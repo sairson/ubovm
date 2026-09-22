@@ -251,6 +251,11 @@ async function main() {
 	const parallelTasks: (() => Promise<void>)[] = [];
 
 	for (const dir of dirs) {
+		if (dir !== '' && !fs.existsSync(path.join(root, dir, 'package.json'))) {
+			log(dir, 'Skipping missing optional dependency directory.');
+			continue;
+		}
+
 		if (dir === '') {
 			removeParcelWatcherPrebuild(dir);
 			continue; // already executed in root
