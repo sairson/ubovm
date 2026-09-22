@@ -1,0 +1,140 @@
+diff --git a/src/vs/workbench/browser/parts/editor/editorTitleControl.ts b/src/vs/workbench/browser/parts/editor/editorTitleControl.ts
+index 13d7f06a..96963b41 100644
+--- a/src/vs/workbench/browser/parts/editor/editorTitleControl.ts
++++ b/src/vs/workbench/browser/parts/editor/editorTitleControl.ts
+@@ -38,8 +38,9 @@ export class EditorTitleControl extends Themable {
+ 	private editorTabsControl: IEditorTabsControl;
+ 	private readonly editorTabsControlDisposable = this._register(new DisposableStore());
+ 
+-	private headerControl: EditorHeaderControl;
++	private headerControl: EditorHeaderControl | undefined;
+ 	private readonly headerControlDisposable = this._register(new MutableDisposable<EditorHeaderControl>());
++	private ubovmConversationChromeHidden = false;
+ 
+ 	constructor(
+ 		private readonly parent: HTMLElement,
+@@ -54,13 +55,37 @@ export class EditorTitleControl extends Themable {
+ 	) {
+ 		super(themeService);
+ 
++		this.ubovmConversationChromeHidden = this.isUbovmConversationGroup();
+ 		this.editorTabsControl = this.createEditorTabsControl();
+ 		this.headerControl = this.createHeaderControl();
+ 	}
+ 
++	private isUbovmConversationGroup(): boolean {
++		return this.groupView.editors.some(editor =>
++			editor.editorId === 'mainThreadWebview-ubovm.welcome' || editor.editorId === 'mainThreadWebview-ubovm.conversation'
++		);
++	}
++
++	private updateConversationChrome(): void {
++		const hideChrome = this.isUbovmConversationGroup();
++		if (hideChrome === this.ubovmConversationChromeHidden) {
++			return;
++		}
++
++		this.ubovmConversationChromeHidden = hideChrome;
++		this.editorTabsControlDisposable.clear();
++		this.headerControlDisposable.clear();
++		clearNode(this.parent);
++		this.editorTabsControl = this.createEditorTabsControl();
++		this.headerControl = this.createHeaderControl();
++		this.editorTabsControl.openEditors(this.groupView.editors);
++		this.headerControl?.handleEditorsChange(true);
++		this.groupView.relayout();
++	}
++
+ 	private createEditorTabsControl(): IEditorTabsControl {
+ 		let tabsControlType;
+-		switch (this.groupsView.partOptions.showTabs) {
++		switch (this.ubovmConversationChromeHidden ? 'none' : this.groupsView.partOptions.showTabs) {
+ 			case 'none':
+ 				tabsControlType = NoEditorTabsControl;
+ 				break;
+@@ -77,26 +102,32 @@ export class EditorTitleControl extends Themable {
+ 		return this.editorTabsControlDisposable.add(control);
+ 	}
+ 
+-	private createHeaderControl(): EditorHeaderControl {
++	private createHeaderControl(): EditorHeaderControl | undefined {
++		if (this.ubovmConversationChromeHidden) {
++			return undefined;
++		}
++
+ 		const control = this.instantiationService.createInstance(EditorHeaderControl, this.parent, this.groupView, this.groupsView, this.menuIds, this.showHeader);
+ 		this.headerControlDisposable.value = control;
+ 		return control;
+ 	}
+ 
+ 	openEditor(editor: EditorInput, options?: IInternalEditorOpenOptions): void {
++		this.updateConversationChrome();
+ 		const didChange = this.editorTabsControl.openEditor(editor, options);
+ 
+ 		this.handleOpenedEditors(didChange);
+ 	}
+ 
+ 	openEditors(editors: EditorInput[]): void {
++		this.updateConversationChrome();
+ 		const didChange = this.editorTabsControl.openEditors(editors);
+ 
+ 		this.handleOpenedEditors(didChange);
+ 	}
+ 
+ 	private handleOpenedEditors(didChange: boolean): void {
+-		this.headerControl.handleEditorsChange(didChange);
++		this.headerControl?.handleEditorsChange(didChange);
+ 	}
+ 
+ 	beforeCloseEditor(editor: EditorInput): void {
+@@ -104,12 +135,14 @@ export class EditorTitleControl extends Themable {
+ 	}
+ 
+ 	closeEditor(editor: EditorInput): void {
++		this.updateConversationChrome();
+ 		this.editorTabsControl.closeEditor(editor);
+ 
+ 		this.handleClosedEditors();
+ 	}
+ 
+ 	closeEditors(editors: EditorInput[]): void {
++		this.updateConversationChrome();
+ 		this.editorTabsControl.closeEditors(editors);
+ 
+ 		this.handleClosedEditors();
+@@ -117,7 +150,7 @@ export class EditorTitleControl extends Themable {
+ 
+ 	private handleClosedEditors(): void {
+ 		if (!this.groupView.activeEditor) {
+-			this.headerControl.handleEditorsChange(true);
++			this.headerControl?.handleEditorsChange(true);
+ 		}
+ 	}
+ 
+@@ -149,7 +182,7 @@ export class EditorTitleControl extends Themable {
+ 		this.editorTabsControl.updateEditorLabel(editor);
+ 		if (this.groupView.activeEditor === editor) {
+ 			// An active input may change its effective resource without being reopened.
+-			this.headerControl.handleEditorsChange(true);
++			this.headerControl?.handleEditorsChange(true);
+ 		}
+ 	}
+ 
+@@ -189,7 +222,7 @@ export class EditorTitleControl extends Themable {
+ 		// Layout tabs control
+ 		this.editorTabsControl.layout(dimensions);
+ 
+-		this.headerControl.layout(dimensions.container.width);
++		this.headerControl?.layout(dimensions.container.width);
+ 
+ 		return new Dimension(dimensions.container.width, this.getHeight().total);
+ 	}
+@@ -198,7 +231,7 @@ export class EditorTitleControl extends Themable {
+ 		const tabsControlHeight = this.editorTabsControl.getHeight();
+ 
+ 		return {
+-			total: tabsControlHeight + this.headerControl.height,
++			total: tabsControlHeight + (this.headerControl?.height ?? 0),
+ 			offset: tabsControlHeight
+ 		};
+ 	}

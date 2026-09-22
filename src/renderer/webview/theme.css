@@ -1,0 +1,49 @@
+/* Follow the host theme; keep dark surfaces distinct without bright outlines. */
+body.vscode-dark {
+  color-scheme: dark;
+  --canvas: var(--vscode-editor-background, #1b1e22);
+  --ink: var(--vscode-foreground, #e2e6e9);
+  --muted: color-mix(in srgb, var(--ink) 72%, var(--canvas));
+  --border: color-mix(in srgb, var(--ink) 17%, var(--canvas));
+  --wash: color-mix(in srgb, var(--ink) 4%, var(--canvas));
+  --hover: color-mix(in srgb, var(--ink) 9%, var(--canvas));
+  --surface-raised: color-mix(in srgb, var(--ink) 6%, var(--canvas));
+  --accent: #a0c4b0;
+  --accent-wash: color-mix(in srgb, var(--accent) 13%, var(--canvas));
+  --focus: var(--vscode-focusBorder, #a0c4b0);
+  --dark-error: #f0a09a;
+  --dark-warning: #ddc18b;
+}
+
+body.vscode-dark ::selection { background: color-mix(in srgb, var(--accent) 32%, var(--canvas)); color: var(--ink); }
+body.vscode-dark :is(input, textarea)::placeholder { color: var(--muted); opacity: .85; }
+body.vscode-dark .composer { background: var(--wash); border-color: var(--border); box-shadow: 0 3px 12px #00000018; }
+body.vscode-dark .composer:focus-within { border-color: var(--focus); box-shadow: 0 0 0 2px color-mix(in srgb, var(--focus) 15%, transparent); }
+body.vscode-dark :is(.primary-button, .submit, .composer .submit) { background: var(--accent); color: #17251e; border-color: transparent; }
+body.vscode-dark :is(.primary-button, .submit, .composer .submit):hover:enabled { background: #b5d4c3; }
+body.vscode-dark .composer .submit:disabled { background: var(--hover); color: var(--muted); }
+
+body.vscode-dark :is(.goal-tabs, .worker-options-menu, .graph-workspace .graph-detail, #settings-discard) { background: var(--surface-raised); box-shadow: 0 12px 32px #00000050; }
+body.vscode-dark :is(#note-editor, #settings-dialog) { background: var(--surface-raised); box-shadow: 0 24px 80px #00000070; }
+body.vscode-dark :is(#note-editor, #settings-dialog)::backdrop { background: #080b10a6; }
+body.vscode-dark .note-reader-toolbar { background: var(--wash); }
+body.vscode-dark .note-select[aria-pressed="true"] { background: var(--accent-wash); border-color: color-mix(in srgb, var(--accent) 45%, var(--canvas)); box-shadow: inset 3px 0 0 var(--accent); }
+body.vscode-dark .notebook-filters button[aria-pressed="true"] { background: var(--surface-raised); color: var(--accent); box-shadow: 0 1px 4px #00000030; }
+body.vscode-dark #notes-search { background: var(--canvas); }
+
+body.vscode-dark :is(.ui-error, .note-editor-error, .execution-error, .worker-detail-error, .settings-catalog-error, .summary-card[data-status="failed"] .thinking-summary, .worker-status[data-status="failed"], #settings-status[data-error="true"], .composer-status[data-error="true"], .prompt-count[data-limit="true"]) { color: var(--vscode-errorForeground, var(--dark-error)); }
+body.vscode-dark .ui-error { background: color-mix(in srgb, var(--dark-error) 7%, var(--canvas)); border-color: color-mix(in srgb, var(--dark-error) 45%, var(--canvas)); }
+body.vscode-dark :is(.worker-status[data-status="waiting"], .worker-status[data-status="queued"]) { color: var(--vscode-editorWarning-foreground, var(--dark-warning)); }
+body.vscode-dark .worker-card-list > .worker-card[data-status="failed"] { border-color: var(--vscode-errorForeground, var(--dark-error)); }
+body.vscode-dark .graph-workspace { --graph-error: var(--vscode-errorForeground, var(--dark-error)); }
+body.vscode-dark .graph-node[data-kind="root"] { color: #17251e; }
+
+body.vscode-dark .md-content .md-token-keyword { color: var(--vscode-symbolIcon-keywordForeground, #c9afe7); }
+body.vscode-dark .md-content .md-token-string { color: var(--vscode-debugTokenExpression-string, #deb399); }
+body.vscode-dark .md-content .md-token-number { color: var(--vscode-debugTokenExpression-number, #a0c4b0); }
+body.vscode-dark .md-content .md-token-comment { color: var(--muted); }
+body.vscode-dark .md-content mark { background: color-mix(in srgb, var(--dark-warning) 24%, var(--canvas)); color: var(--ink); }
+
+/* Preserve host accessibility colors instead of applying the muted dark palette. */
+body.vscode-high-contrast { color-scheme: dark; --accent: var(--vscode-textLink-foreground, #b6dfc8); --border: var(--vscode-contrastBorder, #fff); --accent-wash: var(--canvas); }
+body.vscode-high-contrast .graph-node[data-kind="root"] { color: var(--canvas); }

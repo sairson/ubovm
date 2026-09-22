@@ -1,0 +1,27 @@
+diff --git a/src/vs/workbench/contrib/webviewPanel/browser/webviewEditorInput.ts b/src/vs/workbench/contrib/webviewPanel/browser/webviewEditorInput.ts
+--- a/src/vs/workbench/contrib/webviewPanel/browser/webviewEditorInput.ts
++++ b/src/vs/workbench/contrib/webviewPanel/browser/webviewEditorInput.ts
+@@ -35,9 +35,23 @@ export class WebviewInput extends EditorInput {
+ 	}
+ 
+ 	public override get capabilities(): EditorInputCapabilities {
++		if (this.viewType === 'mainThreadWebview-ubovm.conversation' || this.viewType === 'mainThreadWebview-ubovm.welcome') {
++			// UBOVM's main conversation survives user close actions and editor limits.
++			// Explicit lifecycle disposal remains available for shutdown and reload.
++			return EditorInputCapabilities.Readonly | EditorInputCapabilities.Singleton | EditorInputCapabilities.CannotClose | EditorInputCapabilities.ExcludeFromEditorLimit;
++		}
++
+ 		return EditorInputCapabilities.Readonly | EditorInputCapabilities.Singleton | EditorInputCapabilities.CanDropIntoEditor;
+ 	}
+ 
++	public override canMove(sourceGroup: GroupIdentifier, targetGroup: GroupIdentifier): true | string {
++		if (sourceGroup !== targetGroup && (this.viewType === 'mainThreadWebview-ubovm.conversation' || this.viewType === 'mainThreadWebview-ubovm.welcome')) {
++			return '主对话固定在工作台主区域，不能移动到其他编辑器组。';
++		}
++
++		return super.canMove(sourceGroup, targetGroup);
++	}
++
+ 	private readonly _resourceId = generateUuid();
+ 
+ 	private _webviewTitle: string;

@@ -1,0 +1,33 @@
+diff --git a/src/vs/workbench/browser/parts/views/treeView.ts b/src/vs/workbench/browser/parts/views/treeView.ts
+index bf917583..fa8d7aed 100644
+--- a/src/vs/workbench/browser/parts/views/treeView.ts
++++ b/src/vs/workbench/browser/parts/views/treeView.ts
+@@ -681,6 +681,7 @@ abstract class AbstractTreeView extends Disposable implements ITreeView {
+ 		this.updateMessage();
+ 		this.treeContainer = DOM.append(this.domNode, DOM.$('.customview-tree'));
+ 		this.treeContainer.classList.add('file-icon-themable-tree', 'show-file-icons');
++		this.treeContainer.classList.toggle('ubovm-session-tree', this.id === 'ubovm.sessions');
+ 		const focusTracker = this._register(DOM.trackFocus(this.domNode));
+ 		this._register(focusTracker.onDidFocus(() => this.focused = true));
+ 		this._register(focusTracker.onDidBlur(() => this.focused = false));
+@@ -700,7 +701,7 @@ abstract class AbstractTreeView extends Disposable implements ITreeView {
+ 
+ 		const widgetAriaLabel = this._title;
+ 
+-		this.tree = this.treeDisposables.add(this.instantiationService.createInstance(Tree, this.id, this.treeContainer!, new TreeViewDelegate(), [renderer],
++		this.tree = this.treeDisposables.add(this.instantiationService.createInstance(Tree, this.id, this.treeContainer!, new TreeViewDelegate(this.id), [renderer],
+ 			dataSource, {
+ 			identityProvider: new TreeViewIdentityProvider(),
+ 			accessibilityProvider: {
+@@ -1166,8 +1167,10 @@ class TreeViewIdentityProvider implements IIdentityProvider<ITreeItem> {
+ 
+ class TreeViewDelegate implements IListVirtualDelegate<ITreeItem> {
+ 
++	constructor(private readonly viewId: string) { }
++
+ 	getHeight(element: ITreeItem): number {
+-		return TreeRenderer.ITEM_HEIGHT;
++		return this.viewId === 'ubovm.sessions' ? 44 : TreeRenderer.ITEM_HEIGHT;
+ 	}
+ 
+ 	getTemplateId(element: ITreeItem): string {

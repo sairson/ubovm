@@ -1,0 +1,51 @@
+diff --git a/src/vs/workbench/contrib/files/browser/views/explorerView.ts b/src/vs/workbench/contrib/files/browser/views/explorerView.ts
+index 2ec2f54..1a961a6 100644
+--- a/src/vs/workbench/contrib/files/browser/views/explorerView.ts
++++ b/src/vs/workbench/contrib/files/browser/views/explorerView.ts
+@@ -183,6 +183,7 @@ export class ExplorerView extends ViewPane implements IExplorerView {
+ 	private findProvider!: ExplorerFindProvider;
+ 
+ 	private resourceContext: ResourceContextKey;
++	private ubovmEditingContext: IContextKey<boolean>;
+ 	private folderContext: IContextKey<boolean>;
+ 	private parentReadonlyContext: IContextKey<boolean>;
+ 	private readonlyContext: IContextKey<boolean>;
+@@ -248,6 +249,7 @@ export class ExplorerView extends ViewPane implements IExplorerView {
+ 		this._register(this.resourceContext);
+ 
+ 		this.parentReadonlyContext = ExplorerResourceParentReadOnlyContext.bindTo(contextKeyService);
++		this.ubovmEditingContext = contextKeyService.createKey('ubovm.explorerEditing', false);
+ 		this.folderContext = ExplorerFolderContext.bindTo(contextKeyService);
+ 		this.readonlyContext = ExplorerResourceReadonlyContext.bindTo(contextKeyService);
+ 		this.availableEditorIdsContext = ExplorerResourceAvailableEditorIdsContext.bindTo(contextKeyService);
+@@ -456,6 +458,8 @@ export class ExplorerView extends ViewPane implements IExplorerView {
+ 	}
+ 
+ 	async setEditable(stat: ExplorerItem, isEditing: boolean): Promise<void> {
++		// The empty-folder welcome must not cover the inline filename input.
++		this.ubovmEditingContext.set(isEditing);
+ 		if (isEditing) {
+ 			this.horizontalScrolling = this.tree.options.horizontalScrolling;
+ 
+diff --git a/src/vs/workbench/browser/parts/views/viewPane.ts b/src/vs/workbench/browser/parts/views/viewPane.ts
+index 69fcf62..87ceaf7 100644
+--- a/src/vs/workbench/browser/parts/views/viewPane.ts
++++ b/src/vs/workbench/browser/parts/views/viewPane.ts
+@@ -124,7 +124,7 @@ class ViewWelcomeController {
+ 		this.disposables.add(Event.runAndSubscribe(this.delegate.onDidChangeViewWelcomeState, () => this.onDidChangeViewWelcomeState()));
+ 		if (this.delegate.id === 'workbench.explorer.fileView') {
+ 			this.disposables.add(this.contextKeyService.onDidChangeContext(event => {
+-				if (event.affectsSome(new Set(['ubovm.emptyFolder', 'ubovm.noWorkspace']))) { this.onDidChangeViewWelcomeState(); if (this._enabled) { this.render(); } }
++				if (event.affectsSome(new Set(['ubovm.emptyFolder', 'ubovm.noWorkspace', 'ubovm.explorerEditing']))) { this.onDidChangeViewWelcomeState(); if (this._enabled) { this.render(); } }
+ 			}));
+ 		}
+ 		this.disposables.add(lifecycleService.onWillShutdown(() => this.dispose())); // Fixes https://github.com/microsoft/vscode/issues/208878
+@@ -151,7 +151,7 @@ class ViewWelcomeController {
+ 	}
+ 
+ 	private onDidChangeViewWelcomeState(): void {
+-		const enabled = this.delegate.shouldShowWelcome() || (this.delegate.id === 'workbench.explorer.fileView' && (this.contextKeyService.getContextKeyValue('ubovm.emptyFolder') === true || this.contextKeyService.getContextKeyValue('ubovm.noWorkspace') === true));
++		const enabled = this.delegate.shouldShowWelcome() || (this.delegate.id === 'workbench.explorer.fileView' && this.contextKeyService.getContextKeyValue('ubovm.explorerEditing') !== true && (this.contextKeyService.getContextKeyValue('ubovm.emptyFolder') === true || this.contextKeyService.getContextKeyValue('ubovm.noWorkspace') === true));
+ 
+ 		if (this._enabled === enabled) {
+ 			return;

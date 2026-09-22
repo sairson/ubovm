@@ -1,0 +1,44 @@
+{
+  "name": "ubovm-ide",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Desktop IDE skeleton powered by the full VS Code / Code OSS core",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/harness/index.d.mts",
+      "import": "./src/harness/index.mjs"
+    },
+    "./harness": {
+      "types": "./src/harness/index.d.mts",
+      "import": "./src/harness/index.mjs"
+    }
+  },
+  "engines": {
+    "node": ">=24.18.0 <25"
+  },
+  "scripts": {
+    "build": "node build.mjs build",
+    "installer": "node build.mjs installer",
+    "start": "node build.mjs start",
+    "dev": "node build.mjs dev",
+    "setup": "node build.mjs setup",
+    "check": "node build.mjs check",
+    "test": "node build.mjs test",
+    "core": "node build.mjs source",
+    "test:platform": "node --test src/main/test/build-platform.mjs"
+  },
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "0.86.1",
+    "@earendil-works/pi-ai": "0.86.1",
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "cheerio": "1.2.0",
+    "playwright-core": "1.63.0",
+    "ssh2": "1.17.0",
+    "typebox": "1.3.27",
+    "yaml": "2.9.1"
+  },
+  "devDependencies": {
+    "typescript": "7.0.2"
+  }
+}

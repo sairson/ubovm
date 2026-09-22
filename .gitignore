@@ -1,0 +1,30 @@
+# Installed dependencies
+node_modules/
+
+# Generated build outputs and downloaded runtimes
+.cache/
+.runtime/
+dist/
+
+# Generated files inside the vendored Code OSS source tree
+out/
+.build/
+vendor/vscode/.agents/
+vendor/vscode/.claude/
+vendor/vscode/.config/
+vendor/vscode/.devcontainer/
+vendor/vscode/.github/
+vendor/vscode/.vscode/
+vendor/vscode/ubovm/
+
+# Logs and local environment overrides
+*.log
+.env
+.env.*
+!.env.example
+
+# Editor and operating-system metadata
+.idea/
+/.vscode/
+.DS_Store
+Thumbs.db

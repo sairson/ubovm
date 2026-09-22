@@ -1,0 +1,42 @@
+'use strict';
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const { mkdtemp, mkdir, writeFile, readFile, rm } = require('node:fs/promises');
+const path = require('node:path');
+const { tmpdir } = require('node:os');
+const { createHash, randomUUID } = require('node:crypto');
+const { createHarnessService } = require('../harness/harness-service.cjs');
+const hash = value => createHash('sha256').update(value).digest('hex').slice(0, 32);
+
+test('pending legacy execution stays with its workspace across switching and reload', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'ubovm-workspace-execution-'));
+  const services = [];
+  t.after(async () => { for (const service of services) await service.close(); await rm(root, { recursive: true, force: true }); });
+  let workspace = path.join(root, 'project-a');
+  const create = () => {
+    const service = createHarnessService({ sdkPath: path.resolve(__dirname, '../../harness/index.mjs'), storageDirectory: path.join(root, 'storage'), workspaceRoots: () => [workspace], readConfiguration: async () => { throw Error('Restoration must not start a model'); } });
+    services.push(service); return service;
+  };
+  const input = { conversationId: 'conversation', mode: 'goal', goal: { objective: 'Inspect the project' } };
+  const goalKey = 'goal-' + hash(input.goal.objective);
+  const directory = path.join(root, 'storage', hash(input.conversationId), goalKey);
+  const request = { schemaVersion: 1, sessionId: 'ide_' + hash(input.conversationId + ':' + goalKey), conversationId: input.conversationId, goalKey, objective: input.goal.objective, requestId: randomUUID(), status: 'accepted', facts: ['Unfinished work in A'], baseRevision: null, appliedRevision: null, resultRevision: null, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+  await mkdir(directory, { recursive: true });
+  const requestFile = path.join(directory, 'goal-request.json');
+  await writeFile(requestFile, JSON.stringify(request));
+  let service = create();
+  assert.equal((await service.restore(input)).canResume, true);
+  await service.releaseWorkspace(input.conversationId);
+  workspace = path.join(root, 'project-b');
+  await assert.rejects(service.resume(input.conversationId), { code: 'RESUME_UNAVAILABLE' }, 'resume rechecks the workspace even before the UI restores it');
+  assert.equal((await service.restore(input)).canResume, false);
+  await assert.rejects(service.resume(input.conversationId), { code: 'RESUME_UNAVAILABLE' });
+  assert.deepEqual(JSON.parse(await readFile(requestFile, 'utf8')), request, 'switching preserves the old pending request');
+  await service.close(); service = create();
+  assert.equal((await service.restore(input)).canResume, false, 'reload in B does not pick up A checkpoints');
+  await service.releaseWorkspace(input.conversationId);
+  workspace = path.join(root, 'project-a');
+  assert.equal((await service.restore(input)).canResume, true, 'returning to A restores its pending work');
+  await service.close(); service = create();
+  assert.equal((await service.restore(input)).canResume, true, 'binding survives application restart');
+});

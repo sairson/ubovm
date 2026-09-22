@@ -1,0 +1,25 @@
+:root { --motion-duration: 220ms; --motion-ease: cubic-bezier(.22, 1, .36, 1); }
+/* Discrete display transitions retain outgoing content without delaying state,
+   focus restoration, or keyboard accessibility. Reversals use the current frame. */
+.worker-panel {
+  opacity: 1; transform: translateX(0);
+  transition: transform var(--motion-duration) var(--motion-ease), opacity 160ms ease-out,
+    display var(--motion-duration) allow-discrete;
+}
+.worker-panel[hidden] { opacity: 0; transform: translateX(28px); pointer-events: none; }
+@starting-style { .worker-panel:not([hidden]) { opacity: 0; transform: translateX(28px); } }
+.shell > main { transition: margin-right var(--motion-duration) var(--motion-ease); }
+.worker-panel-resizing > main, .worker-panel-resizing .worker-panel { transition: none; }
+#settings-dialog {
+  transform: none;
+  transition: none;
+}
+#settings-dialog[open] { opacity: 1; transform: none; animation: none; }
+/* The initial placeholder must paint immediately; only the progress bar waits. */
+.page-loading { animation: none; }
+.page-progress { animation: loading-reveal 160ms ease-out 180ms both; }
+@keyframes loading-reveal { from { opacity: 0; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; scroll-behavior: auto !important; } }
+.page-background *, .page-background *::before, .page-background *::after,
+.settings-visible .shell *, .settings-visible .shell *::before, .settings-visible .shell *::after { animation-play-state: paused !important; }
+@media (prefers-reduced-motion: reduce) { *::before, *::after { animation: none !important; transition: none !important; } }

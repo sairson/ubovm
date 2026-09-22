@@ -1,0 +1,41 @@
+diff --git a/extensions/npm/package.json b/extensions/npm/package.json
+index 9a8cfa0b..da8338ac 100644
+--- a/extensions/npm/package.json
++++ b/extensions/npm/package.json
+@@ -78,7 +78,7 @@
+         {
+           "id": "npm",
+           "name": "%view.name%",
+-          "when": "npm:showScriptExplorer",
++          "when": "false",
+           "icon": "$(json)",
+           "visibility": "hidden",
+           "contextualTitle": "%view.name%"
+diff --git a/src/vs/workbench/contrib/splash/browser/partsSplash.ts b/src/vs/workbench/contrib/splash/browser/partsSplash.ts
+index dbf1339c..09d465be 100644
+--- a/src/vs/workbench/contrib/splash/browser/partsSplash.ts
++++ b/src/vs/workbench/contrib/splash/browser/partsSplash.ts
+@@ -137,6 +137,23 @@ export class PartsSplash {
+ 	}
+ 
+ 	private _removePartsSplash(): void {
++		// A lightweight first-paint cover ends on the real workbench layout,
++		// without a minimum display time or simulated loading percentage.
++		const startup = mainWindow.document.getElementById('ubovm-startup');
++		if (startup) {
++			const finish = () => {
++				startup.remove();
++				mainWindow.document.getElementById('ubovm-startup-style')?.remove();
++			};
++			startup.setAttribute('aria-hidden', 'true');
++			startup.classList.add('ubovm-startup-exit');
++			if (mainWindow.matchMedia('(prefers-reduced-motion: reduce)').matches) {
++				finish();
++			} else {
++				startup.addEventListener('transitionend', finish, { once: true });
++				mainWindow.setTimeout(finish, 320); // cleanup if no transition event fires
++			}
++		}
+ 		// eslint-disable-next-line no-restricted-syntax
+ 		const element = mainWindow.document.getElementById(PartsSplash._splashElementId);
+ 		if (element) {

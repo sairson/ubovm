@@ -1,0 +1,54 @@
+{
+  "package": "@lobehub/icons-static-svg",
+  "version": "1.95.1",
+  "revision": "49a2130df7bfa5eb1b088261bff20a37e2967789",
+  "source": "https://github.com/lobehub/lobe-icons",
+  "integrity": "sha512-Hw7EPPgVnC4NZLXBfTNJG6hyQgqECfUPC11VVXodPSr1aebKcFxDZlSpxhWwYNdCc6bhxps/x5TtXoPmfKH2ag==",
+  "providers": {
+    "openai": {
+      "file": "openai.svg",
+      "brand": "OpenAI",
+      "sha256": "a595df6b423920c67a7f8f73c063e4bfb72d415948097b6cac063a2366bb5186"
+    },
+    "anthropic": {
+      "file": "anthropic.svg",
+      "brand": "Anthropic",
+      "sha256": "e833fdfa7e7187a86a05b870925067556a506dcd4239089aed73e1e58c9366a3"
+    },
+    "google": {
+      "file": "gemini-color.svg",
+      "brand": "Google Gemini",
+      "sha256": "8ab0a9bafec11f7e69bcb9fc4ffd8f1bc927d1ddcbbb6ff36dee5ae8b5a9d602"
+    },
+    "deepseek": {
+      "file": "deepseek-color.svg",
+      "brand": "DeepSeek",
+      "sha256": "deba5f98a5c1796e20fcac3149bcd7eb8a32f0bdd04d048819400b1f28bd1439"
+    },
+    "openrouter": {
+      "file": "openrouter.svg",
+      "brand": "OpenRouter",
+      "sha256": "ae671cc83de9bd45db97a47ed5e38a4e1bd9f93a12be495ba4b4f8b284026bca"
+    },
+    "mistral": {
+      "file": "mistral-color.svg",
+      "brand": "Mistral",
+      "sha256": "722f74b289d95486b43662fe24fa883b333701296f618406cd0ed502299170b6"
+    },
+    "groq": {
+      "file": "groq.svg",
+      "brand": "Groq",
+      "sha256": "078d5cf6e7a54905040c15ddacf5ea33c13042fe7739e820cedc2096e4406651"
+    },
+    "xai": {
+      "file": "xai.svg",
+      "brand": "xAI",
+      "sha256": "89eb7de9f0d02a41cfecd9109e253d7fd3529e27467dee4254faa67f3ac21451"
+    },
+    "moonshotai": {
+      "file": "moonshot.svg",
+      "brand": "Moonshot AI",
+      "sha256": "435f41b74e6a87639b6bf860e9628f20cbe7d6229bece412d548f4cea3081852"
+    }
+  }
+}

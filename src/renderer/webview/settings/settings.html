@@ -1,0 +1,15 @@
+<dialog id="settings-dialog" aria-labelledby="settings-title">
+  <div class="settings-shell">
+    <header class="settings-header"><button type="button" id="settings-close" aria-label="返回对话">← <span>返回对话</span></button><h2 id="settings-title">系统配置</h2><span class="settings-header-note">UBOVM</span></header>
+    <div id="settings-progress" hidden aria-hidden="true"><span></span></div>
+    <div class="settings-layout"><form id="settings-form">
+      <div class="settings-heading"><span id="settings-section-kicker" class="settings-eyebrow">PREFERENCES</span><h3 id="settings-section-title"></h3><p id="settings-description"></p></div>
+      <div id="settings-model-roles" hidden role="tablist" aria-label="模型角色"></div>
+      <div id="settings-skeleton" hidden aria-hidden="true"><div></div><div></div><div></div><div></div></div>
+      <p id="settings-load-error" class="settings-empty" hidden></p>
+      <div id="settings-fields"></div>
+    </form></div>
+    <footer class="settings-footer"><div><p id="settings-status" role="status" aria-live="polite">更改将在下一次运行时生效。</p><small>密钥留空保留已有值；凭据加密保存在本机。</small></div><button type="button" id="settings-reload">重新载入</button><button type="submit" form="settings-form" id="settings-save">保存更改</button></footer>
+    <div id="settings-discard" hidden role="alert"><span>有未保存的更改。</span><button type="button" id="settings-keep">继续编辑</button><button type="button" id="settings-discard-confirm">放弃更改</button></div>
+  </div>
+</dialog>

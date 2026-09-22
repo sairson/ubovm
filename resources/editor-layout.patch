@@ -1,0 +1,72 @@
+diff --git a/src/vs/workbench/browser/parts/editor/editorPart.ts b/src/vs/workbench/browser/parts/editor/editorPart.ts
+index 1a5a3cf1..5fee81f6 100644
+--- a/src/vs/workbench/browser/parts/editor/editorPart.ts
++++ b/src/vs/workbench/browser/parts/editor/editorPart.ts
+@@ -503,7 +503,17 @@ export class EditorPart extends Part<IEditorPartMemento> implements IEditorPart,
+ 		return this.gridWidget.isViewExpanded(targetGroup);
+ 	}
+ 
++	private get ubovmConversationGroup(): IEditorGroupView | undefined {
++		return this.groups.find(group => group.editors.some(editor =>
++			editor.editorId === 'mainThreadWebview-ubovm.welcome' || editor.editorId === 'mainThreadWebview-ubovm.conversation'
++		));
++	}
++
+ 	setGroupOrientation(orientation: GroupOrientation): void {
++		if (this.ubovmConversationGroup && orientation !== GroupOrientation.HORIZONTAL) {
++			return;
++		}
++
+ 		if (!this.gridWidget) {
+ 			return; // we have not been created yet
+ 		}
+@@ -515,6 +525,15 @@ export class EditorPart extends Part<IEditorPartMemento> implements IEditorPart,
+ 	}
+ 
+ 	applyLayout(layout: EditorGroupLayout): void {
++		if (this.ubovmConversationGroup) {
++			if ((typeof layout.orientation === 'number' && layout.orientation !== GroupOrientation.HORIZONTAL) ||
++				layout.groups.length < 1 || layout.groups.length > 2 || layout.groups.some(group => Array.isArray(group.groups))) {
++				return;
++			}
++
++			layout = { ...layout, orientation: GroupOrientation.HORIZONTAL };
++		}
++
+ 		const restoreFocus = this.shouldRestoreFocus(this.container);
+ 
+ 		// Determine how many groups we need overall
+@@ -623,6 +642,16 @@ export class EditorPart extends Part<IEditorPartMemento> implements IEditorPart,
+ 
+ 		// Same groups view: add to grid widget directly
+ 		if (locationView.groupsView === this) {
++			const conversationGroup = this.ubovmConversationGroup;
++			if (conversationGroup) {
++				const fileGroup = this.groups.find(group => group !== conversationGroup);
++				if (fileGroup) {
++					return fileGroup;
++				}
++
++				direction = GroupDirection.RIGHT;
++			}
++
+ 			const restoreFocus = this.shouldRestoreFocus(locationView.element);
+ 
+ 			const shouldExpand = this.groupViews.size > 1 && this.isGroupExpanded(locationView);
+@@ -890,6 +919,16 @@ export class EditorPart extends Part<IEditorPartMemento> implements IEditorPart,
+ 			throw new Error('Cannot move group into its own');
+ 		}
+ 
++		const conversationGroup = this.ubovmConversationGroup;
++		if (conversationGroup) {
++			if (sourceView.groupsView !== this || targetView.groupsView !== this ||
++				(sourceView !== conversationGroup && targetView !== conversationGroup)) {
++				return sourceView;
++			}
++
++			direction = sourceView === conversationGroup ? GroupDirection.LEFT : GroupDirection.RIGHT;
++		}
++
+ 		const restoreFocus = this.shouldRestoreFocus(sourceView.element);
+ 		let movedView: IEditorGroupView;
+ 

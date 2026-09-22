@@ -1,0 +1,791 @@
+{
+  "name": "ubovm-core",
+  "displayName": "UBOVM Core",
+  "description": "UBOVM 桌面 IDE 的工作台入口与开发骨架。",
+  "version": "0.2.0",
+  "publisher": "ubovm",
+  "private": true,
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.135.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./extension.cjs",
+  "extensionKind": [
+    "ui"
+  ],
+  "activationEvents": [
+    "*",
+    "onWebviewPanel:ubovm.welcome"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": true
+    },
+    "virtualWorkspaces": {
+      "supported": false
+    }
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "ubovm.validateCodeChanges",
+        "title": "验证代码修改",
+        "category": "UBOVM",
+        "icon": "$(check-all)"
+      },
+      {
+        "command": "ubovm.attachSelection",
+        "title": "将选中代码添加到 Agent 上下文",
+        "category": "UBOVM",
+        "icon": "$(comment-discussion)",
+        "enablement": "editorHasSelection"
+      },
+      {
+        "command": "ubovm.installBrowser",
+        "title": "下载并安装内置浏览器",
+        "category": "UBOVM",
+        "icon": "$(cloud-download)"
+      },
+      {
+        "command": "ubovm.reviewCodeChanges",
+        "enablement": "ubovm.mode == assist",
+        "title": "代码更改：查看 diff 与撤销",
+        "category": "UBOVM",
+        "icon": "$(diff)"
+      },
+      {
+        "command": "ubovm.configureModel",
+        "title": "配置模型与 API 密钥",
+        "category": "UBOVM",
+        "icon": "$(settings-gear)"
+      },
+      {
+        "command": "ubovm.runGoal",
+        "title": "开始探索",
+        "category": "UBOVM",
+        "icon": "$(play)"
+      },
+      {
+        "command": "ubovm.cancelRun",
+        "title": "停止当前运行",
+        "category": "UBOVM",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "ubovm.resumeRun",
+        "title": "恢复当前运行",
+        "category": "UBOVM",
+        "icon": "$(debug-continue)"
+      },
+      {
+        "command": "ubovm.openWelcome",
+        "title": "主对话",
+        "category": "UBOVM",
+        "icon": "$(home)"
+      },
+      {
+        "command": "ubovm.openTerminal",
+        "title": "新建 SSH 终端",
+        "category": "UBOVM",
+        "icon": "$(terminal)"
+      },
+      {
+        "command": "ubovm.openLocalTerminal",
+        "title": "新建当前系统终端",
+        "category": "UBOVM",
+        "icon": "$(terminal)"
+      },
+      {
+        "command": "ubovm.selectTerminal",
+        "title": "选择终端连接",
+        "category": "UBOVM",
+        "icon": "$(remote)"
+      },
+      {
+        "command": "ubovm.openSource",
+        "title": "打开 VS Code 核心源码",
+        "category": "UBOVM",
+        "icon": "$(code)"
+      },
+      {
+        "command": "ubovm.showRuntimeInfo",
+        "title": "查看运行时信息",
+        "category": "UBOVM",
+        "icon": "$(info)"
+      },
+      {
+        "command": "ubovm.openAssistant",
+        "title": "聚焦主对话",
+        "category": "UBOVM",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "ubovm.newChat",
+        "title": "新建对话",
+        "category": "UBOVM",
+        "icon": "$(add)"
+      },
+      {
+        "command": "ubovm.newGoal",
+        "title": "新建探索",
+        "category": "UBOVM",
+        "icon": "$(add)"
+      },
+      {
+        "command": "ubovm.selectConversation",
+        "title": "打开会话",
+        "category": "UBOVM",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "ubovm.deleteConversation",
+        "title": "删除会话",
+        "category": "UBOVM",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "ubovm.resetLayout",
+        "title": "恢复工作台布局",
+        "category": "UBOVM",
+        "icon": "$(layout)"
+      },
+      {
+        "command": "ubovm.searchConversations",
+        "title": "搜索会话",
+        "category": "UBOVM",
+        "icon": "$(search)"
+      },
+      {
+        "command": "ubovm.hideSessions",
+        "title": "收起会话栏",
+        "category": "UBOVM",
+        "icon": "$(chevron-left)"
+      },
+      {
+        "command": "ubovm.hideFiles",
+        "title": "收起文件栏",
+        "category": "UBOVM",
+        "icon": "$(chevron-right)"
+      },
+      {
+        "command": "ubovm.createFirstFile",
+        "title": "新建第一个文件",
+        "category": "UBOVM",
+        "icon": "$(new-file)"
+      },
+      {
+        "command": "ubovm.openSettings",
+        "title": "系统配置",
+        "category": "UBOVM",
+        "icon": "$(settings-gear)"
+      },
+      {
+        "command": "ubovm.openMcp",
+        "title": "管理 MCP 服务",
+        "category": "UBOVM",
+        "icon": "$(plug)"
+      },
+      {
+        "command": "ubovm.openSkills",
+        "title": "管理 Skills",
+        "category": "UBOVM",
+        "icon": "$(book)"
+      },
+      {
+        "command": "ubovm.toggleTheme",
+        "title": "切换浅色 / 暗色主题",
+        "category": "UBOVM",
+        "icon": "$(color-mode)"
+      },
+      {
+        "command": "ubovm.reloadConversation",
+        "title": "重新加载对话页面",
+        "category": "UBOVM"
+      }
+    ],
+    "terminal": {
+      "profiles": [
+        {
+          "id": "ubovm.ssh",
+          "title": "UBOVM SSH",
+          "icon": "remote"
+        },
+        {
+          "id": "ubovm.local",
+          "title": "当前系统终端",
+          "icon": "terminal"
+        }
+      ]
+    },
+    "configurationDefaults": {
+      "terminal.integrated.defaultProfile.windows": "UBOVM SSH",
+      "terminal.integrated.defaultProfile.linux": "UBOVM SSH",
+      "terminal.integrated.defaultProfile.osx": "UBOVM SSH"
+    },
+    "configuration": {
+      "title": "UBOVM Agent",
+      "properties": {
+        "ubovm.modelProfiles": {
+          "type": "array",
+          "scope": "machine",
+          "default": [],
+          "description": "已保存的模型配置。请在系统配置中管理；API Key 保存在系统凭据库中。",
+          "items": {
+            "type": "object",
+            "required": ["id", "name", "model"],
+            "additionalProperties": false,
+            "properties": {
+              "id": { "type": "string" },
+              "name": { "type": "string" },
+              "model": { "type": "object" }
+            }
+          }
+        },
+        "ubovm.model": {
+          "type": "object",
+          "scope": "machine",
+          "default": {},
+          "markdownDescription": "Reason、Worker 与对话默认使用的模型。使用 `UBOVM: 配置模型与 API 密钥` 将密钥保存到加密凭据存储。",
+          "additionalProperties": false,
+          "properties": {
+            "provider": {
+              "type": "string",
+              "description": "pi provider 标识，或自定义 provider 名称。"
+            },
+            "modelId": {
+              "type": "string",
+              "description": "模型 ID。"
+            },
+            "api": {
+              "type": "string",
+              "description": "自定义服务的 pi API 类型，例如 openai-completions。"
+            },
+            "baseUrl": {
+              "type": "string",
+              "description": "自定义服务的 API 地址。"
+            },
+            "contextWindow": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "maxTokens": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "reasoning": {
+              "type": "boolean"
+            },
+            "input": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "text",
+                  "image"
+                ]
+              }
+            },
+            "compat": {
+              "type": "object",
+              "description": "pi provider 的兼容性参数。"
+            },
+            "streamOptions": {
+              "type": "object",
+              "description": "请求超时、重试和采样参数。"
+            }
+          }
+        },
+        "ubovm.reason": {
+          "type": "object",
+          "scope": "machine",
+          "default": {},
+          "description": "Reason 规划器参数。model 可覆盖默认模型；模型密钥通过配置模型命令保存。",
+          "additionalProperties": false,
+          "properties": {
+            "model": {
+              "type": "object"
+            },
+            "thinkingLevel": {
+              "type": "string",
+              "enum": [
+                "off",
+                "minimal",
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ]
+            },
+            "systemPrompt": {
+              "type": "string"
+            },
+            "maxIntents": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "maxRepairs": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4
+            },
+            "maxResponseBytes": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        },
+        "ubovm.worker": {
+          "type": "object",
+          "scope": "machine",
+          "default": {},
+          "description": "Worker 执行参数。model 可覆盖默认模型；模型密钥通过配置模型命令保存。",
+          "additionalProperties": false,
+          "properties": {
+            "model": {
+              "type": "object"
+            },
+            "thinkingLevel": {
+              "type": "string",
+              "enum": [
+                "off",
+                "minimal",
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ]
+            },
+            "systemPrompt": {
+              "type": "string"
+            },
+            "maxModelCalls": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "调用次数上限，0 表示不限次数（默认）。"
+            },
+            "maxToolCalls": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "调用次数上限，0 表示不限次数（默认）。"
+            },
+            "maxPlanSteps": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "maxResponseBytes": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "maxCheckpointBytes": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "maxToolResultBytes": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "requireToolApproval": {
+              "type": "boolean",
+              "default": true,
+              "description": "协助模式下所有工具调用（含子 Worker）执行前须人工审核。关闭后从下一轮对话自动执行。"
+            }
+          }
+        },
+        "ubovm.contextSummary": {
+          "type": [
+            "object",
+            "boolean"
+          ],
+          "scope": "machine",
+          "default": true,
+          "description": "上下文摘要默认开启，使用 Reason 模型；false 关闭。可设置 model、triggerTokens、targetTokens、keepRecentMessages、maxSummaryTokens、maxSummaryCalls、timeoutMs。",
+          "properties": {
+            "model": {
+              "type": "object"
+            },
+            "triggerTokens": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "targetTokens": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "triggerMessages": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "keepRecentMessages": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "maxSummaryTokens": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "maxSummaryCalls": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "maxSummaryCallsPerScope": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "maxSummaryInputTokens": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "timeoutMs": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "additionalProperties": false
+        },
+        "ubovm.mcp": {
+          "type": "object",
+          "scope": "machine",
+          "default": {
+            "servers": []
+          },
+          "description": "本机配置的 MCP 服务，支持 stdio、streamable_http、sse。只读取用户设置，每个运行独立连接并在结束时释放。",
+          "properties": {
+            "servers": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "name"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "transport": {
+                    "type": "string",
+                    "enum": [
+                      "stdio",
+                      "streamable_http",
+                      "streamable-http",
+                      "sse"
+                    ]
+                  },
+                  "enabled": {
+                    "type": "boolean",
+                    "default": true
+                  },
+                  "required": {
+                    "type": "boolean",
+                    "default": true
+                  },
+                  "command": {
+                    "type": "string"
+                  },
+                  "args": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "cwd": {
+                    "type": "string"
+                  },
+                  "env": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "string"
+                    }
+                  },
+                  "url": {
+                    "type": "string"
+                  },
+                  "headers": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "string"
+                    }
+                  },
+                  "tools": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "toolNamePrefix": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "connectTimeoutMs": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "callTimeoutMs": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "maxResultBytes": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "additionalProperties": false
+        },
+        "ubovm.skills": {
+          "type": "object",
+          "scope": "machine",
+          "default": {},
+          "description": "仅加载 ~/.ubovm/skills 下的技能。内置技能自动释放到此目录，可配置加载预算。",
+          "properties": {
+            "allowedSkills": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "maxSkills": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "maxSkillBytes": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "maxTotalBytes": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "maxFiles": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "maxActiveBytes": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "maxWorkers": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "resource": {
+              "type": "object"
+            },
+            "script": {
+              "type": "object"
+            }
+          },
+          "additionalProperties": false
+        },
+        "ubovm.intools": {
+          "type": [
+            "object",
+            "boolean"
+          ],
+          "scope": "machine",
+          "default": {},
+          "description": "内置工具全部默认启用；保留 SSH、网络搜索等连接参数。旧开关与工具白名单不再限制桌面工具。",
+          "properties": {
+            "browser": {
+              "type": [
+                "object",
+                "boolean"
+              ]
+            },
+            "ssh": {
+              "type": "object"
+            },
+            "webSearch": {
+              "type": [
+                "object",
+                "boolean"
+              ]
+            },
+            "fetchContent": {
+              "type": [
+                "object",
+                "boolean"
+              ]
+            },
+            "target": {
+              "type": "string"
+            },
+            "canPromote": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false
+        },
+        "ubovm.summaryEnabled": {
+          "type": "boolean",
+          "scope": "machine",
+          "default": true,
+          "description": "启用上下文摘要，关闭时保留已配置的摘要参数。"
+        }
+      }
+    },
+    "viewsContainers": {
+      "secondarySidebar": [
+        {
+          "id": "ubovm-sessions",
+          "title": "会话",
+          "icon": "media/icon.svg"
+        }
+      ],
+      "activitybar": [
+        {
+          "id": "ubovm-blackboard",
+          "title": "黑板详情",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "ubovm-sessions": [
+        {
+          "id": "ubovm.sessions",
+          "name": "会话",
+          "contextualTitle": "会话"
+        }
+      ],
+      "ubovm-blackboard": [
+        {
+          "type": "webview",
+          "id": "ubovm.blackboardDetails",
+          "name": "黑板详情",
+          "contextualTitle": "黑板详情"
+        }
+      ]
+    },
+    "menus": {
+      "editor/context": [
+        {
+          "command": "ubovm.attachSelection",
+          "when": "editorHasSelection && (resourceScheme == file || resourceScheme == untitled || resourceScheme == ubovm-diff)",
+          "group": "navigation@1"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "workbench.files.action.refreshFilesExplorer",
+          "group": "navigation@90"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "ubovm.deleteConversation",
+          "when": "view == ubovm.sessions && !ubovm.settingsPage && (viewItem == ubovm.conversation || viewItem == ubovm.currentConversation)",
+          "group": "inline@1"
+        },
+        {
+          "command": "ubovm.deleteConversation",
+          "when": "view == ubovm.sessions && !ubovm.settingsPage && (viewItem == ubovm.conversation || viewItem == ubovm.currentConversation)",
+          "group": "9_delete"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "ubovm.selectTerminal",
+          "when": "view == terminal",
+          "group": "navigation@1"
+        },
+        {
+          "command": "ubovm.newChat",
+          "when": "view == ubovm.sessions && ubovm.mode != goal && !ubovm.settingsPage",
+          "group": "navigation@2"
+        },
+        {
+          "command": "ubovm.newGoal",
+          "when": "view == ubovm.sessions && ubovm.mode == goal && !ubovm.settingsPage",
+          "group": "navigation@2"
+        },
+        {
+          "command": "ubovm.searchConversations",
+          "when": "view == ubovm.sessions && !ubovm.settingsPage",
+          "group": "navigation@1"
+        },
+        {
+          "command": "ubovm.hideSessions",
+          "when": "view == ubovm.sessions",
+          "group": "navigation@3"
+        },
+        {
+          "command": "ubovm.hideFiles",
+          "when": "view == workbench.explorer.fileView || view == workbench.explorer.emptyView",
+          "group": "navigation@99"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "ubovm.reviewCodeChanges",
+          "when": "ubovm.mode == assist"
+        },
+        {
+          "command": "ubovm.deleteConversation",
+          "when": "false"
+        },
+        {
+          "command": "ubovm.newGoal",
+          "when": "ubovm.mode == goal"
+        },
+        {
+          "command": "ubovm.selectConversation",
+          "when": "false"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "ubovm.attachSelection",
+        "key": "ctrl+alt+l",
+        "mac": "cmd+alt+l",
+        "when": "editorTextFocus && editorHasSelection"
+      },
+      {
+        "command": "ubovm.openAssistant",
+        "key": "ctrl+l",
+        "mac": "cmd+l",
+        "when": "!terminalFocus"
+      },
+      {
+        "command": "ubovm.newChat",
+        "key": "ctrl+shift+l",
+        "mac": "cmd+shift+l",
+        "when": "!terminalFocus"
+      }
+    ],
+    "themes": [
+      {
+        "id": "UBOVM Dark",
+        "label": "UBOVM Dark",
+        "uiTheme": "vs-dark",
+        "path": "./themes/ubovm-dark.json"
+      },
+      {
+        "id": "UBOVM Light",
+        "label": "UBOVM Light",
+        "uiTheme": "vs",
+        "path": "./themes/ubovm-light.json"
+      }
+    ],
+    "viewsWelcome": [
+      {
+        "view": "ubovm.sessions",
+        "when": "ubovm.mode != goal",
+        "contents": "$(comment-discussion)\n还没有会话\n从一个问题开始，你的对话会保存在这里。\n[开始对话](command:ubovm.openAssistant)"
+      },
+      {
+        "view": "ubovm.sessions",
+        "when": "ubovm.mode == goal",
+        "contents": "$(target)\n还没有探索记录\n从已知事实出发，定义你的探索目标。\n[开始探索](command:ubovm.openAssistant)"
+      }
+    ]
+  }
+}

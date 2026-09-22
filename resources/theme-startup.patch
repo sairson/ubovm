@@ -1,0 +1,17 @@
+diff --git a/src/vs/workbench/services/themes/browser/workbenchThemeService.ts b/src/vs/workbench/services/themes/browser/workbenchThemeService.ts
+--- a/src/vs/workbench/services/themes/browser/workbenchThemeService.ts
++++ b/src/vs/workbench/services/themes/browser/workbenchThemeService.ts
+@@ -203,6 +203,12 @@
+ 		const initializeColorTheme = async () => {
+ 			const devThemes = this.colorThemeRegistry.findThemeByExtensionLocation(extDevLoc);
+ 			if (devThemes.length) {
++				// UBOVM loads its UI as a development extension in the source desktop.
++				// Honor the saved theme before falling back to the startup splash type.
++				const configuredColorTheme = devThemes.find(theme => theme.settingsId === this.settings.colorTheme);
++				if (configuredColorTheme) {
++					return this.setColorTheme(configuredColorTheme.id, undefined);
++				}
+ 				const matchedColorTheme = devThemes.find(theme => theme.type === this.currentColorTheme.type);
+ 				return this.setColorTheme(matchedColorTheme ? matchedColorTheme.id : devThemes[0].id, undefined);
+ 			}
+

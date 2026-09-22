@@ -1,0 +1,43 @@
+diff --git a/src/vs/workbench/browser/parts/panel/panelPart.ts b/src/vs/workbench/browser/parts/panel/panelPart.ts
+index 10376ab9..2cecfdcd 100644
+--- a/src/vs/workbench/browser/parts/panel/panelPart.ts
++++ b/src/vs/workbench/browser/parts/panel/panelPart.ts
+@@ -67,6 +67,29 @@ export class PanelPart extends AbstractPaneCompositePart {
+ 
+ 	static readonly activePanelSettingsKey = 'workbench.panelpart.activepanelid';
+ 
++	// UBOVM keeps the bottom panel dedicated to the terminal. Other view
++	// containers stay registered so output, diagnostics and debug services can
++	// continue their background work without instantiating a visible panel.
++	override async openPaneComposite(id?: string, focus?: boolean) {
++		if (id !== undefined && id !== 'terminal') {
++			return undefined;
++		}
++		return super.openPaneComposite('terminal', focus);
++	}
++
++	override getPaneComposite(id: string) {
++		return id === 'terminal' ? super.getPaneComposite(id) : undefined;
++	}
++
++	override getPaneComposites() {
++		return super.getPaneComposites().filter(composite => composite.id === 'terminal');
++	}
++
++	override getLastActivePaneCompositeId(): string {
++		// Ignore a persisted Problems/Output/Debug Console/Ports selection.
++		return 'terminal';
++	}
++
+ 	constructor(
+ 		@INotificationService notificationService: INotificationService,
+ 		@IStorageService storageService: IStorageService,
+@@ -212,7 +235,7 @@ export class PanelPart extends AbstractPaneCompositePart {
+ 	}
+ 
+ 	protected override shouldShowCompositeBar(): boolean {
+-		return true;
++		return false;
+ 	}
+ 
+ 	protected getCompositeBarPosition(): CompositeBarPosition {

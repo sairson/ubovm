@@ -1,0 +1,124 @@
+diff --git a/src/vs/workbench/contrib/files/common/explorerModel.ts b/src/vs/workbench/contrib/files/common/explorerModel.ts
+index ddba6b3..2b8126e 100644
+--- a/src/vs/workbench/contrib/files/common/explorerModel.ts
++++ b/src/vs/workbench/contrib/files/common/explorerModel.ts
+@@ -77,7 +77,10 @@ export class ExplorerModel implements IDisposable {
+ 			}
+ 		}
+ 
+-		return null;
++		// A session explorer root can be outside the window's workspace folders.
++		const sessionRoot = this.roots.filter(root => this.uriIdentityService.extUri.isEqualOrParent(resource, root.resource))
++			.sort((a, b) => b.resource.path.length - a.resource.path.length)[0];
++		return sessionRoot?.find(resource) ?? null;
+ 	}
+ 
+ 	dispose(): void {
+diff --git a/src/vs/workbench/contrib/files/browser/explorerService.ts b/src/vs/workbench/contrib/files/browser/explorerService.ts
+index 4ff77c2..3c98dc6 100644
+--- a/src/vs/workbench/contrib/files/browser/explorerService.ts
++++ b/src/vs/workbench/contrib/files/browser/explorerService.ts
+@@ -28,6 +28,7 @@ import { ResourceGlobMatcher } from '../../../common/resources.js';
+ import { IFilesConfigurationService } from '../../../services/filesConfiguration/common/filesConfigurationService.js';
+ import { IDecorationsService } from '../../../services/decorations/common/decorations.js';
+ import { ExplorerDecorationsProvider } from './views/explorerDecorationsProvider.js';
++import { CommandsRegistry } from '../../../../platform/commands/common/commands.js';
+ 
+ export const UNDO_REDO_SOURCE = new UndoRedoSource();
+ 
+@@ -64,6 +65,28 @@ export class ExplorerService implements IExplorerService {
+ 
+ 		this.model = new ExplorerModel(this.contextService, this.uriIdentityService, this.fileService, this.configurationService, this.filesConfigurationService);
+ 		this.disposables.add(this.model);
++		// Session roots affect the explorer only; switching the window workspace
++		// would restart the extension host and interrupt other running sessions.
++		const sessionWatcher = this.disposables.add(new DisposableStore());
++		let sessionRoot: string | undefined;
++		const setSessionRoot = async (folder: string) => {
++			const resource = folder ? URI.file(folder) : undefined;
++			sessionWatcher.clear();
++			this.model.roots.splice(0, this.model.roots.length, ...(resource ? [new ExplorerItem(resource, this.fileService, this.configurationService, this.filesConfigurationService, undefined, true)] : []));
++			if (resource) {
++				sessionWatcher.add(this.fileService.watch(resource, { recursive: true, excludes: [] }));
++			}
++			await this.view?.setTreeInput();
++		};
++		this.disposables.add(CommandsRegistry.registerCommand('_ubovm.setExplorerWorkspace', async (_accessor, folder: string) => {
++			if (typeof folder !== 'string') { throw new Error('Invalid session workspace'); }
++			if (sessionRoot === folder) { return; }
++			await setSessionRoot(folder);
++			sessionRoot = folder;
++		}));
++		this.disposables.add(this.contextService.onDidChangeWorkspaceFolders(() => {
++			if (sessionRoot !== undefined) { void setSessionRoot(sessionRoot); }
++		}));
+ 		this.disposables.add(this.fileService.onDidRunOperation(e => this.onDidRunOperation(e)));
+ 
+ 		this.onFileChangesScheduler = this.disposables.add(new RunOnceScheduler(async () => {
+diff --git a/src/vs/workbench/contrib/files/browser/views/explorerView.ts b/src/vs/workbench/contrib/files/browser/views/explorerView.ts
+index 3c8c088..2ec2f54 100644
+--- a/src/vs/workbench/contrib/files/browser/views/explorerView.ts
++++ b/src/vs/workbench/contrib/files/browser/views/explorerView.ts
+@@ -272,6 +272,7 @@ export class ExplorerView extends ViewPane implements IExplorerView {
+ 	}
+ 
+ 	get name(): string {
++		if (this.explorerService.roots.length <= 1) { return this.explorerService.roots[0]?.name ?? nls.localize('ubovm.sessionFiles', "文件"); }
+ 		return this.labelService.getWorkspaceLabel(this.contextService.getWorkspace());
+ 	}
+ 
+@@ -675,9 +676,9 @@ export class ExplorerView extends ViewPane implements IExplorerView {
+ 	}
+ 
+ 	private setContextKeys(stat: ExplorerItem | null | undefined): void {
+-		const folders = this.contextService.getWorkspace().folders;
+-		const resource = stat ? stat.resource : folders[folders.length - 1].uri;
+-		stat = stat || this.explorerService.findClosest(resource);
++		const roots = this.explorerService.roots;
++		const resource = stat ? stat.resource : roots[roots.length - 1]?.resource;
++		stat = stat || (resource ? this.explorerService.findClosest(resource) : undefined);
+ 		this.resourceContext.set(resource);
+ 		this.folderContext.set(!!stat && stat.isDirectory);
+ 		this.readonlyContext.set(!!stat && !!stat.isReadonly);
+@@ -843,7 +844,8 @@ export class ExplorerView extends ViewPane implements IExplorerView {
+ 		}
+ 		const roots = this.explorerService.roots;
+ 		let input: ExplorerItem | ExplorerItem[] = roots[0];
+-		if (this.contextService.getWorkbenchState() !== WorkbenchState.FOLDER || roots[0].error) {
++		this.updateTitle(this.name);
++		if (roots.length !== 1 || this.contextService.getWorkbenchState() !== WorkbenchState.FOLDER || roots[0]?.error) {
+ 			// Display roots only when multi folder workspace
+ 			input = roots;
+ 		}
+diff --git a/src/vs/workbench/browser/parts/views/viewPane.ts b/src/vs/workbench/browser/parts/views/viewPane.ts
+index df35d48..eff97c7 100644
+--- a/src/vs/workbench/browser/parts/views/viewPane.ts
++++ b/src/vs/workbench/browser/parts/views/viewPane.ts
+@@ -124,7 +124,7 @@ class ViewWelcomeController {
+ 		this.disposables.add(Event.runAndSubscribe(this.delegate.onDidChangeViewWelcomeState, () => this.onDidChangeViewWelcomeState()));
+ 		if (this.delegate.id === 'workbench.explorer.fileView') {
+ 			this.disposables.add(this.contextKeyService.onDidChangeContext(event => {
+-				if (event.affectsSome(new Set(['ubovm.emptyFolder']))) { this.onDidChangeViewWelcomeState(); }
++				if (event.affectsSome(new Set(['ubovm.emptyFolder', 'ubovm.noWorkspace']))) { this.onDidChangeViewWelcomeState(); if (this._enabled) { this.render(); } }
+ 			}));
+ 		}
+ 		this.disposables.add(lifecycleService.onWillShutdown(() => this.dispose())); // Fixes https://github.com/microsoft/vscode/issues/208878
+@@ -151,7 +151,7 @@ class ViewWelcomeController {
+ 	}
+ 
+ 	private onDidChangeViewWelcomeState(): void {
+-		const enabled = this.delegate.shouldShowWelcome() || (this.delegate.id === 'workbench.explorer.fileView' && this.contextKeyService.getContextKeyValue('ubovm.emptyFolder') === true);
++		const enabled = this.delegate.shouldShowWelcome() || (this.delegate.id === 'workbench.explorer.fileView' && (this.contextKeyService.getContextKeyValue('ubovm.emptyFolder') === true || this.contextKeyService.getContextKeyValue('ubovm.noWorkspace') === true));
+ 
+ 		if (this._enabled === enabled) {
+ 			return;
+@@ -299,6 +299,9 @@ class ViewWelcomeController {
+ 	}
+ 
+ 	private getContentDescriptors(): IViewContentDescriptor[] {
++		if (this.delegate.id === 'workbench.explorer.fileView' && this.contextKeyService.getContextKeyValue('ubovm.noWorkspace') === true) {
++			return [{ content: '$(folder-opened)\n尚未选择工作空间\n请在当前会话顶部选择工作空间，文件列表将随会话自动更新。' }];
++		}
+ 		if (this.delegate.id === 'workbench.explorer.emptyView') {
+ 			return [{ content: '$(folder-opened)\n尚未选择工作空间\n请在当前会话顶部选择工作空间，文件列表将随会话自动更新。' }];
+ 		}

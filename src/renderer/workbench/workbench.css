@@ -1,0 +1,534 @@
+/*
+ * UBOVM native workbench chrome.
+ * Appended to the same workbench stylesheet in source and packaged runtimes.
+ * Keep native file tabs, file operations, terminal content and window controls.
+ * Menu/command policy is enforced separately; these selectors trim visible UI.
+ */
+
+/* The build embeds the shared mark for both source and packaged workbenches. */
+.monaco-workbench {
+  --ubovm-product-logo: url("{{PRODUCT_LOGO_URI}}");
+  --ubovm-popup-border: var(--vscode-widget-border, #d9dedb);
+  --ubovm-popup-shadow: 0 12px 36px #18251d18, 0 2px 6px #18251d0a;
+  --ubovm-modal-shadow: 0 24px 72px #18251d28, 0 4px 12px #18251d10;
+}
+.monaco-workbench.vs-dark {
+  --ubovm-popup-shadow: 0 12px 36px #0006, 0 2px 6px #0003;
+  --ubovm-modal-shadow: 0 24px 72px #0008, 0 4px 12px #0004;
+}
+/* Native selectors retain their list sizing and keyboard behavior. */
+.monaco-workbench :is(.monaco-menu, .monaco-select-box-dropdown-container) {
+  border-radius: 12px;
+  box-shadow: var(--ubovm-popup-shadow);
+}
+.monaco-workbench :is(.quick-input-widget, .monaco-dialog-box) {
+  border: 1px solid var(--ubovm-popup-border);
+  border-radius: 16px;
+  box-shadow: var(--ubovm-modal-shadow);
+}
+.monaco-workbench .monaco-dialog-box { padding: 12px; min-width: min(480px, 90vw); }
+.monaco-workbench .monaco-dialog-box.align-vertical { min-width: min(350px, 90vw); }
+.monaco-workbench .monaco-dialog-modal-block.dimmed { background: #18251d45; }
+.monaco-workbench.vs-dark .monaco-dialog-modal-block.dimmed { background: #080b1099; }
+.monaco-workbench .monaco-dialog-box .monaco-button { border-radius: 7px; }
+.monaco-workbench :is(.quick-input-widget, .monaco-dialog-box) .monaco-inputbox { border-radius: 8px; }
+.monaco-workbench :is(.quick-input-widget, .monaco-select-box-dropdown-container) .monaco-list-row { border-radius: 6px; }
+.monaco-workbench .monaco-menu .monaco-action-bar.vertical .action-label { border-radius: 7px; }
+.monaco-workbench:is(.hc-light, .hc-black) :is(.quick-input-widget, .monaco-dialog-box, .monaco-menu, .monaco-select-box-dropdown-container) {
+  border: 1px solid var(--vscode-contrastBorder);
+  box-shadow: none;
+}
+.monaco-workbench .part.titlebar > .titlebar-container > .titlebar-left > .window-appicon {
+  background-image: none !important;
+}
+.monaco-workbench .part.titlebar > .titlebar-container > .titlebar-left > .window-appicon::before {
+  content: '';
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  background-color: var(--vscode-titleBar-activeForeground);
+  mask: var(--ubovm-product-logo) center / contain no-repeat;
+}
+.monaco-workbench .part.titlebar.inactive > .titlebar-container > .titlebar-left > .window-appicon::before {
+  background-color: var(--vscode-titleBar-inactiveForeground);
+}
+.monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark-wrapper .editor-group-watermark .letterpress {
+  background-image: none;
+  background-color: var(--vscode-foreground);
+  mask: var(--ubovm-product-logo) center / contain no-repeat;
+  opacity: .08;
+}
+.monaco-workbench:is(.hc-light, .hc-black) .part.editor > .content .editor-group-container > .editor-group-watermark-wrapper .editor-group-watermark .letterpress {
+  opacity: .35;
+}
+
+/* Editor tools: Run, Preview, Split, overflow and the extra New Tab control.
+ * Tab close buttons live in .tab-actions and are intentionally retained.
+ */
+/* Independent snapshots let the editor grow while an outgoing pane fades away. */
+/* First layout precedes extension activation. Keep a quiet, stable content
+ * frame visible until the conversation acknowledges its first rendered state. */
+.monaco-workbench:has(.ubovm-sessions-body) .part.editor::before {
+  content: ''; position: absolute; inset: 0; z-index: 5; pointer-events: none;
+  opacity: 0; visibility: hidden;
+  background-color: var(--vscode-editor-background);
+  background-image: linear-gradient(var(--vscode-widget-border, #e9e9e7), var(--vscode-widget-border, #e9e9e7)),
+    linear-gradient(var(--vscode-widget-border), var(--vscode-widget-border)), linear-gradient(var(--vscode-sideBar-background), var(--vscode-sideBar-background)), linear-gradient(var(--vscode-sideBar-background), var(--vscode-sideBar-background));
+  background-size: 100% 1px, 150px 14px, min(52%, 420px) 9px, min(38%, 300px) 9px;
+  background-position: 0 51px, 50% 38%, 50% calc(38% + 36px), 50% calc(38% + 58px);
+  background-repeat: no-repeat;
+  transition: opacity 180ms ease-out, visibility 180ms;
+}
+html:not(.ubovm-content-ready):not(.ubovm-content-slow) .monaco-workbench:has(.ubovm-sessions-body) .part.editor::before { opacity: 1; visibility: visible; }
+.ubovm-session-loading { position: absolute; inset: 84px 18px auto; color: var(--vscode-descriptionForeground); font-size: 12px; line-height: 1.8; }
+.ubovm-session-loading[hidden] { display: none; }
+.ubovm-session-loading button { display: block; margin-top: 10px; color: var(--vscode-textLink-foreground); background: transparent; border: 0; padding: 0; cursor: pointer; font: inherit; }
+.ubovm-session-loading button[hidden] { display: none; }
+.ubovm-sessions-body { position: relative; }
+.ubovm-sessions-body:not(.ubovm-sessions-loading) .ubovm-session-loading { inset: auto 18px 174px; }
+html:not(.ubovm-content-slow) .ubovm-sessions-loading .tree-explorer-viewlet-tree-view > .message { visibility: hidden; }
+
+:root { view-transition-name: none; }
+.monaco-workbench .webview, .monaco-workbench .webview-overlay-content { background-color: var(--vscode-editor-background); }
+/* Cross-process webviews must remain live rather than become captured textures. */
+.monaco-workbench .part.editor { view-transition-name: none; }
+.monaco-workbench .part.sidebar { view-transition-name: ubovm-files; }
+.monaco-workbench .part.auxiliarybar { view-transition-name: ubovm-sessions; }
+.monaco-workbench .part.panel { view-transition-name: ubovm-terminal; }
+::view-transition { pointer-events: none; }
+::view-transition-group(*) { animation-duration: 220ms; animation-timing-function: cubic-bezier(.22, 1, .36, 1); }
+::view-transition-old(*), ::view-transition-new(*) { animation-duration: 180ms; animation-timing-function: ease-out; }
+::view-transition-group(ubovm-editor) { overflow: clip; }
+::view-transition-old(ubovm-editor), ::view-transition-new(ubovm-editor) { height: 100%; object-fit: none; object-position: left top; }
+::view-transition-old(ubovm-files):only-child { animation-name: ubovm-pane-out-right; }
+::view-transition-new(ubovm-files):only-child { animation-name: ubovm-pane-in-right; }
+::view-transition-old(ubovm-sessions):only-child { animation-name: ubovm-pane-out-left; }
+::view-transition-new(ubovm-sessions):only-child { animation-name: ubovm-pane-in-left; }
+::view-transition-old(ubovm-terminal):only-child { animation-name: ubovm-pane-out-bottom; }
+::view-transition-new(ubovm-terminal):only-child { animation-name: ubovm-pane-in-bottom; }
+@keyframes ubovm-pane-out-right { to { opacity: 0; transform: translateX(20px); } }
+@keyframes ubovm-pane-in-right { from { opacity: 0; transform: translateX(20px); } }
+@keyframes ubovm-pane-out-left { to { opacity: 0; transform: translateX(-20px); } }
+@keyframes ubovm-pane-in-left { from { opacity: 0; transform: translateX(-20px); } }
+@keyframes ubovm-pane-out-bottom { to { opacity: 0; transform: translateY(16px); } }
+@keyframes ubovm-pane-in-bottom { from { opacity: 0; transform: translateY(16px); } }
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(*), ::view-transition-old(*), ::view-transition-new(*) { animation-duration: 0s !important; }
+}
+
+.monaco-workbench .part.editor .editor-actions,
+.monaco-workbench .part.editor .title > .title-actions,
+.monaco-workbench .part.editor .editor-layout-actions,
+.monaco-workbench .part.editor .editor-actions-separator,
+.monaco-workbench .part.editor .tabs-bar-add-tab {
+  display: none !important;
+}
+
+/* The title bar exposes three visibility toggles: sessions, terminal, files.
+ * Registered theme-icon names are stable across UI languages and icon fonts.
+ * Native minimize/maximize/close buttons are outside this toolbar.
+ */
+.monaco-workbench .part.titlebar > .titlebar-container > .titlebar-left > .window-appicon.codicon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: normal;
+}
+
+.monaco-workbench .part.titlebar .center-adjacent-toolbar-container,
+.monaco-workbench .part.titlebar .update-toolbar-container,
+.monaco-workbench .part.titlebar .action-toolbar-container .action-item:not(:has(
+  .codicon-auxiliarybar-left-layout-icon,
+  .codicon-auxiliarybar-left-off-layout-icon,
+  .codicon-panel-layout-icon,
+  .codicon-panel-layout-icon-off,
+  .codicon-color-mode,
+  .codicon-panel-right,
+  .codicon-panel-right-off
+)) {
+  display: none !important;
+}
+
+/* More, account and manage entries must not leak back through another toolbar.
+ * Scope to workbench toolbar actions: do not suppress context-view overlays,
+ * editor context menus, notifications, text selection or webview controls.
+ */
+.monaco-workbench .part .monaco-toolbar .action-item:has(
+  .codicon-toolbar-more,
+  .codicon-accounts-view-bar-icon,
+  .codicon-settings-gear,
+  .codicon-gear
+) {
+  display: none !important;
+}
+
+/* Both side panes contain one dedicated view; there is no container switcher.
+ * Their native titles and pane collapse controls remain visible.
+ */
+.monaco-workbench .part.sidebar .composite-bar-container,
+.monaco-workbench .part.auxiliarybar .composite-bar-container {
+  display: none !important;
+}
+
+/* Right Explorer: one create action and a pane-collapse button.
+ * Folder creation and refresh remain in the native context menu.
+ * Include both merged container titles and ordinary individual view headers.
+ */
+.monaco-workbench .part.sidebar .title-actions .action-item:not(:has(
+  .codicon-new-file,
+  .codicon-chevron-right
+)),
+.monaco-workbench .part.sidebar .pane-header > .actions .action-item:not(:has(
+  .codicon-new-file,
+  .codicon-chevron-right
+)) {
+  display: none !important;
+}
+
+/* Session tools apply to both merged and standalone view headers. */
+.monaco-workbench .part.auxiliarybar .title-actions .action-item:not(:has(.codicon-add, .codicon-search, .codicon-chevron-left)),
+.monaco-workbench .part.auxiliarybar .pane-header > .actions .action-item:not(:has(.codicon-add, .codicon-search, .codicon-chevron-left)) {
+  display: none !important;
+}
+
+/* Explicit view-header collapse actions and persistent main-header toggles
+ * own sidebar visibility. Avoid duplicating native global close controls. */
+.monaco-workbench .part.sidebar > .title > .global-actions .action-item,
+.monaco-workbench .part.auxiliarybar > .title > .global-actions .action-item {
+  display: none !important;
+}
+
+/* Terminal panel: no Problems/Output/Debug Console switching or maximization.
+ * Keep the native panel close action and actual terminal-instance operations.
+ */
+.monaco-workbench .part.panel > .title > .composite-bar-container,
+.monaco-workbench .part.panel > .header-or-footer > .composite-bar-container,
+.monaco-workbench .part.panel > .title > .global-actions .action-item:not(:has(.codicon-panel-close)),
+.monaco-workbench .part.panel .title-actions .action-item:not(:has(
+  .codicon-terminal-new,
+  .codicon-terminal-kill,
+  .codicon-remote,
+  .single-terminal-tab
+)) {
+  display: none !important;
+}
+
+/* Keep the New dropdown for SSH and local terminal profiles, while omitting
+ * manual split controls.
+ */
+.monaco-workbench .part.panel .pane-body.integrated-terminal .action-item:has(
+  .codicon-split-horizontal,
+  .codicon-split-vertical,
+  .codicon-terminal-configure-profile
+) {
+  display: none !important;
+}
+
+/* Use a consistent sans-serif fallback for Chinese workbench labels. Keep
+ * editor and terminal fonts under their own native settings. */
+.monaco-workbench .part.titlebar,
+.monaco-workbench .part.sidebar,
+.monaco-workbench .part.auxiliarybar {
+  font-family: 'Segoe UI', 'Microsoft YaHei UI', 'Microsoft YaHei', sans-serif;
+}
+
+.monaco-workbench .part.auxiliarybar > .title .title-label h2,
+.monaco-workbench .part.auxiliarybar .pane-header .title {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: .2px;
+}
+
+/* Only the conversation tree receives the roomy treatment. Its virtual list
+ * reserves 44px in session-list.patch; CSS never changes row positioning or
+ * height. The 36px rounded surface leaves 8px between conversation entries. */
+.monaco-workbench .ubovm-session-tree .monaco-list .monaco-list-row {
+  padding: 0 10px;
+  font-size: 14px;
+  font-weight: 400;
+  color: var(--vscode-sideBar-foreground);
+  background: transparent !important;
+  outline: none !important;
+}
+
+.monaco-workbench .ubovm-session-tree .monaco-tl-row {
+  box-sizing: border-box;
+  height: 36px;
+  margin: 4px 0;
+  padding: 0 10px;
+  border-radius: 7px;
+}
+
+.monaco-workbench .ubovm-session-tree .monaco-tl-twistie,
+.monaco-workbench .ubovm-session-tree .monaco-tl-indent {
+  display: none;
+}
+
+.monaco-workbench .ubovm-session-tree .custom-view-tree-node-item {
+  min-width: 0;
+  height: 36px !important;
+  line-height: 36px !important;
+}
+
+.monaco-workbench .ubovm-session-tree .custom-view-tree-node-item-icon {
+  flex-shrink: 0;
+  height: 36px !important;
+  padding-right: 8px !important;
+  color: var(--vscode-descriptionForeground);
+  font-size: 15px;
+}
+
+.monaco-workbench .ubovm-session-tree .custom-view-tree-node-item-icon.codicon-circle-filled {
+  font-size: 9px;
+  color: var(--vscode-foreground);
+}
+
+.monaco-workbench .ubovm-session-tree .monaco-list-row:hover .monaco-tl-row {
+  background: var(--vscode-list-hoverBackground);
+}
+
+.monaco-workbench .ubovm-session-tree .monaco-list-row:has(.codicon-circle-filled) .monaco-tl-row {
+  color: var(--vscode-list-activeSelectionForeground);
+  background: var(--vscode-list-activeSelectionBackground);
+  font-weight: 600;
+}
+
+.monaco-workbench .ubovm-session-tree .monaco-list:focus .monaco-list-row.focused .monaco-tl-row {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
+/* Native welcome views stay keyboard accessible and scroll in short panels. */
+.monaco-workbench .pane > .pane-body.ubovm-sessions-body { position: relative; }
+.monaco-workbench .pane > .pane-body.ubovm-sessions-body > .ubovm-sidebar-modes {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  height: 38px;
+  box-sizing: border-box;
+  margin: 4px 12px 8px;
+  padding: 3px;
+  border: 1px solid var(--vscode-widget-border);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--vscode-foreground) 4%, transparent);
+}
+.monaco-workbench .ubovm-sidebar-modes button {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  height: 30px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 6px;
+  font: 12px 'Segoe UI', 'Microsoft YaHei UI', sans-serif;
+  color: var(--vscode-descriptionForeground);
+  background: transparent;
+  cursor: pointer;
+  transition: background 140ms, color 140ms;
+}
+.monaco-workbench .ubovm-sidebar-modes button[aria-pressed="true"] {
+  color: var(--vscode-foreground);
+  background: var(--vscode-editor-background);
+  box-shadow: 0 1px 4px #0000000c;
+  font-weight: 600;
+}
+.monaco-workbench .ubovm-sidebar-modes button:hover:enabled { color: var(--vscode-foreground); }
+.monaco-workbench .ubovm-sidebar-modes button[aria-disabled="true"] { cursor: default; opacity: .6; }
+.monaco-workbench .ubovm-sidebar-modes button:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; }
+.monaco-workbench .pane > .pane-body.ubovm-sessions-body > .welcome-view { height: max(0px, calc(100% - 206px)); }
+
+/* Keep management reachable while the conversation list scrolls above it. */
+.monaco-workbench .pane > .pane-body.ubovm-sessions-body > .ubovm-sidebar-management {
+  position: absolute;
+  inset: auto 0 0;
+  z-index: 1;
+  display: grid;
+  grid-template-rows: 18px repeat(3, 34px);
+  gap: 3px;
+  height: 156px;
+  box-sizing: border-box;
+  padding: 12px;
+  border-top: 1px solid var(--vscode-widget-border);
+  background: var(--vscode-sideBar-background);
+  font-family: 'Segoe UI', 'Microsoft YaHei UI', sans-serif;
+}
+.monaco-workbench .ubovm-management-heading {
+  padding: 0 9px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 11px;
+  line-height: 18px;
+}
+.monaco-workbench .ubovm-sidebar-management button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 6px;
+  color: var(--vscode-descriptionForeground);
+  background: transparent;
+  font: 13px 'Segoe UI', 'Microsoft YaHei UI', sans-serif;
+  text-align: left;
+  cursor: pointer;
+}
+.monaco-workbench .ubovm-sidebar-management button .codicon { flex: 0 0 16px; font-size: 16px; }
+.monaco-workbench .ubovm-sidebar-management button:hover:enabled { color: var(--vscode-foreground); background: var(--vscode-list-hoverBackground); }
+.monaco-workbench .ubovm-sidebar-management button[aria-current="page"] { color: var(--vscode-foreground); background: var(--vscode-list-inactiveSelectionBackground); font-weight: 600; }
+.monaco-workbench .ubovm-sidebar-management button:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+.monaco-workbench .ubovm-sidebar-management button:disabled { cursor: default; opacity: .6; }
+
+/* Dark session navigation shares the notebook's muted green selection cues. */
+.monaco-workbench.vs-dark .ubovm-sessions-body {
+  --ubovm-nav-accent: var(--vscode-focusBorder, #96b3a0);
+  --ubovm-nav-selected: color-mix(in srgb, var(--ubovm-nav-accent) 16%, var(--vscode-sideBar-background));
+  --ubovm-nav-hover: color-mix(in srgb, var(--vscode-foreground) 6%, var(--vscode-sideBar-background));
+}
+.monaco-workbench.vs-dark .pane > .pane-body.ubovm-sessions-body > .ubovm-sidebar-modes {
+  background: color-mix(in srgb, var(--vscode-foreground) 3%, var(--vscode-sideBar-background));
+  border-color: var(--vscode-sideBar-border);
+}
+.monaco-workbench.vs-dark .ubovm-sidebar-modes button:hover:enabled { background: var(--ubovm-nav-hover); }
+.monaco-workbench.vs-dark .ubovm-sidebar-modes button[aria-pressed="true"] {
+  color: var(--vscode-foreground);
+  background: var(--ubovm-nav-selected);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ubovm-nav-accent) 28%, transparent);
+}
+.monaco-workbench.vs-dark .ubovm-session-tree .monaco-list-row:has(.codicon-circle-filled) .monaco-tl-row {
+  background: var(--ubovm-nav-selected);
+  color: var(--vscode-foreground);
+  box-shadow: inset 2px 0 0 var(--ubovm-nav-accent);
+}
+.monaco-workbench.vs-dark .ubovm-session-tree .custom-view-tree-node-item-icon.codicon-circle-filled { color: var(--ubovm-nav-accent); }
+.monaco-workbench.vs-dark .pane > .pane-body.ubovm-sessions-body > .ubovm-sidebar-management {
+  border-top-color: var(--vscode-sideBar-border);
+  background: color-mix(in srgb, var(--vscode-foreground) 2%, var(--vscode-sideBar-background));
+}
+.monaco-workbench.vs-dark .ubovm-sidebar-management button:hover:enabled { background: var(--ubovm-nav-hover); }
+.monaco-workbench.vs-dark .ubovm-sidebar-management button[aria-current="page"] { background: var(--ubovm-nav-selected); color: var(--vscode-foreground); }
+.monaco-workbench.vs-dark .ubovm-sidebar-management button[aria-current="page"] .codicon { color: var(--ubovm-nav-accent); }
+.monaco-workbench .part:is(.sidebar, .auxiliarybar) .welcome-view > .monaco-scrollable-element {
+  height: 100%;
+  min-height: 0;
+}
+.monaco-workbench .part:is(.sidebar, .auxiliarybar) .welcome-view-content {
+  /* Welcome nodes are recreated on context changes before native layout runs. */
+  height: 100% !important;
+  box-sizing: border-box;
+  justify-content: safe center;
+  padding: 24px;
+  text-align: center;
+  font-family: 'Segoe UI', 'Microsoft YaHei UI', 'Microsoft YaHei', sans-serif;
+  animation: ubovm-empty-enter 180ms ease-out;
+}
+.monaco-workbench .part:is(.sidebar, .auxiliarybar) .welcome-view-content > * { flex-shrink: 0; }
+.monaco-workbench .part:is(.sidebar, .auxiliarybar) .welcome-view-content > :last-child { margin-bottom: 0; }
+.monaco-workbench .part:is(.sidebar, .auxiliarybar) .welcome-view-content > p {
+  margin: 0 auto 12px;
+  max-width: 250px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 12px;
+  line-height: 1.85;
+}
+.monaco-workbench .part:is(.sidebar, .auxiliarybar) .welcome-view-content > p:first-child {
+  display: grid;
+  place-items: center;
+  width: 46px;
+  height: 46px;
+  margin-bottom: 20px;
+  border: 1px solid var(--vscode-widget-border);
+  border-radius: 13px;
+  background: var(--vscode-editor-background);
+}
+.monaco-workbench .part:is(.sidebar, .auxiliarybar) .welcome-view-content > p:first-child .codicon {
+  font-size: 23px;
+}
+.monaco-workbench .part:is(.sidebar, .auxiliarybar) .welcome-view-content > p:nth-child(2) {
+  color: var(--vscode-foreground);
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+.monaco-workbench .part:is(.sidebar, .auxiliarybar) .pane > .pane-body .welcome-view-content > .button-container {
+  margin: 22px auto 0;
+  max-width: 230px;
+  padding: 0;
+}
+.monaco-workbench .part:is(.sidebar, .auxiliarybar) .pane > .pane-body .welcome-view-content > .button-container > .monaco-button {
+  margin-inline: auto;
+}
+.monaco-workbench .part:is(.sidebar, .auxiliarybar) .welcome-view-content .monaco-button {
+  min-height: 34px;
+  box-sizing: border-box;
+  border-radius: 8px;
+  font-size: 12px;
+}
+/* Loading remains tied to native file/session progress and shell readiness.
+ * Keep feedback in a small compositor layer, without animating pane geometry. */
+.monaco-workbench .part:is(.sidebar, .auxiliarybar, .panel) .monaco-progress-container .progress-bit {
+  border-radius: 2px;
+}
+.monaco-workbench .ubovm-sidebar-modes button[aria-busy="true"]::after,
+.monaco-workbench .ubovm-sidebar-management button[aria-busy="true"]::after {
+  content: '';
+  flex: 0 0 10px;
+  width: 10px;
+  height: 10px;
+  box-sizing: border-box;
+  border: 1.5px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: ubovm-loading-turn 800ms linear infinite;
+}
+.monaco-workbench .ubovm-sidebar-modes button[aria-busy="true"]::after { position: absolute; right: 5px; top: 10px; }
+.monaco-workbench .ubovm-sidebar-management button[aria-busy="true"]::after { margin-left: auto; }
+.monaco-workbench .pane-body.integrated-terminal.ubovm-terminal-loading { position: relative; }
+.monaco-workbench .pane-body.integrated-terminal.ubovm-terminal-loading::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 40;
+  width: 24%;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--vscode-progressBar-background, var(--vscode-focusBorder));
+  pointer-events: none;
+  animation: ubovm-terminal-progress 1.4s ease-in-out infinite;
+}
+@keyframes ubovm-loading-turn { to { transform: rotate(360deg); } }
+@keyframes ubovm-terminal-progress {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(420%); }
+}
+@keyframes ubovm-empty-enter {
+  from { opacity: 0; transform: translateY(5px); }
+  to { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .monaco-workbench .ubovm-sidebar-modes button { transition: none; }
+  .monaco-workbench .part:is(.sidebar, .auxiliarybar) .welcome-view-content { animation: none; }
+  .monaco-workbench .ubovm-sidebar-modes button[aria-busy="true"]::after,
+  .monaco-workbench .ubovm-sidebar-management button[aria-busy="true"]::after,
+  .monaco-workbench .pane-body.integrated-terminal.ubovm-terminal-loading::after,
+  .monaco-workbench .part:is(.sidebar, .auxiliarybar, .panel) .monaco-progress-container.infinite .progress-bit { animation: none; }
+}
+
+.monaco-workbench .ubovm-settings-navigation button[hidden] { display: none; }
+.monaco-workbench .ubovm-settings-navigation button:not([hidden]) { flex: 1; text-align: left; background: transparent; }
+
+/* Follow the confirmed settings page, even after focus moves into its form.
+ * The outer list row deliberately has a transparent background; paint the
+ * inner rounded surface just as we do for the current conversation. */
+.monaco-workbench .ubovm-sessions-body:has(.ubovm-settings-navigation) .ubovm-session-tree .monaco-list-row[aria-label$="，当前设置"] .monaco-tl-row {
+  background: var(--vscode-list-activeSelectionBackground);
+  color: var(--vscode-list-activeSelectionForeground);
+  box-shadow: inset 3px 0 0 var(--vscode-focusBorder);
+  font-weight: 600;
+}
+.monaco-workbench .ubovm-sessions-body:has(.ubovm-settings-navigation) .ubovm-session-tree .monaco-list-row[aria-label$="，当前设置"] :is(.custom-view-tree-node-item-icon, .label-description) {
+  color: var(--vscode-list-activeSelectionForeground);
+}

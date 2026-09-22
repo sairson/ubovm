@@ -1,0 +1,24 @@
+diff --git a/src/vs/workbench/browser/parts/editor/editorTitleControl.ts b/src/vs/workbench/browser/parts/editor/editorTitleControl.ts
+--- a/src/vs/workbench/browser/parts/editor/editorTitleControl.ts
++++ b/src/vs/workbench/browser/parts/editor/editorTitleControl.ts
+@@ -78,7 +78,7 @@ export class EditorTitleControl extends Themable {
+ 		clearNode(this.parent);
+ 		this.editorTabsControl = this.createEditorTabsControl();
+ 		this.headerControl = this.createHeaderControl();
+-		this.editorTabsControl.openEditors(this.groupView.editors);
++		this.editorTabsControl.openEditors([...this.groupView.editors]);
+ 		this.headerControl?.handleEditorsChange(true);
+ 		this.groupView.relayout();
+ 	}
+diff --git a/src/vs/workbench/browser/parts/paneCompositePart.ts b/src/vs/workbench/browser/parts/paneCompositePart.ts
+--- a/src/vs/workbench/browser/parts/paneCompositePart.ts
++++ b/src/vs/workbench/browser/parts/paneCompositePart.ts
+@@ -32,7 +32,7 @@
+ import { ActionsOrientation } from '../../../base/browser/ui/actionbar/actionbar.js';
+ import { Gesture, EventType as GestureEventType } from '../../../base/browser/touch.js';
+ import { StandardMouseEvent } from '../../../base/browser/mouseEvent.js';
+-import { IAction, SubmenuAction } from '../../../base/common/actions.js';
++import { SubmenuAction } from '../../../base/common/actions.js';
+ import { Composite } from '../composite.js';
+ import { ViewsSubMenu } from './views/viewPaneContainer.js';
+ import { getActionBarActions } from '../../../platform/actions/browser/menuEntryActionViewItem.js';

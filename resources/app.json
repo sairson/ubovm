@@ -1,0 +1,100 @@
+{
+  "product": {
+    "nameShort": "UBOVM",
+    "nameLong": "UBOVM IDE",
+    "applicationName": "ubovm",
+    "dataFolderName": ".ubovm",
+    "urlProtocol": "ubovm",
+    "win32AppUserModelId": "UBOVM.IDE",
+    "win32MutexName": "ubovm",
+    "win32DirName": "UBOVM",
+    "win32NameVersion": "UBOVM",
+    "win32RegValueName": "UBOVM",
+    "win32ShellNameShort": "UBOVM",
+    "serverApplicationName": "ubovm-server",
+    "serverDataFolderName": ".ubovm-server",
+    "enableTelemetry": false,
+    "showTelemetryOptOut": false,
+    "updateUrl": ""
+  },
+  "settings": {
+    "window.title": "${dirty}${activeEditorShort}${separator}${rootName}${separator}UBOVM IDE",
+    "workbench.colorTheme": "UBOVM Light",
+    "window.autoDetectColorScheme": false,
+    "workbench.startupEditor": "none",
+    "workbench.tips.enabled": false,
+    "editor.fontSize": 14,
+    "editor.minimap.enabled": false,
+    "editor.glyphMargin": false,
+    "files.autoSave": "off",
+    "telemetry.telemetryLevel": "off",
+    "update.mode": "none",
+    "extensions.autoUpdate": "off",
+    "extensions.autoCheckUpdates": false,
+    "chat.disableAIFeatures": true,
+    "files.watcherExclude": {
+      "**/.runtime/**": true,
+      "**/.cache/**": true,
+      "**/.data/**": true,
+      "**/vendor/**": true
+    },
+    "search.exclude": {
+      "**/.runtime": true,
+      "**/.cache": true,
+      "**/.data": true,
+      "**/vendor": true
+    },
+    "window.titleBarStyle": "custom",
+    "window.menuBarVisibility": "hidden",
+    "window.commandCenter": false,
+    "workbench.navigationControl.enabled": false,
+    "window.density.editorTabHeight": "compact",
+    "workbench.experimental.modernUI": true,
+    "workbench.experimental.modernUIUppercaseViewHeaders": false,
+    "workbench.activityBar.location": "hidden",
+    "workbench.sideBar.location": "right",
+    "workbench.secondarySideBar.defaultVisibility": "visible",
+    "workbench.secondarySideBar.forceMaximized": false,
+    "workbench.secondarySideBar.showLabels": true,
+    "workbench.layoutControl.type": "toggles",
+    "workbench.layoutControl.enabled": true,
+    "workbench.editor.editorActionsLocation": "hidden",
+    "workbench.editor.dragToOpenWindow": false,
+    "workbench.editor.enablePreview": false,
+    "workbench.editor.enablePreviewFromQuickOpen": false,
+    "workbench.editor.enablePreviewFromCodeNavigation": false,
+    "workbench.editor.tabSizing": "shrink",
+    "workbench.tree.indent": 12,
+    "workbench.tree.renderIndentGuides": "none",
+    "workbench.statusBar.visible": false,
+    "breadcrumbs.enabled": false,
+    "explorer.compactFolders": false,
+    "files.exclude": {
+      "**/.runtime": true,
+      "**/.data": true,
+      "**/.cache": true,
+      "**/.git": true
+    },
+    "workbench.editor.openSideBySideDirection": "right",
+    "workbench.editor.closeEmptyGroups": true
+  },
+  "core": {
+    "source": {
+      "repository": "https://github.com/microsoft/vscode.git",
+      "ref": "1.135.0",
+      "commit": "08d4889f9ec4a1685d257b9b95de036c8e1ce1e5",
+      "node": "24.18.0"
+    },
+    "runtime": {
+      "provider": "VSCodium",
+      "version": "1.135.06055",
+      "platform": "win32",
+      "arch": "x64",
+      "directory": ".runtime/vscodium-1.135.06055",
+      "executable": "VSCodium.exe",
+      "archive": "VSCodium-win32-x64-1.135.06055.zip",
+      "url": "https://github.com/VSCodium/vscodium/releases/download/1.135.06055/VSCodium-win32-x64-1.135.06055.zip",
+      "sha256": "0bec978f201238624bc9ad43966f5e201ed8afacc37d77035a822252d9c9c200"
+    }
+  }
+}

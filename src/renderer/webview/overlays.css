@@ -1,0 +1,92 @@
+/* Shared floating surfaces, loaded after component styles. */
+body {
+  --overlay-selection-background: var(--vscode-list-activeSelectionBackground, var(--accent-wash));
+  --overlay-selection-foreground: var(--vscode-list-activeSelectionForeground, var(--ink));
+  --overlay-hover-background: var(--vscode-list-hoverBackground, var(--hover));
+  --overlay-hover-foreground: var(--vscode-list-hoverForeground, var(--ink));
+  --overlay-surface: var(--canvas);
+  --overlay-border: color-mix(in srgb, var(--ink) 16%, var(--canvas));
+  --overlay-shadow: 0 12px 36px #18251d18, 0 2px 6px #18251d0a;
+  --modal-shadow: 0 24px 72px #18251d28, 0 4px 12px #18251d10;
+  --overlay-backdrop: #18251d45;
+  --overlay-radius: 12px;
+  --overlay-item-radius: 7px;
+}
+body.vscode-dark {
+  --overlay-selection-background: var(--vscode-list-activeSelectionBackground, #304239);
+  --overlay-selection-foreground: var(--vscode-list-activeSelectionForeground, #e4eee7);
+  --overlay-surface: var(--surface-raised, var(--canvas));
+  --overlay-border: color-mix(in srgb, var(--ink) 20%, var(--canvas));
+  --overlay-shadow: 0 12px 36px #0006, 0 2px 6px #0003;
+  --modal-shadow: 0 24px 72px #0008, 0 4px 12px #0004;
+  --overlay-backdrop: #080b1099;
+}
+body :is(.goal-tabs, .exploration-runs-popover, .worker-options-menu, #settings-discard) {
+  color: var(--ink);
+  background: var(--overlay-surface);
+  border: 1px solid var(--overlay-border);
+  border-radius: var(--overlay-radius);
+  box-shadow: var(--overlay-shadow);
+}
+body :is(.goal-tabs, .worker-options-menu) { padding: 6px; }
+body :is(.goal-tabs, .worker-options-menu) button {
+  border-radius: var(--overlay-item-radius);
+  min-height: 34px;
+  transition: background 120ms, color 120ms;
+}
+body :is(.goal-tabs, .worker-options-menu) button:hover:enabled { background: var(--hover); color: var(--ink); }
+body :is(.goal-tabs, .worker-options-menu) button:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+body .goal-tabs button[aria-selected="true"] { background: var(--accent-wash); color: var(--ink); }
+body :is(.goal-view-switcher, .exploration-runs) > summary { border-radius: 8px; transition: background 120ms, border-color 120ms; }
+body :is(.goal-view-switcher, .exploration-runs)[open] > summary { border-color: var(--focus); background: var(--accent-wash); }
+.exploration-runs > summary::after { content: ''; width: 5px; height: 5px; margin: -3px 2px 0 4px; border: solid currentColor; border-width: 0 1.5px 1.5px 0; transform: rotate(45deg); }
+.exploration-runs[open] > summary::after { transform: rotate(225deg); margin-top: 3px; }
+.exploration-runs-popover h2 { padding: 2px 4px 10px; color: var(--muted); font-size: 11px; font-weight: 500; }
+.exploration-run + .exploration-run { border-top: 1px solid var(--border); margin-top: 6px; padding-top: 10px; }
+.exploration-run .text-button { width: 100%; border: 0; border-radius: 7px; padding: 7px 8px; background: transparent; }
+.exploration-run p { padding-inline: 8px; overflow-wrap: anywhere; }
+body #note-editor { border-color: var(--overlay-border); border-radius: 16px; background: var(--overlay-surface); box-shadow: var(--modal-shadow); }
+body #note-editor::backdrop { background: var(--overlay-backdrop); }
+body #note-editor[open] { animation: overlay-appear 140ms ease-out; }
+body #settings-discard { padding: 16px; gap: 12px; }
+body .html-preview { border-color: var(--overlay-border); border-radius: 16px; box-shadow: var(--modal-shadow); }
+body #settings-dialog { box-shadow: none; }
+#settings-dialog select { cursor: pointer; transition: border-color 120ms, background 120ms; }
+#settings-dialog select:hover:enabled { border-color: var(--overlay-border); background: var(--wash); }
+#settings-dialog select:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+#settings-dialog select:disabled { cursor: default; opacity: .55; }
+/* Keep the native select fallback on engines without customizable pickers. */
+@supports (appearance: base-select) {
+  #settings-dialog select, #settings-dialog select::picker(select) { appearance: base-select; }
+  #settings-dialog select::picker(select) {
+    margin-block: 6px; max-height: min(360px, 60dvh); overflow: auto; padding: 6px;
+    border: 1px solid var(--overlay-border); border-radius: var(--overlay-radius);
+    color: var(--ink); background: var(--overlay-surface); box-shadow: var(--overlay-shadow);
+  }
+  #settings-dialog select::picker-icon { color: var(--muted); }
+  #settings-dialog select option { display: flex; align-items: center; gap: 9px; min-height: 34px; padding: 8px 10px; border-radius: var(--overlay-item-radius); font: inherit; color: var(--ink); background: transparent; }
+  #settings-dialog select option:hover, #settings-dialog select option:focus { background: var(--overlay-hover-background); color: var(--overlay-hover-foreground); }
+  #settings-dialog select option:checked { background: var(--overlay-selection-background); color: var(--overlay-selection-foreground); }
+  #settings-dialog select option:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+  #settings-dialog select option::checkmark { order: 1; margin-left: auto; color: currentColor; }
+}
+@keyframes overlay-appear { from { opacity: 0; translate: 0 4px; } to { opacity: 1; translate: 0 0; } }
+@media (max-width: 700px) {
+  body #note-editor { border-radius: 0; }
+}
+@media (max-width: 650px) {
+  body .goal-view-switcher { position: static; }
+  body .goal-tabs { top: 100%; right: 14px; max-width: calc(100vw - 28px); }
+}
+@media (max-width: 540px) {
+  body .html-preview { border-radius: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  body #note-editor[open] { animation: none; }
+  body :is(.goal-tabs, .worker-options-menu) button, #settings-dialog select,
+  body :is(.goal-view-switcher, .exploration-runs) > summary { transition: none; }
+}
+@media (forced-colors: active) {
+  body { --overlay-border: CanvasText; --overlay-surface: Canvas; --overlay-shadow: none; --modal-shadow: none; }
+  body .goal-tabs button[aria-selected="true"], #settings-dialog select option:checked { outline: 1px solid Highlight; outline-offset: -2px; }
+}
