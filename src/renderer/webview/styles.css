@@ -74,8 +74,6 @@ svg.product-logo { fill: currentColor; stroke: none; }
 .goal-identity > svg { width: 32px; height: 32px; padding: 4px; border-radius: 9px; color: var(--accent); background: var(--accent-wash); }
 .goal-identity strong { display: block; font-size: 14px; font-weight: 600; line-height: 1.5; white-space: nowrap; }
 .goal-identity small { display: none; margin-top: 3px; color: var(--muted); font-size: 11px; line-height: 1.5; }
-.new-goal { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; }
-.new-goal svg { width: 14px; height: 14px; }
 body[data-mode="goal"] .topbar > .brand, body[data-mode="goal"] .header-divider, body[data-mode="goal"] .conversation-title { display: none; }
 .ui-error { flex-shrink: 0; margin: 12px var(--gutter); padding: 10px 14px; border: 1px solid var(--vscode-inputValidation-errorBorder, #ba7169); border-radius: 10px; color: var(--vscode-errorForeground, #a8453f); font-size: 12px; overflow-wrap: anywhere; }
 
@@ -104,15 +102,19 @@ textarea::placeholder { color: var(--vscode-input-placeholderForeground, #92958f
 .context-remove svg { width: 12px; height: 12px; }
 .context-caption { overflow: hidden; color: var(--muted); font-size: 10px; white-space: nowrap; text-overflow: ellipsis; opacity: .75; }
 .context-row:has(.context-chip:not([hidden])) .context-add > span:last-child, .context-row:has(.context-chip:not([hidden])) .context-caption { display: none; }
-.composer-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 8px; min-width: 0; min-height: 28px; }
-.composer-options { display: flex; align-items: center; gap: 5px; flex: 1; min-width: 0; }
+.composer-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; min-width: 0; min-height: 32px; }
+.composer-options { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; }
 .mode { display: inline-flex; align-items: center; gap: 5px; flex-shrink: 0; min-height: 26px; padding: 2px 7px; border: 1px solid var(--border); border-radius: 6px; color: var(--muted); background: var(--canvas); font-size: 11px; line-height: 1.5; }
 .mode svg { width: 12px; height: 12px; }
 .mode-name { color: var(--ink); font-weight: 500; }
-.provider { position: relative; min-width: 0; min-height: 26px; max-width: 260px; padding: 3px 18px 3px 6px; border: 0; border-radius: 5px; background: transparent; color: var(--muted); font-size: 11px; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.provider::after { content: ''; position: absolute; top: 10px; right: 7px; width: 5px; height: 5px; border-right: 1px solid currentColor; border-bottom: 1px solid currentColor; transform: rotate(45deg); opacity: .7; }
-.provider:hover:enabled { color: var(--ink); background: var(--hover); }
-.composer-send { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.provider { position: relative; display: inline-flex; align-items: center; min-width: 0; min-height: 28px; max-width: min(260px, 34vw); padding: 4px 24px 4px 21px; border: 1px solid var(--border); border-radius: 999px; background: color-mix(in srgb, var(--ink) 3%, var(--canvas)); color: var(--muted); font-size: 11px; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: border-color .15s, background .15s, color .15s; }
+.provider::before { content: ''; position: absolute; left: 9px; width: 6px; height: 6px; border-radius: 50%; background: currentColor; opacity: .55; }
+.provider::after { content: ''; position: absolute; top: 10px; right: 9px; width: 5px; height: 5px; border-right: 1px solid currentColor; border-bottom: 1px solid currentColor; transform: rotate(45deg); opacity: .7; }
+.provider[data-status="connected"] { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); color: color-mix(in srgb, var(--accent) 78%, var(--ink)); background: color-mix(in srgb, var(--accent) 8%, var(--canvas)); }
+.provider[data-status="connected"]::before { opacity: 1; }
+.provider[data-status="attention"] { border-color: color-mix(in srgb, var(--vscode-errorForeground, #a8453f) 42%, var(--border)); color: var(--vscode-errorForeground, #a8453f); background: color-mix(in srgb, var(--vscode-errorForeground, #a8453f) 7%, var(--canvas)); }
+.provider:hover:enabled { color: var(--ink); border-color: color-mix(in srgb, var(--focus) 55%, var(--border)); background: var(--hover); }
+.composer-send { display: flex; align-items: center; gap: 10px; flex-shrink: 0; margin-left: auto; }
 .prompt-shortcut { color: var(--muted); font-size: 10px; line-height: 1.5; white-space: nowrap; opacity: .8; }
 .prompt-count { color: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .prompt-count[data-limit="true"] { color: var(--vscode-errorForeground, #a8453f); }
@@ -122,9 +124,11 @@ textarea::placeholder { color: var(--vscode-input-placeholderForeground, #92958f
 .submit { display: grid; place-items: center; flex-shrink: 0; width: 34px; height: 34px; border: 0; border-radius: 10px; background: var(--vscode-button-background, #292a2d); color: var(--vscode-button-foreground, #fff); }
 .submit:hover:enabled { background: var(--vscode-button-hoverBackground, #414244); }
 .submit svg { width: 18px; height: 18px; stroke-width: 1.8; }
-.composer .submit { width: 28px; height: 28px; border-radius: 7px; background: var(--ink); color: var(--canvas); }
+.composer .submit { width: 32px; height: 32px; border-radius: 9px; background: var(--ink); color: var(--canvas); box-shadow: 0 2px 5px #00000014; }
 .composer .submit:hover:enabled { background: color-mix(in srgb, var(--ink) 80%, var(--canvas)); }
 .composer .submit:disabled { background: color-mix(in srgb, var(--ink) 8%, var(--canvas)); color: color-mix(in srgb, var(--ink) 35%, var(--canvas)); opacity: 1; }
+.composer .submit[data-running="true"] { background: var(--vscode-errorForeground, #a8453f); color: #fff; box-shadow: 0 2px 7px color-mix(in srgb, var(--vscode-errorForeground, #a8453f) 30%, transparent); }
+.composer .submit[data-running="true"]:hover:enabled { background: color-mix(in srgb, var(--vscode-errorForeground, #a8453f) 82%, #000); }
 .composer .submit svg { width: 17px; height: 17px; }
 .suggestions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 26px; }
 .suggestion { display: flex; align-items: flex-start; gap: 12px; min-width: 0; padding: 15px; border: 1px solid var(--border); border-radius: 10px; background: transparent; color: var(--ink); text-align: left; line-height: 1.5; }
@@ -340,8 +344,6 @@ textarea::placeholder { color: var(--vscode-input-placeholderForeground, #92958f
   .goal-identity { gap: 8px; }
   .goal-identity small { display: none; }
   .goal-identity strong { font-size: 13px; }
-  .new-goal { width: 34px; height: 34px; padding: 0; justify-content: center; }
-  .new-goal > span { display: none; }
   .home-layout { padding-top: 32px; padding-bottom: 28px; }
   .intro { margin-bottom: 24px; }
   .hero-mark { margin-bottom: 18px; }
@@ -367,8 +369,9 @@ textarea::placeholder { color: var(--vscode-input-placeholderForeground, #92958f
   .goal-editor { padding: 17px; }
   .context-caption { display: none; }
   .composer { padding-inline: 8px; }
-  .composer-options { gap: 2px; }
-  .composer-send { gap: 5px; }
+  .composer-options { gap: 3px; }
+  .provider { max-width: 38vw; }
+  .composer-send { gap: 6px; }
   .criterion { padding: 13px; gap: 10px; }
 }
 @media (max-height: 650px) {
@@ -490,9 +493,6 @@ body[data-loading="true"] .page-progress, body[data-navigating="true"] .page-pro
 .goal-content .goal-panels { min-height: 0; padding-block: 16px; }
 .goal-content #goal-overview { max-width: 1360px; }
 .goal-overview-summary { margin-bottom: 14px; padding: 0 0 12px; }
-.goal-initial-facts { margin-top: 12px; font-size: 13px; }
-.goal-initial-facts summary { cursor: pointer; color: var(--muted); }
-.goal-initial-facts p { margin-top: 10px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 240px; overflow: auto; }
 .goal-overview-columns { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; align-items: start; }
 .goal-overview-columns > section { min-width: 0; }
 .goal-overview-split { display: none; }
@@ -576,7 +576,6 @@ body[data-loading="true"] .page-progress, body[data-navigating="true"] .page-pro
 /* The overview prioritizes Reason's journal and the live Worker roster. */
 .goal-overview-summary .goal-meta { margin-top: 0; font-size: 11px; gap: 14px; }
 .goal-overview-summary:not(:has(> :not([hidden]))) { display: none; }
-.goal-overview-summary .goal-initial-facts:not([hidden]) + .goal-meta { margin-top: 8px; }
 
 .goal-overview-columns > .goal-output-panel { margin-top: 0; }
 .goal-panel-kicker { display: block; margin-bottom: 5px; color: var(--muted); font-size: 9px; font-weight: 600; letter-spacing: .12em; }

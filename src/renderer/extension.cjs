@@ -622,7 +622,12 @@ async function activate(context) {
   async function refreshEmptyFolder() {
     const revision = ++folderCheckRevision;
     const folders = sessionFolders(sessions.current().id);
+    // A previous check can still be awaiting the command bridge after the
+    // session/workspace has changed. Do not let that stale result restore the
+    // "no workspace" welcome view over the newly selected workspace.
+    if (shuttingDown || revision !== folderCheckRevision) return;
     await vscode.commands.executeCommand('setContext', 'ubovm.noWorkspace', folders.length === 0);
+    if (shuttingDown || revision !== folderCheckRevision) return;
     let empty = false;
     if (folders.length === 1) {
       try { empty = (await vscode.workspace.fs.readDirectory(folders[0].uri)).length === 0; }
@@ -1032,11 +1037,6 @@ async function activate(context) {
       return result;
     }),
     registerCommand('ubovm.newChat', async () => { await newChat(); return openAssistant(); }),
-    registerCommand('ubovm.newGoal', async () => {
-      if (sessions.current().mode !== 'goal') throw new Error('请先切换到探索模式。');
-      await newChat(sessions.current().id);
-      return openAssistant();
-    }),
     registerCommand('ubovm.selectConversation', selectConversation),
     registerCommand('ubovm.deleteConversation', deleteConversation),
     registerCommand('ubovm.searchConversations', searchConversations),

@@ -39,7 +39,6 @@
       <button class="icon-button" id="validate-code-changes" type="button" data-action="validateCodeChanges" title="验证代码修改" aria-label="验证代码修改"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 12 4 4L17 6m-6 10 3 3 7-9"/></svg></button>
       <button class="icon-button" id="review-code-changes" type="button" data-action="reviewCodeChanges" title="代码更改：查看 diff 与撤销" aria-label="代码更改：查看 diff 与撤销"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h14v18H5V3ZM8 8h8m-8 8h8m-4-4v8"/></svg></button>
       <button class="icon-button" id="new-chat" type="button" title="新对话" aria-label="开始新对话"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>
-      <button class="text-button new-goal" id="new-goal" type="button" title="新建探索" aria-label="新建探索" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg><span>新建探索</span></button>
     </header>
     <div class="ui-error" id="ui-error" role="alert" aria-live="assertive" hidden><div class="ui-error-content"><strong id="ui-error-title">操作未完成</strong><p id="ui-error-message"></p><details id="ui-error-details" hidden><summary>查看错误详情</summary><pre id="ui-error-detail"></pre></details></div><button type="button" id="ui-error-dismiss" aria-label="关闭错误提示">×</button></div>
     <main id="main-content" aria-busy="true">
@@ -136,7 +135,6 @@
             <div class="goal-panels" id="goal-panels">
             <section id="goal-overview" role="tabpanel" aria-labelledby="goal-tab-overview">
               <section class="goal-overview-summary" aria-label="目标进展摘要">
-                <details class="goal-initial-facts" id="goal-initial-facts" hidden><summary>初始事实</summary><p id="goal-facts-detail"></p></details>
                 <div class="goal-meta" hidden><span><strong id="goal-progress">0 / 0</strong> 项已确认</span><span><strong id="goal-note-count">0</strong> 条笔记</span><span class="connection-status" id="goal-provider-label">未连接模型</span></div>
                 <progress class="goal-completion" id="goal-completion" value="0" max="1" aria-label="手动确认的验收标准" aria-describedby="goal-progress" hidden></progress>
               </section>

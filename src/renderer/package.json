@@ -129,12 +129,6 @@
         "icon": "$(add)"
       },
       {
-        "command": "ubovm.newGoal",
-        "title": "新建探索",
-        "category": "UBOVM",
-        "icon": "$(add)"
-      },
-      {
         "command": "ubovm.selectConversation",
         "title": "打开会话",
         "category": "UBOVM",
@@ -702,11 +696,6 @@
           "group": "navigation@2"
         },
         {
-          "command": "ubovm.newGoal",
-          "when": "view == ubovm.sessions && ubovm.mode == goal && !ubovm.settingsPage",
-          "group": "navigation@2"
-        },
-        {
           "command": "ubovm.searchConversations",
           "when": "view == ubovm.sessions && !ubovm.settingsPage",
           "group": "navigation@1"
@@ -730,10 +719,6 @@
         {
           "command": "ubovm.deleteConversation",
           "when": "false"
-        },
-        {
-          "command": "ubovm.newGoal",
-          "when": "ubovm.mode == goal"
         },
         {
           "command": "ubovm.selectConversation",

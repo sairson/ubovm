@@ -7,6 +7,12 @@ import { existsSync, readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { configureDataPaths, findLegacyRoot, initializeUserSettings } from './data-paths.mjs';
 
+// UBOVM is a standalone IDE and owns the code/terminal execution boundary in
+// its extension host. Keep every opened directory usable without VS Code's
+// interactive trust prompt; otherwise a normal untrusted folder can prevent
+// the main workspace page and its actions from becoming available.
+if (!process.argv.includes('--disable-workspace-trust')) process.argv.push('--disable-workspace-trust');
+
 // The executable can be opened without build.bat, so data isolation belongs in
 // the actual Electron entry rather than only in the development launcher.
 const dataPaths = configureDataPaths({ app, legacyRoot: findLegacyRoot(app.getAppPath()) });

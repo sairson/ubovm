@@ -39,7 +39,7 @@ index fa8d7ae..77b463f 100644
 +				button.dataset.mode = mode;
 +				button.textContent = mode === 'goal' ? '探索模式' : '协助模式';
 +				const select = async () => {
-+					if (pending || !this.contextKeyService.getContextKeyValue('ubovm.mode')) { return; }
++					if (pending || !this.contextKeyService.getContextKeyValue('ubovm.mode') || this.contextKeyService.getContextKeyValue('ubovm.contentReady') !== true) { return; }
 +					const settings = !!this.contextKeyService.getContextKeyValue('ubovm.settingsPage');
 +					if (!settings && this.contextKeyService.getContextKeyValue('ubovm.mode') === mode) { return; }
 +					pending = 'mode:' + mode;
@@ -94,7 +94,7 @@ index fa8d7ae..77b463f 100644
 +				const page = this.contextKeyService.getContextKeyValue('ubovm.settingsPage');
 +				const settings = !!page;
 +				for (const button of managementButtons) {
-+					button.disabled = !!pending || !mode;
++					button.disabled = !!pending || !mode || !ready;
 +					button.setAttribute('aria-busy', String(pending === 'page:' + button.dataset.settingsPage));
 +					if (button.dataset.settingsPage === page) {
 +						button.setAttribute('aria-current', 'page');
@@ -109,7 +109,7 @@ index fa8d7ae..77b463f 100644
 +					const label = settings ? '← 返回对话' : button.dataset.mode === 'goal' ? '探索模式' : '协助模式';
 +					if (button.textContent !== label) { button.textContent = label; }
 +					button.setAttribute('aria-pressed', String(button.dataset.mode === mode));
-+					button.disabled = !!pending || !mode;
++					button.disabled = !!pending || !mode || !ready;
 +					button.setAttribute('aria-disabled', String(button.disabled));
 +					button.setAttribute('aria-busy', String(pending === 'mode:' + button.dataset.mode));
 +				}

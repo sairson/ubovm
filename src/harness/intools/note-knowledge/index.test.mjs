@@ -46,6 +46,17 @@ test('structured writes infer category for nested, JSON and flat assets', async 
   assert.equal((await call({ action: 'list', vulnerability_type: 'sqlInjection' })).total, 1);
 });
 
+test('flattened vulnerability fields are normalized for tool adapters', async () => {
+  const { call } = fixture();
+  const result = await call({ action: 'write', note_type: 'vulnerability', vulnerability_type: 'ssti',
+    title: 'Template injection', target: 'http://example.test/render', status: 'verified', severity: 'critical',
+    vector: 'POST /render', effects: ['Template expressions are evaluated'],
+    preconditions: ['Endpoint is reachable'], evidence: ['{{7*7}} -> 49'], details: { param: 'template' } });
+  assert.equal(result.note.vulnerability_type, 'ssti');
+  assert.equal(result.note.vulnerability.status, 'verified');
+  assert.deepEqual(result.note.vulnerability.effects, ['Template expressions are evaluated']);
+});
+
 test('plain notes and legacy category aliases still work', async () => {
   const { call, tool } = fixture();
   for (const note_type of [undefined, 'note', 'NOTE', 'note-knowledge', 'note_knowledge']) {

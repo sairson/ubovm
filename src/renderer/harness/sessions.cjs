@@ -282,6 +282,13 @@ function createSessions(vscode, context, onDidChange, { isBusy = () => false, cr
 
   function history() { return list().filter(session => !session.placeholder); }
 
+  // The native session tree only reads identity and a message count. Return
+  // the in-memory records directly so refreshing the tree does not clone or
+  // redact every historical message; mutations still go through this store.
+  function treeHistory() {
+    return state.sessions.filter(session => session.mode === state.activeMode && !session.placeholder);
+  }
+
   // UI headers and streaming notifications only need identity and a count.
   // Avoid copying every message in every conversation just to read these.
   function summary() {
@@ -345,7 +352,7 @@ function createSessions(vscode, context, onDidChange, { isBusy = () => false, cr
 
   const provider = {
     onDidChangeTreeData: emitter.event,
-    getChildren(element) { return element ? [] : history(); },
+    getChildren(element) { return element ? [] : treeHistory(); },
     getTreeItem(session) {
       const selected = session.mode === state.activeMode && session.id === state.currentIds[state.activeMode];
       const item = new vscode.TreeItem(session.title, vscode.TreeItemCollapsibleState.None);
@@ -362,7 +369,14 @@ function createSessions(vscode, context, onDidChange, { isBusy = () => false, cr
 
   // Keep the legacy key as a fallback until the new state has been persisted.
   // New sessions always read from STORAGE_KEY once migration has completed.
-  const ready = enqueue(() => commit(state));
+  const needsInitialPersist = !stored || Number(stored.version) !== STORAGE_VERSION
+    || stored.activeMode !== state.activeMode
+    || JSON.stringify(stored.currentIds ?? {}) !== JSON.stringify(state.currentIds)
+    || (createWorkspace && state.sessions.some(session => !session.workspace))
+    // Test/embedded stores without a workspace allocator still need the
+    // normalized detached snapshot published on initial readiness.
+    || !createWorkspace;
+  const ready = needsInitialPersist ? enqueue(() => commit(state)) : Promise.resolve(current());
 
   return {
     ready,

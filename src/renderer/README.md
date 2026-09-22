@@ -67,7 +67,7 @@ renderer/
 - 新建终端默认使用 `UBOVM SSH` profile，通过 `host/terminal-service.cjs` 将原生终端输入、输出与尺寸连接至独立的 `SSHCommands.openInteractive()` PTY。配置从本机用户设置与 SecretStorage 读取，不依赖模型配置。终端下拉菜单保留“当前系统终端”，工具栏可选择任意已保存 SSH 主机；断线后需新建终端重连。
 - NPM Scripts 视图的扩展声明设为 `when: "false"`，同时隐藏旧配置中的 `npm` 视图；不依赖已弃用的 `npm.enableScriptExplorer` 设置。
 - 主空间禁止手动分屏，编辑器最多保留主对话与固定右侧文件组，禁止额外列和嵌套分屏。文件以正式标签页打开，即使调用方显式要求 `preview: true`，也不会创建预览标签。
-- 命令：`ubovm.openWelcome`、`ubovm.openAssistant`、`ubovm.newChat`、`ubovm.newGoal`、`ubovm.selectConversation`、`ubovm.setMode`、`ubovm.resetLayout`、`ubovm.openTerminal`、`ubovm.openLocalTerminal`、`ubovm.selectTerminal`、`ubovm.openSource`、`ubovm.showRuntimeInfo`
+- 命令：`ubovm.openWelcome`、`ubovm.openAssistant`、`ubovm.newChat`、`ubovm.selectConversation`、`ubovm.setMode`、`ubovm.resetLayout`、`ubovm.openTerminal`、`ubovm.openLocalTerminal`、`ubovm.selectTerminal`、`ubovm.openSource`、`ubovm.showRuntimeInfo`
 - 对话界面使用主题变量、CSP nonce 与消息白名单，不加载网络资源。
 - 启动后主对话常驻，禁止通过关闭标签页、关闭全部编辑器或跨组移动操作移除；窗口重载后自动恢复。使用 `Ctrl+L` 聚焦主对话，`Ctrl+Shift+L` 或会话树标题栏的加号新建对话，已有会话继续保留并可从左侧切换。
 - `harness/sessions.cjs` 在 workspaceState 的 `conversations` v3 中持久化当前模式、每种模式的最近会话和历史；自动迁移旧 `conversation` 数据，并把 v2 混合会话的聊天与目标拆分保存。每种模式独立保留最多 50 个会话，每个会话保留最近 40 条消息。当前会话以圆点标识，重启后恢复选择与消息。`list()` / 扩展导出的 `conversationList()` 只返回当前模式，传入模式参数可只读查询另一模式；跨模式 `select` 会被拒绝。

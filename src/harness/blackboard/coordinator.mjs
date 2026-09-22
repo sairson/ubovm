@@ -163,7 +163,10 @@ export class BlackboardCoordinator {
 
       for (let round = 1; round <= this.maxRounds; round += 1) {
         checkAbort(signal);
-        await this.#dispatch(signal);
+        // Each completed Worker gets an immediate Reason pass. These passes
+        // are observational while the batch is still draining; the final
+        // pass below remains authoritative for creating intents/completion.
+        await this.#dispatch(signal, () => this.#thinkAfterWorker(signal));
         checkAbort(signal);
         const snapshot = this.blackboard.snapshot();
         const context = buildBlackboardContext(snapshot);
@@ -201,7 +204,7 @@ export class BlackboardCoordinator {
         const intents = prepareIntents(decision.intents, snapshot, context);
         await this.blackboard.createIntents(intents, { expectedRevision: snapshot.revision });
         checkAbort(signal);
-        await this.#dispatch(signal);
+        await this.#dispatch(signal, () => this.#thinkAfterWorker(signal));
       }
       throw failure('MAX_ROUNDS', `Blackboard execution exceeded ${this.maxRounds} Reason rounds.`);
     } finally {
@@ -246,20 +249,43 @@ export class BlackboardCoordinator {
     return { complete: true, evidenceIds, summary: decision.summary.trim(), rounds: round, revision: snapshot.revision };
   }
 
-  async #dispatch(signal) {
-    const nodes = this.blackboard.pendingIntents();
-    let next = 0;
+  async #thinkAfterWorker(signal) {
+    checkAbort(signal);
+    const snapshot = this.blackboard.snapshot();
+    const context = buildBlackboardContext(snapshot);
+    let decision;
+    try {
+      // A Worker completion is a useful incremental observation even when
+      // other Workers are still running. Apply only against the exact
+      // snapshot that Reason saw; concurrent completions are handled by their
+      // own Reason pass and must never be overwritten by a stale decision.
+      decision = await interruptible(() => this.reason({ context, signal }), signal);
+    } catch (cause) {
+      if (signal?.aborted) throw abortError(signal);
+      throw failure('REASON_FAILED', `Reason callback failed after Worker completion: ${cause?.message ?? cause}`, cause);
+    }
+    if (this.blackboard.snapshot().revision !== snapshot.revision || !decision || decision.complete === true) return;
+    if (!Array.isArray(decision.intents) || decision.intents.length === 0) return;
+    const intents = prepareIntents(decision.intents, snapshot, context);
+    await this.blackboard.createIntents(intents, { expectedRevision: snapshot.revision });
+  }
+
+  async #dispatch(signal, onWorkerComplete) {
+    const claimed = new Set();
     const consume = async () => {
-      while (next < nodes.length) {
+      while (true) {
         checkAbort(signal);
-        const node = nodes[next++];
-        await this.#execute(node, signal);
+        const node = this.blackboard.pendingIntents().find(item => !claimed.has(item.id));
+        if (!node) return;
+        claimed.add(node.id);
+        const completed = await this.#execute(node, signal);
+        if (completed && onWorkerComplete) await onWorkerComplete();
       }
     };
     // allSettled ensures every started worker is finished or has had its write
     // access revoked before the board lease is released after any error.
     const settled = await Promise.allSettled(
-      Array.from({ length: Math.min(this.maxConcurrency, nodes.length) }, consume),
+      Array.from({ length: this.maxConcurrency }, consume),
     );
     const errors = settled.filter((item) => item.status === 'rejected').map((item) => item.reason);
     // Do not hide failed interruption persistence behind the signal: the host
@@ -364,5 +390,6 @@ export class BlackboardCoordinator {
       }
       throw error;
     }
+    return true;
   }
 }

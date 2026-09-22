@@ -260,11 +260,10 @@
     const promptPending = hasPending('prompt');
     input.disabled = unavailable;
     byId('new-chat').disabled = unavailable || hasPending();
-    byId('new-goal').disabled = unavailable || hasPending();
     byId('navigation-loading').hidden = !navigationPending();
     document.body.dataset.navigating = String(navigationPending());
     byId('main-content').setAttribute('aria-busy', String(!hostState || navigationPending()));
-    for (const id of ['new-chat', 'new-goal']) byId(id).setAttribute('aria-busy', String(navigationPending()));
+    byId('new-chat').setAttribute('aria-busy', String(navigationPending()));
     byId('attach-file').disabled = unavailable || busy || promptPending || contextPending();
     if (byId('remove-context')) byId('remove-context').disabled = unavailable || busy || promptPending || contextPending();
     document.querySelectorAll('[data-prompt]').forEach(button => { button.disabled = unavailable || busy || promptPending; });
@@ -319,9 +318,19 @@
     if (!Array.isArray(left) || !Array.isArray(right)) return !left?.length && !right?.length;
     return left.length === right.length && left.every((part, index) => ['id', 'type', 'text', 'name', 'status', 'args', 'output', 'startedAt', 'endedAt', 'truncated', 'source', 'workerId', 'fallback', 'beforeTokens', 'afterTokens'].every(key => part[key] === right[index]?.[key]));
   }
+  function sameMessages(left, right) {
+    if (left === right) return true;
+    if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false;
+    return left.every((message, index) => {
+      const other = right[index];
+      return message?.role === other?.role && message?.text === other?.text && sameParts(message?.parts, other?.parts);
+    });
+  }
   function renderApprovals(view) {
     view.approvals ??= new Map();
-    const records = hostState?.toolApprovals || [];
+    // Completed approvals remain in the host snapshot for lifecycle tracking,
+    // but they are no longer actionable and should not occupy the conversation.
+    const records = (hostState?.toolApprovals || []).filter(record => record.status === 'pending');
     const ids = new Set(records.map(record => record.id));
     let changed = false;
     for (const [id, card] of view.approvals) if (!ids.has(id)) { card.element.remove(); view.approvals.delete(id); changed = true; }
@@ -368,7 +377,11 @@
     let view = messageViews.get(messages);
     // Execution-only publications retain the immutable history array; full
     // state publications replace it and reconcile edits and deletions.
-    const historyChanged = view?.sessionId !== currentSessionId || view.source !== items;
+    // Webview messages are structured-cloned by the extension bridge, so an
+    // unchanged history array never retains its object identity here. Compare
+    // its stable content instead of reparsing the whole conversation on every
+    // host publication (especially while a tool is streaming).
+    const historyChanged = view?.sessionId !== currentSessionId || !sameMessages(view?.source, items);
     const safeMessages = historyChanged ? items.filter(item => item && (item.role === 'user' || item.role === 'assistant') && typeof item.text === 'string') : view.history;
     const execution = executionState();
     const executionParts = Array.isArray(execution.parts) ? execution.parts : [];
@@ -478,7 +491,6 @@
     byId('goal-header-actions').hidden = !goalMode;
     byId('goal-view-switcher').hidden = !goalMode;
     if (!goalMode) byId('goal-view-switcher').open = false;
-    byId('new-goal').hidden = !goalMode;
     byId('new-chat').hidden = goalMode;
     byId('review-code-changes').hidden = goalMode;
     byId('assist-notes-toggle').hidden = goalMode;
@@ -490,7 +502,6 @@
     const editing = workspaceMissing() || !hostState?.goal || draftFor().goalEditing && !busy;
     const view = goalMode && !editing ? draftFor().view : '';
     byId('goal-edit').hidden = view !== 'overview';
-    byId('new-goal').hidden = !goalMode || Boolean(view && view !== 'overview');
     byId('goal-board-actions').hidden = view !== 'board';
     byId('goal-notes-actions').hidden = goalMode ? view !== 'notes' : draftFor().view !== 'notes';
     byId('note-new').hidden = !goalMode;
@@ -858,8 +869,6 @@
       const notes = Array.isArray(goal.notes) ? goal.notes : [];
       setText(byId('goal-objective'), goal.objective);
       byId('goal-objective').title = goal.objective;
-      setText(byId('goal-facts-detail'), goal.initialFacts || '');
-      byId('goal-initial-facts').hidden = !goal.initialFacts;
       setText(byId('goal-board-objective'), goal.objective);
       setText(byId('goal-progress'), criteria.filter(item => item.done).length + ' / ' + criteria.length);
       byId('goal-completion').max = Math.max(1, criteria.length);
@@ -909,9 +918,6 @@
     if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && event.keyCode !== 229) { event.preventDefault(); sendPrompt(); }
   });
   byId('new-chat').addEventListener('click', () => {
-    if (!hasPending()) request('newChat');
-  });
-  byId('new-goal').addEventListener('click', () => {
     if (!hasPending()) request('newChat');
   });
   byId('goal-run').addEventListener('click', () => {
@@ -1086,11 +1092,21 @@
       if (document.hidden || byId('settings-dialog').open) return;
       renderPending = false;
       const full = fullRenderPending; fullRenderPending = false;
-      if (full) renderState();
-      else {
-        messages.setAttribute('aria-busy', String(busy));
-        if (hostState.mode !== 'goal') renderMessages(Array.isArray(hostState.messages) ? hostState.messages : []);
-        renderGoal(); renderExecution(); updateControls();
+      try {
+        if (full) renderState();
+        else {
+          messages.setAttribute('aria-busy', String(busy));
+          if (hostState.mode !== 'goal') renderMessages(Array.isArray(hostState.messages) ? hostState.messages : []);
+          renderGoal(); renderExecution(); updateControls();
+        }
+      } catch (error) {
+        // A malformed or unusually large payload must not leave the page on
+        // its permanent loading screen. Keep the last stable DOM and expose a
+        // recoverable error while the next host publication can retry.
+        console.error('Webview render failed', error);
+        byId('page-loading').hidden = true;
+        document.body.dataset.loading = 'false';
+        showError(error instanceof Error ? error : new Error('页面渲染失败，请重试。'));
       }
     });
   }
@@ -1138,8 +1154,12 @@
     setText(byId('goal-selection-label'), contextLabel);
     goalSelection.title = '已添加选中代码：' + file + ' · ' + selection + '（添加时的快照）';
     if (state.provider) {
-      setText(byId('provider-label'), state.provider.configured && state.ssh?.configured === false ? '配置 SSH（必需）' : state.provider.label || '未连接模型');
-      byId('provider-label').title = state.provider.error || state.ssh?.error || '配置模型与工具';
+      const providerButton = byId('provider-label');
+      const sshMissing = state.ssh?.configured === false;
+      const providerMissing = state.provider.configured === false;
+      setText(providerButton, sshMissing && state.provider.configured ? '配置 SSH（必需）' : state.provider.label || '未连接模型');
+      providerButton.title = state.provider.error || state.ssh?.error || '配置模型与工具';
+      providerButton.dataset.status = sshMissing || providerMissing ? 'attention' : state.provider.connected ? 'connected' : 'offline';
       setText(byId('connection-note'), configurationMissing() ? '请先完成模型和 SSH 连接配置，再运行 IDE 任务' : '准备好，开始你的下一步');
     }
     renderGoal();

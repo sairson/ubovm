@@ -78,6 +78,16 @@ test('streaming updates do not rescan unchanged published history', async t => {
   assert.match(await page.locator('#messages').textContent(), /Live 4/);
 });
 
+test('repeated full state publications reuse unchanged conversation history', async t => {
+  const page = await pageFor(t);
+  const messages = Array.from({ length: 100 }, (_, i) => ({ role: 'assistant', text: 'History ' + i }));
+  await send(page, { ...state(), messages });
+  const before = await page.locator('#messages .message').count();
+  await send(page, { ...state(), messages: messages.map(message => ({ ...message })) });
+  assert.equal(await page.locator('#messages .message').count(), before);
+  assert.equal((await page.locator('#messages .message-text').first().textContent()).trim(), 'History 0');
+});
+
 test('hidden panels defer rendering and reopening displays the latest state', async t => {
   const page = await pageFor(t);
   const current = state('deferred-panels', 'goal');
@@ -383,8 +393,7 @@ test('goal creation keeps initial facts in drafts and submits them separately', 
   assert.equal(message.goal.objective, '完成项目管理功能');
   await send(page, { ...initial, goal: { ...message.goal, notes: [] } });
   await send(page, { type: 'uiResult', requestId: message.requestId, ok: true });
-  await page.locator('#goal-initial-facts summary').click();
-  assert.equal(await page.locator('#goal-facts-detail').textContent(), message.goal.initialFacts);
+  assert.equal(await page.locator('#goal-overview .goal-initial-facts').count(), 0);
 });
 
 test('goal page switcher supports keyboard navigation and restores reading position', async t => {
@@ -768,9 +777,9 @@ test('goal header substitutes module actions and restores overview controls', as
   assert.equal(await page.locator('#goal-mode').getAttribute('aria-label'), '探索模式');
   assert.match(await page.title(), /探索工作台/);
   const choose = async view => { await page.locator('#goal-view-switcher > summary').click(); await page.locator('#goal-tab-' + view).click(); };
-  assert(await page.locator('#goal-edit').isVisible()); assert(await page.locator('#new-goal').isVisible());
+  assert(await page.locator('#goal-edit').isVisible()); assert.equal(await page.locator('#new-goal').count(), 0);
   await choose('board');
-  assert.equal(await page.locator('#goal-edit').isVisible(), false); assert.equal(await page.locator('#new-goal').isVisible(), false);
+  assert.equal(await page.locator('#goal-edit').isVisible(), false);
   assert.equal(await page.locator('.topbar #goal-board-actions button').count(), 0);
   assert(await page.locator('.graph-workspace .graph-controls').isVisible());
   assert.equal(await page.locator('.graph-direction, .graph-toolbar').count(), 0);
@@ -786,9 +795,9 @@ test('goal header substitutes module actions and restores overview controls', as
   await page.locator('#note-new').click(); assert(await page.locator('#goal-note-input').isVisible());
   await page.locator('#note-close').click();
   await send(page, { type: 'executionState', conversationId: 'module-actions', execution: message.execution, busy: false });
-  assert(await page.locator('.topbar #note-new').isVisible()); assert.equal(await page.locator('#new-goal').isVisible(), false);
+  assert(await page.locator('.topbar #note-new').isVisible());
   await choose('overview');
-  assert(await page.locator('#goal-edit').isVisible()); assert(await page.locator('#new-goal').isVisible());
+  assert(await page.locator('#goal-edit').isVisible());
   assert.equal(await page.locator('#goal-notes-actions').isVisible(), false);
   await send(page, state('assist-actions'));
   assert.equal(await page.locator('#review-code-changes').isVisible(), true);

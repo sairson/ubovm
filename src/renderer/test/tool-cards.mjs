@@ -260,3 +260,22 @@ test('composer selects automatic or manual approval per conversation and sends t
   assert(bounds.x >= 0 && bounds.x + bounds.width <= 320);
   await f.page.screenshot({ path: screenshotDirectory + '/composer-approval.png' });
 });
+
+test('completed approval records are removed from the conversation', async t => {
+  const f = await fixture(t);
+  const approval = (id, status) => ({ id, status, toolName: '运行本地命令', workerId: '主任务', args: '{"command":"npm test"}' });
+  await f.emit(state([], {
+    busy: false,
+    execution: { status: 'idle', busy: false, parts: [], activities: [] },
+    toolApprovals: [approval('pending', 'pending'), approval('approved', 'approved'), approval('denied', 'denied')]
+  }));
+  assert.equal(await f.page.locator('.approval-card').count(), 1);
+  assert.equal(await f.page.locator('.approval-card').getAttribute('data-status'), 'pending');
+
+  await f.emit(state([], {
+    busy: false,
+    execution: { status: 'idle', busy: false, parts: [], activities: [] },
+    toolApprovals: [approval('pending', 'approved')]
+  }));
+  assert.equal(await f.page.locator('.approval-card').count(), 0);
+});

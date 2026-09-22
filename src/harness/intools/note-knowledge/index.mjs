@@ -20,7 +20,11 @@ const parameters = Type.Object({
   action: enumSchema(['write', 'list', 'get', 'promote', 'delete']),
   note_type: Type.Optional({ ...enumSchema(noteTypes), description: 'Record category. On write, omit to infer from asset/vulnerability, otherwise defaults to note. On list, omit for all categories. fact and intent belong in promotion_kind, not note_type.' }), asset_type: Type.Optional(subtypeSchema), vulnerability_type: Type.Optional(subtypeSchema),
   asset: Type.Optional(Type.Union([assetSchema, Type.String({ description: 'Compatibility: JSON-encoded asset object' })])), vulnerability: Type.Optional(vulnerabilitySchema),
-  type: Type.Optional(subtypeSchema), locator: optionalString, method: optionalString, operation: optionalString, protocol: optionalString, details: Type.Optional(objectSchema),
+  // Accept vulnerability fields at the top level as well as in `vulnerability`.
+  // Some model/tool adapters flatten discriminated payloads before validation.
+  type: Type.Optional(subtypeSchema), title: optionalString, target: optionalString, status: Type.Optional(enumSchema(['candidate', 'verified', 'exploitable'])), severity: Type.Optional(enumSchema(['unknown', 'info', 'low', 'medium', 'high', 'critical'])), vector: optionalString,
+  effects: optionalStrings, preconditions: optionalStrings, constraints: optionalStrings, chain_hints: optionalStrings, related_note_ids: optionalStrings,
+  locator: optionalString, method: optionalString, operation: optionalString, protocol: optionalString, details: Type.Optional(objectSchema),
   content: optionalString, query: optionalString, limit: Type.Optional(Type.Integer()), offset: Type.Optional(Type.Integer()), note_id: optionalString, delete_reason: optionalString,
   promotion_kind: optionalString, outcome: optionalString, statement: optionalString, evidence: optionalStrings, failed_checks: optionalStrings, limitations: optionalStrings, description: optionalString, hint: optionalString, tool_call_ids: optionalStrings
 }, { additionalProperties: false });
@@ -141,7 +145,11 @@ function parseInput(input) {
       normalized.content ||= [normalized.asset.type, normalized.asset.method, normalized.asset.locator, normalized.asset.operation].filter(Boolean).join(' ');
       bounded(normalized.asset, 'asset');
     } else if (normalized.note_type === 'vulnerability') {
-      const v = value.vulnerability; fields(v, vulnerabilityKeys, 'vulnerability');
+      const v = { ...(value.vulnerability ?? {}) };
+      // Normalize the flattened form into the canonical nested payload.
+      for (const key of vulnerabilityKeys) if (v[key] === undefined && value[key] !== undefined) v[key] = value[key];
+      v.type ||= value.vulnerability_type || value.type;
+      fields(v, vulnerabilityKeys, 'vulnerability');
       normalized.vulnerability = { type: subtype(v.type, 'vulnerability.type'), title: required(text(v.title, 'vulnerability.title'), 'vulnerability.title'), target: required(text(v.target, 'vulnerability.target'), 'vulnerability.target'), vector: text(v.vector, 'vulnerability.vector'), status: text(v.status, 'vulnerability.status').toLowerCase() || 'candidate', severity: text(v.severity, 'vulnerability.severity').toLowerCase() || 'unknown', details: details(v.details) };
       const out = normalized.vulnerability;
       if (!['candidate', 'verified', 'exploitable'].includes(out.status) || !['unknown', 'info', 'low', 'medium', 'high', 'critical'].includes(out.severity)) throw new Error('Invalid vulnerability status or severity');

@@ -73,6 +73,7 @@ test('Reason and coordinator plan from facts and complete with fact evidence aft
       calls++;
       if (calls === 1) return { intents: ['A', 'B'].map(description => ({ description, parentIds: [context.data.root], keyPoints: ['evidence'], priority: 'medium' })) };
       const facts = context.data.nodes.filter(n => n.kind === 'fact');
+      if (facts.length < 2) return { intents: [] };
       assert.equal(facts.length, 2);
       assert(facts.every(n => n.producer && context.data.nodes.find(p => p.ref === n.producer).result === n.ref));
       return parseReasonDecision(JSON.stringify({ complete: true, evidenceIds: facts.map(n => n.ref), summary: 'verified' }), { context });
@@ -81,6 +82,7 @@ test('Reason and coordinator plan from facts and complete with fact evidence aft
   });
   const result = await coordinator.run();
   assert.equal(result.complete, true); assert.equal(peak, 2);
+  assert(calls >= 4, `expected initial, per-Worker, and final Reason passes; got ${calls}`);
   assert(result.evidenceIds.every(id => board.node(id).kind === 'fact'));
 });
 

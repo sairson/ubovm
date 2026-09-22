@@ -898,12 +898,12 @@ function Invoke-Core {
                 $env:VSCODE_SKIP_PRELAUNCH = $null; $env:ELECTRON_RUN_AS_NODE = $null
                 $workspace = if ($env:UBOVM_SOURCE_WORKSPACE) { [IO.Path]::GetFullPath($env:UBOVM_SOURCE_WORKSPACE) } else { $ProjectRoot }
                 if (-not (Test-Path -LiteralPath $workspace -PathType Container)) { throw "Workspace folder not found: $workspace" }
-                $LaunchArgs = @($workspace, '--new-window', "--extensionDevelopmentPath=$(Join-Path $ProjectRoot 'src/renderer')", "--user-data-dir=$(Join-Path $Portable 'user-data')", "--extensions-dir=$(Join-Path $Portable 'extensions')", "--shared-data-dir=$(Join-Path $Portable 'shared-data')", "--crash-reporter-directory=$(Join-Path $Portable 'crashes')")
+                $LaunchArgs = @($workspace, '--new-window', '--disable-workspace-trust', "--extensionDevelopmentPath=$(Join-Path $ProjectRoot 'src/renderer')", "--user-data-dir=$(Join-Path $Portable 'user-data')", "--extensions-dir=$(Join-Path $Portable 'extensions')", "--shared-data-dir=$(Join-Path $Portable 'shared-data')", "--crash-reporter-directory=$(Join-Path $Portable 'crashes')")
                 if ($env:UBOVM_SOURCE_SMOKE -eq '1') {
                     # Prepare Electron before starting the bounded desktop test.
                     Invoke-Checked (Get-Command $NodeCommand).Source @('build/lib/preLaunch.ts') $SourceRoot
                     $env:VSCODE_SKIP_PRELAUNCH = '1'
-                    $LaunchArgs += @('--disable-workspace-trust', "--extensionTestsPath=$(Join-Path $ProjectRoot 'src/renderer/test/smoke.cjs')")
+                    $LaunchArgs += "--extensionTestsPath=$(Join-Path $ProjectRoot 'src/renderer/test/smoke.cjs')"
                 }
                 if ($OnWindows) {
                     Invoke-Checked (Join-Path $SourceRoot 'scripts/code.bat') $LaunchArgs $SourceRoot
