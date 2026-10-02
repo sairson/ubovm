@@ -75,6 +75,66 @@ function Get-FileDigest($Path) {
     finally { $stream.Dispose(); $hasher.Dispose() }
 }
 
+function Get-RuntimeDownloadUrls {
+    $urls = [System.Collections.Generic.List[string]]::new()
+    if ($env:UBOVM_RUNTIME_URL) { [void]$urls.Add([string]$env:UBOVM_RUNTIME_URL) }
+    # Prefer configured mirrors first: GitHub release assets often stall behind
+    # Great Firewall / corporate proxies, while mirrors stay resumable via curl.
+    if ($Config.core.runtime.PSObject.Properties.Name -contains 'mirrorUrls' -and $Config.core.runtime.mirrorUrls) {
+        foreach ($mirror in @($Config.core.runtime.mirrorUrls)) {
+            if ($mirror) { [void]$urls.Add([string]$mirror) }
+        }
+    }
+    $primary = [string]$Config.core.runtime.url
+    if ($primary -match '^https://github\.com/') {
+        [void]$urls.Add('https://ghproxy.net/' + $primary)
+    }
+    [void]$urls.Add($primary)
+    $seen = @{}
+    $ordered = @()
+    foreach ($url in $urls) {
+        if (-not $seen.ContainsKey($url)) { $seen[$url] = $true; $ordered += $url }
+    }
+    return $ordered
+}
+
+function Invoke-ArchiveDownload($Urls, $Destination, $ExpectedSha256) {
+    Assert-ChildPath $Destination (Split-Path $Destination -Parent)
+    $partial = $Destination + '.partial'
+    $sourceMarker = $partial + '.source'
+    $failures = [System.Collections.Generic.List[string]]::new()
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
+    foreach ($url in $Urls) {
+        Write-Host "[UBOVM] Downloading archive: $url"
+        if ((Test-Path -LiteralPath $sourceMarker) -and (Get-Content -LiteralPath $sourceMarker -Raw).Trim() -ne $url) {
+            if (Test-Path -LiteralPath $partial) { Remove-Item -LiteralPath $partial -Force }
+        }
+        [IO.File]::WriteAllText($sourceMarker, ($url + [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
+        try {
+            if ($curl) {
+                Invoke-Checked $curl.Source @(
+                    '-fL', '--connect-timeout', '30', '--max-time', '0',
+                    '--retry', '8', '--retry-delay', '5', '--retry-all-errors',
+                    '-C', '-', '-o', $partial, $url
+                )
+            } else {
+                Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $partial
+            }
+            if ((Get-FileDigest $partial) -ne $ExpectedSha256) {
+                throw 'Downloaded archive SHA-256 does not match resources/app.json.'
+            }
+            Move-Item -LiteralPath $partial -Destination $Destination -Force
+            if (Test-Path -LiteralPath $sourceMarker) { Remove-Item -LiteralPath $sourceMarker -Force }
+            return
+        } catch {
+            [void]$failures.Add("$url :: $($_.Exception.Message)")
+            Write-Host ("[UBOVM] Download failed: " + $_.Exception.Message) -ForegroundColor Yellow
+        }
+    }
+    throw ("All runtime download URLs failed.`n" + ($failures -join "`n"))
+}
+
 function Get-HarnessInstaller {
     $node = Get-Command $NodeCommand -ErrorAction SilentlyContinue
     $npm = Get-Command $NpmCommand -ErrorAction SilentlyContinue
@@ -571,12 +631,8 @@ function Initialize-Runtime {
         $archive = Join-Path $cache $Config.core.runtime.archive
         Assert-ChildPath $archive $cache
         if (-not (Test-Path -LiteralPath $archive)) {
-            $partial = $archive + '.partial'
             Write-Host '[UBOVM] Downloading the pinned Code OSS desktop runtime...'
-            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-            Invoke-WebRequest -UseBasicParsing -Uri $Config.core.runtime.url -OutFile $partial
-            Assert-Archive $partial
-            Move-Item -LiteralPath $partial -Destination $archive
+            Invoke-ArchiveDownload (Get-RuntimeDownloadUrls) $archive $Config.core.runtime.sha256
         }
         Write-Host '[UBOVM] Verifying SHA-256...'
         Assert-Archive $archive
