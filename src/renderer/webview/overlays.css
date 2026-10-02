@@ -21,21 +21,21 @@ body.vscode-dark {
   --modal-shadow: 0 24px 72px #0008, 0 4px 12px #0004;
   --overlay-backdrop: #080b1099;
 }
-body :is(.goal-tabs, .exploration-runs-popover, .worker-options-menu, #settings-discard) {
+body :is(.goal-tabs, .exploration-runs-popover, .worker-options-menu, .new-create-menu, #settings-discard) {
   color: var(--ink);
   background: var(--overlay-surface);
   border: 1px solid var(--overlay-border);
   border-radius: var(--overlay-radius);
   box-shadow: var(--overlay-shadow);
 }
-body :is(.goal-tabs, .worker-options-menu) { padding: 6px; }
-body :is(.goal-tabs, .worker-options-menu) button {
+body :is(.goal-tabs, .worker-options-menu, .new-create-menu) { padding: 6px; }
+body :is(.goal-tabs, .worker-options-menu, .new-create-menu) button {
   border-radius: var(--overlay-item-radius);
   min-height: 34px;
   transition: background 120ms, color 120ms;
 }
-body :is(.goal-tabs, .worker-options-menu) button:hover:enabled { background: var(--hover); color: var(--ink); }
-body :is(.goal-tabs, .worker-options-menu) button:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+body :is(.goal-tabs, .worker-options-menu, .new-create-menu) button:hover:enabled { background: var(--hover); color: var(--ink); }
+body :is(.goal-tabs, .worker-options-menu, .new-create-menu) button:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
 body .goal-tabs button[aria-selected="true"] { background: var(--accent-wash); color: var(--ink); }
 body :is(.goal-view-switcher, .exploration-runs) > summary { border-radius: 8px; transition: background 120ms, border-color 120ms; }
 body :is(.goal-view-switcher, .exploration-runs)[open] > summary { border-color: var(--focus); background: var(--accent-wash); }
@@ -48,6 +48,10 @@ body :is(.goal-view-switcher, .exploration-runs)[open] > summary { border-color:
 body #note-editor { border-color: var(--overlay-border); border-radius: 16px; background: var(--overlay-surface); box-shadow: var(--modal-shadow); }
 body #note-editor::backdrop { background: var(--overlay-backdrop); }
 body #note-editor[open] { animation: overlay-appear 140ms ease-out; }
+body #project-switcher { background: transparent; box-shadow: none; }
+body #project-switcher::backdrop { background: var(--overlay-backdrop); }
+body #project-switcher[open] { animation: overlay-appear 140ms ease-out; }
+body .project-switcher-shell { border-color: var(--overlay-border); background: var(--overlay-surface); box-shadow: var(--modal-shadow); }
 body #settings-discard { padding: 16px; gap: 12px; }
 body .html-preview { border-color: var(--overlay-border); border-radius: 16px; box-shadow: var(--modal-shadow); }
 body #settings-dialog { box-shadow: none; }
@@ -73,6 +77,7 @@ body #settings-dialog { box-shadow: none; }
 @keyframes overlay-appear { from { opacity: 0; translate: 0 4px; } to { opacity: 1; translate: 0 0; } }
 @media (max-width: 700px) {
   body #note-editor { border-radius: 0; }
+  body #project-switcher { border-radius: 0; }
 }
 @media (max-width: 650px) {
   body .goal-view-switcher { position: static; }
@@ -82,7 +87,7 @@ body #settings-dialog { box-shadow: none; }
   body .html-preview { border-radius: 0; }
 }
 @media (prefers-reduced-motion: reduce) {
-  body #note-editor[open] { animation: none; }
+  body #note-editor[open], body #project-switcher[open] { animation: none; }
   body :is(.goal-tabs, .worker-options-menu) button, #settings-dialog select,
   body :is(.goal-view-switcher, .exploration-runs) > summary { transition: none; }
 }

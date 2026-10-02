@@ -5,31 +5,33 @@ const { normalize: normalizeError, text: errorText } = require('./webview/errors
 const { readFileSync, existsSync } = require('node:fs');
 const { open } = require('node:fs/promises');
 const path = require('node:path');
+const { randomUUID } = require('node:crypto');
 const { pathToFileURL } = require('node:url');
 const { homedir } = require('node:os');
-const { createSessions } = require('./harness/sessions.cjs');
-const { createDefaultWorkspace } = require('./harness/default-workspace.cjs');
+const { createSessions, inputMessageIds } = require('./harness/session/sessions.cjs');
+const { createDefaultWorkspace, ensureDefaultWorkspace } = require('./harness/workspace/default-workspace.cjs');
 const { createModelConfiguration } = require('./harness/config/model-config.cjs');
 const { createSettingsConfiguration, readSSHConfiguration, resolveSSHTestProfile, readSSHStatus, sshConfigurationStatus } = require('./harness/config/settings-config.cjs');
-const { createSSHConnectionTest } = require('./host/ssh-connection-test.cjs');
-const { createHarnessService } = require('./harness/harness-service.cjs');
-const { createWorkspaceSearch } = require('./harness/workspace-search.cjs');
-const { createWorkspaceValidation } = require('./harness/workspace-validation.cjs');
-const { captureSelection } = require('./harness/selection-context.cjs');
-const { createCodingService } = require('./harness/coding-service.cjs');
-const { copyText, openMessageLink } = require('./harness/message-actions.cjs').createMessageActions(vscode);
-const { renderWebview } = require('./host/webview.cjs');
-const { createBlackboardSidebar } = require('./host/blackboard-sidebar.cjs');
-const { createExecutionPublisher } = require('./host/state-publisher.cjs');
-const { createTerminalService } = require('./host/terminal-service.cjs');
-const { readTheme, setTheme } = require('./host/theme.cjs');
+const { createSSHConnectionTest } = require('./host/system/ssh-connection-test.cjs');
+const { createHarnessService } = require('./host/agent/agent-service.cjs');
+const { createWorkspaceSearch } = require('./harness/workspace/workspace-search.cjs');
+const { createWorkspaceValidation } = require('./harness/workspace/workspace-validation.cjs');
+const { captureSelection } = require('./harness/workspace/selection-context.cjs');
+const { createCodingService } = require('./harness/coding/coding-service.cjs');
+const { copyText, openMessageLink } = require('./harness/session/message-actions.cjs').createMessageActions(vscode);
+const { renderWebview } = require('./host/ui/webview.cjs');
+const { createBlackboardSidebar } = require('./host/ui/blackboard-sidebar.cjs');
+const { createExecutionPublisher } = require('./host/agent/state-publisher.cjs');
+const { createTerminalService } = require('./host/system/terminal-service.cjs');
+const { createProjectManager } = require('./host/project/project-manager.cjs');
+const { readTheme, setTheme } = require('./host/system/theme.cjs');
 
 let shutdownHarness = async () => {};
 
-const UI_REVISION = 7;
+const UI_REVISION = 10;
 const UI_KEYS = [
   'workbench.colorTheme', 'window.autoDetectColorScheme', 'window.titleBarStyle',
-  'window.menuBarVisibility', 'window.commandCenter', 'window.density.editorTabHeight',
+  'window.menuBarVisibility', 'window.enableMenuBarMnemonics', 'window.customMenuBarAltFocus', 'window.commandCenter', 'window.density.editorTabHeight',
   'workbench.experimental.modernUI', 'workbench.experimental.modernUIUppercaseViewHeaders',
   'workbench.activityBar.location', 'workbench.sideBar.location',
   'workbench.secondarySideBar.defaultVisibility', 'workbench.secondarySideBar.forceMaximized',
@@ -47,6 +49,7 @@ const UI_KEYS = [
 async function activate(context) {
   let welcome;
   let welcomeReady = false;
+  let viewRevision = 0;
   let openingConversation;
   let maintainingLayout = false;
   let sideGroupSized = false;
@@ -54,7 +57,7 @@ async function activate(context) {
   let layoutTimer;
   let sessionsView;
   let settingsPage = '', settingsSection = 'model';
-  const settingsNavigation = [['model', '模型', 'settings-gear'], ['ssh', 'SSH 连接', 'remote'], ['web', '浏览器与搜索', 'globe'], ['summary', '上下文与摘要', 'note'], ['reason', '思考Agent', 'list-tree'], ['worker', '执行Agent', 'play']];
+  const settingsNavigation = [['model', '模型', 'settings-gear'], ['ssh', 'SSH 连接', 'remote'], ['web', '浏览器与搜索', 'globe'], ['python', 'Python 执行', 'terminal'], ['summary', '上下文与摘要', 'note'], ['reason', '思考Agent', 'list-tree'], ['worker', '执行Agent', 'play']];
   const sidebarChanged = new vscode.EventEmitter();
   let publishedMode;
   let conversationSearch;
@@ -62,13 +65,14 @@ async function activate(context) {
   let folderCheckRevision = 0;
   let explorerReady = false;
   let explorerWorkspace;
-  const sessionExplorer = require('./host/session-explorer.cjs').createSessionExplorer(vscode, { onDidChangeFiles: scheduleFolderCheck });
+  const sessionExplorer = require('./host/ui/session-explorer.cjs').createSessionExplorer(vscode, { onDidChangeFiles: scheduleFolderCheck });
   context.subscriptions.push(sessionExplorer);
   const fileContexts = new Map();
   let messageQueue = Promise.resolve();
   let harness;
   let executionPublisher;
   let settingsOpenRevision = 0;
+  let settingsOpening = 0;
   let recovering = true;
   let switchingTheme = false;
   let recoveryTimer;
@@ -90,21 +94,58 @@ async function activate(context) {
   const output = vscode.window.createOutputChannel('UBOVM');
   context.subscriptions.push(new vscode.Disposable(() => { shuttingDown = true; clearTimeout(layoutTimer); clearTimeout(recoveryTimer); releaseFirstPaint(); executionPublisher?.dispose(); void shutdownHarness().catch(error => output.appendLine(String(error))); }), output);
   const sessions = createSessions(vscode, context, publishState, { isBusy: id => harness?.isBusy(id) === true, createWorkspace: createDefaultWorkspace });
-  const blackboardSidebar = createBlackboardSidebar(vscode, {
-    onSelect: (id, sessionId) => welcome?.webview.postMessage({ type: 'selectBlackboardNode', id, sessionId }),
-    onClose: () => welcome?.webview.postMessage({ type: 'closeBlackboardDetails' })
+  let creatingProject = false;
+  let pendingProjectSwitcher = null;
+  const projectManager = createProjectManager(vscode, sessions, {
+    create: query => vscode.commands.executeCommand('ubovm.newProject', { suggestedName: typeof query === 'string' && !/[\\/:]/.test(query) ? query.trim().slice(0, 60) : undefined }),
+    open: id => openProject(id),
+    rename: id => vscode.commands.executeCommand('ubovm.renameProject', { id }),
+    remove: id => deleteProject({ id }),
+    runningCount: id => sessions.projectSessions(id).filter(session => harness.isBusy(session.id)).length,
+    onError: error => vscode.window.showErrorMessage(`项目操作失败：${errorText(error)}`)
   });
-  context.subscriptions.push(vscode.window.registerWebviewViewProvider('ubovm.blackboardDetails', blackboardSidebar));
+  context.subscriptions.push(projectManager);
+  const blackboardSidebar = createBlackboardSidebar(vscode, {
+    onAction: onMessage,
+    onSelect: (id, sessionId) => welcome?.webview.postMessage({ type: 'selectBlackboardNode', id, sessionId }),
+    onClose: () => welcome?.webview.postMessage({ type: 'closeBlackboardDetails' }),
+    onError: error => output.appendLine('黑板详情：' + String(error))
+  });
+  context.subscriptions.push(blackboardSidebar, vscode.window.registerWebviewViewProvider('ubovm.blackboardDetails', blackboardSidebar));
+  const workerPanel = require('./host/ui/worker-panel.cjs').createWorkerPanel(vscode, {
+    readState: () => {
+      const current = sessions.summary(), execution = assistantExecution(current);
+      return { sessionId: current.id, workers: execution.workers || [], error: execution.workerViewError?.message };
+    },
+    onAction: onMessage,
+    onError: error => output.appendLine(String(error))
+  });
+  context.subscriptions.push(workerPanel, vscode.window.registerWebviewViewProvider('ubovm.workerLogs', workerPanel, { webviewOptions: { retainContextWhenHidden: true } }));
   executionPublisher = createExecutionPublisher({
     currentId: () => sessions.summary().id,
-    canPublish: () => !shuttingDown && welcomeReady && welcome?.visible === true && !settingsPage,
+    canPublish: () => !shuttingDown && (workerPanel.visible || welcomeReady && welcome?.visible === true && !settingsPage),
     readExecution: () => assistantExecution(sessions.summary()),
-    postMessage: message => welcome.webview.postMessage(message),
+    postMessage: message => {
+      // Worker delivery owns its own bounded queue. A slow or closing sidebar
+      // must not hold the main conversation's streaming publication open.
+      if (message.type === 'executionState') void workerPanel.publish({ sessionId: message.conversationId, workers: message.execution.workers || [], error: message.execution.workerViewError?.message });
+      return welcomeReady && welcome?.visible === true && !settingsPage ? welcome.webview.postMessage({ ...message, viewRevision: ++viewRevision }) : undefined;
+    },
     onError: error => output.appendLine(String(error))
   });
   const sdkCandidates = [process.env.UBOVM_HARNESS_ENTRY, path.resolve(__dirname, '../harness/index.mjs'), path.join(vscode.env.appRoot, 'ubovm/harness/index.mjs')].filter(Boolean);
   const sdkPath = sdkCandidates.find(candidate => existsSync(candidate));
-  const browserInstaller = require('./host/browser-install.cjs').createBrowserInstaller({ sdkPath: sdkPath ?? sdkCandidates[0] });
+  if (process.platform === 'win32' && sdkPath) {
+    // Do not block the IDE's initial paint on native sandbox provisioning.
+    void import(pathToFileURL(path.join(path.dirname(sdkPath), 'intools', 'terminals', 'python', 'setup.mjs')).href)
+      .then(({ setupPythonSandbox }) => setupPythonSandbox({ automatic: true }))
+      .then(result => { output.appendLine('[Python 沙箱] ' + result.message); if (result.cancelled) void vscode.window.showWarningMessage(result.message); })
+      .catch(error => {
+        output.appendLine('[Python 沙箱自动初始化失败] ' + errorText(error));
+        void vscode.window.showWarningMessage('Python 沙箱自动初始化失败：' + errorText(error) + '。可运行“UBOVM: 初始化 Python 沙箱”重试。');
+      });
+  }
+  const browserInstaller = require('./host/system/browser-install.cjs').createBrowserInstaller({ sdkPath: sdkPath ?? sdkCandidates[0] });
   let browserInstallOperation;
   function installBrowser(notifyError = true) {
     if (browserInstallOperation) return browserInstallOperation;
@@ -122,21 +163,28 @@ async function activate(context) {
     }).finally(() => { browserInstallOperation = undefined; });
     return browserInstallOperation;
   }
-  const sshConnectionTest = createSSHConnectionTest({ loadSSH: () => import(pathToFileURL(path.join(path.dirname(sdkPath ?? sdkCandidates[0]), 'intools', 'ssh-commands-execute.mjs')).href) });
+  const sshConnectionTest = createSSHConnectionTest({ loadSSH: () => import(pathToFileURL(path.join(path.dirname(sdkPath ?? sdkCandidates[0]), 'intools', 'terminals', 'ssh-terminal', 'commands.mjs')).href) });
   context.subscriptions.push(sshConnectionTest);
   const terminalService = createTerminalService(vscode, {
     readConfiguration: () => readSSHConfiguration(vscode, context),
-    loadSSH: () => import(pathToFileURL(path.join(path.dirname(sdkPath ?? sdkCandidates[0]), 'intools', 'ssh-commands-execute.mjs')).href),
+    loadSSH: () => import(pathToFileURL(path.join(path.dirname(sdkPath ?? sdkCandidates[0]), 'intools', 'terminals', 'ssh-terminal', 'commands.mjs')).href),
     openSettings: () => openSettings('settings', 'ssh')
   });
   context.subscriptions.push(terminalService, ...terminalService.register());
   const search = createWorkspaceSearch(vscode, { workspaceFolders: sessionFolders });
   const validation = createWorkspaceValidation(vscode, context, { changes: id => coding.changes(id), workspaceFolders: sessionFolders });
-  const coding = createCodingService(vscode, context, { beforeEdit: validation.capture, workspaceFolders: sessionFolders });
+  const coding = createCodingService(vscode, context, { beforeEdit: validation.capture, workspaceFolders: sessionFolders,
+    turnId: id => harness?.state(id).runId });
   context.subscriptions.push(coding, validation);
-  const toolApprovals = require('./host/tool-approvals.cjs').createToolApprovals({ onChange: () => publishState() });
+  const toolApprovals = require('./host/agent/tool-approvals.cjs').createToolApprovals({ onChange: () => publishState() });
+  const stoppedInputQueues = new Set();
+  const scheduledInputQueues = new Set();
   context.subscriptions.push(toolApprovals);
+  let learningRecovery, learningStartup = Promise.resolve();
+  const codeSummaryRuns = new Map();
   harness = createHarnessService({
+    onError: error => output.appendLine('Agent 后端连接失败：' + JSON.stringify(error)),
+    beforeSession: async () => { await learningStartup; return learningRecovery?.pause(); },
     requestToolApproval: request => toolApprovals.request(request),
     sdkPath: sdkPath ?? sdkCandidates[0],
     storageDirectory: path.join((context.storageUri ?? context.globalStorageUri).fsPath, 'harness'),
@@ -147,14 +195,30 @@ async function activate(context) {
       if (!ssh.configured) throw new Error(ssh.error);
       return browserInstaller.configure(configuration);
     },
-    additionalTools: conversationId => [...coding.tools(conversationId), ...search.tools(conversationId), ...validation.tools(conversationId)],
+    additionalTools: conversationId => [...coding.tools(conversationId), ...search.tools(conversationId), ...validation.tools(conversationId), ...require('./harness/session/goal-tools.cjs').goalTools(sessions, conversationId)],
     onChange: id => {
+      sessions.refreshRunning(id);
       const current = sessions.summary();
       executionPublisher.schedule(sessions.goalSummaries().some(goal => goal.id === id) ? current.id : id);
+      const execution = harness?.state(id);
+      const completedRun = execution?.runId && !harness.isBusy(id) ? execution.runId + ':' + execution.status : undefined;
+      if (completedRun && codeSummaryRuns.get(id) !== completedRun) {
+        codeSummaryRuns.set(id, completedRun);
+        void coding.recover(id).catch(error => output.appendLine('文件修改状态核对失败：' + errorText(error)))
+          .finally(() => { if (!shuttingDown && sessions.summary().id === id) publishState(); });
+      }
+      if (harness && !harness.isBusy(id) && harness.state(id).status === 'completed') scheduleInputs(id);
     },
-    onMessage: (conversationId, message) => sessions.appendMessage(conversationId, message),
+    onMessage: async (conversationId, message) => {
+      try { await coding.recover(conversationId); } catch (error) { output.appendLine('本轮文件记录核对失败：' + errorText(error)); }
+      return sessions.appendMessage(conversationId, message);
+    },
   });
-  shutdownHarness = () => harness.close();
+  shutdownHarness = async () => {
+    shuttingDown = true;
+    await learningStartup;
+    try { await learningRecovery?.close(); } finally { await harness.close(); }
+  };
   // The session snapshot is already in memory. Do not hold UI registration
   // behind disk writes, SDK imports or execution-history recovery.
   messageQueue = sessions.ready.then(() => firstPaint).then(async () => {
@@ -164,22 +228,27 @@ async function activate(context) {
       await require('./harness/config/skills-catalog.cjs').installBundledSkills(path.join(path.dirname(sdkPath ?? sdkCandidates[0]), 'agents', 'skills'));
     } catch (error) { output.appendLine('内置 Skills 释放失败：' + error.message); }
     if (!shuttingDown) await restoreExecution();
+    // Offline recovery runs after first paint and does not require credentials, SSH, or a new user message.
+    if (!shuttingDown) learningStartup = (async () => {
+      const saved = vscode.workspace.getConfiguration('ubovm').inspect('intools');
+      const configured = (saved?.globalValue ?? saved?.defaultValue)?.knowledge;
+      if (configured === false || configured?.background === false) return;
+      const learning = { libraryFile: path.join(homedir(), '.ubovm', 'learning', 'knowledge.sqlite'), ...configured };
+      if (!learning.libraryFile) return;
+      const { startLocalLearningRecovery } = await import(pathToFileURL(sdkPath ?? sdkCandidates[0]).href);
+      if (shuttingDown) return;
+      learningRecovery = await startLocalLearningRecovery({ ...learning,
+        storageDirectory: path.join((context.storageUri ?? context.globalStorageUri).fsPath, 'harness'),
+        onEvent: event => { if (event.type === 'knowledge.failed') output.appendLine(event.message || '后台学习本地恢复暂未完成，将保留任务。'); } });
+    })().catch(() => output.appendLine('后台学习本地恢复暂不可用，未完成任务仍保留。'));
   }).finally(() => { recovering = false; if (!shuttingDown) publishState(); });
-  void messageQueue.catch(error => output.appendLine('会话初始化失败：' + String(error)));
+  messageQueue = messageQueue.catch(error => output.appendLine('会话初始化失败：' + String(error)));
   const sidebarProvider = {
     onDidChangeTreeData: sidebarChanged.event,
-    getChildren: element => settingsPage ? (element ? [] : settingsPage === 'settings' ? settingsNavigation : [[settingsPage, settingsPage === 'mcp' ? 'MCP 服务' : 'Skills', settingsPage === 'mcp' ? 'plug' : 'book']]) : sessions.provider.getChildren(element),
-    getTreeItem(entry) {
-      if (!Array.isArray(entry)) return sessions.provider.getTreeItem(entry);
-      const [key, label, icon] = entry, item = new vscode.TreeItem(label, vscode.TreeItemCollapsibleState.None);
-      item.id = 'settings-' + key; item.iconPath = new vscode.ThemeIcon(icon);
-      item.description = key === settingsSection ? '当前' : '';
-      item.accessibilityInformation = { label: key === settingsSection ? `${label}，当前设置` : label };
-      item.command = { command: 'ubovm.selectSettings', title: label, arguments: [key] };
-      return item;
-    }
+    getChildren: element => sessions.provider.getChildren(element),
+    getTreeItem: entry => sessions.provider.getTreeItem(entry)
   };
-  context.subscriptions.push(sidebarChanged, sessions.provider.onDidChangeTreeData(() => { if (!settingsPage) sidebarChanged.fire(); }));
+  context.subscriptions.push(sidebarChanged, sessions.provider.onDidChangeTreeData(() => sidebarChanged.fire()));
   sessionsView = vscode.window.createTreeView('ubovm.sessions', { treeDataProvider: sidebarProvider, showCollapseAll: false });
   context.subscriptions.push(sessionsView, sessions);
   publishState();
@@ -192,12 +261,15 @@ async function activate(context) {
   async function chooseWorkspace(expectedSessionId) {
     const id = expectedSessionId ?? sessions.current().id;
     assertCurrentSession(id); assertIdle(id);
+    const conversation = sessions.get(id);
+    const inProject = Boolean(conversation?.projectId);
     const uris = await vscode.window.showOpenDialog({ canSelectMany: false, canSelectFiles: false, canSelectFolders: true,
-      openLabel: '选择工作空间', title: '为当前会话选择工作空间',
-      defaultUri: sessions.current().workspace ? vscode.Uri.file(sessions.current().workspace) : vscode.workspace.workspaceFolders?.[0]?.uri });
+      openLabel: inProject ? '选择项目目录' : '选择工作空间',
+      title: inProject ? '选择项目目录' : '为当前会话选择工作空间',
+      defaultUri: conversation?.workspace ? vscode.Uri.file(conversation.workspace) : vscode.workspace.workspaceFolders?.[0]?.uri });
     if (!uris?.length) return;
-    if (uris[0].scheme !== 'file') throw new Error('请选择本地工作空间目录。');
-    if (!((await vscode.workspace.fs.stat(uris[0])).type & vscode.FileType.Directory)) throw new Error('工作空间必须是目录。');
+    if (uris[0].scheme !== 'file') throw new Error(inProject ? '请选择本地项目目录。' : '请选择本地工作空间目录。');
+    if (!((await vscode.workspace.fs.stat(uris[0])).type & vscode.FileType.Directory)) throw new Error(inProject ? '项目目录必须是文件夹。' : '工作空间必须是目录。');
     return updateSession(id, async () => {
       assertIdle(id);
       const previous = sessions.get(id)?.workspace;
@@ -213,44 +285,63 @@ async function activate(context) {
     });
   }
 
-  function workspaceName() {
-    return sessions.current().workspace || '选择工作空间（必选）';
+  function workspaceName(conversation = sessions.current()) {
+    if (conversation.workspace) return conversation.workspace;
+    return conversation.projectId ? '选择项目目录（必选）' : '选择工作空间（必选）';
+  }
+
+
+  function projectCatalog() {
+    const currentId = sessions.summary().projectId;
+    return sessions.projects().map(project => {
+      const members = sessions.projectSessions(project.id);
+      const running = members.filter(session => harness?.isBusy(session.id)).length;
+      const folder = project.workspace?.split(/[\\/]/).filter(Boolean).pop() || project.workspace || '';
+      const updatedAt = members.reduce((latest, session) => Math.max(latest, session.updatedAt || 0), 0);
+      return {
+        id: project.id, name: project.name, workspace: project.workspace, folder,
+        sessionCount: members.length,
+        assistCount: members.filter(session => session.mode !== 'goal').length,
+        goalCount: members.filter(session => session.mode === 'goal').length,
+        running, current: project.id === currentId, updatedAt
+      };
+    }).sort((left, right) => Number(right.current) - Number(left.current) || (right.updatedAt || 0) - (left.updatedAt || 0) || String(left.name).localeCompare(String(right.name), 'zh'));
   }
 
   function assistantState() {
     const conversation = sessions.current();
+    const messageIds = inputMessageIds(conversation.messages, 'user');
     const editor = vscode.window.activeTextEditor;
     const attached = fileContexts.get(conversation.id);
     const activeFile = attached !== null && editor?.document.uri.scheme === 'file' ? vscode.workspace.asRelativePath(editor.document.uri) : '';
     const file = attached?.label || activeFile;
     const execution = assistantExecution(conversation);
     return {
-      type: 'state', nativeBlackboardSidebar: true, theme: readTheme(vscode), recovering, messages: conversation.messages, conversation: { id: conversation.id, title: conversation.title, legacyDraftId: conversation.legacyDraftId },
-      mode: conversation.mode, goal: conversation.goal, conversationIds: sessions.ids(),
-      context: { workspace: workspaceName(), workspaceConfigured: Boolean(conversation.workspace), file, fileSource: attached?.kind === 'selection' ? 'selection' : attached ? 'attached' : activeFile ? 'active' : null,
+      type: 'state', nativeWorkerPanel: true, nativeBlackboardSidebar: true, theme: readTheme(vscode), recovering, messages: conversation.messages.map((message, index) => message.role === 'user' ? { ...message, id: messageIds[index] } : message), inputQueue: conversation.inputQueue?.map(({ id, text, delivery }) => ({ id, text, delivery })), queuePaused: conversation.queuePaused || ['interrupted', 'failed'].includes(harness.state(conversation.id).status), conversation: { id: conversation.id, title: conversation.title, legacyDraftId: conversation.legacyDraftId },
+      mode: conversation.mode, goal: conversation.goal, conversationIds: sessions.ids(), relatedConversations: sessions.related(conversation.id),
+      context: { workspace: workspaceName(conversation), workspaceConfigured: Boolean(conversation.workspace), projectId: conversation.projectId || null, file, fileSource: attached?.kind === 'selection' ? 'selection' : attached ? 'attached' : activeFile ? 'active' : null,
         selectionLabel: attached?.rangeLabel || '' },
-      toolApprovals: toolApprovals.snapshot(conversation.id),
+      toolApprovals: toolApprovals.snapshot(conversation.id), codeChanges: coding.turnSummary(conversation.id),
       requireToolApproval: (vscode.workspace.getConfiguration('ubovm').inspect('worker')?.globalValue?.requireToolApproval ?? true) !== false,
-      provider: modelConfiguration.status(), ssh: readSSHStatus(vscode), execution: { ...execution, mode: conversation.mode }, busy: execution.busy
+      provider: modelConfiguration.status(), ssh: readSSHStatus(vscode), execution: { ...execution, mode: conversation.mode }, busy: execution.busy,
+      projects: projectCatalog()
     };
   }
 
   function assistantExecution(conversation) {
     const execution = harness?.state(conversation.id) ?? { status: 'idle', busy: false, workers: [], streamText: '', canResume: false };
-    if (restoreErrors.has(conversation.id)) execution.error = { message: restoreErrors.get(conversation.id) };
     const explorationRuns = sessions.goalSummaries().map(goal => {
       const run = harness?.runtimeSummary(goal.id) || {};
       return { ...goal, status: run.status || 'idle', phase: run.phase, busy: run.busy === true,
         workerCount: run.workerCount || 0, activeWorkers: run.activeWorkers || 0,
         error: restoreErrors.get(goal.id) || (typeof run.error === 'string' ? run.error : run.error?.message) || '' };
     });
-    return { ...execution, mode: conversation.mode, explorationRuns };
+    return { ...execution, ...(restoreErrors.has(conversation.id) ? { error: { message: restoreErrors.get(conversation.id) } } : {}), mode: conversation.mode, explorationRuns };
   }
 
   function publishState() {
-    executionPublisher?.clear();
-    const state = assistantState();
-    const currentWorkspace = sessions.current().workspace || '';
+    const state = { ...assistantState(), viewRevision: ++viewRevision };
+    const currentWorkspace = sessions.summary().workspace || '';
     if (explorerReady && explorerWorkspace !== currentWorkspace) {
       explorerWorkspace = currentWorkspace;
       void sessionExplorer.sync(currentWorkspace).catch(error => {
@@ -259,11 +350,12 @@ async function activate(context) {
       });
       scheduleFolderCheck();
     }
+    void workerPanel.publish({ sessionId: state.conversation.id, workers: state.execution.workers || [], error: state.execution.workerViewError?.message });
     blackboardSidebar.setSession(state.mode === 'goal' ? state.conversation.id : '');
     const title = state.mode === 'goal' ? '探索工作台' : '协助对话';
     if (welcome && welcome.title !== title) welcome.title = title;
     if (sessionsView) {
-      const sidebarTitle = settingsPage ? (settingsPage === 'settings' ? '系统配置' : '扩展管理') : state.mode === 'goal' ? '探索' : '协助';
+      const sidebarTitle = settingsPage ? (settingsPage === 'initialize' ? '首次初始化' : settingsPage === 'settings' ? '系统配置' : '扩展管理') : state.mode === 'goal' ? '探索' : '协助';
       const description = settingsPage ? '' : `${sessions.summary().historyCount}`;
       if (sessionsView.title !== sidebarTitle) sessionsView.title = sidebarTitle;
       if (sessionsView.description !== description) sessionsView.description = description;
@@ -272,7 +364,9 @@ async function activate(context) {
       publishedMode = state.mode;
       void vscode.commands.executeCommand('setContext', 'ubovm.mode', state.mode);
     }
-    if (welcomeReady && welcome?.visible === true) void welcome.webview.postMessage(state);
+    if (welcomeReady && welcome?.visible === true) {
+      executionPublisher.publishFull(state);
+    }
     return state;
   }
 
@@ -361,15 +455,17 @@ async function activate(context) {
     if (!harness) return;
     const conversation = sessions.current();
     try {
-      await harness.restore({ conversationId: conversation.id, mode: conversation.mode, goal: conversation.goal });
+      await ensureDefaultWorkspace(conversation);
+      await harness.restore({ conversationId: conversation.id, mode: conversation.mode, goal: conversation.goal, executionBranch: conversation.executionBranch });
       restoreErrors.delete(conversation.id);
     } catch (error) { restoreErrors.set(conversation.id, error.message || String(error)); output.appendLine(String(error)); }
   }
 
   async function executionContext(conversation) {
+    await ensureDefaultWorkspace(conversation);
     const editor = vscode.window.activeTextEditor;
     const attached = fileContexts.get(conversation.id);
-    if (attached?.kind === 'selection') return { workspace: workspaceName(), ...structuredClone(attached.snapshot) };
+    if (attached?.kind === 'selection' || attached?.kind === 'file-drop') return { workspace: workspaceName(), ...structuredClone(attached.snapshot) };
     // A removed chip explicitly disables automatic editor context for this
     // conversation until the user selects another file.
     if (attached === null) return { workspace: workspaceName() };
@@ -424,6 +520,22 @@ async function activate(context) {
     const operation = messageQueue.then(async () => {
       assertCurrentSession(expectedSessionId);
       const conversation = sessions.current();
+      if (conversation.mode === 'assist') {
+        const context = await executionContext(conversation);
+        await sessions.updateInputQueue(conversation.id, current => {
+          if (current.inputQueue.length >= 20) throw new Error('输入队列最多保留 20 条消息。');
+          return { inputQueue: [...current.inputQueue, { id: randomUUID(), text: text.trim(), approvalMode, context }],
+            queuePaused: current.inputQueue.length ? current.queuePaused : false };
+        });
+        if (!harness.isBusy(conversation.id)) {
+          try { await drainInputs(conversation.id, !conversation.inputQueue.length); }
+          catch (error) {
+            output.appendLine(errorText(error));
+            void vscode.window.showErrorMessage('输入已保存，但未能启动执行：' + errorText(error) + '。可取回队列输入或回退该消息后重试。');
+          }
+        }
+        return publishState();
+      }
       assertCanRun(conversation.id);
       if (conversation.mode === 'goal' && !conversation.goal) throw new Error('请先保存目标，再开始执行。');
       if (conversation.mode === 'goal' && harness.state(conversation.id).canResume) throw new Error('此目标有待恢复的执行，请先点击“继续执行”。');
@@ -438,6 +550,115 @@ async function activate(context) {
     return operation;
   }
 
+  function scheduleInputs(id) {
+    if (shuttingDown || scheduledInputQueues.has(id) || !sessions.get(id)?.inputQueue?.length) return;
+    scheduledInputQueues.add(id);
+    const operation = messageQueue.then(() => {
+      // Keep one queued dispatch per session. Release the marker when it
+      // starts so a completion during dispatch can queue the next input.
+      scheduledInputQueues.delete(id);
+      return drainInputs(id);
+    });
+    messageQueue = operation.catch(error => output.appendLine(errorText(error)));
+  }
+
+  async function drainInputs(id, explicit = false) {
+    if (explicit) stoppedInputQueues.delete(id);
+    const conversation = sessions.get(id);
+    if (shuttingDown || stoppedInputQueues.has(id) || !conversation || conversation.queuePaused || harness.isBusy(id) || !conversation.inputQueue.length) return;
+    if (!explicit && ['interrupted', 'failed'].includes(harness.state(id).status)) return;
+    const item = conversation.inputQueue[0];
+    if (conversation.inputQueue.some(input => input.delivery)) return;
+    try {
+      assertCanRun(id);
+      await sessions.appendMessage(id, { id: item.id, role: 'user', text: item.text });
+      if (shuttingDown || stoppedInputQueues.has(id)) return;
+      // Commit dequeue before launch: a later persistence failure must never
+      // make an accepted model/tool execution eligible for automatic replay.
+      await sessions.updateInputQueue(id, current => ({ inputQueue: current.inputQueue.filter(input => input.id !== item.id) }));
+      if (shuttingDown || stoppedInputQueues.has(id)) {
+        await sessions.updateInputQueue(id, current => ({ inputQueue: [item, ...current.inputQueue], queuePaused: true }));
+        return;
+      }
+      await harness.start({ conversationId: id, mode: 'assist', executionBranch: conversation.executionBranch,
+        text: item.text, approvalMode: item.approvalMode, context: item.context, messages: sessions.get(id).messages });
+    } catch (error) {
+      await sessions.updateInputQueue(id, () => ({ queuePaused: true }));
+      throw error;
+    }
+    publishState();
+  }
+
+  function changeInputQueue(message) {
+    return updateSession(message.sessionId, async () => {
+      const id = message.sessionId;
+      if (message.action === 'steerInput') {
+        const conversation = sessions.get(id);
+        const item = conversation?.inputQueue.find(input => input.id === message.inputId);
+        if (!item) throw new Error('该输入已开始执行或已从队列移除。');
+        const execution = harness.state(id);
+        if (shuttingDown || conversation.mode !== 'assist' || !harness.isBusy(id) || !execution.canSteer || message.runId !== execution.runId) throw new Error('当前运行已变化或尚未就绪，输入仍保留在队列中。');
+        await sessions.beginSteering(id, item.id);
+        let accepted;
+        try { accepted = !shuttingDown && !stoppedInputQueues.has(id) && await harness.steer(id, { id: item.id, runId: execution.runId, text: item.text, context: item.context }); }
+        catch (error) {
+          // Only the backend's pre-injection admission checks can certify that
+          // nothing was sent. Transport errors remain ambiguous and never replay.
+          if (error?.code === 'STEERING_NOT_SENT') {
+            await sessions.finishSteering(id, item.id, 'rejected');
+            throw error;
+          }
+          await sessions.finishSteering(id, item.id, 'uncertain');
+          throw new Error('无法确认引导是否送达，输入及附件仍保留在队列中。请核实执行结果，取回编辑或删除该条后再继续。' + errorText(error));
+        }
+        await sessions.finishSteering(id, item.id, accepted ? 'accepted' : 'rejected');
+        if (!accepted) {
+          throw new Error('Agent 尚未就绪或已结束，输入已保留在队列中，请继续发送或稍后引导。');
+        }
+        publishState();
+        return;
+      }
+      await sessions.updateInputQueue(id, current => {
+        if (message.action === 'resumeInputs') {
+          if (current.inputQueue.some(input => input.delivery)) throw new Error('请先核实送达待确认的引导，取回编辑或删除后再继续。');
+          return { queuePaused: false };
+        }
+        if (!current.inputQueue.some(item => item.id === message.inputId)) throw new Error('该输入已开始执行或已从队列移除。');
+        return { inputQueue: current.inputQueue.filter(item => item.id !== message.inputId) };
+      });
+      if (message.action === 'resumeInputs') await drainInputs(id, true);
+    });
+  }
+
+  function rewindInput(message) {
+    assertCurrentSession(message.sessionId);
+    const validateTarget = () => {
+      const conversation = sessions.get(message.sessionId);
+      const messageIds = conversation?.mode === 'assist' ? inputMessageIds(conversation.messages, 'user') : [];
+      if (conversation?.mode !== 'assist' || typeof message.messageId !== 'string' || !message.messageId
+        || !conversation.messages.some((item, index) => item.role === 'user' && messageIds[index] === message.messageId)) {
+        throw new Error('该用户消息已不存在，请刷新对话后再回退。');
+      }
+    };
+    // Reject stale requests before changing the stop latch or cancelling a run.
+    // Recheck after serialization, since an earlier rewind can remove the target.
+    validateTarget();
+    stoppedInputQueues.add(message.sessionId);
+    return updateSession(message.sessionId, async () => {
+      const id = message.sessionId;
+      validateTarget();
+      await sessions.updateInputQueue(id, () => ({ queuePaused: true }));
+      harness.cancel(id);
+      const deadline = Date.now() + 30000;
+      while (harness.isBusy(id)) {
+        if (Date.now() >= deadline) throw new Error('Agent 仍在停止，请稍后重试回退。');
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+      await sessions.rewindInput(id, message.messageId);
+      await restoreExecution();
+    });
+  }
+
   function runGoal(expectedSessionId) {
     return updateSession(expectedSessionId, async () => {
       const conversation = sessions.current(); assertCanRun(conversation.id);
@@ -447,9 +668,11 @@ async function activate(context) {
     });
   }
 
-  function cancelRun(expectedSessionId) {
+  async function cancelRun(expectedSessionId) {
     assertCurrentSession(expectedSessionId);
+    stoppedInputQueues.add(expectedSessionId);
     harness.cancel(sessions.current().id);
+    if (sessions.current().mode === 'assist') await sessions.updateInputQueue(expectedSessionId, () => ({ queuePaused: true }));
     return publishState();
   }
 
@@ -472,25 +695,40 @@ async function activate(context) {
   }
 
   async function openSettings(page = 'settings', section = 'model') {
-    await openWelcome();
-    const panel = welcome;
-    const revision = ++settingsOpenRevision;
-    const requestId = `settings-open-${revision}`;
-    await panel.webview.postMessage({ type: 'settingsLoading', page, section, requestId });
-    try {
-      const data = await settingsConfiguration.snapshot();
-      data.browserInstallation = browserInstaller.status();
-      if (revision === settingsOpenRevision && panel === welcome) await panel.webview.postMessage({ type: 'openSettings', page, data, requestId });
-    } catch (error) {
-      if (revision === settingsOpenRevision && panel === welcome) await panel.webview.postMessage({ type: 'settingsLoadError', page, requestId, error: errorText(error), failure: normalizeError(error, 'settingsRead') });
-      output.appendLine(String(error));
+    if (page === 'settings' && (!modelConfiguration.status().configured || !readSSHStatus(vscode).configured)) {
+      page = 'initialize';
+      section = modelConfiguration.status().configured ? 'ssh' : 'model';
     }
+    const revision = ++settingsOpenRevision;
+    settingsOpening = revision;
+    try {
+      await openWelcome();
+      const panel = welcome;
+      // Creating/revealing an editor does not mean its message listeners exist.
+      // Only the newest navigation may proceed after the webview handshake.
+      for (let attempt = 0; !welcomeReady && attempt < 200; attempt++) {
+        if (revision !== settingsOpenRevision || panel !== welcome || shuttingDown) return;
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+      if (revision !== settingsOpenRevision || panel !== welcome || shuttingDown) return;
+      if (!welcomeReady) throw new Error('面板加载超时，请重新打开设置重试。');
+      const requestId = `settings-open-${revision}`;
+      await panel.webview.postMessage({ type: 'settingsLoading', page, section, requestId });
+      try {
+        const data = await settingsConfiguration.snapshot({ includeSkills: page === 'skills' });
+        data.browserInstallation = browserInstaller.status();
+        if (revision === settingsOpenRevision && panel === welcome) await panel.webview.postMessage({ type: 'openSettings', page, data, requestId });
+      } catch (error) {
+        if (revision === settingsOpenRevision && panel === welcome) await panel.webview.postMessage({ type: 'settingsLoadError', page, requestId, error: errorText(error), failure: normalizeError(error, 'settingsRead') });
+        output.appendLine(String(error));
+      }
+    } finally { if (settingsOpening === revision) settingsOpening = 0; }
   }
 
-  function newChat(expectedSessionId) {
+  function newChat(expectedSessionId, projectId) {
     const operation = messageQueue.then(async () => {
       assertCurrentSession(expectedSessionId);
-      await sessions.create();
+      await sessions.create(undefined, projectId);
       await restoreExecution();
       return publishState();
     });
@@ -498,15 +736,76 @@ async function activate(context) {
     return operation;
   }
 
-  function selectConversation(id) {
+
+  function projectSwitcherMessage(options = {}) {
+    const query = typeof options.query === 'string' ? options.query : '';
+    const create = options.create === true;
+    return {
+      type: create ? 'openProjectSwitcherCreate' : 'openProjectSwitcher',
+      ...(query ? { query } : {}),
+      ...(create ? { create: true } : {})
+    };
+  }
+
+  async function openProjectSwitcher(options = {}) {
+    if (creatingProject) return;
+    const opts = typeof options === 'string' ? { query: options } : (options && typeof options === 'object' ? options : {});
+    await openAssistant(false);
+    if (welcomeReady && welcome) {
+      pendingProjectSwitcher = null;
+      await welcome.webview.postMessage(projectSwitcherMessage(opts));
+      try { welcome.reveal(welcome.viewColumn ?? vscode.ViewColumn.Active, false); } catch { /* Focus best-effort. */ }
+      return;
+    }
+    pendingProjectSwitcher = { create: opts.create === true, query: typeof opts.query === 'string' ? opts.query : '' };
+  }
+
+  function openProject(id) {
     const operation = messageQueue.then(async () => {
-      await sessions.select(id);
-      await restoreExecution();
+      const previous = sessions.summary().id;
+      await sessions.selectProject(id);
       await openAssistant();
-      return publishState();
+      publishState();
+      if (sessions.summary().id !== previous) await restoreExecution();
+      await publishState();
+      await revealCurrentInSessionsTree();
     });
     messageQueue = operation.catch(() => {});
     return operation;
+  }
+
+  function selectConversation(id, sourceId) {
+    const operation = messageQueue.then(async () => {
+      const alreadySelected = sessions.summary().id === id;
+      if (sourceId !== undefined) await sessions.openRelated(sourceId, id);
+      else await sessions.select(id, { crossMode: true });
+      await openWelcome();
+      publishState();
+      if (!alreadySelected) await restoreExecution();
+      await publishState();
+      await revealCurrentInSessionsTree();
+    });
+    messageQueue = operation.catch(() => {});
+    return operation;
+  }
+
+  async function revealCurrentInSessionsTree() {
+    const view = typeof sessionsView === 'undefined' ? undefined : sessionsView;
+    if (!view || shuttingDown) return;
+    const current = sessions.current?.() || sessions.get?.(sessions.summary().id);
+    if (!current?.id) return;
+    try {
+      if (current.projectId) {
+        const project = sessions.projects?.().find(item => item.id === current.projectId);
+        if (project) await view.reveal({ ...project, kind: 'project' }, { expand: true, select: false, focus: false });
+      }
+      const element = current.projectId
+        ? { id: current.id, title: current.title, mode: current.mode, projectId: current.projectId, messageCount: current.messages?.length || 0, updatedAt: current.updatedAt }
+        : current;
+      await view.reveal(element, { select: true, focus: false });
+    } catch (error) {
+      if (typeof output !== 'undefined') output.appendLine('会话树定位：' + errorText(error));
+    }
   }
 
   async function deleteConversation(target) {
@@ -527,11 +826,44 @@ async function activate(context) {
       // and its execution history untouched.
       await sessions.remove(id);
       fileContexts.delete(id); restoreErrors.delete(id);
-      try { await harness.remove(id); await coding.remove(id); await validation.remove(id); }
+      try { await harness.remove(id); await coding.remove(id); codeSummaryRuns.delete(id); await validation.remove(id); }
       catch (error) {
         output.appendLine(String(error));
         void vscode.window.showWarningMessage('会话已从列表删除，但本地执行记录清理失败：' + (error.message || String(error)));
       }
+      if (wasCurrent) await restoreExecution();
+      return publishState();
+    });
+    messageQueue = operation.catch(() => {});
+    return operation;
+  }
+
+  async function deleteProject(target) {
+    const id = typeof target === 'string' ? target : target?.id;
+    const project = sessions.projects().find(item => item.id === id);
+    if (!project) return;
+    const members = () => sessions.projectSessions(id);
+    if (members().some(session => harness.isBusy(session.id))) {
+      await vscode.window.showWarningMessage('项目中有会话正在运行，请先停止后再删除。'); return;
+    }
+    const expectedSessionIds = members().map(session => session.id);
+    const choice = await vscode.window.showWarningMessage(`删除项目“${project.name}”？`, {
+      modal: true, detail: `将删除 ${expectedSessionIds.length} 个会话及其草稿和本地执行记录，包含协助和探索两个模式。\n项目目录：${project.workspace}\n目录中的文件不会被删除。此操作无法撤销。`
+    }, '删除项目');
+    if (choice !== '删除项目') return;
+    const operation = messageQueue.then(async () => {
+      if (!sessions.projects().some(item => item.id === id)) return;
+      const removed = members();
+      const wasCurrent = removed.some(session => session.id === sessions.current().id);
+      // Persist first; failed storage must leave execution records intact.
+      await sessions.removeProject(id, { expectedSessionIds });
+      let cleanupFailed = false;
+      for (const session of removed) {
+        fileContexts.delete(session.id); restoreErrors.delete(session.id); codeSummaryRuns.delete(session.id);
+        const results = await Promise.allSettled([harness.remove(session.id), coding.remove(session.id), validation.remove(session.id)]);
+        for (const result of results) if (result.status === 'rejected') { cleanupFailed = true; output.appendLine(String(result.reason)); }
+      }
+      if (cleanupFailed) void vscode.window.showWarningMessage('项目已从列表删除，但部分本地执行记录清理失败。');
       if (wasCurrent) await restoreExecution();
       return publishState();
     });
@@ -557,10 +889,21 @@ async function activate(context) {
     }
   }
 
-  async function attachFile(expectedSessionId) {
+  async function attachFile(expectedSessionId, attachment) {
     assertCurrentSession(expectedSessionId);
     const sessionId = sessions.current().id;
     assertIdle(sessionId);
+    if (attachment !== undefined) {
+      const operation = messageQueue.then(async () => {
+        assertCurrentSession(sessionId); assertIdle(sessionId);
+        const selected = await require('./harness/workspace/dropped-file.cjs').droppedFile(vscode, attachment);
+        assertCurrentSession(sessionId); assertIdle(sessionId);
+        fileContexts.set(sessionId, selected);
+        return publishState();
+      });
+      messageQueue = operation.catch(() => {});
+      return operation;
+    }
     const uris = await vscode.window.showOpenDialog({ canSelectMany: false, canSelectFolders: false, openLabel: '添加上下文', defaultUri: vscode.workspace.workspaceFolders?.[0]?.uri });
     if (!uris?.[0]) return publishState();
     const uri = uris[0];
@@ -622,12 +965,7 @@ async function activate(context) {
   async function refreshEmptyFolder() {
     const revision = ++folderCheckRevision;
     const folders = sessionFolders(sessions.current().id);
-    // A previous check can still be awaiting the command bridge after the
-    // session/workspace has changed. Do not let that stale result restore the
-    // "no workspace" welcome view over the newly selected workspace.
-    if (shuttingDown || revision !== folderCheckRevision) return;
     await vscode.commands.executeCommand('setContext', 'ubovm.noWorkspace', folders.length === 0);
-    if (shuttingDown || revision !== folderCheckRevision) return;
     let empty = false;
     if (folders.length === 1) {
       try { empty = (await vscode.workspace.fs.readDirectory(folders[0].uri)).length === 0; }
@@ -659,6 +997,10 @@ async function activate(context) {
 
   async function onMessage(message, target = welcome) {
     if (!message || typeof message.action !== 'string') return;
+    if (message.action === 'connectionProbe' && typeof message.probeId === 'string' && message.probeId.length <= 100) {
+      await target?.webview.postMessage({ type: 'connectionStatus', probeId: message.probeId, backend: harness?.connectionState() ?? { status: 'idle' } });
+      return;
+    }
     const requestId = typeof message.requestId === 'string' && message.requestId.length <= 100 ? message.requestId : undefined;
     if (message.action === 'settingsInstallBrowser') {
       let result;
@@ -690,7 +1032,7 @@ async function activate(context) {
       try {
         const data = message.action === 'settingsSave'
           ? await settingsConfiguration.save(message.section, message.value, message.revision)
-          : await settingsConfiguration.snapshot();
+          : await settingsConfiguration.snapshot({ includeSkills: message.page === 'skills' });
         data.browserInstallation = browserInstaller.status();
         await target?.webview.postMessage({ type: 'settingsResult', requestId, ok: true, data, saved: message.action === 'settingsSave' });
         publishState();
@@ -700,33 +1042,53 @@ async function activate(context) {
       return;
     }
     try {
-      const goalActions = ['setMode', 'saveGoal', 'toggleGoalCriterion', 'addGoalNote', 'prompt', 'runGoal', 'cancelRun', 'resumeRun', 'newChat', 'selectWorkspace', 'attachFile', 'clearFileContext', 'toolApproval'];
+      const goalActions = ['openRelatedConversation', 'setMode', 'saveGoal', 'toggleGoalCriterion', 'addGoalNote', 'prompt', 'runGoal', 'cancelRun', 'interruptCommand', 'backgroundCommand', 'resumeRun', 'newChat', 'selectWorkspace', 'attachFile', 'clearFileContext', 'toolApproval'];
       if (goalActions.includes(message.action) && typeof message.sessionId !== 'string') {
         throw new Error('缺少会话标识，请重新打开当前会话后重试。');
       }
-      const commands = { folder: 'workbench.action.files.openFolder', terminal: 'ubovm.openTerminal', source: 'ubovm.openSource',
-        toggleSessions: 'workbench.action.toggleAuxiliaryBar', toggleFiles: 'workbench.action.toggleSidebarVisibility' };
+      const commands = { folder: 'workbench.action.files.openFolder', terminal: 'ubovm.openLocalTerminal', source: 'ubovm.openSource',
+        toggleSessions: 'workbench.action.toggleAuxiliaryBar', toggleFiles: 'workbench.action.toggleSidebarVisibility', manageProjects: 'ubovm.manageProjects' };
       if (Object.hasOwn(commands, message.action)) await vscode.commands.executeCommand(commands[message.action]);
+      else if (message.action === 'reloadConversation' && target === welcome) await reloadConversation();
       else if (message.action === 'setTheme') { await setTheme(vscode, message.theme); }
       else if (message.action === 'blackboardDetail') {
         if (message.sessionId !== sessions.current().id || sessions.current().mode !== 'goal') return;
         blackboardSidebar.setSession(message.sessionId);
         await blackboardSidebar.update(message.detail ? { ...message.detail, sessionId: message.sessionId } : null, message.reveal === true);
       }
-      else if (message.action === 'ready') { welcomeReady = true; publishState(); }
+      else if (message.action === 'ready') {
+        const firstReady = !welcomeReady;
+        welcomeReady = true; publishState();
+        if (pendingProjectSwitcher && welcome) {
+          const pending = pendingProjectSwitcher;
+          pendingProjectSwitcher = null;
+          await welcome.webview.postMessage(projectSwitcherMessage(pending));
+        }
+        if (firstReady && !settingsOpening && (!modelConfiguration.status().configured || !readSSHStatus(vscode).configured)) await openSettings();
+      }
       else if (message.action === 'toolApproval') {
         assertCurrentSession(message.sessionId);
         if (!toolApprovals.respond({ id: message.approvalId, conversationId: message.sessionId, decision: message.decision })) throw new Error('该审核已处理或失效，请查看最新状态。');
       }
+      else if (message.action === 'firstPaint') {
+        clearTimeout(recoveryTimer);
+        releaseFirstPaint();
+      }
       else if (message.action === 'contentReady') {
+        if (message.sessionId && message.sessionId !== sessions.current().id) return;
         await vscode.commands.executeCommand('setContext', 'ubovm.contentReady', true);
         clearTimeout(recoveryTimer);
         releaseFirstPaint();
       }
       else if (message.action === 'prompt') await submitPrompt(message.text, message.sessionId, message.approvalMode);
+      else if (message.action === 'removeInput' || message.action === 'resumeInputs' || message.action === 'steerInput') await changeInputQueue(message);
+      else if (message.action === 'rewindInput') await rewindInput(message);
       else if (message.action === 'selectWorkspace') await chooseWorkspace(message.sessionId);
       else if (message.action === 'newChat') await newChat(message.sessionId);
       else if (message.action === 'setMode') await setMode(message.mode, message.sessionId);
+      else if (message.action === 'openRelatedConversation') {
+        await selectConversation(message.targetId, message.sessionId);
+      }
       else if (message.action === 'openExploration') {
         if (!sessions.goalSummaries().some(goal => goal.id === message.goalSessionId)) throw Object.assign(new Error('探索记录不存在或已删除，请刷新会话列表。'), { code: 'SESSION_NOT_FOUND' });
         await selectConversation(message.goalSessionId);
@@ -734,23 +1096,47 @@ async function activate(context) {
       else if (message.action === 'saveGoal') await saveGoal(message.goal, message.sessionId);
       else if (message.action === 'toggleGoalCriterion') await toggleGoalCriterion(message.criterionId, message.done, message.sessionId);
       else if (message.action === 'addGoalNote') await addGoalNote(message.text, message.sessionId);
-      else if (message.action === 'attachFile') await attachFile(message.sessionId);
+      else if (message.action === 'attachFile') await attachFile(message.sessionId, message.attachment);
       else if (message.action === 'clearFileContext') await clearFileContext(message.sessionId);
       else if (message.action === 'runGoal') await runGoal(message.sessionId);
       else if (message.action === 'cancelRun') await cancelRun(message.sessionId);
+      else if (message.action === 'interruptCommand' || message.action === 'backgroundCommand') {
+        assertCurrentSession(message.sessionId);
+        await harness[message.action](message.sessionId, message.commandId);
+        publishState();
+      }
       else if (message.action === 'resumeRun') await resumeRun(message.sessionId);
       else if (message.action === 'openSettings') await configureModel();
       else if (message.action === 'openMcp') await openSettings('mcp');
       else if (message.action === 'openSkills') await openSettings('skills');
       else if (message.action === 'settingsNavigation') {
         const previousPage = settingsPage, previousSection = settingsSection;
-        settingsPage = ['settings', 'mcp', 'skills'].includes(message.page) ? message.page : '';
+        settingsPage = ['settings', 'initialize', 'mcp', 'skills'].includes(message.page) ? message.page : '';
         settingsSection = settingsNavigation.some(([key]) => key === message.section) ? message.section : settingsPage;
-        await vscode.commands.executeCommand('setContext', 'ubovm.settingsPage', settingsPage);
-        if (previousPage !== settingsPage || previousSection !== settingsSection) { sidebarChanged.fire(); publishState(); }
+        if (previousPage !== settingsPage) await vscode.commands.executeCommand('setContext', 'ubovm.settingsPage', settingsPage);
+        if (previousPage !== settingsPage || previousSection !== settingsSection) sidebarChanged.fire();
+        // A settings-tab change needs only a sidebar selection update. Building
+        // and transmitting the entire chat history here makes long chats stutter.
+        if (previousPage !== settingsPage) publishState();
         if (settingsPage && previousPage !== settingsPage) await vscode.commands.executeCommand('workbench.view.extension.ubovm-sessions');
+        if (!settingsPage && ['assist', 'goal'].includes(message.mode) && typeof message.sessionId === 'string') {
+          await setMode(message.mode, message.sessionId);
+        }
       }
+      else if (message.action === 'openWorker') await workerPanel.show(message.workerId, message.sessionId);
       else if (message.action === 'copyText') await copyText(message.text);
+      else if (['openTurnFile', 'reviewCodeTurnFile', 'undoCodeTurn'].includes(message.action)) {
+        const id = message.sessionId;
+        assertCurrentSession(id);
+        if (sessions.get(id)?.mode !== 'assist' || typeof message.turnId !== 'string' || message.turnId.length > 200) throw new Error('修改记录所属会话无效。');
+        if (message.action === 'undoCodeTurn') {
+          if (harness.isBusy(id)) throw new Error('请等待本轮执行结束后再撤销文件修改。');
+          try { await coding.undoTurn(id, message.turnId, message.revision); } finally { publishState(); }
+        } else {
+          if (typeof message.fileId !== 'string') throw new Error('请选择有效的文件记录。');
+          await coding.showTurnFile(id, message.turnId, message.fileId, message.action === 'openTurnFile');
+        }
+      }
       else if (message.action === 'reviewCodeChanges') {
         const id = message.sessionId || sessions.summary().id;
         if (sessions.current().mode !== 'assist' || sessions.get(id)?.mode !== 'assist') throw Object.assign(new Error('请在协助模式的有效会话中查看代码更改。'), { code: 'INVALID_SESSION_MODE' });
@@ -759,6 +1145,61 @@ async function activate(context) {
       }
       else if (message.action === 'validateCodeChanges') await validation.review(message.sessionId || sessions.summary().id);
       else if (message.action === 'openMessageLink') await openMessageLink(message.href, message.rootIndex);
+      else if (message.action === 'projectSwitcherOpen') {
+        if (typeof message.projectId !== 'string' || !message.projectId) throw new Error('请选择要打开的项目。');
+        await openProject(message.projectId);
+      }
+      else if (message.action === 'projectSwitcherRename') {
+        if (typeof message.projectId !== 'string' || !message.projectId) throw new Error('请选择要重命名的项目。');
+        await vscode.commands.executeCommand('ubovm.renameProject', { id: message.projectId });
+        publishState();
+      }
+      else if (message.action === 'projectSwitcherDelete') {
+        if (typeof message.projectId !== 'string' || !message.projectId) throw new Error('请选择要删除的项目。');
+        await deleteProject({ id: message.projectId });
+      }
+      else if (message.action === 'projectSwitcherCreate') {
+        if (creatingProject) throw new Error('正在创建项目，请稍候。');
+        const name = typeof message.name === 'string' ? message.name.trim() : '';
+        if (!name || name.length > 60) throw new Error('请输入 1–60 个字符的项目名称。');
+        creatingProject = true;
+        const projectMode = sessions.activeMode();
+        try {
+          let folder;
+          if (message.folderMode === 'browse') {
+            const workspace = sessions.current().workspace;
+            const folderName = name.replace(/[<>:"/\\|?*\x00-\x1f]/g, '-').replace(/[. ]+$/, '') || 'project';
+            const suggested = workspace ? path.join(path.dirname(workspace), folderName) : path.resolve(folderName);
+            const defaultUri = vscode.Uri.file(path.dirname(path.resolve(suggested)));
+            const uris = await vscode.window.showOpenDialog({ canSelectMany: false, canSelectFiles: false, canSelectFolders: true,
+              openLabel: '选择项目目录', title: '新建项目 · 选择项目目录', defaultUri, ignoreFocusOut: true });
+            if (!uris?.length) throw Object.assign(new Error('已取消创建项目。'), { code: 'CANCELLED' });
+            folder = uris[0];
+          } else {
+            const suggestedPath = typeof message.suggestedPath === 'string' ? message.suggestedPath.trim() : '';
+            if (!suggestedPath || (!path.isAbsolute(suggestedPath) && !path.win32.isAbsolute(suggestedPath))) {
+              throw new Error('建议目录无效，请改用浏览选择目录。');
+            }
+            folder = vscode.Uri.file(path.normalize(suggestedPath));
+          }
+          if (folder.scheme !== 'file') throw new Error('请选择本地项目目录。');
+          const existing = sessions.projectForWorkspace(folder.fsPath);
+          if (existing) { await openProject(existing.id); return; }
+          const operation = messageQueue.then(async () => {
+            if (sessions.activeMode() !== projectMode) throw new Error('模式已切换，请在当前模式中重新新建项目。');
+            await vscode.workspace.fs.createDirectory(folder);
+            if (!((await vscode.workspace.fs.stat(folder)).type & vscode.FileType.Directory)) throw new Error('项目目录已不可用，请重新输入。');
+            await sessions.createProject(name, folder.fsPath);
+            await openAssistant();
+            publishState();
+            await restoreExecution();
+            await publishState();
+          });
+          messageQueue = operation.catch(() => {});
+          await operation;
+        } finally { creatingProject = false; }
+      }
+
       else throw Object.assign(new Error('此操作不可用，请重新打开页面后重试。'), { code: 'UNSUPPORTED_ACTION' });
       if (requestId) await target?.webview.postMessage({ type: 'uiResult', requestId, ok: true });
     } catch (error) {
@@ -806,12 +1247,17 @@ async function activate(context) {
       if (welcome !== panel || panelVisible === panel.visible) return;
       panelVisible = panel.visible;
       if (panel.visible && welcomeReady) publishState();
-      else executionPublisher.clear();
+      else if (!workerPanel.visible) executionPublisher.clear();
     });
     panel.onDidDispose(() => {
       subscription.dispose();
       visibilitySubscription.dispose();
-      if (welcome === panel) { welcome = undefined; welcomeReady = false; executionPublisher.clear(); }
+      if (welcome === panel) {
+        welcome = undefined; welcomeReady = false; executionPublisher.clear({ resetTransport: true });
+        ++settingsOpenRevision; settingsOpening = 0;
+        settingsPage = ''; settingsSection = 'model'; sidebarChanged.fire();
+        void vscode.commands.executeCommand('setContext', 'ubovm.settingsPage', '').catch(error => output.appendLine(errorText(error)));
+      }
       // Normal UI closing is blocked by the core CannotClose capability.
       // Recover only if an extension/lifecycle operation disposes the webview.
       if (!shuttingDown) scheduleLayout();
@@ -829,8 +1275,13 @@ async function activate(context) {
   async function reloadConversation() {
     if (!welcome) return openWelcome();
     const panel = welcome;
+    ++settingsOpenRevision;
+    settingsOpening = 0;
+    settingsPage = ''; settingsSection = 'model';
+    sidebarChanged.fire();
     welcomeReady = false;
-    executionPublisher.clear();
+    executionPublisher.clear({ resetTransport: true });
+    await vscode.commands.executeCommand('setContext', 'ubovm.settingsPage', '');
     await vscode.commands.executeCommand('setContext', 'ubovm.contentReady', false);
     if (welcome !== panel || shuttingDown) return;
     // A fresh nonce forces a real webview reload while sessions and runs stay
@@ -1011,6 +1462,10 @@ async function activate(context) {
       }
     }),
     registerCommand('ubovm.openWelcome', () => openWelcome()),
+    // Native maximization retains group identity, dirty buffers and the grid's
+    // saved sizes. Forward the title-menu context so inactive file groups work.
+    registerCommand('ubovm.expandFileEditor', (...args) => vscode.commands.executeCommand('workbench.action.toggleMaximizeEditorGroup', ...args)),
+    registerCommand('ubovm.restoreFileEditor', (...args) => vscode.commands.executeCommand('workbench.action.toggleMaximizeEditorGroup', ...args)),
     registerCommand('ubovm.attachSelection', async () => {
       try { await attachSelection(); }
       catch (error) { await vscode.window.showErrorMessage(`UBOVM：${errorText(error)}`); }
@@ -1037,6 +1492,32 @@ async function activate(context) {
       return result;
     }),
     registerCommand('ubovm.newChat', async () => { await newChat(); return openAssistant(); }),
+    registerCommand('ubovm.newProject', async options => {
+      if (creatingProject) return;
+      const suggestedName = typeof options?.suggestedName === 'string' ? options.suggestedName.trim().slice(0, 60) : '';
+      return openProjectSwitcher({ create: true, ...(suggestedName ? { query: suggestedName } : {}) });
+    }),
+    registerCommand('ubovm.newProjectConversation', async entry => { await newChat(undefined, entry.id); return openAssistant(); }),
+    registerCommand('ubovm.openProject', entry => openProject(typeof entry === 'string' ? entry : entry?.id)),
+    registerCommand('ubovm.changeProjectWorkspace', async entry => {
+      const projectId = typeof entry === 'string' ? entry : entry?.id;
+      if (!projectId || !sessions.projects().some(project => project.id === projectId)) throw new Error('项目已不存在。');
+      if (sessions.current().projectId !== projectId) await openProject(projectId);
+      return chooseWorkspace(sessions.current().id);
+    }),
+    registerCommand('ubovm.renameProject', async entry => {
+      const project = sessions.projects().find(item => item.id === entry.id);
+      if (!project) return;
+      const name = await vscode.window.showInputBox({ title: '重命名项目', value: project.name, validateInput: value => !value.trim() || value.trim().length > 60 ? '请输入 1–60 个字符的项目名称。' : undefined });
+      if (name) await sessions.renameProject(project.id, name);
+    }),
+    registerCommand('ubovm.deleteProject', deleteProject),
+    registerCommand('ubovm.manageProjects', () => creatingProject ? undefined : openProjectSwitcher()),
+    registerCommand('ubovm.newGoal', async () => {
+      if (sessions.current().mode !== 'goal') throw new Error('请先切换到探索模式。');
+      await newChat(sessions.current().id);
+      return openAssistant();
+    }),
     registerCommand('ubovm.selectConversation', selectConversation),
     registerCommand('ubovm.deleteConversation', deleteConversation),
     registerCommand('ubovm.searchConversations', searchConversations),
@@ -1052,8 +1533,17 @@ async function activate(context) {
     registerCommand('ubovm.configureModel', configureModel),
     registerCommand('ubovm.openSettings', () => openSettings()),
     registerCommand('ubovm.installBrowser', installBrowser),
+    registerCommand('ubovm.setupPythonSandbox', async () => {
+      const { setupPythonSandbox } = await import(pathToFileURL(path.join(path.dirname(sdkPath ?? sdkCandidates[0]), 'intools', 'terminals', 'python', 'setup.mjs')).href);
+      const result = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: '正在初始化 Python 沙箱', cancellable: false }, () => setupPythonSandbox());
+      await vscode.window.showInformationMessage(result.message);
+    }),
     registerCommand('ubovm.selectSettings', section => welcome?.webview.postMessage({ type: 'settingsSection', section })),
-    registerCommand('ubovm.closeSettings', () => welcome?.webview.postMessage({ type: 'closeSettings' })),
+    registerCommand('ubovm.closeSettings', mode => {
+      ++settingsOpenRevision;
+      return welcome?.webview.postMessage({ type: 'closeSettings',
+        ...(['assist', 'goal'].includes(mode) ? { mode, sessionId: sessions.current().id } : {}) });
+    }),
     registerCommand('ubovm.openMcp', () => openSettings('mcp')),
     registerCommand('ubovm.openSkills', () => openSettings('skills')),
     registerCommand('ubovm.runGoal', runGoal),
@@ -1061,14 +1551,14 @@ async function activate(context) {
     registerCommand('ubovm.resumeRun', resumeRun),
     registerCommand('ubovm.resetLayout', async () => {
       await applyUiPreset(true);
-      await vscode.commands.executeCommand(sessions.current().workspace ? 'workbench.view.explorer' : 'workbench.action.closeSidebar');
+      await vscode.commands.executeCommand('workbench.action.closeSidebar');
       await hideUnusedViews();
       await vscode.commands.executeCommand('workbench.view.extension.ubovm-sessions');
       await openWelcome(); scheduleLayout();
     }),
     registerCommand('ubovm.reloadConversation', reloadConversation),
-    registerCommand('ubovm.openTerminal', () => terminalService.open()),
-    registerCommand('ubovm.openLocalTerminal', () => terminalService.open('local')),
+    registerCommand('ubovm.openTerminal', () => terminalService.switchTo('ssh')),
+    registerCommand('ubovm.openLocalTerminal', () => terminalService.switchTo('local')),
     registerCommand('ubovm.selectTerminal', () => terminalService.select()),
     registerCommand('ubovm.openSource', openSource),
     registerCommand('ubovm.showRuntimeInfo', showRuntimeInfo),
@@ -1095,6 +1585,10 @@ async function activate(context) {
   // container selected, which has no content when built-in AI is disabled.
   void vscode.commands.executeCommand('workbench.view.extension.ubovm-sessions')
     .catch(error => output.appendLine('会话栏初始化失败: ' + String(error)));
+  // Each launch starts with the right-hand tools closed. Explicit file/Worker
+  // navigation may reveal them later; streaming state never opens them.
+  void vscode.commands.executeCommand('workbench.action.closeSidebar')
+    .catch(error => output.appendLine('工具栏初始化失败: ' + String(error)));
   void (async () => {
     await applyUiPreset();
     if (shuttingDown) return;

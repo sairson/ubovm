@@ -1,0 +1,24 @@
+.delivery-workspace { flex: 0 0 auto; min-width: 0; border-bottom: 1px solid var(--border); }
+.delivery-panel { min-width: 0; }
+.delivery-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding: 9px 20px; font-size: 12px; cursor: pointer; }
+.delivery-heading strong { font-weight: 600; }
+.delivery-heading::after { content: '展开验收详情'; color: var(--muted); margin-left: auto; font-size: 11px; }
+.delivery-panel[open] > .delivery-heading::after { content: '收起'; }
+.delivery-heading:focus-visible { outline: 2px solid var(--focus); outline-offset: -3px; }
+.delivery-status { color: var(--muted); }
+.delivery-body { max-height: min(38vh, 360px); overflow: auto; padding: 4px 20px 16px; font-size: 12px; overflow-wrap: anywhere; }
+.delivery-objective { color: var(--ink); }
+.delivery-artifact, .delivery-detail, .delivery-check small, .delivery-caption { color: var(--muted); font-size: 11px; }
+.delivery-stages { list-style: none; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; padding: 0; margin: 12px 0; }
+.delivery-stage { display: flex; flex-direction: column; gap: 3px; padding: 8px; border: 1px solid var(--border); border-radius: 6px; }
+.delivery-stage strong { font-size: 11px; font-weight: 500; }
+.delivery-stage span { color: var(--muted); font-size: 10px; }
+.delivery-stage[data-status="accepted"] { border-color: var(--accent); background: var(--accent-wash); }
+.delivery-stage[data-status="blocked"] { border-color: var(--vscode-editorWarning-foreground, #b78943); }
+.delivery-check, .delivery-findings { padding: 9px 0; border-top: 1px solid var(--border); }
+.delivery-check h3, .delivery-findings h3 { font-size: 12px; font-weight: 500; margin-bottom: 4px; }
+.delivery-finding { display: flex; flex-direction: column; gap: 2px; padding: 6px 0; }
+.delivery-finding strong { font-weight: 500; }
+.delivery-finding[data-severity="high"] strong, .delivery-finding[data-severity="critical"] strong { color: var(--vscode-errorForeground, #c34d4d); }
+.delivery-caption { margin-top: 8px; }
+@media (max-width: 480px) { .delivery-heading { padding: 8px 14px; } .delivery-body { padding: 4px 14px 12px; } .delivery-stages { grid-template-columns: repeat(2, minmax(0, 1fr)); } }

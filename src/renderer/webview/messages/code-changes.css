@@ -1,0 +1,12 @@
+.code-change-card { margin-top: 16px; padding: 12px; border: 1px solid var(--border); border-radius: 8px; font-size: 12px; min-width: 0; }
+.code-change-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.code-change-files { list-style: none; margin: 10px 0; padding: 0; }
+.code-change-file { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 6px 0; }
+.code-change-path { flex: 1 1 160px; min-width: 0; overflow-wrap: anywhere; text-align: left; }
+.code-change-kind { opacity: .7; }
+.code-change-counts { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.code-change-card button { cursor: pointer; border: 1px solid var(--border); border-radius: 5px; padding: 5px 8px; background: transparent; color: inherit; }
+.code-change-card button:disabled { cursor: default; opacity: .5; }
+.code-change-card button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.code-change-scope { margin: 10px 0 0; opacity: .65; font-size: 11px; line-height: 1.5; }
+.code-change-error { color: var(--vscode-errorForeground, #b42318); margin-bottom: 0; }

@@ -10,7 +10,14 @@
   </style>
 </head>
 <body data-loading="true">
+  <aside id="runtime-recovery" role="alert" hidden>
+    <strong>页面恢复</strong><p id="runtime-recovery-message">页面显示遇到问题。</p>
+    <button id="runtime-resync" type="button">同步最新状态</button>
+    <button id="runtime-reload" type="button">重新加载页面</button>
+    <p>恢复页面不会重新提交任务。操作结果请以同步后的状态为准。</p>
+  </aside>
   <div class="shell">
+    <aside id="connection-warning" role="alert" hidden><span id="connection-warning-text"></span><button id="connection-check" type="button">检查连接</button></aside>
     <header class="topbar">
       <button class="icon-button" id="toggle-sessions" type="button" data-action="toggleSessions" title="展开 / 收起会话栏" aria-label="展开或收起会话栏"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></svg></button>
       <div class="brand">{{PRODUCT_LOGO}}<span>UBOVM</span></div>
@@ -36,48 +43,61 @@
       <button class="text-button" id="assist-notes-toggle" type="button" aria-controls="goal-notes" aria-expanded="false">笔记</button>
       <div class="goal-module-actions" id="goal-notes-actions" hidden><button class="text-button" id="note-copy" type="button" disabled>复制</button><button class="text-button primary-button" id="note-new" type="button">＋ 新建笔记</button></div>
       <button class="workspace text-button" type="button" data-action="selectWorkspace" title="选择当前会话的工作空间" aria-label="选择当前会话的工作空间"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v10H3V6Z"/></svg><span id="workspace-name">{{WORKSPACE_NAME}}</span></button>
+      <button class="icon-button" id="manage-projects" type="button" data-action="manageProjects" title="管理与切换项目" aria-label="管理与切换项目"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h7l2 2h9v11H3V7ZM3 7V4h7l2 2h8M9 14h6m-3-3v6"/></svg></button>
       <button class="icon-button" id="validate-code-changes" type="button" data-action="validateCodeChanges" title="验证代码修改" aria-label="验证代码修改"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 12 4 4L17 6m-6 10 3 3 7-9"/></svg></button>
       <button class="icon-button" id="review-code-changes" type="button" data-action="reviewCodeChanges" title="代码更改：查看 diff 与撤销" aria-label="代码更改：查看 diff 与撤销"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h14v18H5V3ZM8 8h8m-8 8h8m-4-4v8"/></svg></button>
-      <button class="icon-button" id="new-chat" type="button" title="新对话" aria-label="开始新对话"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>
+      <details class="new-create" id="new-create">
+        <summary class="icon-button new-create-toggle" title="新建对话或项目" aria-label="新建对话或项目"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></summary>
+        <div class="new-create-menu" role="menu">
+          <button type="button" role="menuitem" id="new-create-chat" data-create="chat">新建对话</button>
+          <button type="button" role="menuitem" id="new-create-project" data-create="project">新建项目</button>
+        </div>
+      </details>
     </header>
-    <div class="ui-error" id="ui-error" role="alert" aria-live="assertive" hidden><div class="ui-error-content"><strong id="ui-error-title">操作未完成</strong><p id="ui-error-message"></p><details id="ui-error-details" hidden><summary>查看错误详情</summary><pre id="ui-error-detail"></pre></details></div><button type="button" id="ui-error-dismiss" aria-label="关闭错误提示">×</button></div>
+    <div class="operation-loading busy" id="operation-loading" role="status" aria-live="polite" hidden></div>
+    <div class="ui-error" id="ui-error" role="alert" aria-live="assertive" hidden><div class="ui-error-content"><strong id="ui-error-title">操作未完成</strong><p id="ui-error-message"></p><button type="button" class="text-button" id="ui-render-retry" hidden>重新显示页面</button><details id="ui-error-details" hidden><summary>查看错误详情</summary><pre id="ui-error-detail"></pre></details></div><button type="button" id="ui-error-dismiss" aria-label="关闭错误提示">×</button></div>
     <main id="main-content" aria-busy="true">
       <div class="page-progress" aria-hidden="true"><span></span></div>
+      <div id="route-loading" class="route-loading" role="status" aria-live="polite" hidden><span class="panel-loading" id="route-loading-label">正在切换页面…</span><div class="route-loading-lines" aria-hidden="true"><i></i><i></i><i></i></div></div>
       <section class="page-loading" id="page-loading" aria-label="加载会话">
         <div class="loading-skeleton" aria-hidden="true"><span class="skeleton-heading"></span><span></span><span></span><div class="skeleton-composer"></div></div>
         <p class="panel-loading" id="page-loading-label" role="status">正在加载会话与工作区…</p>
         <button class="text-button" id="page-retry" type="button" hidden>重新载入</button>
       </section>
+      <section class="delivery-workspace" id="delivery-workspace" aria-label="新开发项目交付记录" hidden></section>
       <section class="assist-mode" id="assist-mode" aria-label="协助模式">
       <div class="empty-scroll" id="empty-state">
         <div class="home-layout">
           <section class="intro" aria-labelledby="welcome-title">
             <div class="hero-mark" aria-hidden="true">{{PRODUCT_LOGO}}</div>
             <h1 id="welcome-title">今天，想完成什么？</h1>
-            <p>从安全测试、代码审计到开发排障，描述任务，我们一起推进。</p>
+            <p>开发、代码审计、安全测试、部署与运维，按需独立使用。创建新开发项目时，贯通完整交付流程。</p>
           </section>
           <div id="composer-home-slot">
+            <div class="composer-stack" id="composer-stack">
+            <section id="input-queue" aria-label="待发送输入" hidden></section>
             <form class="composer" id="prompt-form" aria-label="发送任务">
               <div class="context-row" id="composer-context">
                 <button class="context-add" id="attach-file" type="button" data-action="attachFile" title="添加文件上下文" aria-label="添加文件上下文"><span class="context-at" aria-hidden="true">@</span><span>添加上下文</span></button>
                 <span class="context-chip" id="composer-file" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9Z"/><path d="M14 3v6h6"/></svg><span id="context-label"></span><button class="context-remove" id="remove-context" type="button" title="移除文件上下文" aria-label="移除文件上下文"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10M7 17 17 7"/></svg></button></span>
                 <span class="context-caption" id="context-caption">项目上下文</span>
+                <span class="composer-status" id="composer-status" role="status" aria-live="polite"></span>
               </div>
               <textarea id="prompt-input" rows="1" maxlength="8000" aria-label="描述你的任务" aria-describedby="composer-status prompt-shortcut" placeholder="提问、规划，或描述你想完成的改动…"></textarea>
               <div class="composer-toolbar">
                 <div class="composer-options"><fieldset id="tool-approval-mode" class="approval-mode" aria-label="工具执行方式"><label title="自动执行工具，无需人工审核"><input type="radio" name="tool-approval-mode" value="auto"><span>自动</span></label><label title="每次工具调用须人工批准"><input type="radio" name="tool-approval-mode" value="manual" checked><span>人工</span></label></fieldset><span class="mode"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 6-5 6 5 6m8-12 5 6-5 6m-3-15-2 18"/></svg><span class="mode-name">协助</span></span><button class="provider" id="provider-label" type="button" data-action="openSettings" title="配置模型连接">未连接模型</button></div>
                 <div class="composer-send"><span class="prompt-shortcut" id="prompt-shortcut">Enter 发送 · Shift + Enter 换行</span><span class="prompt-count" id="prompt-count" hidden></span><button class="submit" id="submit-prompt" type="submit" title="发送（Enter）" aria-label="发送任务" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5m-6 6 6-6 6 6"/></svg></button></div>
               </div>
-              <p class="composer-status" id="composer-status" role="status" aria-live="polite"></p>
             </form>
+            </div>
           </div>
           <section class="suggestions" aria-labelledby="suggestions-title">
-            <div class="section-heading"><h2 id="suggestions-title">从一个任务开始</h2><span>点击填入，编辑后发送</span></div>
+            <div class="section-heading"><h2 id="suggestions-title">选择任务入口</h2><span>点击填入，编辑后发送</span></div>
             <button class="suggestion" type="button" data-prompt="帮我对已获授权的目标做一次渗透测试。先确认目标地址、测试范围与限制，再制定测试计划；记录验证过程、风险等级和修复建议，最后整理成报告。"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 8 3v6c0 4-4 7-8 9-4-2-8-5-8-9V6l8-3Z"/><path d="m8 12 3 3 5-6"/></svg><span class="suggestion-copy"><strong>做一次渗透测试</strong><small>明确范围，验证风险，输出报告</small></span></button>
             <button class="suggestion" type="button" data-prompt="帮我对当前项目做一次代码安全审计。先梳理技术栈、入口和数据流，重点检查身份认证、权限控制、输入处理及敏感信息。对发现的问题给出代码位置、触发条件、风险等级与修复建议，并区分已确认问题和待验证风险。"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3H5v18h14V8l-5-5ZM14 3v5h5M8 12l-2 2 2 2m7-4 2 2-2 2m-3-5-2 6"/></svg><span class="suggestion-copy"><strong>做一次代码审计</strong><small>追踪关键代码，定位安全问题</small></span></button>
-            <button class="suggestion" type="button" data-prompt="帮我检查当前项目的依赖和配置风险。先识别依赖清单、版本及部署配置，核查已知漏洞、敏感信息暴露和不安全的默认配置，按优先级给出整改建议与验证方法。"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 9 5-9 5-9-5 9-5Zm-9 9 9 5 9-5M3 16l9 5 9-5"/></svg><span class="suggestion-copy"><strong>检查依赖与配置</strong><small>排查组件漏洞和配置隐患</small></span></button>
-            <button class="suggestion" type="button" data-prompt="帮我排查项目中的问题。先了解异常现象、复现步骤和相关日志，分析根因，再实施修复并验证结果。"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4.5 4.5M8 10.5h5"/></svg><span class="suggestion-copy"><strong>排查并修复问题</strong><small>复现异常，分析根因，验证修复</small></span></button>
-            <button class="suggestion" type="button" data-prompt="帮我理解这个项目的目录结构、技术栈和主要入口，梳理核心模块之间的关系，并说明如何启动、调试和运行测试。"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h6l2 2 2-2h6v14h-6l-2 2-2-2H4V5Z"/><path d="M12 7v14"/></svg><span class="suggestion-copy"><strong>快速理解项目</strong><small>梳理架构、入口和运行方式</small></span></button>
+            <button class="suggestion" type="button" data-prompt="帮我部署当前项目。这是独立部署任务。先确认部署环境、目标地址、版本和回滚方式，再使用已配置的部署工具执行；从实际用户访问范围验证上线地址及核心功能，记录结果和限制。"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V3m-5 5 5-5 5 5M4 15v6h16v-6"/></svg><span class="suggestion-copy"><strong>部署项目</strong><small>发布版本，验证访问与功能，准备回滚</small></span></button>
+            <button class="suggestion" type="button" data-prompt="帮我检查已有服务的运行状态。这是独立运维任务。先确认目标环境和问题，检查健康状态、日志与资源指标，定位根因；按授权范围修复并复测，整理监控和回滚建议。"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l3-7 4 14 3-7h4"/></svg><span class="suggestion-copy"><strong>运维与排障</strong><small>检查健康与日志，定位故障，验证恢复</small></span></button>
+            <button class="suggestion" type="button" data-prompt="我要创建一个全新的开发项目，使用完整交付闭环。先确认产品需求、技术栈、工作目录和验收标准，再初始化新开发项目的交付记录，依次完成开发、代码审计、授权范围内的安全测试、部署验证和运维交接。关联真实执行证据，修复问题后复测；缺少部署环境或安全测试授权时明确记录阻塞，不宣称交付完成。"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h6l2 2h8v14H4V5ZM8 14h8m-4-4v8"/></svg><span class="suggestion-copy"><strong>创建新开发项目</strong><small>完整闭环 · 开发 → 审计 → 安全 → 部署 → 运维</small></span></button>
             <button class="suggestion" type="button" data-prompt="我想为这个项目开发一个新功能。请先了解需求和验收标准，结合现有架构给出实现方案，再分步骤完成开发与验证。"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v18M3 12h18"/></svg><span class="suggestion-copy"><strong>开发一个新功能</strong><small>从需求到实现，逐步完成验证</small></span></button>
           </section>
           <section class="shortcuts" aria-labelledby="shortcuts-title">
@@ -88,10 +108,21 @@
         </div>
         <footer class="home-footer"><span>Code OSS {{VSCODE_VERSION}}</span><span class="footer-separator" aria-hidden="true">/</span><span id="connection-note">连接模型后，即可开始 AI 对话</span></footer>
       </div>
+      <div class="conversation-region">
       <div class="conversation" id="conversation" tabindex="-1" hidden>
         <div class="messages" id="messages" role="log" aria-label="对话消息" aria-live="polite" aria-relevant="additions text"></div>
         <div class="busy" id="busy-status" role="status" hidden>正在处理…</div>
         <section class="assist-execution" id="assist-execution" aria-label="执行动态" hidden><p class="execution-error" id="assist-execution-error" role="alert" hidden></p><div class="activity-list" id="assist-activities"></div><button class="text-button" id="assist-resume" type="button" hidden>继续执行</button></section>
+      </div>
+      <nav id="conversation-outline" class="conversation-outline" aria-label="对话骨架" hidden>
+        <div class="outline-header">
+          <div class="outline-heading"><strong>对话脉络</strong><span id="outline-count"></span></div>
+          <button id="outline-toggle" class="outline-toggle" type="button" aria-label="展开对话骨架" aria-expanded="false" aria-controls="outline-list" title="展开 / 收起对话脉络"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5h11M9 12h8M9 19h11"/><circle cx="4" cy="5" r="1"/><circle cx="4" cy="12" r="1"/><circle cx="4" cy="19" r="1"/></svg></button>
+        </div>
+        <p class="outline-caption">沿着提问，回到思路开始的地方</p>
+        <ol id="outline-list"></ol>
+        <div class="outline-footer"><span class="outline-current-dot" aria-hidden="true"></span>当前阅读位置<span>点击跳转</span></div>
+      </nav>
       </div>
       <section class="collaboration-workers" id="collaboration-workers" aria-label="蜂群协作 Worker" hidden>
         <div class="worker-roster-heading"><h2>Workers <span id="worker-count"></span></h2><p id="worker-swarm-status" role="status"></p></div>
@@ -135,25 +166,16 @@
             <div class="goal-panels" id="goal-panels">
             <section id="goal-overview" role="tabpanel" aria-labelledby="goal-tab-overview">
               <section class="goal-overview-summary" aria-label="目标进展摘要">
-                <div class="goal-meta" hidden><span><strong id="goal-progress">0 / 0</strong> 项已确认</span><span><strong id="goal-note-count">0</strong> 条笔记</span><span class="connection-status" id="goal-provider-label">未连接模型</span></div>
+                <div class="goal-meta" hidden><span><strong id="goal-note-count">0</strong> 条笔记</span><span class="connection-status" id="goal-provider-label">未连接模型</span></div>
+                <div class="goal-progress-caption" id="goal-progress-caption" hidden><span>验收进度</span><span><strong id="goal-progress">0 / 0</strong> 项已确认</span></div>
                 <progress class="goal-completion" id="goal-completion" value="0" max="1" aria-label="手动确认的验收标准" aria-describedby="goal-progress" hidden></progress>
               </section>
-              <div class="goal-panel-controls" role="group" aria-label="概览面板布局"><span>面板</span><button type="button" data-overview-toggle="log" aria-pressed="true">思考日志</button><button type="button" data-overview-toggle="workers" aria-pressed="true">任务执行</button><button type="button" id="goal-panels-swap" title="交换面板位置" aria-label="交换面板位置">⇄</button></div>
-              <p id="goal-panels-empty" class="empty-copy" hidden>面板已关闭，点击上方“思考日志”或“任务执行”重新展开。</p>
-              <div class="goal-overview-columns">
+              <div class="goal-overview-columns" data-visible="1">
               <section class="goal-output-panel" data-overview-panel="log" aria-labelledby="goal-output-title">
-                <div class="goal-output-heading"><div class="goal-panel-grip" draggable="true" tabindex="0" aria-label="拖动思考日志面板，Alt 加方向键交换位置"><span class="goal-panel-kicker">REASON AGENT</span><h2 id="goal-output-title">思考与调度日志</h2></div><span id="goal-output-status" role="status"></span><button type="button" class="goal-panel-close" data-overview-close="log" aria-label="关闭思考日志面板" title="关闭面板">×</button></div>
+                <div class="goal-output-heading"><div class="goal-log-heading-copy"><span class="goal-panel-kicker">REASON AGENT</span><h2 id="goal-output-title">思考与调度日志</h2></div><span id="goal-output-status" role="status"></span><button id="goal-log-bottom" type="button" aria-controls="goal-output-content" title="查看最新思考日志" disabled>↓ 回到底部</button></div>
+                <p class="execution-error" id="execution-error" role="alert" hidden></p>
                 <p class="empty-copy" id="goal-output-empty">开始执行后，Reason 的思考和 Worker 派发记录会显示在这里。</p>
                 <div id="goal-output-content" class="message-text" aria-label="目标执行日志"></div>
-              </section>
-              <div id="goal-overview-split" class="goal-overview-split" role="separator" tabindex="0" aria-orientation="vertical" aria-label="调整日志与任务执行面板宽度" aria-controls="goal-output-content worker-list" title="拖动调整宽度 · 左右键微调 · 双击恢复默认"></div>
-              <section class="execution-panel" data-overview-panel="workers" aria-label="Worker 运行状态">
-                <div class="goal-section-heading"><div class="goal-panel-grip" draggable="true" tabindex="0" aria-label="拖动任务执行面板，Alt 加方向键交换位置"><span class="goal-panel-kicker">WORKERS</span><h2>任务执行</h2></div><div class="goal-worker-heading-meta"><span id="goal-overview-worker-count">0 个</span><p id="goal-overview-worker-summary" class="goal-worker-summary" role="status">尚未派发 Worker</p></div><details class="goal-runtime-details"><summary aria-label="运行信息" title="运行信息"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10v1"/></svg></summary><div class="goal-runtime-content"><strong>运行信息</strong><p id="execution-phase">尚未开始</p><p class="execution-caption" id="execution-caption">点击“开始执行”，由 Reason 规划并派发 Worker。</p><p class="field-help" id="execution-integrations" hidden></p></div></details><button type="button" class="goal-panel-close" data-overview-close="workers" aria-label="关闭任务执行面板" title="关闭面板">×</button></div>
-
-                <p class="execution-error" id="execution-error" role="alert" hidden></p>
-                <p class="empty-copy" id="goal-overview-workers-empty">Reason 会根据目标创建任务，Worker 的运行状态将在这里实时更新。</p>
-                <div class="worker-list" id="worker-list"></div>
-                
               </section>
               </div>
               <details class="goal-acceptance-panel"><summary>验收清单 <span>手动确认目标完成情况</span></summary>
@@ -162,7 +184,9 @@
               </details>
             </section>
             <section id="goal-workers" role="tabpanel" aria-labelledby="goal-tab-workers" hidden>
-              <header class="goal-page-heading"><h2>Worker</h2><p id="goal-workers-summary" role="status">暂无 Worker</p></header>
+              <header class="goal-page-heading"><div class="goal-workers-heading-copy"><h2>Worker</h2><p id="goal-workers-summary" role="status">暂无 Worker</p></div>
+              <details class="goal-runtime-details"><summary aria-label="运行信息" title="运行信息"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10v1"/></svg></summary><div class="goal-runtime-content"><strong>运行信息</strong><p id="execution-phase">尚未开始</p><p class="execution-caption" id="execution-caption">点击“开始执行”，由 Reason 规划并派发 Worker。</p><p class="field-help" id="execution-integrations" hidden></p></div></details>
+              </header>
               <div class="goal-workers-toolbar"><input id="goal-workers-search" type="search" aria-label="搜索 Worker" placeholder="搜索名称、任务或编号…"><select id="goal-workers-filter" aria-label="筛选 Worker 状态"><option value="all">全部状态</option><option value="active">进行中</option><option value="completed">已完成</option><option value="issues">异常 / 已停止</option></select></div>
               <p id="goal-workers-error" class="execution-error" role="status" hidden></p>
               <p id="goal-workers-empty" class="empty-copy">开始执行目标后，派发的 Worker 将显示在这里。</p>
@@ -170,12 +194,6 @@
             </section>
             <section id="goal-board" role="tabpanel" aria-labelledby="goal-tab-board" hidden>
               <header class="goal-page-heading"><h2>黑板</h2><p>探索路径与产出事实 <span id="blackboard-revision">等待执行</span></p></header><div class="board-live" id="blackboard-nodes"></div><p class="empty-copy" id="blackboard-empty">执行后，探索意图与产出事实会以独立节点显示在这里。</p>
-              <details class="graph-acceptance"><summary>目标与验收 · 手动确认</summary>
-              <div class="board-root"><p class="eyebrow">目标</p><p id="goal-board-objective"></p></div>
-              <div class="board-connector" aria-hidden="true"></div>
-              <div class="board-criteria" id="goal-board-criteria"></div>
-              <p class="empty-copy" id="goal-board-empty" hidden>添加验收标准后，它们会展示在目标下方。</p>
-              </details>
             </section>
             <section id="goal-notes" role="tabpanel" aria-labelledby="goal-tab-notes" hidden>
               <header class="notebook-heading"><div><h2>笔记</h2><p>记录、查找，继续你的思考。</p></div></header>
@@ -218,9 +236,47 @@
       <footer class="note-editor-footer"><div><p class="note-draft-status" id="note-draft-status" role="status">关闭后保留草稿</p><span id="note-length">0 / 2,000</span><span class="note-shortcut">Ctrl / ⌘ + Enter 保存</span></div><button class="text-button primary-button" id="goal-add-note" type="submit" disabled>保存笔记</button></footer>
     </form>
   </dialog>
+
+  <dialog id="project-switcher" data-mode="list" closedby="any" aria-labelledby="project-switcher-title">
+    <div class="project-switcher-shell">
+      <header class="project-switcher-header">
+        <h2 id="project-switcher-title">项目</h2>
+        <button id="project-switcher-close" type="button" aria-label="关闭项目管理" title="关闭">关闭</button>
+      </header>
+      <div id="project-switcher-list-pane">
+        <div class="project-switcher-search-wrap">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"/><path d="m16 16 4 4"/></svg>
+          <input id="project-switcher-search" type="search" placeholder="搜索项目名称或目录…" aria-label="搜索项目" autocomplete="off">
+        </div>
+        <button class="project-switcher-cta" id="project-switcher-new" type="button">
+          <span class="project-switcher-cta-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></span>
+          <strong>新建项目</strong>
+          <span>名称 + 目录</span>
+        </button>
+        <p id="project-switcher-empty" hidden>还没有项目，先新建一个</p>
+        <p id="project-switcher-error" role="alert" hidden></p>
+        <div id="project-switcher-list" role="listbox" aria-label="项目列表"></div>
+      </div>
+      <div id="project-switcher-create" hidden>
+        <div class="project-switcher-field">
+          <label for="project-switcher-name">项目名称</label>
+          <input id="project-switcher-name" type="text" maxlength="60" placeholder="例如：官网改版" autocomplete="off">
+        </div>
+        <div class="project-switcher-field">
+          <label>项目目录</label>
+          <p class="project-switcher-path" id="project-switcher-path">输入名称后显示建议目录</p>
+        </div>
+        <p id="project-switcher-create-error" role="alert" hidden></p>
+        <div class="project-switcher-create-actions">
+          <button class="text-button" id="project-switcher-create-back" type="button">返回列表</button>
+          <button class="text-button" id="project-switcher-create-browse" type="button">浏览并创建…</button>
+          <button class="text-button primary-button" id="project-switcher-create-submit" type="button">创建项目</button>
+        </div>
+      </div>
+    </div>
+  </dialog>
+
   {{SETTINGS_HTML}}
-  <script nonce="{{NONCE}}">
-    {{APP_SCRIPT}}
-  </script>
+  {{APP_SCRIPT}}
 </body>
 </html>

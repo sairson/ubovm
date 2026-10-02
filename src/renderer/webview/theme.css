@@ -1,3 +1,23 @@
+/* Keep native select semantics, with a consistent popup where Chromium supports it. */
+@supports (appearance: base-select) {
+  select:not([multiple]):not([size]), select:not([multiple]):not([size])::picker(select) { appearance: base-select; }
+  select:not([multiple]):not([size]) { align-items: center; gap: 8px; cursor: pointer; }
+  select::picker(select) { max-height: min(360px, 65vh); overflow: auto; padding: 5px; border: 1px solid var(--border); border-radius: 9px; background: var(--canvas); color: var(--ink); box-shadow: 0 8px 24px #00000020; }
+  select option { padding: 8px 10px; border-radius: 5px; gap: 9px; font: inherit; color: var(--ink); }
+  select option:hover, select option:focus { background: var(--hover); }
+  select option:checked { background: var(--accent-wash); color: var(--ink); font-weight: 600; }
+  select option:focus-visible { outline: 1px solid var(--focus, var(--accent)); outline-offset: -1px; }
+  select option::checkmark { order: 1; margin-left: auto; color: var(--accent); }
+  select::picker-icon { color: var(--muted); }
+  select:disabled { cursor: default; }
+  select option:disabled { color: var(--muted); background: transparent; font-weight: 400; }
+}
+select:focus-visible { outline: 2px solid var(--focus, var(--accent)); outline-offset: 2px; }
+@media (forced-colors: active) {
+  body select option:checked, body .settings-provider-select option:checked { background: Highlight; color: HighlightText; }
+  select option::checkmark { color: currentColor; }
+}
+
 /* Follow the host theme; keep dark surfaces distinct without bright outlines. */
 body.vscode-dark {
   color-scheme: dark;
@@ -23,9 +43,10 @@ body.vscode-dark :is(.primary-button, .submit, .composer .submit) { background: 
 body.vscode-dark :is(.primary-button, .submit, .composer .submit):hover:enabled { background: #b5d4c3; }
 body.vscode-dark .composer .submit:disabled { background: var(--hover); color: var(--muted); }
 
-body.vscode-dark :is(.goal-tabs, .worker-options-menu, .graph-workspace .graph-detail, #settings-discard) { background: var(--surface-raised); box-shadow: 0 12px 32px #00000050; }
+body.vscode-dark :is(.goal-tabs, .worker-options-menu, .new-create-menu, .graph-workspace .graph-detail, #settings-discard) { background: var(--surface-raised); box-shadow: 0 12px 32px #00000050; }
 body.vscode-dark :is(#note-editor, #settings-dialog) { background: var(--surface-raised); box-shadow: 0 24px 80px #00000070; }
-body.vscode-dark :is(#note-editor, #settings-dialog)::backdrop { background: #080b10a6; }
+body.vscode-dark .project-switcher-shell { background: var(--surface-raised); box-shadow: 0 24px 80px #00000070; }
+body.vscode-dark :is(#note-editor, #settings-dialog, #project-switcher)::backdrop { background: #080b10a6; }
 body.vscode-dark .note-reader-toolbar { background: var(--wash); }
 body.vscode-dark .note-select[aria-pressed="true"] { background: var(--accent-wash); border-color: color-mix(in srgb, var(--accent) 45%, var(--canvas)); box-shadow: inset 3px 0 0 var(--accent); }
 body.vscode-dark .notebook-filters button[aria-pressed="true"] { background: var(--surface-raised); color: var(--accent); box-shadow: 0 1px 4px #00000030; }

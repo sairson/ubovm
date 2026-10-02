@@ -31,6 +31,25 @@
   "contributes": {
     "commands": [
       {
+        "command": "ubovm.setupPythonSandbox",
+        "title": "初始化 Python 沙箱",
+        "category": "UBOVM"
+      },
+      {
+        "command": "ubovm.expandFileEditor",
+        "title": "占据主空间",
+        "category": "UBOVM",
+        "icon": "$(screen-full)",
+        "enablement": "!editorPartMaximizedEditorGroup && multipleEditorGroups && activeEditor != mainThreadWebview-ubovm.welcome && activeEditor != mainThreadWebview-ubovm.conversation"
+      },
+      {
+        "command": "ubovm.restoreFileEditor",
+        "title": "恢复侧栏",
+        "category": "UBOVM",
+        "icon": "$(screen-normal)",
+        "enablement": "editorPartMaximizedEditorGroup"
+      },
+      {
         "command": "ubovm.validateCodeChanges",
         "title": "验证代码修改",
         "category": "UBOVM",
@@ -88,21 +107,21 @@
       },
       {
         "command": "ubovm.openTerminal",
-        "title": "新建 SSH 终端",
+        "title": "切换到 SSH 终端",
         "category": "UBOVM",
-        "icon": "$(terminal)"
+        "icon": "$(remote)"
       },
       {
         "command": "ubovm.openLocalTerminal",
-        "title": "新建当前系统终端",
+        "title": "切换到本地终端",
         "category": "UBOVM",
         "icon": "$(terminal)"
       },
       {
         "command": "ubovm.selectTerminal",
-        "title": "选择终端连接",
+        "title": "选择连接并新建终端",
         "category": "UBOVM",
-        "icon": "$(remote)"
+        "icon": "$(list-selection)"
       },
       {
         "command": "ubovm.openSource",
@@ -125,6 +144,12 @@
       {
         "command": "ubovm.newChat",
         "title": "新建对话",
+        "category": "UBOVM",
+        "icon": "$(add)"
+      },
+      {
+        "command": "ubovm.newGoal",
+        "title": "新建探索",
         "category": "UBOVM",
         "icon": "$(add)"
       },
@@ -198,26 +223,68 @@
         "command": "ubovm.reloadConversation",
         "title": "重新加载对话页面",
         "category": "UBOVM"
+      },
+      {
+        "command": "ubovm.newProject",
+        "title": "新建项目",
+        "category": "UBOVM",
+        "icon": "$(new-folder)"
+      },
+      {
+        "command": "ubovm.openProject",
+        "title": "打开项目",
+        "category": "UBOVM",
+        "icon": "$(folder-opened)"
+      },
+      {
+        "command": "ubovm.manageProjects",
+        "title": "管理与切换项目",
+        "category": "UBOVM",
+        "icon": "$(folder-opened)"
+      },
+      {
+        "command": "ubovm.newProjectConversation",
+        "title": "新建会话",
+        "category": "UBOVM",
+        "icon": "$(add)"
+      },
+      {
+        "command": "ubovm.changeProjectWorkspace",
+        "title": "更改项目目录",
+        "category": "UBOVM",
+        "icon": "$(folder)"
+      },
+      {
+        "command": "ubovm.renameProject",
+        "title": "重命名项目",
+        "category": "UBOVM"
+      },
+      {
+        "command": "ubovm.deleteProject",
+        "title": "删除项目",
+        "category": "UBOVM",
+        "icon": "$(trash)"
       }
     ],
     "terminal": {
       "profiles": [
         {
-          "id": "ubovm.ssh",
-          "title": "UBOVM SSH",
-          "icon": "remote"
-        },
-        {
           "id": "ubovm.local",
           "title": "当前系统终端",
           "icon": "terminal"
+        },
+        {
+          "id": "ubovm.ssh",
+          "title": "UBOVM SSH",
+          "icon": "remote"
         }
       ]
     },
     "configurationDefaults": {
-      "terminal.integrated.defaultProfile.windows": "UBOVM SSH",
-      "terminal.integrated.defaultProfile.linux": "UBOVM SSH",
-      "terminal.integrated.defaultProfile.osx": "UBOVM SSH"
+      "security.workspace.trust.enabled": false,
+      "terminal.integrated.defaultProfile.windows": "当前系统终端",
+      "terminal.integrated.defaultProfile.linux": "当前系统终端",
+      "terminal.integrated.defaultProfile.osx": "当前系统终端"
     },
     "configuration": {
       "title": "UBOVM Agent",
@@ -229,12 +296,22 @@
           "description": "已保存的模型配置。请在系统配置中管理；API Key 保存在系统凭据库中。",
           "items": {
             "type": "object",
-            "required": ["id", "name", "model"],
+            "required": [
+              "id",
+              "name",
+              "model"
+            ],
             "additionalProperties": false,
             "properties": {
-              "id": { "type": "string" },
-              "name": { "type": "string" },
-              "model": { "type": "object" }
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "model": {
+                "type": "object"
+              }
             }
           }
         },
@@ -247,7 +324,7 @@
           "properties": {
             "provider": {
               "type": "string",
-              "description": "pi provider 标识，或自定义 provider 名称。"
+              "description": "Pi Agent 使用的模型服务商标识。"
             },
             "modelId": {
               "type": "string",
@@ -339,6 +416,15 @@
           "description": "Worker 执行参数。model 可覆盖默认模型；模型密钥通过配置模型命令保存。",
           "additionalProperties": false,
           "properties": {
+            "swarmBackendSelection": {
+              "type": "string",
+              "enum": [
+                "fixed",
+                "autonomous"
+              ],
+              "default": "fixed",
+              "description": "Swarm 模型选择模式；所有模型统一通过 Pi Agent 调用。"
+            },
             "model": {
               "type": "object"
             },
@@ -587,6 +673,49 @@
           "default": {},
           "description": "内置工具全部默认启用；保留 SSH、网络搜索等连接参数。旧开关与工具白名单不再限制桌面工具。",
           "properties": {
+            "python": {
+              "type": [
+                "object",
+                "boolean"
+              ],
+              "description": "本地 Python 沙箱，首次 Windows 初始化请运行 UBOVM: 初始化 Python 沙箱。",
+              "properties": {
+                "executable": {
+                  "type": "string",
+                  "description": "Python 解释器绝对路径；留空优先使用 IDE 内置 Python，开发环境缺失内置运行时时才查找 PATH。"
+                },
+                "allowedDomains": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "default": []
+                },
+                "allowWorkspaceWrite": {
+                  "type": "boolean",
+                  "default": false
+                },
+                "defaultTimeoutSeconds": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 3600,
+                  "default": 120
+                },
+                "maxTimeoutSeconds": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 3600,
+                  "default": 600
+                },
+                "maxOutputBytes": {
+                  "type": "integer",
+                  "minimum": 1024,
+                  "maximum": 10485760,
+                  "default": 1048576
+                }
+              },
+              "additionalProperties": false
+            },
             "browser": {
               "type": [
                 "object",
@@ -635,6 +764,11 @@
       ],
       "activitybar": [
         {
+          "id": "ubovm-workers",
+          "title": "Worker 日志",
+          "icon": "media/icon.svg"
+        },
+        {
           "id": "ubovm-blackboard",
           "title": "黑板详情",
           "icon": "media/icon.svg"
@@ -642,11 +776,19 @@
       ]
     },
     "views": {
+      "ubovm-workers": [
+        {
+          "type": "webview",
+          "id": "ubovm.workerLogs",
+          "name": "Worker 日志",
+          "contextualTitle": "Worker 日志"
+        }
+      ],
       "ubovm-sessions": [
         {
           "id": "ubovm.sessions",
-          "name": "会话",
-          "contextualTitle": "会话"
+          "name": "项目与会话",
+          "contextualTitle": "项目与会话"
         }
       ],
       "ubovm-blackboard": [
@@ -659,6 +801,18 @@
       ]
     },
     "menus": {
+      "editor/title": [
+        {
+          "command": "ubovm.expandFileEditor",
+          "when": "!editorPartMaximizedEditorGroup && multipleEditorGroups && activeEditor != mainThreadWebview-ubovm.welcome && activeEditor != mainThreadWebview-ubovm.conversation",
+          "group": "navigation@-100"
+        },
+        {
+          "command": "ubovm.restoreFileEditor",
+          "when": "editorPartMaximizedEditorGroup",
+          "group": "navigation@-100"
+        }
+      ],
       "editor/context": [
         {
           "command": "ubovm.attachSelection",
@@ -682,18 +836,73 @@
           "command": "ubovm.deleteConversation",
           "when": "view == ubovm.sessions && !ubovm.settingsPage && (viewItem == ubovm.conversation || viewItem == ubovm.currentConversation)",
           "group": "9_delete"
+        },
+        {
+          "command": "ubovm.newProjectConversation",
+          "when": "view == ubovm.sessions && viewItem == ubovm.project",
+          "group": "inline@1"
+        },
+        {
+          "command": "ubovm.renameProject",
+          "when": "view == ubovm.sessions && viewItem == ubovm.project",
+          "group": "navigation@2"
+        },
+        {
+          "command": "ubovm.changeProjectWorkspace",
+          "when": "view == ubovm.sessions && !ubovm.settingsPage && viewItem == ubovm.project",
+          "group": "navigation@3"
+        },
+        {
+          "command": "ubovm.newProject",
+          "when": "view == ubovm.sessions && !ubovm.settingsPage && viewItem == ubovm.project",
+          "group": "navigation@4"
+        },
+        {
+          "command": "ubovm.deleteProject",
+          "when": "view == ubovm.sessions && !ubovm.settingsPage && viewItem == ubovm.project",
+          "group": "inline@2"
+        },
+        {
+          "command": "ubovm.deleteProject",
+          "when": "view == ubovm.sessions && !ubovm.settingsPage && viewItem == ubovm.project",
+          "group": "9_delete"
         }
       ],
       "view/title": [
         {
-          "command": "ubovm.selectTerminal",
+          "command": "ubovm.manageProjects",
+          "when": "view == ubovm.sessions && !ubovm.settingsPage",
+          "group": "navigation@-1"
+        },
+        {
+          "command": "workbench.action.quickOpen",
+          "when": "view == workbench.explorer.fileView",
+          "group": "navigation@1"
+        },
+        {
+          "command": "workbench.action.findInFiles",
+          "when": "view == workbench.explorer.fileView",
+          "group": "navigation@2"
+        },
+        {
+          "command": "workbench.action.replaceInFiles",
+          "when": "view == workbench.explorer.fileView",
+          "group": "navigation@3"
+        },
+        {
+          "command": "ubovm.openTerminal",
+          "when": "view == terminal",
+          "group": "navigation@2"
+        },
+        {
+          "command": "ubovm.openLocalTerminal",
           "when": "view == terminal",
           "group": "navigation@1"
         },
         {
-          "command": "ubovm.newChat",
-          "when": "view == ubovm.sessions && ubovm.mode != goal && !ubovm.settingsPage",
-          "group": "navigation@2"
+          "command": "ubovm.selectTerminal",
+          "when": "view == terminal",
+          "group": "navigation@3"
         },
         {
           "command": "ubovm.searchConversations",
@@ -703,15 +912,32 @@
         {
           "command": "ubovm.hideSessions",
           "when": "view == ubovm.sessions",
-          "group": "navigation@3"
+          "group": "navigation@4"
         },
         {
           "command": "ubovm.hideFiles",
           "when": "view == workbench.explorer.fileView || view == workbench.explorer.emptyView",
           "group": "navigation@99"
+        },
+        {
+          "submenu": "ubovm.create",
+          "when": "view == ubovm.sessions && !ubovm.settingsPage",
+          "group": "navigation@2"
         }
       ],
       "commandPalette": [
+        {
+          "command": "ubovm.newProjectConversation",
+          "when": "false"
+        },
+        {
+          "command": "ubovm.renameProject",
+          "when": "false"
+        },
+        {
+          "command": "ubovm.deleteProject",
+          "when": "false"
+        },
         {
           "command": "ubovm.reviewCodeChanges",
           "when": "ubovm.mode == assist"
@@ -721,8 +947,29 @@
           "when": "false"
         },
         {
+          "command": "ubovm.newGoal",
+          "when": "ubovm.mode == goal"
+        },
+        {
           "command": "ubovm.selectConversation",
           "when": "false"
+        }
+      ],
+      "ubovm.create": [
+        {
+          "command": "ubovm.newChat",
+          "when": "view == ubovm.sessions && ubovm.mode != goal && !ubovm.settingsPage",
+          "group": "1_chat@1"
+        },
+        {
+          "command": "ubovm.newGoal",
+          "when": "view == ubovm.sessions && ubovm.mode == goal && !ubovm.settingsPage",
+          "group": "1_chat@1"
+        },
+        {
+          "command": "ubovm.newProject",
+          "when": "view == ubovm.sessions && !ubovm.settingsPage",
+          "group": "2_project@1"
         }
       ]
     },
@@ -770,6 +1017,13 @@
         "view": "ubovm.sessions",
         "when": "ubovm.mode == goal",
         "contents": "$(target)\n还没有探索记录\n从已知事实出发，定义你的探索目标。\n[开始探索](command:ubovm.openAssistant)"
+      }
+    ],
+    "submenus": [
+      {
+        "id": "ubovm.create",
+        "label": "新建",
+        "icon": "$(add)"
       }
     ]
   }
