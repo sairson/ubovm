@@ -29,11 +29,11 @@ jobs:
             target: linux-x64
           - os: ubuntu-24.04-arm
             target: linux-arm64
-          - os: macos-14
+          - os: macos-15
             target: darwin-arm64
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 1
 
@@ -50,10 +50,29 @@ jobs:
 
       - name: Install PowerShell 7
         if: runner.os == 'macOS'
-        run: brew install --cask powershell
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if command -v pwsh >/dev/null 2>&1; then
+            pwsh --version
+            exit 0
+          fi
+          auth=()
+          if [ -n "${GITHUB_TOKEN:-}" ]; then
+            auth=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
+          fi
+          tag=$(curl -fsSL "${auth[@]}" https://api.github.com/repos/PowerShell/PowerShell/releases/latest | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"])')
+          version="${tag#v}"
+          pkg_arch=arm64
+          if [ "$(uname -m)" = "x86_64" ]; then pkg_arch=x64; fi
+          curl -fL "${auth[@]}" -o /tmp/powershell.pkg "https://github.com/PowerShell/PowerShell/releases/download/${tag}/powershell-${version}-osx-${pkg_arch}.pkg"
+          sudo installer -pkg /tmp/powershell.pkg -target /
+          echo /usr/local/bin >> "$GITHUB_PATH"
+          echo /usr/local/microsoft/powershell/7 >> "$GITHUB_PATH"
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: '24.18.0'
           cache: npm
