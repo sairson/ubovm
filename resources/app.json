@@ -110,6 +110,69 @@
         "https://ghproxy.net/https://github.com/VSCodium/vscodium/releases/download/1.135.06055/VSCodium-win32-x64-1.135.06055.zip"
       ],
       "sha256": "0bec978f201238624bc9ad43966f5e201ed8afacc37d77035a822252d9c9c200"
+    },
+    "runtimes": {
+      "win32-x64": {
+        "provider": "VSCodium",
+        "version": "1.135.06055",
+        "platform": "win32",
+        "arch": "x64",
+        "directory": ".runtime/vscodium-1.135.06055",
+        "executable": "VSCodium.exe",
+        "archive": "VSCodium-win32-x64-1.135.06055.zip",
+        "url": "https://github.com/VSCodium/vscodium/releases/download/1.135.06055/VSCodium-win32-x64-1.135.06055.zip",
+        "mirrorUrls": [
+          "https://ghfast.top/https://github.com/VSCodium/vscodium/releases/download/1.135.06055/VSCodium-win32-x64-1.135.06055.zip",
+          "https://ghproxy.net/https://github.com/VSCodium/vscodium/releases/download/1.135.06055/VSCodium-win32-x64-1.135.06055.zip"
+        ],
+        "sha256": "0bec978f201238624bc9ad43966f5e201ed8afacc37d77035a822252d9c9c200"
+      },
+      "linux-x64": {
+        "provider": "VSCodium",
+        "version": "1.135.06055",
+        "platform": "linux",
+        "arch": "x64",
+        "directory": ".runtime/vscodium-1.135.06055-linux-x64",
+        "executable": "codium",
+        "archive": "VSCodium-linux-x64-1.135.06055.tar.gz",
+        "url": "https://github.com/VSCodium/vscodium/releases/download/1.135.06055/VSCodium-linux-x64-1.135.06055.tar.gz",
+        "sha256": "c09d8ac8dd7f52b09ee159ee24b440541dfd8f937a0f6f88cc428c78e48ee1f2"
+      },
+      "linux-arm64": {
+        "provider": "VSCodium",
+        "version": "1.135.06055",
+        "platform": "linux",
+        "arch": "arm64",
+        "directory": ".runtime/vscodium-1.135.06055-linux-arm64",
+        "executable": "codium",
+        "archive": "VSCodium-linux-arm64-1.135.06055.tar.gz",
+        "url": "https://github.com/VSCodium/vscodium/releases/download/1.135.06055/VSCodium-linux-arm64-1.135.06055.tar.gz",
+        "sha256": "9765cea4f707ff7dc83a40be408a7318a59abb6996b359631639d9aab2f48a90"
+      },
+      "darwin-arm64": {
+        "provider": "VSCodium",
+        "version": "1.135.06055",
+        "platform": "darwin",
+        "arch": "arm64",
+        "directory": ".runtime/vscodium-1.135.06055-darwin-arm64",
+        "executable": "VSCodium.app/Contents/MacOS/Electron",
+        "appDirectory": "VSCodium.app/Contents/Resources/app",
+        "archive": "VSCodium-darwin-arm64-1.135.06055.zip",
+        "url": "https://github.com/VSCodium/vscodium/releases/download/1.135.06055/VSCodium-darwin-arm64-1.135.06055.zip",
+        "sha256": "61ff9ebc3ac5563c63a0a9e1b479822647e7f2c3303b0629f15fefe9e291f7cc"
+      },
+      "darwin-x64": {
+        "provider": "VSCodium",
+        "version": "1.135.06055",
+        "platform": "darwin",
+        "arch": "x64",
+        "directory": ".runtime/vscodium-1.135.06055-darwin-x64",
+        "executable": "VSCodium.app/Contents/MacOS/Electron",
+        "appDirectory": "VSCodium.app/Contents/Resources/app",
+        "archive": "VSCodium-darwin-x64-1.135.06055.zip",
+        "url": "https://github.com/VSCodium/vscodium/releases/download/1.135.06055/VSCodium-darwin-x64-1.135.06055.zip",
+        "sha256": "2fce180317a011576dc7e0910e1033d3287472b56e362b33175f5416415b604a"
+      }
     }
   }
 }

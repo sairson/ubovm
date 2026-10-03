@@ -1,0 +1,106 @@
+name: Build
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: win32-x64
+          - os: ubuntu-22.04
+            target: linux-x64
+          - os: ubuntu-24.04-arm
+            target: linux-arm64
+          - os: macos-14
+            target: darwin-arm64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Enable Windows long paths
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: git config --global core.longpaths true
+
+      - name: Install PowerShell 7
+        if: runner.os == 'Linux'
+        run: |
+          sudo snap install powershell --classic
+          echo /snap/bin >> "$GITHUB_PATH"
+
+      - name: Install PowerShell 7
+        if: runner.os == 'macOS'
+        run: brew install --cask powershell
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24.18.0'
+          cache: npm
+
+      - name: Cache downloaded runtimes
+        uses: actions/cache@v4
+        with:
+          path: |
+            .cache/*.zip
+            .cache/*.tar.gz
+            .cache/python
+          key: runtime-${{ matrix.target }}-${{ hashFiles('resources/app.json', 'resources/python-runtime.json') }}
+
+      - name: Install repository tools
+        run: npm ci
+
+      - name: Verify platform build wiring
+        run: npm run test:platform
+
+      - name: Build desktop package
+        run: npm run installer
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: ubovm-${{ matrix.target }}
+          path: dist/**
+          if-no-files-found: error
+          retention-days: ${{ github.event_name == 'pull_request' && 7 || 14 }}
+
+  release:
+    name: GitHub release
+    needs: package
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download packages
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/**
+          generate_release_notes: true
+          fail_on_unmatched_files: true

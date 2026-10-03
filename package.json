@@ -20,6 +20,7 @@
   "scripts": {
     "build": "node build.mjs build",
     "installer": "node build.mjs installer",
+    "package": "node build.mjs package",
     "start": "node build.mjs start",
     "dev": "node build.mjs dev",
     "setup": "node build.mjs setup",
@@ -27,7 +28,7 @@
     "check": "node build.mjs check",
     "test": "node build.mjs test",
     "core": "node build.mjs source",
-    "test:platform": "node --test src/main/test/build-platform.mjs",
+    "test:platform": "node --test src/main/test/build-platform.mjs src/main/test/runtime-targets.mjs",
     "test:harness": "node --test \"src/harness/**/*.test.mjs\""
   },
   "dependencies": {

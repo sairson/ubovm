@@ -6,12 +6,27 @@ $OnWindows = [Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT
 $OnMac = -not $OnWindows -and $IsMacOS
 $NpmCommand = if ($OnWindows) { 'npm.cmd' } else { 'npm' }
 $NodeCommand = if ($OnWindows) { 'node.exe' } else { 'node' }
-$UsePrebuilt = $OnWindows -and [Environment]::Is64BitOperatingSystem -and $env:PROCESSOR_ARCHITECTURE -ne 'ARM64' -and $env:PROCESSOR_ARCHITEW6432 -ne 'ARM64'
 $Config = Get-Content -LiteralPath (Join-Path $ProjectRoot 'resources/app.json') -Raw | ConvertFrom-Json
+$HostPlatform = if ($OnWindows) { 'win32' } elseif ($OnMac) { 'darwin' } else { 'linux' }
+$HostArch = 'x64'
+if ($OnWindows) {
+    if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64' -or $env:PROCESSOR_ARCHITEW6432 -eq 'ARM64') { $HostArch = 'arm64' }
+} else {
+    $osArch = [Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
+    if ($osArch -eq 'Arm64') { $HostArch = 'arm64' }
+}
+$RuntimeKey = "$HostPlatform-$HostArch"
+if ($Config.core.runtimes) {
+    $runtimeProperty = $Config.core.runtimes.PSObject.Properties[$RuntimeKey]
+    if ($runtimeProperty) { $Config.core.runtime = $runtimeProperty.Value }
+}
+$UsePrebuilt = [string]$Config.core.runtime.platform -eq $HostPlatform -and [string]$Config.core.runtime.arch -eq $HostArch
 $Action = if ($env:UBOVM_ACTION) { $env:UBOVM_ACTION } else { 'start' }
 $RuntimeRoot = Join-Path $ProjectRoot '.runtime'
 $Runtime = [IO.Path]::GetFullPath((Join-Path $ProjectRoot $Config.core.runtime.directory))
-$AppRoot = Join-Path $Runtime 'resources/app'
+$AppDirectory = [string]$Config.core.runtime.appDirectory
+if (-not $AppDirectory) { $AppDirectory = 'resources/app' }
+$AppRoot = Join-Path $Runtime $AppDirectory
 $Executable = Join-Path $Runtime $Config.core.runtime.executable
 
 function Write-Json($Path, $Value) {
@@ -78,16 +93,20 @@ function Get-FileDigest($Path) {
 function Get-RuntimeDownloadUrls {
     $urls = [System.Collections.Generic.List[string]]::new()
     if ($env:UBOVM_RUNTIME_URL) { [void]$urls.Add([string]$env:UBOVM_RUNTIME_URL) }
-    # Prefer configured mirrors first: GitHub release assets often stall behind
-    # Great Firewall / corporate proxies, while mirrors stay resumable via curl.
-    if ($Config.core.runtime.PSObject.Properties.Name -contains 'mirrorUrls' -and $Config.core.runtime.mirrorUrls) {
-        foreach ($mirror in @($Config.core.runtime.mirrorUrls)) {
-            if ($mirror) { [void]$urls.Add([string]$mirror) }
-        }
-    }
     $primary = [string]$Config.core.runtime.url
-    if ($primary -match '^https://github\.com/') {
-        [void]$urls.Add('https://ghproxy.net/' + $primary)
+    $preferPrimary = $env:GITHUB_ACTIONS -eq 'true' -or $env:UBOVM_PREFER_PRIMARY_RUNTIME -eq '1'
+    if (-not $preferPrimary) {
+        # Prefer configured mirrors first: GitHub release assets often stall behind
+        # Great Firewall / corporate proxies, while mirrors stay resumable via curl.
+        if ($Config.core.runtime.PSObject.Properties.Name -contains 'mirrorUrls' -and $Config.core.runtime.mirrorUrls) {
+            foreach ($mirror in @($Config.core.runtime.mirrorUrls)) {
+                if ($mirror) { [void]$urls.Add([string]$mirror) }
+            }
+        }
+        if ($primary -match '^https://github\.com/') {
+            [void]$urls.Add('https://ghfast.top/' + $primary)
+            [void]$urls.Add('https://ghproxy.net/' + $primary)
+        }
     }
     [void]$urls.Add($primary)
     $seen = @{}
@@ -871,11 +890,41 @@ function Sync-Application {
     Write-Json $npmManifestPath $npmManifest
 }
 
+function Expand-RuntimeArchive($Archive, $Staging) {
+    Assert-ChildPath $Archive (Join-Path $ProjectRoot '.cache')
+    Assert-ChildPath $Staging $RuntimeRoot
+    if ($Archive -match '\.(tar\.gz|tgz)$') {
+        Invoke-Checked 'tar' @('-xzf', $Archive, '-C', $Staging)
+        return
+    }
+    if ($OnWindows) {
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        [IO.Compression.ZipFile]::ExtractToDirectory($Archive, $Staging)
+        return
+    }
+    Invoke-Checked 'tar' @('-xf', $Archive, '-C', $Staging)
+}
+
+function Resolve-RuntimeExecutable($Root) {
+    $pinned = [string]$Config.core.runtime.executable
+    if ($pinned -and (Test-Path -LiteralPath (Join-Path $Root $pinned))) { return $pinned }
+    if ($HostPlatform -eq 'darwin') {
+        foreach ($name in @('Electron', 'VSCodium', 'codium')) {
+            $relative = "VSCodium.app/Contents/MacOS/$name"
+            if (Test-Path -LiteralPath (Join-Path $Root $relative)) { return $relative }
+        }
+    }
+    if ($HostPlatform -eq 'linux') {
+        foreach ($name in @('codium', 'vscodium', 'VSCodium')) {
+            if (Test-Path -LiteralPath (Join-Path $Root $name)) { return $name }
+        }
+    }
+    return $pinned
+}
+
 function Initialize-Runtime {
     Assert-ChildPath $Runtime $RuntimeRoot
-    if (-not [Environment]::Is64BitOperatingSystem -or $env:PROCESSOR_ARCHITECTURE -eq 'ARM64') {
-        throw 'This runtime requires Windows x64.'
-    }
+    if (-not $UsePrebuilt) { throw "No pinned desktop runtime for $RuntimeKey." }
     $marker = Join-Path $Runtime '.ubovm-installed.json'
     if (-not (Test-Path -LiteralPath $marker)) {
         if (Test-Path -LiteralPath $Runtime) { throw "Incomplete runtime. Move it aside before retrying: $Runtime" }
@@ -893,23 +942,41 @@ function Initialize-Runtime {
         New-Item -ItemType Directory -Path $staging | Out-Null
         try {
             Write-Host '[UBOVM] Extracting Electron and the workbench...'
-            Add-Type -AssemblyName System.IO.Compression.FileSystem
-            [IO.Compression.ZipFile]::ExtractToDirectory($archive, $staging)
-            $manifest = Get-Content -LiteralPath (Join-Path $staging 'resources/app/package.json') -Raw | ConvertFrom-Json
+            Expand-RuntimeArchive $archive $staging
+            $extractedRoot = $staging
+            if (-not (Test-Path -LiteralPath (Join-Path $extractedRoot $Config.core.runtime.executable))) {
+                $children = @(Get-ChildItem -LiteralPath $staging -Force | Where-Object { $_.Name -ne '.' -and $_.Name -ne '..' })
+                if ($children.Count -eq 1 -and $children[0].PSIsContainer) { $extractedRoot = $children[0].FullName }
+            }
+            $extractedApp = Join-Path $extractedRoot $AppDirectory
+            $manifest = Get-Content -LiteralPath (Join-Path $extractedApp 'package.json') -Raw | ConvertFrom-Json
             if ($manifest.version -ne $Config.core.runtime.version) { throw "Unexpected runtime version: $($manifest.version)" }
-            if (-not (Test-Path -LiteralPath (Join-Path $staging $Config.core.runtime.executable))) { throw 'Archive contains no desktop executable.' }
-            Write-Json (Join-Path $staging '.ubovm-installed.json') $Config.core.runtime
-            Assert-ChildPath $staging $RuntimeRoot
+            $resolvedExecutable = Resolve-RuntimeExecutable $extractedRoot
+            if (-not $resolvedExecutable -or -not (Test-Path -LiteralPath (Join-Path $extractedRoot $resolvedExecutable))) { throw 'Archive contains no desktop executable.' }
+            $Config.core.runtime.executable = $resolvedExecutable
+            Write-Json (Join-Path $extractedRoot '.ubovm-installed.json') $Config.core.runtime
+            Assert-ChildPath $extractedRoot $RuntimeRoot
             Assert-ChildPath $Runtime $RuntimeRoot
-            Move-Item -LiteralPath $staging -Destination $Runtime
+            if ($extractedRoot -eq $staging) {
+                Move-Item -LiteralPath $staging -Destination $Runtime
+            } else {
+                New-Item -ItemType Directory -Force -Path $RuntimeRoot | Out-Null
+                Move-Item -LiteralPath $extractedRoot -Destination $Runtime
+            }
         } finally { Remove-Managed $staging $RuntimeRoot }
     }
     $installed = Get-Content -LiteralPath $marker -Raw | ConvertFrom-Json
-    if ($installed.sha256 -ne $Config.core.runtime.sha256 -or -not (Test-Path -LiteralPath $Executable)) {
+    if ($installed.sha256 -ne $Config.core.runtime.sha256) {
+        throw 'The installed runtime does not match resources/app.json.'
+    }
+    $resolvedExecutable = Resolve-RuntimeExecutable $Runtime
+    if (-not $resolvedExecutable) { throw 'The installed runtime does not match resources/app.json.' }
+    $script:Executable = Join-Path $Runtime $resolvedExecutable
+    if (-not (Test-Path -LiteralPath $script:Executable)) {
         throw 'The installed runtime does not match resources/app.json.'
     }
     Sync-Application
-    Write-Host "[UBOVM] Ready: VS Code $($Config.core.source.ref) / VSCodium $($Config.core.runtime.version)"
+    Write-Host "[UBOVM] Ready: VS Code $($Config.core.source.ref) / VSCodium $($Config.core.runtime.version) ($RuntimeKey)"
 }
 
 function Get-InstallerTools {
@@ -985,15 +1052,44 @@ function Invoke-InstallerCompiler($Compiler, $Arguments, $Staging) {
 }
 
 function Build-Installer {
-    if (-not $UsePrebuilt) { throw 'The installer target currently supports Windows x64 only.' }
-    $tools = Get-InstallerTools
-    $compiler = $tools.Compiler
-    $editor = $tools.Editor
+    if (-not $UsePrebuilt) { throw "The installer target currently supports pinned runtimes only ($RuntimeKey is not pinned)." }
     $manifest = Get-Content -LiteralPath (Join-Path $ProjectRoot 'package.json') -Raw | ConvertFrom-Json
     $version = $manifest.version
     if ($version -notmatch '^\d+\.\d+\.\d+$') { throw 'Installer requires a numeric major.minor.patch version in package.json.' }
     Initialize-Runtime
     Test-Runtime
+    if ($OnWindows) {
+        if ($HostArch -ne 'x64') { throw 'The Windows installer currently supports x64 only.' }
+        Build-WindowsInstaller $version
+        return
+    }
+    Build-PortableArchive $version
+}
+
+function Copy-RuntimePayload($Source, $Destination) {
+    Assert-ChildPath $Source $RuntimeRoot
+    Assert-ChildPath $Destination (Join-Path $ProjectRoot '.cache')
+    if ($OnWindows) {
+        & robocopy.exe $Source $Destination /E /XJ /R:1 /W:1 /NFL /NDL /NJH /NJS /NP /XD (Join-Path $Source 'data') /XF '.ubovm-installed.json'
+        if ($LASTEXITCODE -ge 8) { throw "Payload copy failed with robocopy exit code $LASTEXITCODE" }
+        return
+    }
+    $rsync = Get-Command rsync -ErrorAction SilentlyContinue
+    if ($rsync) {
+        Invoke-Checked $rsync.Source @('-a', '--exclude', 'data', '--exclude', '.ubovm-installed.json', ($Source.TrimEnd('/') + '/'), ($Destination.TrimEnd('/') + '/'))
+        return
+    }
+    Invoke-Checked 'cp' @('-a', ($Source.TrimEnd('/') + '/.'), $Destination)
+    foreach ($name in @('data', '.ubovm-installed.json')) {
+        $extra = Join-Path $Destination $name
+        if (Test-Path -LiteralPath $extra) { Remove-Managed $extra $Destination }
+    }
+}
+
+function Build-WindowsInstaller($version) {
+    $tools = Get-InstallerTools
+    $compiler = $tools.Compiler
+    $editor = $tools.Editor
     $staging = Join-Path $ProjectRoot '.cache/installer'
     $payload = Join-Path $staging 'UBOVM-win32-x64'
     $output = Join-Path $ProjectRoot 'dist'
@@ -1001,8 +1097,7 @@ function Build-Installer {
     Remove-Managed $payload $staging
     New-Item -ItemType Directory -Path $payload | Out-Null
     Write-Host '[UBOVM] Staging standalone application (excluding portable user data)...'
-    & robocopy.exe $Runtime $payload /E /XJ /R:1 /W:1 /NFL /NDL /NJH /NJS /NP /XD (Join-Path $Runtime 'data') /XF '.ubovm-installed.json'
-    if ($LASTEXITCODE -ge 8) { throw "Payload copy failed with robocopy exit code $LASTEXITCODE" }
+    Copy-RuntimePayload $Runtime $payload
     $originalExe = Join-Path $payload $Config.core.runtime.executable
     $appExe = Join-Path $payload 'UBOVM.exe'
     Assert-ChildPath $originalExe $payload
@@ -1027,6 +1122,35 @@ function Build-Installer {
     if (-not (Test-Path -LiteralPath $result)) { throw 'Installer compiler did not produce the expected executable.' }
     [IO.File]::WriteAllText(($result + '.sha256'), (Get-FileDigest $result) + '  ' + [IO.Path]::GetFileName($result) + "`n", [Text.Encoding]::ASCII)
     Write-Host "[UBOVM] Installer ready: $result"
+}
+
+function Build-PortableArchive($version) {
+    $staging = Join-Path $ProjectRoot '.cache/installer'
+    $payload = Join-Path $staging "UBOVM-$RuntimeKey"
+    $output = Join-Path $ProjectRoot 'dist'
+    New-Item -ItemType Directory -Force -Path $staging, $output | Out-Null
+    Remove-Managed $payload $staging
+    New-Item -ItemType Directory -Path $payload | Out-Null
+    Write-Host '[UBOVM] Staging standalone application (excluding portable user data)...'
+    Copy-RuntimePayload $Runtime $payload
+    $packagedExtension = Join-Path $payload (Join-Path $AppDirectory 'extensions/ubovm-core')
+    Remove-Managed (Join-Path $packagedExtension 'test') $packagedExtension
+    $result = if ($OnMac) {
+        Join-Path $output "UBOVM-$RuntimeKey-$version.zip"
+    } else {
+        Join-Path $output "UBOVM-$RuntimeKey-$version.tar.gz"
+    }
+    if (Test-Path -LiteralPath $result) { Remove-Item -LiteralPath $result -Force }
+    if ($OnMac) {
+        $appPath = Join-Path $payload 'VSCodium.app'
+        if (-not (Test-Path -LiteralPath $appPath)) { throw 'macOS runtime archive is missing VSCodium.app.' }
+        Invoke-Checked 'ditto' @('-c', '-k', '--sequesterRsrc', '--keepParent', $appPath, $result)
+    } else {
+        Invoke-Checked 'tar' @('-czf', $result, '-C', $payload, '.')
+    }
+    if (-not (Test-Path -LiteralPath $result)) { throw 'Portable archive was not produced.' }
+    [IO.File]::WriteAllText(($result + '.sha256'), (Get-FileDigest $result) + '  ' + [IO.Path]::GetFileName($result) + "`n", [Text.Encoding]::ASCII)
+    Write-Host "[UBOVM] Portable package ready: $result"
 }
 
 function Quote-NativeArgument([string]$Value) {
@@ -1094,14 +1218,21 @@ function Test-Runtime {
     if (-not (Test-Path -LiteralPath (Join-Path $AppRoot 'ubovm/main/launch-policy.mjs'))) { throw 'Missing launch policy. Run node build.mjs setup.' }
     if (-not (Test-Path -LiteralPath (Join-Path $AppRoot 'ubovm/main/background.mjs'))) { throw 'Missing background mode. Run node build.mjs setup.' }
     $files = @('ubovm/main/index.mjs', 'ubovm/main/data-paths.mjs', 'ubovm/main/data-migration.mjs', 'ubovm/harness/index.mjs', 'ubovm/harness/blackboard/database/database.mjs', 'ubovm/node_modules/@earendil-works/pi-agent-core/package.json', 'ubovm/node_modules/@modelcontextprotocol/sdk/package.json', 'ubovm/node_modules/yaml/package.json', 'out/main.js', 'out/vs/workbench/workbench.desktop.main.js', 'out/vs/workbench/api/node/extensionHostProcess.js', 'extensions/ubovm-core/extension.cjs')
-    $files += @('extensions/ubovm-core/harness/workspace/workspace-search.cjs', 'extensions/ubovm-core/harness/workspace/workspace-validation.cjs', 'extensions/ubovm-core/harness/workspace/validation-worker.cjs', 'extensions/node_modules/typescript/lib/typescript.js', 'node_modules.asar.unpacked\@vscode\ripgrep-universal\bin\win32-x64\rg.exe')
-    $files += @('ubovm/runtime/python/python.exe', 'ubovm/runtime/python/.ubovm-python-runtime.json')
+    $files += @('extensions/ubovm-core/harness/workspace/workspace-search.cjs', 'extensions/ubovm-core/harness/workspace/workspace-validation.cjs', 'extensions/ubovm-core/harness/workspace/validation-worker.cjs', 'extensions/node_modules/typescript/lib/typescript.js')
+    $pythonAssets = (Get-Content -LiteralPath (Join-Path $ProjectRoot 'resources/python-runtime.json') -Raw | ConvertFrom-Json).assets
+    $pythonAsset = $pythonAssets.PSObject.Properties[$RuntimeKey]
+    if (-not $pythonAsset) { throw "Missing bundled Python for $RuntimeKey." }
+    $files += @((Join-Path 'ubovm/runtime/python' $pythonAsset.Value.executable), 'ubovm/runtime/python/.ubovm-python-runtime.json')
     $files += @('extensions/ubovm-core/host/agent/agent-service.cjs', 'extensions/ubovm-core/host/agent/agent-backend.cjs')
     $files += @('harness-service.cjs', 'harness-thread.cjs', 'thread-rpc.cjs', 'snapshot-queue.cjs', 'projection.cjs', 'errors.cjs') | ForEach-Object { 'ubovm/harness/ide/runtime/' + $_ }
     foreach ($file in $files) {
         if (-not (Test-Path -LiteralPath (Join-Path $AppRoot $file))) { throw "Missing $file. Run node build.mjs setup." }
         Write-Host "[OK] $file"
     }
+    $rgRoot = Join-Path $AppRoot 'node_modules.asar.unpacked/@vscode/ripgrep-universal/bin'
+    $rg = @(Get-ChildItem -LiteralPath $rgRoot -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.BaseName -eq 'rg' })
+    if (-not $rg.Count) { throw 'Missing bundled ripgrep. Run node build.mjs setup.' }
+    Write-Host "[OK] $($rg[0].FullName.Substring($AppRoot.Length + 1))"
     $manifest = Get-Content -LiteralPath (Join-Path $AppRoot 'package.json') -Raw | ConvertFrom-Json
     if ($manifest.main -ne './ubovm/main/index.mjs') { throw 'The custom Electron main entry is not connected.' }
     if (-not ([IO.File]::ReadAllText((Join-Path $AppRoot 'out/main.js'))).Contains('s.emit("ubovm-before-close",r,this._quitRequested)')) { throw 'The background lifecycle hook is missing. Run node build.mjs setup.' }
@@ -1390,7 +1521,7 @@ try {
         'start' { if ($UsePrebuilt) { Start-Desktop } else { Start-SourceDesktop } }
         'dev' { if ($UsePrebuilt) { Start-Desktop -Development } else { Start-SourceDesktop } }
         'setup' { if ($UsePrebuilt) { Initialize-Runtime } else { Invoke-Core install; Invoke-Core build } }
-        'installer' { Build-Installer }
+        { $_ -in 'installer', 'package' } { Build-Installer }
         'migrate' { $portable = Set-PortableData 'desktop'; Write-Host "[UBOVM] Persistent data ready: $portable" }
         'check' { if ($UsePrebuilt) { Test-Runtime } else { Test-SourceRuntime } }
         'test' { if ($UsePrebuilt) { Start-Desktop -Smoke } else { Start-SourceDesktop -Smoke } }
@@ -1400,7 +1531,8 @@ try {
             Write-Host 'node build.mjs start [folder]   Start the desktop IDE'
             Write-Host 'node build.mjs dev [folder]     Load the UI extension from src/renderer'
             Write-Host 'node build.mjs setup            Download and prepare the runtime'
-            Write-Host 'node build.mjs installer        Build a Windows x64 installer in dist'
+            Write-Host 'node build.mjs installer        Build a platform package in dist (Windows setup.exe, Linux tar.gz, macOS zip)'
+            Write-Host 'node build.mjs package          Alias for installer'
             Write-Host 'node build.mjs migrate          Migrate desktop data to ~/.ubovm without launching'
             Write-Host 'node build.mjs check            Check the installed runtime'
             Write-Host 'node build.mjs test             Run a real desktop integration test'
