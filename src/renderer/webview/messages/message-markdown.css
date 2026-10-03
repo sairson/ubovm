@@ -1,7 +1,7 @@
 .md-content, .message-text.md-content {
   min-width: 0;
   color: var(--ink, var(--vscode-foreground, #292a2d));
-  font-size: 14px;
+  font-size: var(--prose-size, 14px);
   line-height: 1.8;
   white-space: normal;
   overflow-wrap: anywhere;
@@ -82,9 +82,12 @@
 .md-content dt { font-weight: 600; }
 .md-content dd { margin: 3px 0 10px 18px; }
 @media (max-width: 420px) {
-  .md-content { font-size: 13px; }
+  .md-content { font-size: var(--prose-size, 13px); }
   .md-content .md-code-toolbar { gap: 5px; padding-inline: 8px; }
   .md-content pre { padding: 12px; }
   .md-content .md-code-button { padding-inline: 5px; }
   .md-content th, .md-content td { padding: 7px 9px; }
 }
+/* Large replies keep all source text while bounding rich-rendering work. */
+.md-large-notice { color: var(--muted); font-size: 12px; }
+.md-large-body { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; margin: 0; max-width: 100%; }

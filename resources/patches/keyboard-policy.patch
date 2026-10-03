@@ -1,0 +1,12 @@
+diff --git a/src/vs/platform/keybinding/common/abstractKeybindingService.ts b/src/vs/platform/keybinding/common/abstractKeybindingService.ts
+--- a/src/vs/platform/keybinding/common/abstractKeybindingService.ts
++++ b/src/vs/platform/keybinding/common/abstractKeybindingService.ts
+@@ -391,2 +391,8 @@
+ 					this._currentlyDispatchingCommandId = resolveResult.commandId;
++					const command = resolveResult.commandId;
++					const basicEditing = /^(?:editor\.action\.(?:clipboardCopyAction|clipboardCutAction|clipboardPasteAction|selectAll)|workbench\.action\.files\.(?:save|saveAll|saveAs))$/;
++					if (/^(?:workbench\.|editor\.action\.|actions\.find|editor\.debug\.|debug\.|testing\.|search\.|references-view\.)/.test(command) && !basicEditing.test(command)) {
++						this._currentlyDispatchingCommandId = null;
++						return true;
++					}
+ 					try {

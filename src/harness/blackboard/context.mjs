@@ -1,3 +1,6 @@
+import { completionEvidenceIssue } from './evidence.mjs';
+import { buildExplorationIndex } from './exploration-index.mjs';
+
 /**
  * Project persisted blackboard state into a compact, one-way graph for a model.
  * Storage IDs and execution bookkeeping stay in the host-side lookup closures.
@@ -35,11 +38,11 @@ export function buildBlackboardContext(snapshot, { focusId } = {}) {
   if (focusId === undefined) {
     for (const node of snapshot.nodes) visible.add(node.id);
   } else {
-    // Shared facts remain available to every worker. Include their ancestry so
-    // every emitted parent reference has a corresponding node in this context.
+    // Shared facts and all task lifecycles remain visible, including failures.
+    // Include ancestry so every parent reference resolves within this context.
     const pending = [snapshot.rootId, focusId];
     for (const node of snapshot.nodes) {
-      if (node.fact) pending.push(node.id);
+      if (node.fact || node.intent) pending.push(node.id);
     }
     while (pending.length > 0) {
       const id = pending.pop();
@@ -77,6 +80,21 @@ export function buildBlackboardContext(snapshot, { focusId } = {}) {
     if (node.fact) {
       // Facts are authoritative evidence: never truncate or summarize them here.
       projected.fact = structuredClone(node.fact.content);
+      const producer = node.producerId ? byId.get(node.producerId) : node.intent ? node : undefined;
+      let fact;
+      try { fact = JSON.parse(node.fact.content); } catch { /* Legacy text has no structured coverage. */ }
+      if (producer?.intent && fact?.version === 1) {
+        const coverage = Array.isArray(fact.coverage) ? fact.coverage : [];
+        const unresolved = (producer.intent.keyPoints ?? []).filter(point => {
+          const entries = coverage.filter(item => item?.point === point);
+          return entries.length !== 1 || !['confirmed', 'negative'].includes(entries[0].status) ||
+            typeof entries[0].result !== 'string' || !entries[0].result.trim();
+        });
+        projected.assessment = {
+          unresolvedKeyPoints: unresolved,
+          completionIssue: completionEvidenceIssue(node.fact.content, producer.intent.keyPoints ?? [], node.provenance?.sourceType) ?? null,
+        };
+      }
     }
     if (node.attempts?.length) {
       projected.attempts = {
@@ -89,6 +107,23 @@ export function buildBlackboardContext(snapshot, { focusId } = {}) {
           return [summary];
         }),
       };
+      // Whitelist a detached progress summary; never expose peer transcripts,
+      // tool arguments/results, checkpoints, or any mutation capability.
+      const latest = node.attempts.at(-1);
+      const checkpoint = latest.checkpoint;
+      if (node.intent?.status === 'running' && latest.status === 'running' &&
+          checkpoint?.kind === 'ubovm.pi-worker' && checkpoint.version === 1 &&
+          checkpoint.intentId === node.id &&
+          ['plan', 'execute', 'replan', 'conclude', 'done'].includes(checkpoint.phase)) {
+        projected.progress = {
+          phase: checkpoint.phase,
+          completedSteps: Array.isArray(checkpoint.completed) ? checkpoint.completed.length : 0,
+          remainingSteps: Array.isArray(checkpoint.plan) ? checkpoint.plan.length : 0,
+        };
+        if (checkpoint.phase === 'execute' && typeof checkpoint.plan?.[0]?.description === 'string') {
+          projected.progress.currentStep = summarizeError(checkpoint.plan[0].description);
+        }
+      }
     }
     if (node.provenance) {
       projected.evidence = {
@@ -107,6 +142,7 @@ export function buildBlackboardContext(snapshot, { focusId } = {}) {
     root: aliases.get(snapshot.rootId),
     ...(focusId === undefined ? {} : { focus: aliases.get(focusId) }),
     nodes,
+    ...(focusId === undefined ? { exploration: buildExplorationIndex(nodes) } : {}),
   };
   return {
     revision: snapshot.revision,

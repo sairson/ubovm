@@ -249,7 +249,8 @@ function Sync-Harness($Destination) {
             Write-Json $sourceStamp @{ digest = $sourceDigest }
         } finally { Remove-Managed $stage $Destination }
     }
-    Write-Host '[OK] Agent SDK and production dependencies prepared'
+    Invoke-Checked $installer.Node @((Join-Path $ProjectRoot 'src/main/prepare-python.mjs'), (Join-Path $Destination 'runtime/python'))
+    Write-Host '[OK] Agent SDK, bundled Python and production dependencies prepared'
 }
 
 function Set-PortableData($Name) {
@@ -298,6 +299,49 @@ function Replace-CoreSnippet([string]$Text, [string]$Before, [string]$After) {
     return $Text.Replace($Before, $After)
 }
 
+function Update-ManagedKeyboardPolicy([string]$Text, [string]$Legacy, [string]$Current) {
+    $anchor = 'this._currentlyDispatchingCommandId=l.commandId;'
+    $count = [regex]::Matches($Text, [regex]::Escape($anchor)).Count
+    if ($count -ne 1) { throw "Unsupported workbench bundle: keyboard dispatch anchor must be unique (matches: $count)." }
+    $prefix = $anchor + "`n"
+    $after = $prefix + $Current + 'try{'
+    $policies = [regex]::Matches($Text, [regex]::Escape($prefix) + '(?<policy>[\s\S]*?)try\{')
+    if ($policies.Count -gt 1) { throw 'Ambiguous managed keyboard policy: multiple dispatch anchors.' }
+    if ($Text.Contains($after)) { return $Text }
+    if ($policies.Count -eq 1) {
+        $policy = $policies[0].Groups['policy'].Value
+        # Only the generated search allow-list may vary. All surrounding
+        # keyboard behavior must still exactly match our original policy.
+        $normalized = [regex]::Replace($policy, '(?m)^\t+const fileSearch = /[^\r\n;]+/;\r?\n', '')
+        $normalized = $normalized.Replace(' && !fileSearch.test(command)', '')
+        if ($normalized -ceq $Legacy) {
+            return Replace-CoreSnippet $Text $policies[0].Value $after
+        }
+    }
+    return Replace-CoreSnippet $Text 'this._currentlyDispatchingCommandId=l.commandId;try{' $after
+}
+
+function Assert-CurrentKeyboardPolicy([string]$Text, [string]$Legacy, [string]$Current) {
+    if ((Update-ManagedKeyboardPolicy $Text $Legacy $Current) -cne $Text) {
+        throw 'The runtime keyboard policy is outdated. Run node build.mjs setup.'
+    }
+}
+
+function Get-SourcePatchNames($PatchDirectory = (Join-Path $ProjectRoot 'resources/patches')) {
+    $manifest = Get-Content -LiteralPath (Join-Path $PatchDirectory 'series.json') -Raw | ConvertFrom-Json
+    if ($manifest.version -ne 1 -or $manifest.patches -isnot [Array] -or !$manifest.patches.Count) { throw 'Invalid source patch manifest' }
+    $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($name in $manifest.patches) {
+        if ($name -isnot [string] -or $name -cnotmatch '^[a-z0-9]+(?:-[a-z0-9]+)*\.patch$') { throw 'Invalid source patch filename' }
+        if (!$seen.Add($name)) { throw "Duplicate source patch: $name" }
+        if (!(Test-Path -LiteralPath (Join-Path $PatchDirectory $name) -PathType Leaf)) { throw "Missing source patch: $name" }
+    }
+    foreach ($file in (Get-ChildItem -LiteralPath $PatchDirectory -File -Filter '*.patch')) {
+        if (!$seen.Contains($file.Name)) { throw "Unregistered source patch: $($file.Name)" }
+    }
+    return $manifest.patches
+}
+
 function Get-AppliedSourcePatches($SourceRoot, $PatchNames) {
     # Later patches can modify earlier hunks. Peel them from a disposable copy
     # in reverse order so repeat builds recognize the complete patch stack.
@@ -309,7 +353,7 @@ function Get-AppliedSourcePatches($SourceRoot, $PatchNames) {
         # Isolate git apply from any enclosing checkout's path prefix.
         Invoke-Checked (Get-Command git).Source @('init', '--quiet', $probeRoot)
         foreach ($name in $PatchNames) {
-            foreach ($line in [IO.File]::ReadAllLines((Join-Path $ProjectRoot "resources/$name"))) {
+            foreach ($line in [IO.File]::ReadAllLines((Join-Path $ProjectRoot "resources/patches/$name"))) {
                 if (-not $line.StartsWith('+++ b/')) { continue }
                 $relative = $line.Substring(6)
                 $source = Join-Path $SourceRoot $relative
@@ -323,7 +367,7 @@ function Get-AppliedSourcePatches($SourceRoot, $PatchNames) {
             }
         }
         for ($i = $PatchNames.Count - 1; $i -ge 0; $i--) {
-            $patch = Join-Path $ProjectRoot ('resources/' + $PatchNames[$i])
+            $patch = Join-Path $ProjectRoot ('resources/patches/' + $PatchNames[$i])
             $oldPreference = $ErrorActionPreference
             try {
                 $ErrorActionPreference = 'Continue'
@@ -339,12 +383,21 @@ function Get-AppliedSourcePatches($SourceRoot, $PatchNames) {
     } finally { Remove-Managed $probeRoot $cache }
 }
 
-function Update-LegacyMinimalUiPatch($SourceRoot, $Patch) {
-    # The earlier minimal-ui patch did not expose the three coding commands.
+function Update-LegacyMinimalUiPatch($SourceRoot, $Patch, $commands = $null) {
+    # Match only known menu-policy versions, preserving unrelated source edits.
+    if (-not $commands) {
+        $coding = "'ubovm.validateCodeChanges', 'ubovm.attachSelection', 'ubovm.reviewCodeChanges', "
+        $editor = "'ubovm.expandFileEditor', 'ubovm.restoreFileEditor', "
+        $projects = "'ubovm.newProject', 'ubovm.manageProjects', 'ubovm.newProjectConversation', 'ubovm.renameProject', 'ubovm.deleteProject', "
+        $projectManager = "'ubovm.manageProjects', "
+        foreach ($missing in @($projectManager, $projects, $coding, $editor, ($editor + $coding))) {
+            if (Update-LegacyMinimalUiPatch $SourceRoot $Patch $missing) { return $true }
+        }
+        return $false
+    }
     # Verify the entire known legacy patch before upgrading its one changed line.
     # Never reset the checkout or treat an arbitrary failed patch as already applied.
     $current = [IO.File]::ReadAllText($Patch)
-    $commands = "'ubovm.validateCodeChanges', 'ubovm.attachSelection', 'ubovm.reviewCodeChanges', "
     if ([regex]::Matches($current, [regex]::Escape($commands)).Count -ne 1) { return $false }
     $legacy = $current.Replace($commands, '')
     $cache = Join-Path $ProjectRoot '.cache'
@@ -376,6 +429,70 @@ function Update-LegacyMinimalUiPatch($SourceRoot, $Patch) {
         }
         return $true
     } finally { if (Test-Path -LiteralPath $probe) { Remove-Item -LiteralPath $probe -Force } }
+}
+
+function Update-LegacySidebarCloseTabsPatch($SourceRoot) {
+    # Normalize the known pre-autorepeat version before peeling overlapping patches.
+    $patch = Join-Path $ProjectRoot 'resources/patches/sidebar-close-tabs.patch'
+    $current = [IO.File]::ReadAllText($patch)
+    $guard = 'if (!event.repeat) { closeTab(); }'
+    if ([regex]::Matches($current, [regex]::Escape($guard)).Count -ne 1) { return $false }
+    $line = @($current -split "`r?`n" | Where-Object { $_.StartsWith('+') -and $_.Contains($guard) })
+    if ($line.Count -ne 1) { return $false }
+    $next = $line[0].Substring(1)
+    $previous = $next.Replace($guard, 'closeTab();')
+    $cache = Join-Path $ProjectRoot '.cache'
+    New-Item -ItemType Directory -Force -Path $cache | Out-Null
+    $probe = Join-Path $cache ('.legacy-sidebar-' + [Guid]::NewGuid().ToString('N') + '.patch')
+    try {
+        [IO.File]::WriteAllText($probe, $current.Replace($guard, 'closeTab();'), [Text.UTF8Encoding]::new($false))
+        $oldPreference = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = 'Continue'
+            & git -c "safe.directory=$SourceRoot" -C $SourceRoot apply --reverse --check $probe 2>$null
+            $matches = $LASTEXITCODE -eq 0
+        } finally { $ErrorActionPreference = $oldPreference }
+        if (-not $matches) { return $false }
+        $path = Join-Path $SourceRoot 'src/vs/workbench/browser/parts/compositeBarActions.ts'
+        $bytes = [IO.File]::ReadAllBytes($path)
+        $source = [IO.File]::ReadAllText($path)
+        if ([regex]::Matches($source, [regex]::Escape($previous)).Count -ne 1) { return $false }
+        try {
+            [IO.File]::WriteAllText($path, $source.Replace($previous, $next), [Text.UTF8Encoding]::new($false))
+            Invoke-Checked (Get-Command git).Source @('-c', "safe.directory=$SourceRoot", '-C', $SourceRoot, 'apply', '--reverse', '--check', $patch)
+        } catch {
+            [IO.File]::WriteAllBytes($path, $bytes)
+            throw
+        }
+        return $true
+    } finally { if (Test-Path -LiteralPath $probe) { Remove-Item -LiteralPath $probe -Force } }
+}
+
+function Update-LegacySidebarModePatch($SourceRoot) {
+    $legacy = Join-Path $ProjectRoot 'resources/patches/legacy/sidebar-mode-v1.patch'
+    $patch = Join-Path $ProjectRoot 'resources/patches/sidebar-mode.patch'
+    $oldPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        & git -c "safe.directory=$SourceRoot" -C $SourceRoot apply --reverse --check $legacy 2>$null
+        $matches = $LASTEXITCODE -eq 0
+    } finally { $ErrorActionPreference = $oldPreference }
+    if (-not $matches) { return $false }
+    # Only a fully recognized historical patch can be replaced. Preserve all
+    # other edits, and restore original bytes if the new patch cannot apply.
+    $path = Join-Path $SourceRoot 'src/vs/workbench/browser/parts/views/treeView.ts'
+    $bytes = [IO.File]::ReadAllBytes($path)
+    $git = (Get-Command git).Source
+    try {
+        Invoke-Checked $git @('-c', "safe.directory=$SourceRoot", '-C', $SourceRoot, 'apply', '--reverse', $legacy)
+        Invoke-Checked $git @('-c', "safe.directory=$SourceRoot", '-C', $SourceRoot, 'apply', '--check', $patch)
+        Invoke-Checked $git @('-c', "safe.directory=$SourceRoot", '-C', $SourceRoot, 'apply', $patch)
+        Invoke-Checked $git @('-c', "safe.directory=$SourceRoot", '-C', $SourceRoot, 'apply', '--reverse', '--check', $patch)
+    } catch {
+        [IO.File]::WriteAllBytes($path, $bytes)
+        throw
+    }
+    return $true
 }
 
 function Get-PatchAdditions($Patch, $SourceFile) {
@@ -427,6 +544,7 @@ function Set-StartupHtml($Path) {
 function Set-FixedConversationCore($Product) {
     $bundlePath = Join-Path $AppRoot 'out/vs/workbench/workbench.desktop.main.js'
     $bundle = [IO.File]::ReadAllText($bundlePath)
+    $bundle = Replace-CoreSnippet $bundle '_startBlockingIframeDragEvents(){' '_startBlockingIframeDragEvents(){if(this.providedViewType==="ubovm.welcome")return;'
     $bundle = $bundle.Replace("new Set(['ubovm.emptyFolder', 'ubovm.noWorkspace', 'ubovm.explorerEditing'])", "new Set(['ubovm.emptyFolder', 'ubovm.noWorkspace'])")
     $bundle = $bundle.Replace('&&this.contextKeyService.getContextKeyValue("ubovm.explorerEditing")!==true', '')
     $bundle = $bundle.Replace('get name(){if(this.explorerService.roots.length===1)return this.explorerService.roots[0].name;return this.labelService.getWorkspaceLabel(this.contextService.getWorkspace())}', 'get name(){return this.labelService.getWorkspaceLabel(this.contextService.getWorkspace())}')
@@ -437,16 +555,28 @@ function Set-FixedConversationCore($Product) {
     $bundle = $bundle.Replace('&&(this.contextKeyService.getContextKeyValue("ubovm.emptyFolder")===true||this.contextKeyService.getContextKeyValue("ubovm.noWorkspace")===true)', '&&this.contextKeyService.getContextKeyValue("ubovm.emptyFolder")===true')
     # Keep the native explorer scoped to the active conversation without
     # changing the window workspace or restarting its extension host.
-    $workspacePatch = Join-Path $ProjectRoot 'resources/session-workspace.patch'
+    $workspacePatch = Join-Path $ProjectRoot 'resources/patches/session-workspace.patch'
+    $bundle = $bundle.Replace('t.length!==1||this.contextService.getWorkbenchState()!==2||t[0]?.error', 't.length!==1||t[0]?.error')
+    # Empty windows still need the real Explorer view to instantiate its service.
+    $bundle = Replace-CoreSnippet $bundle 'this.workspaceContextService.getWorkbenchState()===1||this.workspaceContextService.getWorkspace().folders.length===0?(r&&s.push(r),l||t.push(a)):(l&&s.push(l),r||t.push(o))' '/* UBOVM session explorer */(l&&s.push(l),r||t.push(o))'
     $workspaceCode = (Get-PatchAdditions $workspacePatch 'src/vs/workbench/contrib/files/browser/explorerService.ts')
     $workspaceCode = [regex]::Replace($workspaceCode, '(?m)^import .*\r?\n', '')
     $workspaceCode = $workspaceCode.Replace(': string | undefined', '').Replace(': string', '').Replace('CommandsRegistry', '$e').Replace('DisposableStore', 'O').Replace('URI.file', 'P.file').Replace('new ExplorerItem', 'new cm')
     $workspaceAnchor = 'this.disposables.add(this.model),'
     $bundle = Replace-CoreSnippet $bundle $workspaceAnchor ($workspaceAnchor + '(()=>{' + "`n" + $workspaceCode + '})(),')
+    $bundle = $bundle.Replace('$e.registerCommand("_ubovm.initializeExplorer",accessor=>{accessor.get(ll)});', '')
+    $bundle = Replace-CoreSnippet $bundle 'll=we("explorerService");' 'll=we("explorerService");$e.registerCommand("_ubovm.initializeExplorer",accessor=>{void accessor.get(ll).roots});'
+    $keyboardPolicy = Get-PatchAdditions (Join-Path $ProjectRoot 'resources/patches/keyboard-policy.patch') 'src/vs/platform/keybinding/common/abstractKeybindingService.ts'
+    $legacyKeyboardPolicy = $keyboardPolicy.Replace('resolveResult.commandId', 'l.commandId')
+    $fileSearchPatch = Join-Path $ProjectRoot 'resources/patches/file-search.patch'
+    $searchKeys = Get-PatchAdditions $fileSearchPatch 'src/vs/platform/keybinding/common/abstractKeybindingService.ts'
+    $keyboardPolicy = [regex]::Replace($keyboardPolicy, '(?m)^.*if \(/\^\(\?:workbench.*\{\r?$', $searchKeys.TrimEnd())
+    $keyboardPolicy = $keyboardPolicy.Replace('resolveResult.commandId', 'l.commandId')
+    $bundle = Update-ManagedKeyboardPolicy $bundle $legacyKeyboardPolicy $keyboardPolicy
     $bundle = Replace-CoreSnippet $bundle 'findClosest(i){const e=this.contextService.getWorkspaceFolder(i);if(e){const t=this.roots.find(s=>this.uriIdentityService.extUri.isEqual(s.resource,e.uri));if(t)return t.find(i)}return null}' 'findClosest(i){const e=this.contextService.getWorkspaceFolder(i);if(e){const t=this.roots.find(s=>this.uriIdentityService.extUri.isEqual(s.resource,e.uri));if(t)return t.find(i)}const root=this.roots.filter(r=>this.uriIdentityService.extUri.isEqualOrParent(i,r.resource)).sort((a,b)=>b.resource.path.length-a.resource.path.length)[0];return root?.find(i)??null}'
     $bundle = Replace-CoreSnippet $bundle 'get name(){return this.labelService.getWorkspaceLabel(this.contextService.getWorkspace())}' 'get name(){if(this.explorerService.roots.length<=1)return this.explorerService.roots[0]?.name??"文件";return this.labelService.getWorkspaceLabel(this.contextService.getWorkspace())}'
     $bundle = Replace-CoreSnippet $bundle 'setContextKeys(e){const t=this.contextService.getWorkspace().folders,s=e?e.resource:t[t.length-1].uri;if(e=e||this.explorerService.findClosest(s),' 'setContextKeys(e){const t=this.explorerService.roots,s=e?e.resource:t[t.length-1]?.resource;if(e=e||(s?this.explorerService.findClosest(s):undefined),'
-    $bundle = Replace-CoreSnippet $bundle 'const t=this.explorerService.roots;let s=t[0];(this.contextService.getWorkbenchState()!==2||t[0].error)&&(s=t);' 'const t=this.explorerService.roots;let s=t[0];this.updateTitle(this.name);(t.length!==1||this.contextService.getWorkbenchState()!==2||t[0]?.error)&&(s=t);'
+    $bundle = Replace-CoreSnippet $bundle 'const t=this.explorerService.roots;let s=t[0];(this.contextService.getWorkbenchState()!==2||t[0].error)&&(s=t);' 'const t=this.explorerService.roots;let s=t[0];this.updateTitle(this.name);(t.length!==1||t[0]?.error)&&(s=t);'
     # This exact anchor belongs to WebviewInput in the SHA-256-pinned runtime.
     # Refuse unknown versions instead of changing unrelated editor behavior.
     $original = 'get editorId(){return this.viewType}get capabilities(){return 138}get resource()'
@@ -461,8 +591,13 @@ function Set-FixedConversationCore($Product) {
     }
     # The additions in this patch are plain JavaScript except for the single
     # generic return cast; share the source policy with the pinned bundle.
-    $uiPatch = Join-Path $ProjectRoot 'resources/minimal-ui.patch'
+    $uiPatch = Join-Path $ProjectRoot 'resources/patches/minimal-ui.patch'
     $menuPolicy = Get-PatchAdditions $uiPatch 'src/vs/platform/actions/common/actions.ts'
+    $markdownPatch = Join-Path $ProjectRoot 'resources/patches/markdown-preview.patch'
+    $markdownMenus = Get-PatchAdditions $markdownPatch 'src/vs/platform/actions/common/actions.ts'
+    $menuPolicy = $menuPolicy.Replace('return result.filter', $markdownMenus + 'return result.filter')
+    $searchMenus = Get-PatchAdditions $fileSearchPatch 'src/vs/platform/actions/common/actions.ts'
+    $menuPolicy = [regex]::Replace($menuPolicy, '(?m)^.*return result.filter.*;\r?$', $searchMenus.TrimEnd())
     $beforeMenu = 'getMenuItems(i){let e;return this._menuItems.has(i)?e=[...this._menuItems.get(i)]:e=[],i===T.CommandPalette&&this._appendImplicitItems(e),e}'
     $ownedMenuPrefix = 'getMenuItems(i){let e;this._menuItems.has(i)?e=[...this._menuItems.get(i)]:e=[],i===T.CommandPalette&&this._appendImplicitItems(e);const id=i,result=e;'
     $ownedMenuStart = $bundle.IndexOf($ownedMenuPrefix)
@@ -474,7 +609,17 @@ function Set-FixedConversationCore($Product) {
     $afterMenu = 'getMenuItems(i){let e;this._menuItems.has(i)?e=[...this._menuItems.get(i)]:e=[],i===T.CommandPalette&&this._appendImplicitItems(e);const id=i,result=e;' + "`n" + $menuPolicy + 'return result}'
     $bundle = Replace-CoreSnippet $bundle $beforeMenu $afterMenu
     $commandPolicy = (Get-PatchAdditions $uiPatch 'src/vs/workbench/services/commands/common/commandService.ts').Replace('undefined as T', 'undefined')
+    $commandPolicy = $commandPolicy.Replace('|markdown\.showPreview', '')
+    $searchCommands = Get-PatchAdditions $fileSearchPatch 'src/vs/workbench/services/commands/common/commandService.ts'
+    $commandPolicy = [regex]::Replace($commandPolicy, '(?m)^.*if \(hiddenActions.test\(id\)\).*\{\r?$', $searchCommands.TrimEnd())
     $beforeCommand = 'async executeCommand(e,...t){this._logService.trace("CommandService#executeCommand",e);'
+    $ownedCommandPrefix = 'async executeCommand(e,...t){const id=e;'
+    $ownedCommandStart = $bundle.IndexOf($ownedCommandPrefix)
+    if ($ownedCommandStart -ge 0) {
+        $ownedCommandEnd = $bundle.IndexOf('this._logService.trace("CommandService#executeCommand",e);', $ownedCommandStart)
+        if ($ownedCommandEnd -lt 0) { throw 'Incomplete managed command policy.' }
+        $bundle = $bundle.Substring(0, $ownedCommandStart) + 'async executeCommand(e,...t){' + $bundle.Substring($ownedCommandEnd)
+    }
     $afterCommand = 'async executeCommand(e,...t){const id=e;' + "`n" + $commandPolicy + 'this._logService.trace("CommandService#executeCommand",e);'
     $bundle = Replace-CoreSnippet $bundle $beforeCommand $afterCommand
     $bundle = Replace-CoreSnippet $bundle 'onTitleAreaContextMenu(e){if(this.shouldShowCompositeBar()' 'onTitleAreaContextMenu(e){return;/* UBOVM compact pane header */if(this.shouldShowCompositeBar()'
@@ -491,10 +636,53 @@ function Set-FixedConversationCore($Product) {
     $bundle = Replace-CoreSnippet $bundle 'openEditor(e,t){const s=this.editorTabsControl.openEditor(e,t);this.handleOpenedEditors(s)}openEditors(e){const t=this.editorTabsControl.openEditors(e);this.handleOpenedEditors(t)}handleOpenedEditors(e){this.headerControl.handleEditorsChange(e)}beforeCloseEditor(e){return this.editorTabsControl.beforeCloseEditor(e)}closeEditor(e){this.editorTabsControl.closeEditor(e),this.handleClosedEditors()}closeEditors(e){this.editorTabsControl.closeEditors(e),this.handleClosedEditors()}handleClosedEditors(){this.groupView.activeEditor||this.headerControl.handleEditorsChange(!0)}' 'openEditor(e,t){this.updateConversationChrome();const s=this.editorTabsControl.openEditor(e,t);this.handleOpenedEditors(s)}openEditors(e){this.updateConversationChrome();const t=this.editorTabsControl.openEditors(e);this.handleOpenedEditors(t)}handleOpenedEditors(e){this.headerControl?.handleEditorsChange(e)}beforeCloseEditor(e){return this.editorTabsControl.beforeCloseEditor(e)}closeEditor(e){this.updateConversationChrome(),this.editorTabsControl.closeEditor(e),this.handleClosedEditors()}closeEditors(e){this.updateConversationChrome(),this.editorTabsControl.closeEditors(e),this.handleClosedEditors()}handleClosedEditors(){this.groupView.activeEditor||this.headerControl?.handleEditorsChange(!0)}'
     $bundle = Replace-CoreSnippet $bundle 'updateEditorLabel(e){this.editorTabsControl.updateEditorLabel(e),this.groupView.activeEditor===e&&this.headerControl.handleEditorsChange(!0)}' 'updateEditorLabel(e){this.editorTabsControl.updateEditorLabel(e),this.groupView.activeEditor===e&&this.headerControl?.handleEditorsChange(!0)}'
     $bundle = Replace-CoreSnippet $bundle 'layout(e){return this.editorTabsControl.layout(e),this.headerControl.layout(e.container.width),new Ei(e.container.width,this.getHeight().total)}getHeight(){const e=this.editorTabsControl.getHeight();return{total:e+this.headerControl.height,offset:e}}' 'layout(e){return this.editorTabsControl.layout(e),this.headerControl?.layout(e.container.width),new Ei(e.container.width,this.getHeight().total)}getHeight(){const e=this.editorTabsControl.getHeight();return{total:e+(this.headerControl?.height??0),offset:e}}'
-    # Keep panel services registered for diagnostics, but only expose Terminal.
-    $bundle = Replace-CoreSnippet $bundle 'static{this.activePanelSettingsKey="workbench.panelpart.activepanelid"}' 'static{this.activePanelSettingsKey="workbench.panelpart.activepanelid"}async openPaneComposite(e,t){if(e!==void 0&&e!=="terminal")return;return super.openPaneComposite("terminal",t)}getPaneComposite(e){return e==="terminal"?super.getPaneComposite(e):void 0}getPaneComposites(){return super.getPaneComposites().filter(e=>e.id==="terminal")}getLastActivePaneCompositeId(){return"terminal"}'
-    $bundle = Replace-CoreSnippet $bundle 'shouldShowCompositeBar(){return!0}getCompositeBarPosition(){return Ad.TITLE}toJSON(){return{type:"workbench.parts.panel"}}' 'shouldShowCompositeBar(){return!1}getCompositeBarPosition(){return Ad.TITLE}toJSON(){return{type:"workbench.parts.panel"}}'
-    $startupCode = (Get-PatchAdditions (Join-Path $ProjectRoot 'resources/startup-ui.patch') 'src/vs/workbench/contrib/splash/browser/partsSplash.ts').Replace('mainWindow', 'et')
+    # Preserve explicit terminal focus through the view-to-container bridge.
+    $bundle = Replace-CoreSnippet $bundle 'const r=await this.openComposite(o.id,n);if(r?.openView)' 'const r=await this.openComposite(o.id,n,e==="terminal"?t:void 0);if(r?.openView)'
+    # Normalize the managed reveal guard before matching the complete panel policy.
+    $bundle = $bundle.Replace('if(t!==true&&!this.layoutService.isVisible("workbench.parts.panel"))return;return super.openPaneComposite(e??this.getLastActivePaneCompositeId(),t)', 'return super.openPaneComposite(e??this.getLastActivePaneCompositeId(),t)')
+    # Upgrade the terminal-only policy before installing the shared Worker panel policy.
+    $bundle = $bundle.Replace('static{this.activePanelSettingsKey="workbench.panelpart.activepanelid"}async openPaneComposite(e,t){if(e!==void 0&&e!=="terminal")return;return super.openPaneComposite("terminal",t)}getPaneComposite(e){return e==="terminal"?super.getPaneComposite(e):void 0}getPaneComposites(){return super.getPaneComposites().filter(e=>e.id==="terminal")}getLastActivePaneCompositeId(){return"terminal"}', 'static{this.activePanelSettingsKey="workbench.panelpart.activepanelid"}')
+    $bundle = Replace-CoreSnippet $bundle 'static{this.activePanelSettingsKey="workbench.panelpart.activepanelid"}' 'static{this.activePanelSettingsKey="workbench.panelpart.activepanelid"}async openPaneComposite(e,t){if(e!==void 0&&e!=="terminal"&&e!=="workbench.view.extension.ubovm-workers")return;return super.openPaneComposite(e??this.getLastActivePaneCompositeId(),t)}getPaneComposite(e){return e==="terminal"||e==="workbench.view.extension.ubovm-workers"?super.getPaneComposite(e):void 0}getPaneComposites(){return super.getPaneComposites().filter(e=>e.id==="terminal"||e.id==="workbench.view.extension.ubovm-workers")}getLastActivePaneCompositeId(){const e=super.getLastActivePaneCompositeId();return e==="workbench.view.extension.ubovm-workers"?e:"terminal"}'
+    $bundle = $bundle.Replace('shouldShowCompositeBar(){return!1}getCompositeBarPosition(){return Ad.TITLE}toJSON(){return{type:"workbench.parts.panel"}}', 'shouldShowCompositeBar(){return!0}getCompositeBarPosition(){return Ad.TITLE}toJSON(){return{type:"workbench.parts.panel"}}')
+    $bundle = Replace-CoreSnippet $bundle 'shouldBeHidden(e,t){const s=Oe(e)?this.getViewContainer(e):e,n=Oe(e)?e:e.id;' 'shouldBeHidden(e,t){const s=Oe(e)?this.getViewContainer(e):e,n=Oe(e)?e:e.id;if(this.options.partContainerClass==="panel"&&n!=="terminal"&&n!=="workbench.view.extension.ubovm-workers")return!0;'
+    $bundle = $bundle.Replace('&&n!=="workbench.view.extension.ubovm-workers"&&n!=="workbench.view.extension.ubovm-blackboard")return!0;', '&&n!=="workbench.view.extension.ubovm-workers")return!0;')
+    $bundle = Replace-CoreSnippet $bundle 'if(this.options.partContainerClass==="panel"&&n!=="terminal"&&n!=="workbench.view.extension.ubovm-workers")return!0;' 'if(this.options.partContainerClass==="panel"&&n!=="terminal"&&n!=="workbench.view.extension.ubovm-workers")return!0;if(this.options.partContainerClass==="sidebar"&&n!=="workbench.view.explorer"&&n!=="workbench.view.extension.ubovm-workers")return!0;'
+    $bundle = Replace-CoreSnippet $bundle 'partContainerClass:"sidebar",pinnedViewContainersKey:FZ.pinnedViewContainersKey,placeholderViewContainersKey:FZ.placeholderViewContainersKey,viewContainersWorkspaceStateKey:FZ.viewContainersWorkspaceStateKey,icon:!0' 'partContainerClass:"sidebar",pinnedViewContainersKey:FZ.pinnedViewContainersKey,placeholderViewContainersKey:FZ.placeholderViewContainersKey,viewContainersWorkspaceStateKey:FZ.viewContainersWorkspaceStateKey,icon:!1'
+    # Right-side tabs share the title row so single-view logs do not repeat their title.
+    $bundle = Replace-CoreSnippet $bundle 'getCompositeBarPosition(){switch(this.configurationService.getValue("workbench.activityBar.location")){case"top":return Ad.TOP;' 'getCompositeBarPosition(){switch(this.configurationService.getValue("workbench.activityBar.location")){case"top":return Ad.TITLE;'
+    $closeStart = $bundle.IndexOf('render(e){super.render(e),this.updateChecked(),this.updateEnabled();const container=e;')
+    if ($closeStart -ge 0) {
+        $closeEnd = $bundle.IndexOf('this._register(U(this.container,ie.CONTEXT_MENU,', $closeStart)
+        if ($closeEnd -lt 0 -or !$bundle.Substring($closeStart, $closeEnd - $closeStart).Contains('ubovm-sidebar-tab-close')) { throw 'Unsupported sidebar close-tab patch.' }
+        $bundle = $bundle.Substring(0, $closeStart) + 'render(e){super.render(e),this.updateChecked(),this.updateEnabled(),' + $bundle.Substring($closeEnd)
+    }
+    $closeTabs = Get-PatchAdditions (Join-Path $ProjectRoot 'resources/patches/sidebar-close-tabs.patch') 'src/vs/workbench/browser/parts/compositeBarActions.ts'
+    $closeTabs = $closeTabs.Replace("if (!container.closest('.part.sidebar')) { return; }", "const sidebar = container.closest('.part.sidebar'); if (!sidebar) { return; }").Replace("void this.commandService.executeCommand('workbench.action.closeSidebar');", "sidebar.dispatchEvent(new CustomEvent('ubovm-empty-sidebar'));")
+    $closeTabs = $closeTabs.Replace('querySelector<HTMLElement>', 'querySelector').Replace('addDisposableListener(', 'U(').Replace('localize(''ubovm.closeSidebarTab'', "关闭 {0}", this.compositeBarActionItem.name)', '(''关闭 '' + this.compositeBarActionItem.name)')
+    $bundle = Replace-CoreSnippet $bundle 'render(e){super.render(e),this.updateChecked(),this.updateEnabled(),this._register(U(this.container,ie.CONTEXT_MENU,' ('render(e){super.render(e),this.updateChecked(),this.updateEnabled();const container=e;' + "`n" + $closeTabs + 'this._register(U(this.container,ie.CONTEXT_MENU,')
+    $bundle = Replace-CoreSnippet $bundle 'onDidViewContainerVisible(e){const t=this.getViewContainer(e);t&&(this.addComposite(t),this.compositeBar.activateComposite(t.id),' 'onDidViewContainerVisible(e){const t=this.getViewContainer(e);t&&(this.addComposite(t),this.options.partContainerClass==="sidebar"&&this.compositeBar.pin(e),this.compositeBar.activateComposite(t.id),'
+    $emptySidebar = Get-PatchAdditions (Join-Path $ProjectRoot 'resources/patches/sidebar-empty.patch') 'src/vs/workbench/browser/parts/paneCompositePart.ts'
+    $emptyMethod = [regex]::Match($emptySidebar, '(?s)\tprivate initializeUbovmEmptySidebar\(\): void \{.*?\n\t\}').Value
+    if (-not $emptyMethod) { throw 'Missing empty sidebar implementation.' }
+    $emptyMethod = $emptyMethod.Replace('private ', '').Replace('(): void', '()').Replace('addDisposableListener(', 'U(')
+    # Soft last-tab close: keep the empty CTA visible; do not auto-hide the sidebar part.
+    $autoHideMethod = $emptyMethod.Replace('button.focus();', 'this.hideActivePaneComposite();')
+    if ($bundle.Contains($autoHideMethod)) { $bundle = $bundle.Replace($autoHideMethod, $emptyMethod) }
+    if (-not $bundle.Contains('initializeUbovmEmptySidebar(){') -and -not $bundle.Contains('initializeUbovmEmptySidebar() {')) {
+        $bundle = Replace-CoreSnippet $bundle 'createEmptyPaneMessage(e){' ($emptyMethod + "`n" + 'createEmptyPaneMessage(e){')
+    }
+    $bundle = Replace-CoreSnippet $bundle 'this.createEmptyPaneMessage(this.contentArea),this.updateCompositeBar();' 'this.createEmptyPaneMessage(this.contentArea),this.updateCompositeBar();this.initializeUbovmEmptySidebar();'
+    $bundle = Replace-CoreSnippet $bundle 'onDidOpen(e){const t=e.getId();' 'onDidOpen(e){if(this.partId==="workbench.parts.sidebar"){delete this.element.dataset.ubovmEmpty;this.storageService.remove("ubovm.sidebar.empty",1)}const t=e.getId();'
+    $bundle = Replace-CoreSnippet $bundle 'getLastActivePaneCompositeId(){return this.getLastActiveCompositeId()}' 'getLastActivePaneCompositeId(){if(this.partId==="workbench.parts.sidebar"&&this.element.dataset.ubovmEmpty==="true")return"";return this.getLastActiveCompositeId()}'
+    $bundle = Replace-CoreSnippet $bundle 'if(this.options.partContainerClass==="sidebar"&&n!=="workbench.view.explorer"&&n!=="workbench.view.extension.ubovm-workers")return!0;' 'if(this.options.partContainerClass==="sidebar"&&n!=="workbench.view.explorer"&&n!=="workbench.view.search"&&n!=="workbench.view.extension.ubovm-workers"&&n!=="workbench.view.extension.ubovm-blackboard")return!0;'
+    $bundle = Replace-CoreSnippet $bundle 'if(this.options.partContainerClass==="sidebar"&&n!=="workbench.view.explorer"&&n!=="workbench.view.extension.ubovm-workers"&&n!=="workbench.view.extension.ubovm-blackboard")return!0;' 'if(this.options.partContainerClass==="sidebar"&&n!=="workbench.view.explorer"&&n!=="workbench.view.search"&&n!=="workbench.view.extension.ubovm-workers"&&n!=="workbench.view.extension.ubovm-blackboard")return!0;'
+    $bundle = $bundle.Replace(
+      "['workbench.view.explorer', 'workbench.view.extension.ubovm-workers', 'workbench.view.extension.ubovm-blackboard']",
+      "['workbench.view.explorer', 'workbench.view.search', 'workbench.view.extension.ubovm-workers', 'workbench.view.extension.ubovm-blackboard']")
+    $bundle = $bundle.Replace(
+      '["workbench.view.explorer","workbench.view.extension.ubovm-workers","workbench.view.extension.ubovm-blackboard"]',
+      '["workbench.view.explorer","workbench.view.search","workbench.view.extension.ubovm-workers","workbench.view.extension.ubovm-blackboard"]')
+    $startupCode = (Get-PatchAdditions (Join-Path $ProjectRoot 'resources/patches/startup-ui.patch') 'src/vs/workbench/contrib/splash/browser/partsSplash.ts').Replace('mainWindow', 'et')
     $startupStart = $bundle.IndexOf('_removePartsSplash(){')
     if ($startupStart -lt 0) { throw 'Unsupported workbench bundle: the startup transition anchor is missing.' }
     $startupEnd = $bundle.IndexOf('const e=et.document.getElementById(Vni._splashElementId);', $startupStart)
@@ -503,12 +691,15 @@ function Set-FixedConversationCore($Product) {
     }
     $bundle = Replace-CoreSnippet $bundle '_removePartsSplash(){const e=et.document.getElementById(Vni._splashElementId);' ('_removePartsSplash(){' + "`n" + $startupCode + 'const e=et.document.getElementById(Vni._splashElementId);')
     # Keep source and pinned prebuilt startup width recovery identical.
-    $sidebarSizeCode = (Get-PatchAdditions (Join-Path $ProjectRoot 'resources/sidebar-size.patch') 'src/vs/workbench/browser/layout.ts').Replace('LayoutStateKeys.', 'Ti.').Replace('width * 0.4', 'this._mainContainerDimension.width * 0.4').Replace('width / 4', 'this._mainContainerDimension.width / 4')
+    $sidebarSizeCode = (Get-PatchAdditions (Join-Path $ProjectRoot 'resources/patches/sidebar-size.patch') 'src/vs/workbench/browser/layout.ts').Replace('LayoutStateKeys.', 'Ti.').Replace('width * 0.4', 'this._mainContainerDimension.width * 0.4').Replace('width / 4', 'this._mainContainerDimension.width / 4')
     if (-not $bundle.Contains('// Repair oversized persisted sidebars')) {
         $bundle = Replace-CoreSnippet $bundle 'createGridDescriptor(){const{width:i,height:e}' ('createGridDescriptor(){' + "`n" + $sidebarSizeCode + 'const{width:i,height:e}')
     }
+    $bundle = Replace-CoreSnippet $bundle 'return super.openPaneComposite(e??this.getLastActivePaneCompositeId(),t)' 'if(t!==true&&!this.layoutService.isVisible("workbench.parts.panel"))return;return super.openPaneComposite(e??this.getLastActivePaneCompositeId(),t)'
+    $bundle = Replace-CoreSnippet $bundle 'createGridDescriptor(){' 'createGridDescriptor(){this.stateModel.setRuntimeValue(Ti.SIDEBAR_HIDDEN,!0);'
+    $bundle = Replace-CoreSnippet $bundle 'this.state.initialization.views.containerToRestore.sideBar&&(hs("code/willRestoreViewlet")' 'this.isVisible("workbench.parts.sidebar")&&this.state.initialization.views.containerToRestore.sideBar&&(hs("code/willRestoreViewlet")'
     # Reserve real virtual-list space for conversation rows only.
-    $panelPatch = Join-Path $ProjectRoot 'resources/panel-ui.patch'
+    $panelPatch = Join-Path $ProjectRoot 'resources/patches/panel-ui.patch'
     $motionCode = (Get-PatchAdditions $panelPatch 'src/vs/workbench/browser/layout.ts').Replace(' as HTMLElement | null', '').Replace(' as HTMLElement', '')
     $motionStart = $bundle.IndexOf('setPartHidden(i,e){const hidden=i,part=e;')
     if ($motionStart -ge 0) {
@@ -549,7 +740,7 @@ function Set-FixedConversationCore($Product) {
     $bundle = Replace-CoreSnippet $bundle 'this.folderContext=Hh.bindTo(u),' 'this.ubovmEditingContext=u.createKey("ubovm.explorerEditing",false),this.folderContext=Hh.bindTo(u),'
     $bundle = Replace-CoreSnippet $bundle 'async setEditable(e,t){t?(this.horizontalScrolling=' 'async setEditable(e,t){this.ubovmEditingContext.set(t);t?(this.horizontalScrolling='
     $bundle = Replace-CoreSnippet $bundle 'this.delegate.id==="workbench.explorer.fileView"&&(this.contextKeyService.getContextKeyValue("ubovm.emptyFolder")' 'this.delegate.id==="workbench.explorer.fileView"&&this.contextKeyService.getContextKeyValue("ubovm.explorerEditing")!==true&&(this.contextKeyService.getContextKeyValue("ubovm.emptyFolder")'
-    $modeCode = (Get-PatchAdditions (Join-Path $ProjectRoot 'resources/sidebar-mode.patch') 'src/vs/workbench/browser/parts/views/treeView.ts').Replace(': KeyboardEvent', '')
+    $modeCode = (Get-PatchAdditions (Join-Path $ProjectRoot 'resources/patches/sidebar-mode.patch') 'src/vs/workbench/browser/parts/views/treeView.ts').Replace(': KeyboardEvent', '').Replace('<HTMLElement, boolean>', '').Replace(': Event', '').Replace(' as Node', '').Replace(': number | undefined', '')
     $modeLayoutPattern = '(?m)^\s*if \(this.id === ''ubovm.sessions''\) \{ height = Math.max\(0, height - (?<reserved>\d+)\); \}\s*$'
     $modeLayout = [regex]::Match($modeCode, $modeLayoutPattern)
     $modeParts = [regex]::Split($modeCode, $modeLayoutPattern.Replace('(?<reserved>\d+)', '\d+'))
@@ -584,6 +775,17 @@ function Set-FixedConversationCore($Product) {
     Set-CoreChecksum $Product 'vs/code/electron-browser/workbench/workbench.html'
 }
 
+function Set-BackgroundTrayCore {
+    $mainPath = Join-Path $AppRoot 'out/main.js'
+    $main = [IO.File]::ReadAllText($mainPath)
+    $anchor = 'i.add(k.fromNodeEventEmitter(s,"close")(r=>{const n=e.id;this.windowToCloseRequest.delete(n)||('
+    $replacement = 'i.add(k.fromNodeEventEmitter(s,"close")(r=>{s.emit("ubovm-before-close",r,this._quitRequested);if(r.defaultPrevented)return;const n=e.id;this.windowToCloseRequest.delete(n)||('
+    if (-not $main.Contains($replacement)) {
+        $main = Replace-CoreSnippet $main $anchor $replacement
+        [IO.File]::WriteAllText($mainPath, $main, [Text.UTF8Encoding]::new($false))
+    }
+}
+
 function Sync-Application {
     Sync-Harness (Join-Path $AppRoot 'ubovm')
     Set-ProductBranding $AppRoot
@@ -595,6 +797,7 @@ function Sync-Application {
         $product | Add-Member -NotePropertyName $property.Name -NotePropertyValue $property.Value -Force
     }
     Set-FixedConversationCore $product
+    Set-BackgroundTrayCore
     Write-Json $productPath $product
     $mainDirectory = Join-Path $AppRoot 'ubovm/main'
     New-Item -ItemType Directory -Force -Path $mainDirectory | Out-Null
@@ -659,14 +862,83 @@ function Initialize-Runtime {
     Write-Host "[UBOVM] Ready: VS Code $($Config.core.source.ref) / VSCodium $($Config.core.runtime.version)"
 }
 
+function Get-InstallerTools {
+    $toolsRoot = Join-Path $ProjectRoot '.cache/installer-tools'
+    $cachedCompiler = Join-Path $toolsRoot 'node_modules/innosetup/bin/ISCC.exe'
+    $cachedEditor = Join-Path $toolsRoot 'node_modules/rcedit/bin/rcedit.exe'
+    if ($env:UBOVM_ISCC -and -not (Test-Path -LiteralPath $env:UBOVM_ISCC -PathType Leaf)) {
+        throw "UBOVM_ISCC must point to an existing ISCC.exe file: $env:UBOVM_ISCC"
+    }
+    $candidates = @($env:UBOVM_ISCC, (Join-Path $ProjectRoot 'vendor/vscode/node_modules/innosetup/bin/ISCC.exe'))
+    foreach ($base in @(${env:ProgramFiles(x86)}, $env:ProgramFiles, $env:LOCALAPPDATA)) {
+        if ($base) { $candidates += Join-Path $base 'Inno Setup 6/ISCC.exe'; $candidates += Join-Path $base 'Programs/Inno Setup 6/ISCC.exe' }
+    }
+    $compiler = $candidates | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) } | Select-Object -First 1
+    if (-not $compiler) { $command = Get-Command ISCC.exe -ErrorAction SilentlyContinue; if ($command) { $compiler = $command.Source } }
+    if (-not $compiler -and (Test-Path -LiteralPath $cachedCompiler -PathType Leaf)) { $compiler = $cachedCompiler }
+    $editor = Join-Path $ProjectRoot 'vendor/vscode/node_modules/rcedit/bin/rcedit.exe'
+    if (-not (Test-Path -LiteralPath $editor -PathType Leaf)) { $editor = $cachedEditor }
+    if (-not $compiler -or -not (Test-Path -LiteralPath $editor -PathType Leaf)) {
+        New-Item -ItemType Directory -Force -Path $toolsRoot | Out-Null
+        $installer = Get-HarnessInstaller
+        $oldPath = $env:PATH
+        try {
+            $env:PATH = (Split-Path -Parent $installer.Node) + [IO.Path]::PathSeparator + $oldPath
+            Write-Host '[UBOVM] Preparing cached Inno Setup and executable branding tools...'
+            Invoke-Checked $installer.Npm @('install', '--prefix', $toolsRoot, '--no-save', '--package-lock=false', '--ignore-scripts', '--no-audit', '--no-fund', '--cache', (Join-Path $ProjectRoot '.cache/npm'), 'innosetup@6.4.1', 'rcedit@1.1.0') $toolsRoot
+        } finally { $env:PATH = $oldPath }
+        if (-not $compiler) { $compiler = $cachedCompiler }
+    }
+    foreach ($tool in @($compiler, $editor)) {
+        if (-not (Test-Path -LiteralPath $tool -PathType Leaf)) { throw "Installer tool preparation did not produce: $tool" }
+    }
+    return @{ Compiler = $compiler; Editor = $editor }
+}
+
+function Invoke-InstallerCompiler($Compiler, $Arguments, $Staging) {
+    if (-not (Test-Path -LiteralPath $Compiler -PathType Leaf)) { throw "Installer compiler not found: $Compiler" }
+    $previousTemp = $env:TEMP
+    $previousTmp = $env:TMP
+    $previousPreference = $ErrorActionPreference
+    $attemptRoot = Join-Path $Staging ('compile-' + [Guid]::NewGuid().ToString('N'))
+    Assert-ChildPath $attemptRoot $Staging
+    New-Item -ItemType Directory -Force -Path $attemptRoot | Out-Null
+    try {
+        for ($attempt = 1; $attempt -le 3; $attempt++) {
+            $temporary = Join-Path $attemptRoot "temp-$attempt"
+            New-Item -ItemType Directory -Path $temporary | Out-Null
+            $env:TEMP = $temporary
+            $env:TMP = $temporary
+            $log = Join-Path $attemptRoot "iscc-$attempt.log"
+            # Windows PowerShell may wrap native stderr in ErrorRecord objects.
+            # Read the native exit code and retain diagnostics before deciding to retry.
+            $ErrorActionPreference = 'Continue'
+            $global:LASTEXITCODE = $null
+            & $Compiler @Arguments 2>&1 | Tee-Object -FilePath $log | ForEach-Object { Write-Host $_ }
+            $compilerExit = $LASTEXITCODE
+            $ErrorActionPreference = $previousPreference
+            if ($null -eq $compilerExit) { throw "Installer compiler could not start. Diagnostics: $log" }
+            if ($compilerExit -eq 0) { return }
+            $diagnostics = Get-Content -LiteralPath $log -Raw
+            $resourceAccessFailure = $diagnostics -match '(?i)(?:Begin|End)UpdateResource(?:\w*)? failed\s*\((?:5|32|33|110)\)'
+            if (-not $resourceAccessFailure -or $attempt -eq 3) {
+                throw "Installer compiler exited with $compilerExit. Diagnostics: $log"
+            }
+            Write-Host "[UBOVM] Resource update could not access its temporary executable; retrying ($attempt/3). Log: $log"
+            Start-Sleep -Seconds $attempt
+        }
+    } finally {
+        $env:TEMP = $previousTemp
+        $env:TMP = $previousTmp
+        $ErrorActionPreference = $previousPreference
+    }
+}
+
 function Build-Installer {
     if (-not $UsePrebuilt) { throw 'The installer target currently supports Windows x64 only.' }
-    $compiler = @($env:UBOVM_ISCC, (Join-Path $ProjectRoot 'vendor/vscode/node_modules/innosetup/bin/ISCC.exe'),
-        (Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6/ISCC.exe')) | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
-    if (-not $compiler) { $command = Get-Command ISCC.exe -ErrorAction SilentlyContinue; if ($command) { $compiler = $command.Source } }
-    if (-not $compiler) { throw 'Install Inno Setup 6 or set UBOVM_ISCC to ISCC.exe; the source dependencies also include this compiler.' }
-    $editor = Join-Path $ProjectRoot 'vendor/vscode/node_modules/rcedit/bin/rcedit.exe'
-    if (-not (Test-Path -LiteralPath $editor)) { throw 'Missing executable branding tool. Run node build.mjs source install first.' }
+    $tools = Get-InstallerTools
+    $compiler = $tools.Compiler
+    $editor = $tools.Editor
     $manifest = Get-Content -LiteralPath (Join-Path $ProjectRoot 'package.json') -Raw | ConvertFrom-Json
     $version = $manifest.version
     if ($version -notmatch '^\d+\.\d+\.\d+$') { throw 'Installer requires a numeric major.minor.patch version in package.json.' }
@@ -700,7 +972,7 @@ function Build-Installer {
     Remove-Managed (Join-Path $packagedExtension 'test') $packagedExtension
     $chinese = Join-Path $ProjectRoot 'vendor/vscode/build/win32/i18n/Default.zh-cn.isl'
     if (-not (Test-Path -LiteralPath $chinese)) { throw 'Missing installer Chinese translation; run node build.mjs source fetch.' }
-    Invoke-Checked $compiler @('/Qp', "/DAppVersion=$version", "/DPayloadDir=$payload", "/DOutputDir=$output", "/DAppIcon=$icon", "/DChineseMessages=$chinese", (Join-Path $ProjectRoot 'resources/installer/ubovm.iss'))
+    Invoke-InstallerCompiler $compiler @('/Qp', "/DAppVersion=$version", "/DPayloadDir=$payload", "/DOutputDir=$output", "/DAppIcon=$icon", "/DChineseMessages=$chinese", (Join-Path $ProjectRoot 'resources/installer/ubovm.iss')) $staging
     $result = Join-Path $output "UBOVM-Setup-$version-x64.exe"
     if (-not (Test-Path -LiteralPath $result)) { throw 'Installer compiler did not produce the expected executable.' }
     [IO.File]::WriteAllText(($result + '.sha256'), (Get-FileDigest $result) + '  ' + [IO.Path]::GetFileName($result) + "`n", [Text.Encoding]::ASCII)
@@ -717,7 +989,11 @@ function Start-Desktop([switch]$Development, [switch]$Smoke) {
     Initialize-Runtime
     $portable = Set-PortableData $(if ($Smoke) { 'smoke' } else { 'desktop' })
     $env:UBOVM_HARNESS_ENTRY = Join-Path $AppRoot 'ubovm/harness/index.mjs'
-    $arguments = @('--new-window', '--skip-welcome', '--skip-release-notes')
+    $arguments = @('--skip-welcome', '--skip-release-notes')
+    # Ordinary launches reuse Code OSS's existing window and IPC owner.
+    # Tests require their own window; development uses upstream host matching.
+    if ($Smoke) { $arguments += '--new-window' }
+    elseif (-not $Development) { $arguments += '--reuse-window' }
     if ($Development) { $arguments += '--extensionDevelopmentPath=' + (Join-Path $ProjectRoot 'src/renderer') }
     if ($Smoke) {
         $workspace = Join-Path $ProjectRoot '.cache/smoke-workspace'
@@ -734,7 +1010,7 @@ function Start-Desktop([switch]$Development, [switch]$Smoke) {
         $env:UBOVM_SMOKE_WORKSPACE = $workspace
         $env:UBOVM_SMOKE_RESULT = $result
         $arguments += '--disable-workspace-trust'
-        $arguments += '--extensionTestsPath=' + (Join-Path $ProjectRoot 'src/renderer/test/smoke.cjs')
+        $arguments += '--extensionTestsPath=' + (Join-Path $ProjectRoot 'src/renderer/test/desktop/smoke.cjs')
     } else {
         $workspace = if ($env:UBOVM_ARGUMENT) { [IO.Path]::GetFullPath($env:UBOVM_ARGUMENT) } else { $ProjectRoot }
         if (-not (Test-Path -LiteralPath $workspace -PathType Container)) { throw "Workspace folder not found: $workspace" }
@@ -765,41 +1041,63 @@ function Start-Desktop([switch]$Development, [switch]$Smoke) {
 }
 
 function Test-Runtime {
+    if (-not (Test-Path -LiteralPath (Join-Path $AppRoot 'ubovm/main/launch-policy.mjs'))) { throw 'Missing launch policy. Run node build.mjs setup.' }
+    if (-not (Test-Path -LiteralPath (Join-Path $AppRoot 'ubovm/main/background.mjs'))) { throw 'Missing background mode. Run node build.mjs setup.' }
     $files = @('ubovm/main/index.mjs', 'ubovm/main/data-paths.mjs', 'ubovm/main/data-migration.mjs', 'ubovm/harness/index.mjs', 'ubovm/harness/blackboard/database/database.mjs', 'ubovm/node_modules/@earendil-works/pi-agent-core/package.json', 'ubovm/node_modules/@modelcontextprotocol/sdk/package.json', 'ubovm/node_modules/yaml/package.json', 'out/main.js', 'out/vs/workbench/workbench.desktop.main.js', 'out/vs/workbench/api/node/extensionHostProcess.js', 'extensions/ubovm-core/extension.cjs')
-    $files += @('extensions/ubovm-core/harness/workspace-search.cjs', 'extensions/ubovm-core/harness/workspace-validation.cjs', 'extensions/ubovm-core/harness/validation-worker.cjs', 'extensions/node_modules/typescript/lib/typescript.js', 'node_modules.asar.unpacked\@vscode\ripgrep-universal\bin\win32-x64\rg.exe')
+    $files += @('extensions/ubovm-core/harness/workspace/workspace-search.cjs', 'extensions/ubovm-core/harness/workspace/workspace-validation.cjs', 'extensions/ubovm-core/harness/workspace/validation-worker.cjs', 'extensions/node_modules/typescript/lib/typescript.js', 'node_modules.asar.unpacked\@vscode\ripgrep-universal\bin\win32-x64\rg.exe')
+    $files += @('ubovm/runtime/python/python.exe', 'ubovm/runtime/python/.ubovm-python-runtime.json')
+    $files += @('extensions/ubovm-core/host/agent/agent-service.cjs', 'extensions/ubovm-core/host/agent/agent-backend.cjs')
+    $files += @('harness-service.cjs', 'harness-thread.cjs', 'thread-rpc.cjs', 'snapshot-queue.cjs', 'projection.cjs', 'errors.cjs') | ForEach-Object { 'ubovm/harness/ide/runtime/' + $_ }
     foreach ($file in $files) {
         if (-not (Test-Path -LiteralPath (Join-Path $AppRoot $file))) { throw "Missing $file. Run node build.mjs setup." }
         Write-Host "[OK] $file"
     }
     $manifest = Get-Content -LiteralPath (Join-Path $AppRoot 'package.json') -Raw | ConvertFrom-Json
     if ($manifest.main -ne './ubovm/main/index.mjs') { throw 'The custom Electron main entry is not connected.' }
+    if (-not ([IO.File]::ReadAllText((Join-Path $AppRoot 'out/main.js'))).Contains('s.emit("ubovm-before-close",r,this._quitRequested)')) { throw 'The background lifecycle hook is missing. Run node build.mjs setup.' }
+    $legacyKeys = (Get-PatchAdditions (Join-Path $ProjectRoot 'resources/patches/keyboard-policy.patch') 'src/vs/platform/keybinding/common/abstractKeybindingService.ts').Replace('resolveResult.commandId', 'l.commandId')
+    $searchKeys = Get-PatchAdditions (Join-Path $ProjectRoot 'resources/patches/file-search.patch') 'src/vs/platform/keybinding/common/abstractKeybindingService.ts'
+    $currentKeys = [regex]::Replace($legacyKeys, '(?m)^.*if \(/\^\(\?:workbench.*\{\r?$', $searchKeys.TrimEnd())
+    Assert-CurrentKeyboardPolicy ([IO.File]::ReadAllText((Join-Path $AppRoot 'out/vs/workbench/workbench.desktop.main.js'))) $legacyKeys $currentKeys
+    Write-Host '[OK] Runtime keyboard policy matches source'
     Write-Host "[OK] Electron entry connected; runtime $($manifest.version)"
 }
 
 function Invoke-Core {
-    param([ValidateSet('fetch', 'doctor', 'apply', 'install', 'build', 'watch', 'start')][string]$Action)
+    param([ValidateSet('fetch', 'doctor', 'apply', 'install', 'ensure-install', 'build', 'watch', 'start')][string]$Action)
+    if ($Action -notin @('fetch', 'apply', 'install', 'ensure-install', 'build') -or $script:SourceMutationLock) {
+        Invoke-CoreUnlocked $Action
+        return
+    }
+    $cache = Join-Path $ProjectRoot '.cache'
+    New-Item -ItemType Directory -Force -Path $cache | Out-Null
+    $lockPath = Join-Path $cache 'source-mutation.lock'
+    try {
+        $script:SourceMutationLock = [IO.File]::Open($lockPath, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+    } catch {
+        throw "Cannot acquire source operation lock ($lockPath). Another source operation may be running. $($_.Exception.Message)"
+    }
+    try { Invoke-CoreUnlocked $Action }
+    finally {
+        $script:SourceMutationLock.Dispose()
+        $script:SourceMutationLock = $null
+    }
+}
+
+function Invoke-CoreUnlocked {
+    param([ValidateSet('fetch', 'doctor', 'apply', 'install', 'ensure-install', 'build', 'watch', 'start')][string]$Action)
     $Pin = $Config.core.source
     $SourceRoot = Join-Path $ProjectRoot 'vendor/vscode'
     if (!$Pin.repository -or !$Pin.ref -or $Pin.commit -notmatch '^[a-fA-F0-9]{40}$' -or !$Pin.node) {
         throw 'Configuration needs core.source.repository, ref, commit (40 hex digits), and node.'
     }
     $VerifySource = {
-        $Manifest = Join-Path $SourceRoot 'package.json'
-        if (!(Test-Path -LiteralPath $Manifest)) { throw 'Source missing: run node build.mjs source fetch.' }
-        $NestedGit = Join-Path $SourceRoot '.git'
-        if (Test-Path -LiteralPath $NestedGit) {
-            $Top = & git -c "safe.directory=$SourceRoot" -C $SourceRoot rev-parse --show-toplevel
-            if ($LASTEXITCODE -ne 0 -or [IO.Path]::GetFullPath($Top.Trim()) -ne $SourceRoot) { throw 'vendor/vscode must be its own Git checkout.' }
-            $Head = & git -c "safe.directory=$SourceRoot" -C $SourceRoot rev-parse HEAD
-            if ($LASTEXITCODE -ne 0 -or $Head.Trim() -ne $Pin.commit) {
-                throw "Source commit differs from pin $($Pin.commit). Existing checkout was left untouched; reconcile it before continuing."
-            }
-        } else {
-            $Top = & git -C $ProjectRoot rev-parse --show-toplevel
-            $Tracked = & git -C $ProjectRoot ls-files --error-unmatch -- 'vendor/vscode/package.json' 2>$null
-            if ($LASTEXITCODE -ne 0 -or [IO.Path]::GetFullPath($Top.Trim()) -ne $ProjectRoot -or !$Tracked) {
-                throw 'vendor/vscode must be a pinned checkout or vendored source tracked by the UBOVM repository.'
-            }
+        if (!(Test-Path -LiteralPath (Join-Path $SourceRoot '.git'))) { throw 'Source missing: run node build.mjs source fetch.' }
+        $Top = & git -c "safe.directory=$SourceRoot" -C $SourceRoot rev-parse --show-toplevel
+        if ($LASTEXITCODE -ne 0 -or [IO.Path]::GetFullPath($Top.Trim()) -ne $SourceRoot) { throw 'vendor/vscode must be its own Git checkout.' }
+        $Head = & git -c "safe.directory=$SourceRoot" -C $SourceRoot rev-parse HEAD
+        if ($LASTEXITCODE -ne 0 -or $Head.Trim() -ne $Pin.commit) {
+            throw "Source commit differs from pin $($Pin.commit). Existing checkout was left untouched; reconcile it before continuing."
         }
     }
     switch ($Action) {
@@ -874,10 +1172,16 @@ function Invoke-Core {
         'apply' {
             & $VerifySource
             if (!$Config.product) { throw 'Configuration needs product overrides.' }
-            $PatchNames = @('core-ui.patch', 'minimal-ui.patch', 'editor-layout.patch', 'conversation-chrome.patch', 'terminal-panel.patch', 'startup-ui.patch', 'session-list.patch', 'panel-ui.patch', 'sidebar-mode.patch', 'session-workspace.patch', 'source-compile-fixes.patch', 'sidebar-size.patch', 'theme-startup.patch', 'explorer-editing.patch')
+            $PatchNames = @(Get-SourcePatchNames)
+            if (Update-LegacySidebarCloseTabsPatch $SourceRoot) {
+                Write-Host '[OK] Upgraded legacy sidebar-close-tabs.patch with Delete autorepeat guard'
+            }
+            if (Update-LegacySidebarModePatch $SourceRoot) {
+                Write-Host '[OK] Upgraded legacy sidebar-mode.patch with component loading guards'
+            }
             $AppliedPatches = Get-AppliedSourcePatches $SourceRoot $PatchNames
             foreach ($PatchName in $PatchNames) {
-            $Patch = Join-Path $ProjectRoot ('resources/' + $PatchName)
+            $Patch = Join-Path $ProjectRoot ('resources/patches/' + $PatchName)
             $AlreadyApplied = $AppliedPatches.Contains($PatchName)
             if ($AlreadyApplied) {
                 Write-Host "[OK] Source $PatchName already applied"
@@ -920,9 +1224,16 @@ function Invoke-Core {
             Write-Json $manifestPath $manifest
             Write-Host 'Applied source product.overrides.json (loaded by upstream VSCODE_DEV).'
         }
+        'ensure-install' {
+            # Check again while holding the lock: another process may have installed.
+            if (!(Test-SourceInstallState $SourceRoot)) { Invoke-Core install }
+        }
         'install' {
             Invoke-Core doctor
             Invoke-Core fetch
+            Invoke-Checked (Get-Command node -ErrorAction Stop).Source @((Join-Path $ProjectRoot 'src/main/source-dependencies.mjs'), $SourceRoot) $ProjectRoot
+            # Installation fixes must be applied before upstream postinstall runs.
+            Invoke-Core apply
             $OldForce = $env:VSCODE_FORCE_INSTALL; $OldIgnore = $env:npm_config_ignore_scripts; $OldSkip = $env:VSCODE_SKIP_NODE_VERSION_CHECK
             try {
                 $env:VSCODE_FORCE_INSTALL = '1'; $env:npm_config_ignore_scripts = 'false'; $env:VSCODE_SKIP_NODE_VERSION_CHECK = $null
@@ -932,17 +1243,17 @@ function Invoke-Core {
         }
         { $_ -in 'build', 'watch' } {
             & $VerifySource
-            if (!(Test-Path -LiteralPath (Join-Path $SourceRoot 'node_modules/gulp/bin/gulp.js'))) { throw 'Source dependencies missing: run node build.mjs source install.' }
             Invoke-Core apply
+            Invoke-Core ensure-install
             $Script = if ($Action -eq 'build') { 'compile' } else { 'watch' }
             Invoke-Checked (Get-Command $NpmCommand -ErrorAction Stop).Source @('run', $Script) $SourceRoot
         }
         'start' {
             & $VerifySource
-            if (!(Test-Path -LiteralPath (Join-Path $SourceRoot 'node_modules/gulp/bin/gulp.js'))) { throw 'Run node build.mjs source install before source start.' }
             if (!(Test-Path -LiteralPath (Join-Path $SourceRoot 'out/main.js')) -or !(Test-Path -LiteralPath (Join-Path $SourceRoot 'out/vs/workbench/workbench.desktop.main.js'))) { throw 'Run node build.mjs source build, or wait for source watch to finish its first compilation.' }
             if ($OnWindows -and $ProjectRoot -match '[\x00-\x1f"&|<>^%!()]') { throw 'The upstream Windows batch launcher needs a project path without shell metacharacters.' }
             Invoke-Core apply
+            Invoke-Core ensure-install
             $OldPortable = $env:VSCODE_PORTABLE; $OldSkip = $env:VSCODE_SKIP_PRELAUNCH; $OldNode = $env:ELECTRON_RUN_AS_NODE; $OldHarness = $env:UBOVM_HARNESS_ENTRY
             try {
                 $Portable = Set-PortableData $(if ($env:UBOVM_SOURCE_SMOKE -eq '1') { 'smoke' } elseif ($env:UBOVM_SOURCE_DESKTOP -eq '1') { 'desktop' } else { 'source' })
@@ -954,12 +1265,12 @@ function Invoke-Core {
                 $env:VSCODE_SKIP_PRELAUNCH = $null; $env:ELECTRON_RUN_AS_NODE = $null
                 $workspace = if ($env:UBOVM_SOURCE_WORKSPACE) { [IO.Path]::GetFullPath($env:UBOVM_SOURCE_WORKSPACE) } else { $ProjectRoot }
                 if (-not (Test-Path -LiteralPath $workspace -PathType Container)) { throw "Workspace folder not found: $workspace" }
-                $LaunchArgs = @($workspace, '--new-window', '--disable-workspace-trust', "--extensionDevelopmentPath=$(Join-Path $ProjectRoot 'src/renderer')", "--user-data-dir=$(Join-Path $Portable 'user-data')", "--extensions-dir=$(Join-Path $Portable 'extensions')", "--shared-data-dir=$(Join-Path $Portable 'shared-data')", "--crash-reporter-directory=$(Join-Path $Portable 'crashes')")
+                $LaunchArgs = @($workspace, '--new-window', "--extensionDevelopmentPath=$(Join-Path $ProjectRoot 'src/renderer')", "--user-data-dir=$(Join-Path $Portable 'user-data')", "--extensions-dir=$(Join-Path $Portable 'extensions')", "--shared-data-dir=$(Join-Path $Portable 'shared-data')", "--crash-reporter-directory=$(Join-Path $Portable 'crashes')")
                 if ($env:UBOVM_SOURCE_SMOKE -eq '1') {
                     # Prepare Electron before starting the bounded desktop test.
                     Invoke-Checked (Get-Command $NodeCommand).Source @('build/lib/preLaunch.ts') $SourceRoot
                     $env:VSCODE_SKIP_PRELAUNCH = '1'
-                    $LaunchArgs += "--extensionTestsPath=$(Join-Path $ProjectRoot 'src/renderer/test/smoke.cjs')"
+                    $LaunchArgs += @('--disable-workspace-trust', "--extensionTestsPath=$(Join-Path $ProjectRoot 'src/renderer/test/desktop/smoke.cjs')")
                 }
                 if ($OnWindows) {
                     Invoke-Checked (Join-Path $SourceRoot 'scripts/code.bat') $LaunchArgs $SourceRoot
@@ -970,6 +1281,14 @@ function Invoke-Core {
             } finally { $env:VSCODE_PORTABLE = $OldPortable; $env:VSCODE_SKIP_PRELAUNCH = $OldSkip; $env:ELECTRON_RUN_AS_NODE = $OldNode; $env:UBOVM_HARNESS_ENTRY = $OldHarness }
         }
     }
+}
+
+function Test-SourceInstallState($SourceRoot) {
+    & (Get-Command node -ErrorAction Stop).Source (Join-Path $ProjectRoot 'src/main/source-dependencies.mjs') $SourceRoot '--check-state'
+    $stateExit = $LASTEXITCODE
+    if ($stateExit -notin @(0, 1)) { throw 'Source dependency state check failed; repair the reported source inputs before continuing.' }
+    if ($stateExit -ne 0) { Write-Host '[UBOVM] Source dependency cache is stale or incomplete; installing dependencies.' }
+    return $stateExit -eq 0
 }
 
 function Test-SourceRuntime {
@@ -1014,10 +1333,6 @@ try {
             Write-Host '[UBOVM] Compiling the VS Code source (this does not launch the IDE).'
             Invoke-Core doctor
             Invoke-Core fetch
-            $source = Join-Path $ProjectRoot 'vendor/vscode'
-            $required = @('node_modules/.postinstall-state', 'node_modules/gulp/bin/gulp.js', 'build/node_modules', 'remote/node_modules', 'extensions/copilot/node_modules')
-            $missing = @($required | Where-Object { -not (Test-Path -LiteralPath (Join-Path $source $_)) })
-            if ($missing.Count) { Invoke-Core install }
             Invoke-Core build
             Write-Host "[UBOVM] Compiled core: $(Join-Path $source 'out')"
             Write-Host '[UBOVM] Run it with: node build.mjs source start'

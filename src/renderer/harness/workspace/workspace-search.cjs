@@ -26,7 +26,7 @@ function createWorkspaceSearch(vscode, { executable, workspaceFolders = () => vs
       path.join(vscode.env.appRoot, 'node_modules/@vscode/ripgrep/bin', name)
     ];
     for (const candidate of candidates) { try { await fs.access(candidate); return candidate; } catch {} }
-    throw new Error('运行时缺少代码搜索引擎，请运行 npm run setup。');
+    throw Object.assign(new Error('运行时缺少代码搜索引擎，请运行 npm run setup。reason=SEARCH_ENGINE_MISSING recovery=npm_run_setup'), { code: 'SEARCH_ENGINE_MISSING' });
   }
   async function performSearch(input, signal, sessionId, ticket) {
     signal?.throwIfAborted();
@@ -167,7 +167,7 @@ function createWorkspaceSearch(vscode, { executable, workspaceFolders = () => vs
   async function search(input, signal, sessionId) {
     signal?.throwIfAborted();
     if (active.size >= maxConcurrent || (sessions.get(sessionId) || 0) >= maxPerSession) {
-      throw Object.assign(new Error('搜索任务过多，请等待当前搜索结束后重试。'), { code: 'SEARCH_BUSY' });
+      throw Object.assign(new Error('搜索任务过多，请等待当前搜索结束后重试。reason=SEARCH_BUSY recovery=retry_after_current_search'), { code: 'SEARCH_BUSY' });
     }
     const ticket = { sessionId, physical: false };
     active.add(ticket); sessions.set(sessionId, (sessions.get(sessionId) || 0) + 1);

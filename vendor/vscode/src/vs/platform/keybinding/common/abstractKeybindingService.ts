@@ -389,6 +389,13 @@ export abstract class AbstractKeybindingService extends Disposable implements IK
 
 					this._log(`+ Invoking command ${resolveResult.commandId}.`);
 					this._currentlyDispatchingCommandId = resolveResult.commandId;
+					const command = resolveResult.commandId;
+					const basicEditing = /^(?:editor\.action\.(?:clipboardCopyAction|clipboardCutAction|clipboardPasteAction|selectAll)|workbench\.action\.files\.(?:save|saveAll|saveAs))$/;
+					const fileSearch = /^(?:(?:closeReplaceInFilesWidget|toggleSearch(?:CaseSensitive|WholeWord|Regex|PreserveCase)|addCursorsAtSearchResults)$|filesExplorer\.(?:findInFolder|findInWorkspace)$|search\.|workbench\.action\.(?:findInFiles|replaceInFiles|quickOpen|quickTextSearch|toggleSearchOnType|search\.)|workbench\.view\.search$|actions\.find(?:WithSelection)?$|editor\.actions\.findWithArgs$|(?:closeFindWidget|toggleFindCaseSensitive|toggleFindWholeWord|toggleFindRegex|toggleFindInSelection|togglePreserveCase)$|editor\.action\.(?:startFindReplaceAction|nextMatchFindAction|previousMatchFindAction|goToMatchFindAction|nextSelectionMatchFindAction|previousSelectionMatchFindAction|replaceOne|replaceAll|selectAllMatches|selectHighlights)$)/;
+					if (/^(?:workbench\.|editor\.action\.|actions\.find|editor\.debug\.|debug\.|testing\.|search\.|references-view\.)/.test(command) && !basicEditing.test(command) && !fileSearch.test(command)) {
+						this._currentlyDispatchingCommandId = null;
+						return true;
+					}
 					try {
 						if (typeof resolveResult.commandArgs === 'undefined') {
 							this._commandService.executeCommand(resolveResult.commandId).then(undefined, err => this._notificationService.warn(err));

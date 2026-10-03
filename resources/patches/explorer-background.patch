@@ -1,0 +1,24 @@
+diff --git a/src/vs/workbench/contrib/files/browser/files.contribution.ts b/src/vs/workbench/contrib/files/browser/files.contribution.ts
+--- a/src/vs/workbench/contrib/files/browser/files.contribution.ts
++++ b/src/vs/workbench/contrib/files/browser/files.contribution.ts
+@@ -57,4 +57,8 @@
+ 
++import { CommandsRegistry } from '../../../../platform/commands/common/commands.js';
++
+ registerSingleton(IExplorerService, ExplorerService, InstantiationType.Delayed);
++// Initialize session roots without opening or focusing the file sidebar.
++CommandsRegistry.registerCommand('_ubovm.initializeExplorer', accessor => { void accessor.get(IExplorerService).roots; });
+ 
+ // Register file editors
+diff --git a/src/vs/workbench/browser/layout.ts b/src/vs/workbench/browser/layout.ts
+--- a/src/vs/workbench/browser/layout.ts
++++ b/src/vs/workbench/browser/layout.ts
+@@ -1147,3 +1147,3 @@
+-			if (!this.state.initialization.views.containerToRestore.sideBar) {
++			if (!this.isVisible(Parts.SIDEBAR_PART) || !this.state.initialization.views.containerToRestore.sideBar) {
+ 				return;
+ 			}
+@@ -2685,2 +2685,3 @@
+ 	private createGridDescriptor(): ISerializedGrid {
++		this.stateModel.setRuntimeValue(LayoutStateKeys.SIDEBAR_HIDDEN, true);
+ 		const { width, height } = this._mainContainerDimension;

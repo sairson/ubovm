@@ -43,14 +43,12 @@
       <button class="text-button" id="assist-notes-toggle" type="button" aria-controls="goal-notes" aria-expanded="false">笔记</button>
       <div class="goal-module-actions" id="goal-notes-actions" hidden><button class="text-button" id="note-copy" type="button" disabled>复制</button><button class="text-button primary-button" id="note-new" type="button">＋ 新建笔记</button></div>
       <button class="workspace text-button" type="button" data-action="selectWorkspace" title="选择当前会话的工作空间" aria-label="选择当前会话的工作空间"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v10H3V6Z"/></svg><span id="workspace-name">{{WORKSPACE_NAME}}</span></button>
-      <button class="icon-button" id="manage-projects" type="button" data-action="manageProjects" title="管理与切换项目" aria-label="管理与切换项目"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h7l2 2h9v11H3V7ZM3 7V4h7l2 2h8M9 14h6m-3-3v6"/></svg></button>
       <button class="icon-button" id="validate-code-changes" type="button" data-action="validateCodeChanges" title="验证代码修改" aria-label="验证代码修改"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 12 4 4L17 6m-6 10 3 3 7-9"/></svg></button>
       <button class="icon-button" id="review-code-changes" type="button" data-action="reviewCodeChanges" title="代码更改：查看 diff 与撤销" aria-label="代码更改：查看 diff 与撤销"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h14v18H5V3ZM8 8h8m-8 8h8m-4-4v8"/></svg></button>
       <details class="new-create" id="new-create">
-        <summary class="icon-button new-create-toggle" title="新建对话或项目" aria-label="新建对话或项目"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></summary>
+        <summary class="icon-button new-create-toggle" title="新建对话" aria-label="新建对话"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></summary>
         <div class="new-create-menu" role="menu">
           <button type="button" role="menuitem" id="new-create-chat" data-create="chat">新建对话</button>
-          <button type="button" role="menuitem" id="new-create-project" data-create="project">新建项目</button>
         </div>
       </details>
     </header>
@@ -60,7 +58,17 @@
       <div class="page-progress" aria-hidden="true"><span></span></div>
       <div id="route-loading" class="route-loading" role="status" aria-live="polite" hidden><span class="panel-loading" id="route-loading-label">正在切换页面…</span><div class="route-loading-lines" aria-hidden="true"><i></i><i></i><i></i></div></div>
       <section class="page-loading" id="page-loading" aria-label="加载会话">
-        <div class="loading-skeleton" aria-hidden="true"><span class="skeleton-heading"></span><span></span><span></span><div class="skeleton-composer"></div></div>
+        <div class="loading-skeleton" aria-hidden="true">
+          <span class="skeleton-mark"></span>
+          <span class="skeleton-heading"></span>
+          <span class="skeleton-line"></span>
+          <span class="skeleton-line skeleton-line-short"></span>
+          <div class="skeleton-composer">
+            <span class="skeleton-context"></span>
+            <span class="skeleton-textarea"></span>
+            <div class="skeleton-toolbar"><span></span><span></span></div>
+          </div>
+        </div>
         <p class="panel-loading" id="page-loading-label" role="status">正在加载会话与工作区…</p>
         <button class="text-button" id="page-retry" type="button" hidden>重新载入</button>
       </section>
@@ -124,6 +132,24 @@
         <div class="outline-footer"><span class="outline-current-dot" aria-hidden="true"></span>当前阅读位置<span>点击跳转</span></div>
       </nav>
       </div>
+      <section class="assist-evidence" id="assist-evidence" aria-label="协助证据" hidden>
+        <div class="assist-evidence-heading">
+          <h2>协助证据 <span id="assist-evidence-count"></span></h2>
+          <p>仅展示已声明记录的证据；勾选未附加项后注入关联探索，作为基础种子事实。</p>
+        </div>
+        <div class="assist-evidence-toolbar">
+          <button class="text-button" id="assist-evidence-select-pending" type="button">选择未附加</button>
+          <button class="text-button" id="assist-evidence-clear" type="button">清空勾选</button>
+        </div>
+        <div class="assist-evidence-list" id="assist-evidence-list" role="list"></div>
+        <div class="assist-evidence-actions">
+          <label class="assist-evidence-target"><span>关联探索</span>
+            <select id="assist-evidence-goal" aria-label="选择关联探索目标"></select>
+          </label>
+          <button class="text-button primary-button" id="assist-evidence-attach" type="button" disabled>附加到探索</button>
+        </div>
+        <p class="assist-evidence-hint" id="assist-evidence-hint" role="status" hidden></p>
+      </section>
       <section class="collaboration-workers" id="collaboration-workers" aria-label="蜂群协作 Worker" hidden>
         <div class="worker-roster-heading"><h2>Workers <span id="worker-count"></span></h2><p id="worker-swarm-status" role="status"></p></div>
         <p class="execution-error" id="worker-storage-error" role="status" hidden></p>
@@ -166,9 +192,13 @@
             <div class="goal-panels" id="goal-panels">
             <section id="goal-overview" role="tabpanel" aria-labelledby="goal-tab-overview">
               <section class="goal-overview-summary" aria-label="目标进展摘要">
-                <div class="goal-meta" hidden><span><strong id="goal-note-count">0</strong> 条笔记</span><span class="connection-status" id="goal-provider-label">未连接模型</span></div>
+                <div class="goal-meta" hidden><span><strong id="goal-note-count">0</strong> 条笔记</span><span id="goal-source-evidence" hidden><strong id="goal-source-evidence-count">0</strong> 条协助基础证据</span><span class="connection-status" id="goal-provider-label">未连接模型</span></div>
                 <div class="goal-progress-caption" id="goal-progress-caption" hidden><span>验收进度</span><span><strong id="goal-progress">0 / 0</strong> 项已确认</span></div>
                 <progress class="goal-completion" id="goal-completion" value="0" max="1" aria-label="手动确认的验收标准" aria-describedby="goal-progress" hidden></progress>
+                <details class="goal-source-evidence-panel" id="goal-source-evidence-panel" hidden>
+                  <summary>协助基础证据 <span>用户选定的种子，不能单独证明完成</span></summary>
+                  <ul id="goal-source-evidence-list" class="goal-source-evidence-list"></ul>
+                </details>
               </section>
               <div class="goal-overview-columns" data-visible="1">
               <section class="goal-output-panel" data-overview-panel="log" aria-labelledby="goal-output-title">
@@ -273,6 +303,33 @@
           <button class="text-button primary-button" id="project-switcher-create-submit" type="button">创建项目</button>
         </div>
       </div>
+    </div>
+  </dialog>
+
+  <dialog id="ubovm-modal" data-kind="confirm" closedby="any" aria-labelledby="ubovm-modal-title">
+    <div class="ubovm-modal-shell">
+      <header class="ubovm-modal-header">
+        <h2 id="ubovm-modal-title">确认</h2>
+        <button id="ubovm-modal-close" class="ubovm-modal-close" type="button" aria-label="关闭" title="关闭">关闭</button>
+      </header>
+      <div class="ubovm-modal-body">
+        <p class="ubovm-modal-message" id="ubovm-modal-message"></p>
+        <p class="ubovm-modal-detail" id="ubovm-modal-detail"></p>
+        <div class="ubovm-modal-field" id="ubovm-modal-field" hidden>
+          <label id="ubovm-modal-label" for="ubovm-modal-input">名称</label>
+          <input id="ubovm-modal-input" type="text" maxlength="60" autocomplete="off">
+        </div>
+        <div id="ubovm-modal-search-wrap" hidden>
+          <input id="ubovm-modal-search" class="ubovm-modal-search" type="search" placeholder="搜索…" aria-label="搜索" autocomplete="off">
+        </div>
+        <p class="ubovm-modal-empty" id="ubovm-modal-empty" hidden>暂无项目</p>
+        <div id="ubovm-modal-list" class="ubovm-modal-list" role="listbox" aria-label="选项列表" hidden></div>
+        <p class="ubovm-modal-error" id="ubovm-modal-error" role="alert" hidden></p>
+      </div>
+      <footer class="ubovm-modal-footer" id="ubovm-modal-footer">
+        <button class="text-button" id="ubovm-modal-cancel" type="button">取消</button>
+        <button class="text-button primary-button" id="ubovm-modal-confirm" type="button">确定</button>
+      </footer>
     </div>
   </dialog>
 

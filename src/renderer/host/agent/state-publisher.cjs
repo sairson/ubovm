@@ -11,7 +11,10 @@ function createExecutionPublisher({ currentId, canPublish, readExecution, postMe
   let publicationDelay = delay;
   let retries = 0;
   let transports = new Set();
-  const maxTransports = 4;
+  // Keep a small in-flight budget so full conversation snapshots cannot crowd
+  // out connectionProbe / heartbeat replies on the same webview bridge.
+  const maxTransports = 2;
+  const maxFullTransports = 1;
   const report = error => {
     try { Promise.resolve(onError(error)).catch(() => {}); } catch { /* Reporting cannot break publication. */ }
   };
@@ -45,6 +48,12 @@ function createExecutionPublisher({ currentId, canPublish, readExecution, postMe
     timer = undefined;
     if (disposed || !pending) return;
     if (transports.size >= maxTransports) return;
+    // Prefer incremental execution ticks over stacking another heavy snapshot.
+    if (fullState && transports.size >= maxFullTransports) {
+      pending = true;
+      if (!timer && !sending) timer = setTimeout(flush, Math.max(publicationDelay, 100));
+      return;
+    }
     pending = false;
     const publicationRevision = revision;
     const ticket = sending = {};

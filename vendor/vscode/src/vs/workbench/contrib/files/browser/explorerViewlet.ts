@@ -15,7 +15,7 @@ import { OpenEditorsView } from './views/openEditorsView.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { IExtensionService } from '../../../services/extensions/common/extensions.js';
-import { IWorkspaceContextService, WorkbenchState } from '../../../../platform/workspace/common/workspace.js';
+import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
 import { IContextKeyService, IContextKey, ContextKeyExpr } from '../../../../platform/contextkey/common/contextkey.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
@@ -47,7 +47,7 @@ export class ExplorerViewletViewsContribution extends Disposable implements IWor
 	static readonly ID = 'workbench.contrib.explorerViewletViews';
 
 	constructor(
-		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
+		@IWorkspaceContextService workspaceContextService: IWorkspaceContextService,
 		@IProgressService progressService: IProgressService
 	) {
 		super();
@@ -78,20 +78,14 @@ export class ExplorerViewletViewsContribution extends Disposable implements IWor
 		const emptyViewDescriptor = this.createEmptyViewDescriptor();
 		const registeredEmptyViewDescriptor = viewDescriptors.find(v => v.id === emptyViewDescriptor.id);
 
-		if (this.workspaceContextService.getWorkbenchState() === WorkbenchState.EMPTY || this.workspaceContextService.getWorkspace().folders.length === 0) {
-			if (registeredExplorerViewDescriptor) {
-				viewDescriptorsToDeregister.push(registeredExplorerViewDescriptor);
-			}
-			if (!registeredEmptyViewDescriptor) {
-				viewDescriptorsToRegister.push(emptyViewDescriptor);
-			}
-		} else {
-			if (registeredEmptyViewDescriptor) {
-				viewDescriptorsToDeregister.push(registeredEmptyViewDescriptor);
-			}
-			if (!registeredExplorerViewDescriptor) {
-				viewDescriptorsToRegister.push(explorerViewDescriptor);
-			}
+		// Session folders are independent of the window workspace. Keep the real
+		// tree available even in empty windows so ExplorerService can initialize
+		// and register the session-root command. Its welcome state handles no root.
+		if (registeredEmptyViewDescriptor) {
+			viewDescriptorsToDeregister.push(registeredEmptyViewDescriptor);
+		}
+		if (!registeredExplorerViewDescriptor) {
+			viewDescriptorsToRegister.push(explorerViewDescriptor);
 		}
 
 		if (viewDescriptorsToDeregister.length) {

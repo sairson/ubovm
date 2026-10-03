@@ -548,6 +548,38 @@ export class CompositeActionViewItem extends CompositeBarActionViewItem {
 		this.updateChecked();
 		this.updateEnabled();
 
+		if (['workbench.view.explorer', 'workbench.view.search', 'workbench.view.extension.ubovm-workers', 'workbench.view.extension.ubovm-blackboard'].includes(this.compositeBarActionItem.id)) {
+			const close = container.ownerDocument.createElement('button');
+			close.className = 'ubovm-sidebar-tab-close';
+			close.type = 'button';
+			close.textContent = '×';
+			close.title = localize('ubovm.closeSidebarTab', "关闭 {0}", this.compositeBarActionItem.name);
+			close.setAttribute('aria-label', close.title);
+			const closeTab = () => {
+				const sidebar = container.closest('.part.sidebar');
+				if (!sidebar) { return; }
+				const tabBar = container.parentElement;
+				const restoreFocus = container.contains(container.ownerDocument.activeElement);
+				this.compositeBar.unpin(this.compositeBarActionItem.id);
+				if (!this.compositeBar.getPinnedCompositeIds().some(id => ['workbench.view.explorer', 'workbench.view.search', 'workbench.view.extension.ubovm-workers', 'workbench.view.extension.ubovm-blackboard'].includes(id))) {
+					sidebar.dispatchEvent(new CustomEvent('ubovm-empty-sidebar'));
+				} else if (restoreFocus) {
+					queueMicrotask(() => {
+						const next = tabBar?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]') ?? tabBar?.querySelector<HTMLElement>('[role="tab"]');
+						next?.focus();
+					});
+				}
+			};
+			this._register(addDisposableListener(close, 'mousedown', event => { event.preventDefault(); event.stopPropagation(); }));
+			this._register(addDisposableListener(close, 'click', event => { event.preventDefault(); event.stopPropagation(); closeTab(); }));
+			this._register(addDisposableListener(close, 'keydown', event => { event.stopPropagation(); if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); } }));
+			this._register(addDisposableListener(close, 'keyup', event => { event.stopPropagation(); if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); closeTab(); } }));
+			this._register(addDisposableListener(container, 'mousedown', event => { if (event.button === 1 && container.closest('.part.sidebar')) { event.preventDefault(); event.stopPropagation(); } }, true));
+			this._register(addDisposableListener(container, 'auxclick', event => { if (event.button === 1) { event.preventDefault(); event.stopPropagation(); closeTab(); } }));
+			this._register(addDisposableListener(container, 'keydown', event => { if (event.key === 'Delete') { event.preventDefault(); event.stopPropagation(); if (!event.repeat) { closeTab(); } } }));
+			container.appendChild(close);
+		}
+
 		this._register(addDisposableListener(this.container, EventType.CONTEXT_MENU, e => {
 			EventHelper.stop(e, true);
 

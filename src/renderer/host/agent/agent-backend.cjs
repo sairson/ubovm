@@ -2,8 +2,9 @@
 const path = require('node:path');
 const { existsSync } = require('node:fs');
 
-// Only the IDE host resolves the packaged backend. Browser code never loads it.
-function backendModule(name) {
+// Only the IDE host resolves the packaged harness. Browser code never loads it.
+// Source layout: src/harness. Packaged layout: <appRoot>/ubovm/harness.
+function harnessEntry() {
   const entries = [process.env.UBOVM_HARNESS_ENTRY, path.resolve(__dirname, '../../../harness/index.mjs')].filter(Boolean);
   if (!entries.some(entry => existsSync(entry))) {
     const vscode = require('vscode');
@@ -11,6 +12,15 @@ function backendModule(name) {
   }
   const entry = entries.find(candidate => existsSync(candidate));
   if (!entry) throw new Error('Agent backend is not installed');
-  return require(path.join(path.dirname(entry), 'ide/runtime', name));
+  return entry;
 }
-module.exports = { backendModule };
+
+function backendModule(name) {
+  return require(path.join(path.dirname(harnessEntry()), 'ide/runtime', name));
+}
+
+function harnessModule(name) {
+  return require(path.join(path.dirname(harnessEntry()), name));
+}
+
+module.exports = { backendModule, harnessModule, harnessEntry };

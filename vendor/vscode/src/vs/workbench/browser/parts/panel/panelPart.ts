@@ -67,27 +67,33 @@ export class PanelPart extends AbstractPaneCompositePart {
 
 	static readonly activePanelSettingsKey = 'workbench.panelpart.activepanelid';
 
-	// UBOVM keeps the bottom panel dedicated to the terminal. Other view
+	// UBOVM exposes Terminal and Worker logs. Other view
 	// containers stay registered so output, diagnostics and debug services can
 	// continue their background work without instantiating a visible panel.
 	override async openPaneComposite(id?: string, focus?: boolean) {
-		if (id !== undefined && id !== 'terminal') {
+		if (id !== undefined && id !== 'terminal' && id !== 'workbench.view.extension.ubovm-workers') {
 			return undefined;
 		}
-		return super.openPaneComposite('terminal', focus);
+		// Background reveals must respect a closed panel. Explicit terminal
+		// actions request focus; restoring an already visible panel remains valid.
+		if (focus !== true && !this.layoutService.isVisible(Parts.PANEL_PART)) {
+			return undefined;
+		}
+		return super.openPaneComposite(id ?? this.getLastActivePaneCompositeId(), focus);
 	}
 
 	override getPaneComposite(id: string) {
-		return id === 'terminal' ? super.getPaneComposite(id) : undefined;
+		return id === 'terminal' || id === 'workbench.view.extension.ubovm-workers' ? super.getPaneComposite(id) : undefined;
 	}
 
 	override getPaneComposites() {
-		return super.getPaneComposites().filter(composite => composite.id === 'terminal');
+		return super.getPaneComposites().filter(composite => composite.id === 'terminal' || composite.id === 'workbench.view.extension.ubovm-workers');
 	}
 
 	override getLastActivePaneCompositeId(): string {
 		// Ignore a persisted Problems/Output/Debug Console/Ports selection.
-		return 'terminal';
+		const id = super.getLastActivePaneCompositeId();
+		return id === 'workbench.view.extension.ubovm-workers' ? id : 'terminal';
 	}
 
 	constructor(
@@ -235,7 +241,7 @@ export class PanelPart extends AbstractPaneCompositePart {
 	}
 
 	protected override shouldShowCompositeBar(): boolean {
-		return false;
+		return true;
 	}
 
 	protected getCompositeBarPosition(): CompositeBarPosition {

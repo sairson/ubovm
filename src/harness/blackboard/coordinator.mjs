@@ -1,10 +1,50 @@
 import { buildBlackboardContext } from './context.mjs';
 import { normalizeKeyPoints } from './blackboard.mjs';
-import { workerEvidence } from './evidence.mjs';
+import { workerEvidence, completionEvidenceIssue } from './evidence.mjs';
+import { assertIntentCapacity, intentCapacity } from './intent-capacity.mjs';
 
 // All coordinators in this process share the lease. An isolated worker runtime
 // may be concurrent with another worker, but a board has only one scheduler.
 const runningBoards = new WeakSet();
+const priorityRank = { high: 0, medium: 1, low: 2 };
+
+/** Lower rank launches first: gap closure before unrelated pending work. */
+export function frontierLaunchRank(node, context) {
+  const exploration = context?.data?.exploration;
+  if (!exploration || !node?.id) return 3;
+  const alias = context.aliasFor(node.id);
+  let rank = 3;
+  for (const entry of exploration.frontier ?? []) {
+    const linked = entry.activeRefs?.includes(alias)
+      || exploration.gaps?.some(gap => gap.ref === entry.sourceRef && gap.followUpRefs?.includes(alias));
+    if (!linked) continue;
+    if (entry.status === 'unassigned' || entry.status === 'needs_replan' || entry.failedRefs?.length) rank = Math.min(rank, 0);
+    else if (entry.status === 'review_results' || entry.resultRefs?.length) rank = Math.min(rank, 1);
+    else rank = Math.min(rank, 0);
+  }
+  if (rank === 3) {
+    const gapRefs = new Set((exploration.gaps ?? []).map(gap => gap.ref));
+    for (const parentId of node.parentIds ?? []) {
+      const parentAlias = context.aliasFor(parentId);
+      const parent = context.data.nodes.find(item => item.ref === parentAlias);
+      if (gapRefs.has(parentAlias) || (parent?.result && gapRefs.has(parent.result))) rank = Math.min(rank, 0);
+    }
+  }
+  return rank;
+}
+
+export function orderPendingIntents(pending, snapshot) {
+  if (!Array.isArray(pending) || pending.length <= 1) return pending ?? [];
+  const context = buildBlackboardContext(snapshot);
+  const order = new Map(snapshot.nodes.map((node, index) => [node.id, index]));
+  return [...pending].sort((left, right) => {
+    const frontier = frontierLaunchRank(left, context) - frontierLaunchRank(right, context);
+    if (frontier) return frontier;
+    const priority = (priorityRank[left.intent?.priority] ?? 1) - (priorityRank[right.intent?.priority] ?? 1);
+    if (priority) return priority;
+    return (order.get(left.id) ?? 0) - (order.get(right.id) ?? 0);
+  });
+}
 
 function failure(code, message, cause) {
   const error = new Error(message, cause === undefined ? undefined : { cause });
@@ -70,14 +110,16 @@ const normalizeIntentText = (value) => value.trim().replace(/\s+/gu, ' ').toLowe
 function intentKey(intent, parentIds) {
   return JSON.stringify([
     normalizeIntentText(intent.description),
-    normalizeKeyPoints(intent.keyPoints).map(normalizeIntentText).sort(),
+    [...new Set(normalizeKeyPoints(intent.keyPoints).map(normalizeIntentText))].sort(),
     [...new Set(parentIds)].sort(),
   ]);
 }
 
 function prepareIntents(proposals, snapshot, context) {
+  const byId = new Map(snapshot.nodes.map(node => [node.id, node]));
+  const canonicalParents = ids => [...new Set(ids.map(id => byId.get(id)?.resultId || id))];
   const seen = new Set(snapshot.nodes.filter((node) => node.intent)
-    .map((node) => intentKey(node.intent, node.parentIds)));
+    .map((node) => intentKey(node.intent, canonicalParents(node.parentIds))));
   return proposals.map((intent) => {
     if (!intent || typeof intent !== 'object' || Array.isArray(intent)) {
       throw failure('INVALID_DECISION', 'Each intent must be an object.');
@@ -90,8 +132,8 @@ function prepareIntents(proposals, snapshot, context) {
     }
     let parentIds = intent.parentIds === undefined
       ? [snapshot.rootId] : resolveReferences(intent.parentIds, context, 'parentIds');
-    parentIds = [...new Set(parentIds.map(id => snapshot.nodes.find(node => node.id === id)?.resultId || id))];
-    if (parentIds.some(id => { const node = snapshot.nodes.find(node => node.id === id); return node.kind === 'intent' && !node.fact; })) {
+    parentIds = canonicalParents(parentIds);
+    if (parentIds.some(id => { const node = byId.get(id); return node.kind === 'intent' && !node.fact; })) {
       throw failure('INVALID_DECISION', 'New exploration must cite recorded facts or the root, not unfinished intents.');
     }
     if (parentIds.length === 0) throw failure('INVALID_DECISION', 'Each intent requires at least one parent.');
@@ -103,7 +145,7 @@ function prepareIntents(proposals, snapshot, context) {
     try {
       keyPoints = normalizeKeyPoints(intent.keyPoints);
     } catch (cause) {
-      throw failure('INVALID_DECISION', 'Intent keyPoints must be an array of strings.', cause);
+      throw failure('INVALID_DECISION', `Invalid intent keyPoints: ${cause.message}`, cause);
     }
     const prepared = { description: intent.description.trim(), parentIds, priority: priority.trim().toLowerCase(), keyPoints };
     const key = intentKey(prepared, parentIds);
@@ -118,6 +160,8 @@ function prepareIntents(proposals, snapshot, context) {
 /** Provider-neutral Reason -> parallel Workers -> durable Blackboard loop. */
 export class BlackboardCoordinator {
   #running = false;
+  #completion;
+  #listeners = new Set();
 
   constructor({ blackboard, reason, worker, maxConcurrency = 3, maxRounds = 20 } = {}) {
     if (!blackboard || typeof blackboard.snapshot !== 'function') {
@@ -148,7 +192,38 @@ export class BlackboardCoordinator {
     }
     checkAbort(signal);
     this.#running = true;
+    this.#completion = undefined;
     runningBoards.add(this.blackboard);
+    const controller = new AbortController();
+    const workerSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
+    const active = new Map();
+    const settled = [];
+    const retryIds = [];
+    let reviewedState;
+    let wake;
+    const launch = async () => {
+      while (retryIds.length && intentCapacity(this.blackboard.snapshot().nodes, this.blackboard.openIntents).available > 0) {
+        checkAbort(signal);
+        await this.blackboard.retryIntent(retryIds.shift());
+      }
+      const pending = orderPendingIntents(this.blackboard.pendingIntents(), this.blackboard.snapshot());
+      for (const node of pending) {
+        if (active.size >= this.maxConcurrency) break;
+        if (active.has(node.id)) continue;
+        const operation = this.#execute(node, workerSignal).then(
+          () => settled.push({ id: node.id }),
+          error => settled.push({ id: node.id, error })
+        ).then(() => { wake?.(); });
+        active.set(node.id, operation);
+      }
+    };
+    const waitForWorker = async () => {
+      if (!settled.length) await interruptible(() => new Promise(resolve => { if (settled.length) resolve(); else wake = resolve; }), signal);
+      wake = undefined;
+      const result = settled.shift();
+      active.delete(result.id);
+      if (result.error) throw result.error;
+    };
     try {
       if (resume) {
         await this.blackboard.recoverInterrupted();
@@ -156,20 +231,29 @@ export class BlackboardCoordinator {
           checkAbort(signal);
           if (node.intent && node.intent.status !== 'completed' && node.attempts.length > 0 &&
               ['failed', 'interrupted'].includes(node.intent.status)) {
-            await this.blackboard.retryIntent(node.id);
+            retryIds.push(node.id);
           }
         }
       }
 
-      for (let round = 1; round <= this.maxRounds; round += 1) {
+      await launch();
+      if (active.size) await waitForWorker();
+      for (let round = 1; round <= this.maxRounds;) {
         checkAbort(signal);
-        // Each completed Worker gets an immediate Reason pass. These passes
-        // are observational while the batch is still draining; the final
-        // pass below remains authoritative for creating intents/completion.
-        await this.#dispatch(signal, () => this.#thinkAfterWorker(signal));
-        checkAbort(signal);
-        const snapshot = this.blackboard.snapshot();
+        let snapshot = this.blackboard.snapshot();
         const context = buildBlackboardContext(snapshot);
+        const { revision: _revision, ...state } = context.data;
+        const stateKey = JSON.stringify(state);
+        // Several workers can settle before one review sees their combined facts.
+        // Consume their notifications without asking Reason to review the same
+        // evidence again or charging another reasoning round for checkpoint traffic.
+        if (reviewedState === stateKey) {
+          await launch();
+          if (!active.size) throw failure('STALLED', 'No new evidence or executable work remains.');
+          await waitForWorker();
+          continue;
+        }
+        const currentRound = round++;
         let decision;
         try {
           decision = await interruptible(() => this.reason({ context, signal }), signal);
@@ -178,22 +262,44 @@ export class BlackboardCoordinator {
           throw failure('REASON_FAILED', `Reason callback failed: ${cause?.message ?? cause}`, cause);
         }
         checkAbort(signal);
-        if (this.blackboard.snapshot().revision !== snapshot.revision) {
-          throw failure('STALE_DECISION', 'The blackboard changed while Reason was evaluating its snapshot.');
+        const latest = this.blackboard.snapshot();
+        if (latest.revision !== snapshot.revision) {
+          // Checkpoint-only writes do not change the facts Reason evaluated.
+          const { revision: _oldRevision, ...before } = context.data;
+          const { revision: _newRevision, ...after } = buildBlackboardContext(latest).data;
+          if (JSON.stringify(before) !== JSON.stringify(after)) continue;
+          snapshot = latest;
         }
         if (!decision || typeof decision !== 'object' || Array.isArray(decision)) {
           throw failure('INVALID_DECISION', 'Reason must return a decision object.');
         }
         if (decision.complete === true) {
-          const complete = this.#complete(decision, snapshot, context, round);
+          const complete = this.#complete(decision, snapshot, context, currentRound);
           // Queue the final validation behind already accepted host writes;
           // an in-flight persist is deliberately absent from snapshot().
-          await this.blackboard.verifyRevision(snapshot.revision);
+          try { await this.blackboard.verifyRevision(snapshot.revision); }
+          catch (error) { if (error.code === 'STALE_DECISION') continue; throw error; }
           checkAbort(signal);
-          return complete;
+          this.#completion = { type: 'goal_completed', completion: complete };
+          for (const listener of this.#listeners) { try { listener(structuredClone(this.#completion)); } catch {} }
+          // Delivery is advisory: do not abort tools or override worker decisions.
+          // Keep ownership until the running workers finish their own wrap-up.
+          await Promise.all(active.values());
+          const errors = settled.filter(item => item.error && item.error.code !== 'ABORT_ERR').map(item => item.error);
+          if (errors.length) throw new AggregateError(errors, 'Failed to persist remaining workers.');
+          checkAbort(signal);
+          return { ...complete, revision: this.blackboard.snapshot().revision };
         }
         if (decision.complete !== undefined && decision.complete !== false) {
           throw failure('INVALID_DECISION', 'complete must be a boolean.');
+        }
+        if (decision.wait === true) {
+          if (decision.intents !== undefined) throw failure('INVALID_DECISION', 'Waiting cannot also propose new intents.');
+          reviewedState = stateKey;
+          await launch();
+          if (!active.size) throw failure('STALLED', 'No remaining workers to wait for.');
+          await waitForWorker();
+          continue;
         }
         if (!Array.isArray(decision.intents)) {
           throw failure('INVALID_DECISION', 'An unfinished decision must contain an intents array.');
@@ -201,13 +307,19 @@ export class BlackboardCoordinator {
         if (decision.intents.length === 0) {
           throw failure('STALLED', 'Reason supplied no new intents and no executable pending work remains.');
         }
+        assertIntentCapacity(snapshot.nodes, decision.intents.length, this.blackboard.openIntents);
         const intents = prepareIntents(decision.intents, snapshot, context);
-        await this.blackboard.createIntents(intents, { expectedRevision: snapshot.revision });
+        try { await this.blackboard.createIntents(intents, { expectedRevision: snapshot.revision }); }
+        catch (error) { if (error.code === 'STALE_DECISION') continue; throw error; }
         checkAbort(signal);
-        await this.#dispatch(signal, () => this.#thinkAfterWorker(signal));
+        await launch();
+        await waitForWorker();
       }
       throw failure('MAX_ROUNDS', `Blackboard execution exceeded ${this.maxRounds} Reason rounds.`);
     } finally {
+      controller.abort(failure('COORDINATOR_STOPPED', 'Coordinator stopped; no further work is authorized.'));
+      await Promise.all(active.values());
+      this.#listeners.clear();
       this.#running = false;
       runningBoards.delete(this.blackboard);
     }
@@ -220,9 +332,6 @@ export class BlackboardCoordinator {
     if (typeof decision.summary !== 'string' || !decision.summary.trim()) {
       throw failure('INVALID_DECISION', 'Completion requires a nonempty summary.');
     }
-    if (snapshot.nodes.some((node) => node.intent && ['pending', 'running'].includes(node.intent.status))) {
-      throw failure('INVALID_COMPLETION', 'Pending or running intents must finish before completion.');
-    }
     const evidenceIds = [...new Set(resolveReferences(decision.evidenceIds, context, 'evidenceIds').map(id => workerEvidence(snapshot.nodes, id)?.node.id || id))];
     if (evidenceIds.length === 0) {
       throw failure('INVALID_COMPLETION', 'Completion requires at least one completed fact as evidence.');
@@ -232,68 +341,11 @@ export class BlackboardCoordinator {
       if (!evidence) {
         throw failure('INVALID_COMPLETION', `Node ${id} is not completed fact evidence.`);
       }
-      const { node } = evidence;
-      // Worker lifecycle completion can still yield a blocked/partial finding.
-      // Recognize the pi Worker's versioned fact format without making generic
-      // blackboards depend on the model runtime or changing legacy text facts.
-      let fact;
-      try { fact = JSON.parse(node.fact.content); } catch { /* legacy text */ }
-      const workerFact = fact?.version === 1 && typeof fact.statement === 'string' && typeof fact.outcome === 'string';
-      if ((workerFact || node.provenance?.sourceType === 'pi-worker') &&
-          (!workerFact || !['confirmed', 'negative'].includes(fact.outcome) ||
-           !Array.isArray(fact.evidence) || !fact.evidence.length || !Array.isArray(fact.coverage) ||
-           fact.coverage.some(item => !['confirmed', 'negative'].includes(item.status)))) {
-        throw failure('INVALID_COMPLETION', `Node ${id} contains unresolved Worker evidence.`);
-      }
+      const { node, producer } = evidence;
+      const issue = completionEvidenceIssue(node.fact.content, producer.intent.keyPoints ?? [], node.provenance?.sourceType);
+      if (issue) throw failure('INVALID_COMPLETION', `Node ${id} ${issue}.`);
     }
     return { complete: true, evidenceIds, summary: decision.summary.trim(), rounds: round, revision: snapshot.revision };
-  }
-
-  async #thinkAfterWorker(signal) {
-    checkAbort(signal);
-    const snapshot = this.blackboard.snapshot();
-    const context = buildBlackboardContext(snapshot);
-    let decision;
-    try {
-      // A Worker completion is a useful incremental observation even when
-      // other Workers are still running. Apply only against the exact
-      // snapshot that Reason saw; concurrent completions are handled by their
-      // own Reason pass and must never be overwritten by a stale decision.
-      decision = await interruptible(() => this.reason({ context, signal }), signal);
-    } catch (cause) {
-      if (signal?.aborted) throw abortError(signal);
-      throw failure('REASON_FAILED', `Reason callback failed after Worker completion: ${cause?.message ?? cause}`, cause);
-    }
-    if (this.blackboard.snapshot().revision !== snapshot.revision || !decision || decision.complete === true) return;
-    if (!Array.isArray(decision.intents) || decision.intents.length === 0) return;
-    const intents = prepareIntents(decision.intents, snapshot, context);
-    await this.blackboard.createIntents(intents, { expectedRevision: snapshot.revision });
-  }
-
-  async #dispatch(signal, onWorkerComplete) {
-    const claimed = new Set();
-    const consume = async () => {
-      while (true) {
-        checkAbort(signal);
-        const node = this.blackboard.pendingIntents().find(item => !claimed.has(item.id));
-        if (!node) return;
-        claimed.add(node.id);
-        const completed = await this.#execute(node, signal);
-        if (completed && onWorkerComplete) await onWorkerComplete();
-      }
-    };
-    // allSettled ensures every started worker is finished or has had its write
-    // access revoked before the board lease is released after any error.
-    const settled = await Promise.allSettled(
-      Array.from({ length: this.maxConcurrency }, consume),
-    );
-    const errors = settled.filter((item) => item.status === 'rejected').map((item) => item.reason);
-    // Do not hide failed interruption persistence behind the signal: the host
-    // must learn when its durable state could not be updated.
-    const persistenceErrors = errors.filter((error) => error?.code !== 'ABORT_ERR');
-    if (persistenceErrors.length) throw new AggregateError(persistenceErrors, 'Blackboard worker persistence failed.');
-    checkAbort(signal);
-    if (errors.length) throw errors[0];
   }
 
   async #execute(node, signal) {
@@ -301,6 +353,7 @@ export class BlackboardCoordinator {
     const previous = [...node.attempts].reverse().find((item) => item.checkpoint !== undefined);
     const attempt = await this.blackboard.beginAttempt(node.id);
     let active = true;
+    const subscriptions = new Set();
     const checkpointWrites = [];
     let checkpointFailure;
     const requireActive = () => {
@@ -317,6 +370,14 @@ export class BlackboardCoordinator {
         attempt: structuredClone(attempt),
         checkpoint: previous ? structuredClone(previous.checkpoint) : undefined,
         signal,
+        getMessages: () => this.#completion ? [structuredClone(this.#completion)] : [],
+        onMessage: listener => {
+          requireActive();
+          if (typeof listener !== 'function') throw new TypeError('Message listener must be a function');
+          subscriptions.add(listener); this.#listeners.add(listener);
+          if (this.#completion) listener(structuredClone(this.#completion));
+          return () => { subscriptions.delete(listener); this.#listeners.delete(listener); };
+        },
         getContext: () => {
           requireActive();
           return buildBlackboardContext(this.blackboard.snapshot(), { focusId: node.id });
@@ -375,6 +436,7 @@ export class BlackboardCoordinator {
       return;
     } finally {
       active = false;
+      for (const listener of subscriptions) this.#listeners.delete(listener);
     }
     try {
       await this.blackboard.completeAttempt(node.id, attempt.id, typeof result === 'string' ? result : result.content, {
@@ -390,6 +452,5 @@ export class BlackboardCoordinator {
       }
       throw error;
     }
-    return true;
   }
 }

@@ -45,8 +45,9 @@ body.vscode-dark .composer .submit:disabled { background: var(--hover); color: v
 
 body.vscode-dark :is(.goal-tabs, .worker-options-menu, .new-create-menu, .graph-workspace .graph-detail, #settings-discard) { background: var(--surface-raised); box-shadow: 0 12px 32px #00000050; }
 body.vscode-dark :is(#note-editor, #settings-dialog) { background: var(--surface-raised); box-shadow: 0 24px 80px #00000070; }
-body.vscode-dark .project-switcher-shell { background: var(--surface-raised); box-shadow: 0 24px 80px #00000070; }
-body.vscode-dark :is(#note-editor, #settings-dialog, #project-switcher)::backdrop { background: #080b10a6; }
+body.vscode-dark .project-switcher-shell,
+body.vscode-dark .ubovm-modal-shell { background: var(--surface-raised); box-shadow: 0 24px 80px #00000070; }
+body.vscode-dark :is(#note-editor, #settings-dialog, #project-switcher, #ubovm-modal)::backdrop { background: #080b10a6; }
 body.vscode-dark .note-reader-toolbar { background: var(--wash); }
 body.vscode-dark .note-select[aria-pressed="true"] { background: var(--accent-wash); border-color: color-mix(in srgb, var(--accent) 45%, var(--canvas)); box-shadow: inset 3px 0 0 var(--accent); }
 body.vscode-dark .notebook-filters button[aria-pressed="true"] { background: var(--surface-raised); color: var(--accent); box-shadow: 0 1px 4px #00000030; }

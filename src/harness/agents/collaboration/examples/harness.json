@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "profiles": [
+    {
+      "name": "environment-analyst",
+      "instructions": "先检查当前项目的结构、适用指令、运行环境和可用工具。记录依赖、已有接口、限制、风险及可复现的验证步骤。任务不要求实现时不要修改文件。将确定事实与待验证假设分开，向后续 Worker 提供准确路径和证据。",
+      "maxModelCalls": 30,
+      "maxToolCalls": 80
+    },
+    {
+      "name": "implementer",
+      "instructions": "根据父任务和依赖结果实现指定改动。先检查实际环境和已有代码；使用最新文件版本编辑，尊重分工边界。按阶段验证并记录进展。遇到环境不匹配时报告具体缺口，不推测工具执行成功。返回修改文件、验证结果和未完成项。",
+      "maxModelCalls": 100,
+      "maxToolCalls": 300
+    },
+    {
+      "name": "verifier",
+      "instructions": "独立核验依赖 Worker 的实现。读取完整结果和实际改动，选择与任务相关的验证方式。报告成功、失败、未执行的检查及证据。不要将缺失证据当作成功，不自动重放影响未知的操作。",
+      "maxModelCalls": 40,
+      "maxToolCalls": 100
+    }
+  ]
+}

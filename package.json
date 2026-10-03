@@ -23,12 +23,15 @@
     "start": "node build.mjs start",
     "dev": "node build.mjs dev",
     "setup": "node build.mjs setup",
+    "setup:python": "node src/main/prepare-python.mjs",
     "check": "node build.mjs check",
     "test": "node build.mjs test",
     "core": "node build.mjs source",
-    "test:platform": "node --test src/main/test/build-platform.mjs"
+    "test:platform": "node --test src/main/test/build-platform.mjs",
+    "test:harness": "node --test \"src/harness/**/*.test.mjs\""
   },
   "dependencies": {
+    "@anthropic-ai/sandbox-runtime": "0.0.77",
     "@earendil-works/pi-agent-core": "0.86.1",
     "@earendil-works/pi-ai": "0.86.1",
     "@modelcontextprotocol/sdk": "1.30.0",

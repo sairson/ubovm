@@ -1144,7 +1144,7 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 			// Restoring views could mean that sidebar already
 			// restored, as such we need to test again
 			await restoreDefaultViewsPromise;
-			if (!this.state.initialization.views.containerToRestore.sideBar) {
+			if (!this.isVisible(Parts.SIDEBAR_PART) || !this.state.initialization.views.containerToRestore.sideBar) {
 				return;
 			}
 
@@ -2683,6 +2683,7 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 	}
 
 	private createGridDescriptor(): ISerializedGrid {
+		this.stateModel.setRuntimeValue(LayoutStateKeys.SIDEBAR_HIDDEN, true);
 		const { width, height } = this._mainContainerDimension;
 		// Repair oversized persisted sidebars before the first grid layout.
 		// Normal saved widths and subsequent manual resizing remain untouched.

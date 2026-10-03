@@ -6,7 +6,7 @@ const { readFileSync } = require('node:fs');
 const path = require('node:path');
 const source = readFileSync(path.join(__dirname, '../../../extension.cjs'), 'utf8');
 
-test('conversation and project navigation paint before a slow restore while serializing later actions', async () => {
+test('conversation and project navigation restore before one final publish while serializing later actions', async () => {
   for (const kind of ['conversation', 'project']) {
     let release, active = 'previous';
     const calls = [], recovery = new Promise(resolve => { release = resolve; });
@@ -20,10 +20,11 @@ test('conversation and project navigation paint before a slow restore while seri
     vm.runInNewContext(source.slice(start, source.indexOf('  async function deleteConversation', start)), sandbox);
     const pending = kind === 'project' ? sandbox.openProject('next') : sandbox.selectConversation('next');
     await new Promise(resolve => setImmediate(resolve));
-    assert.deepEqual(calls, ['select', 'view', 'publish', 'restore']);
+    assert.deepEqual(calls, ['select', 'view', 'restore']);
     let later = false; const queued = sandbox.messageQueue.then(() => { later = true; });
     assert.equal(later, false); release(); await pending; await queued;
-    assert.equal(later, true); assert.equal(calls.at(-1), 'publish');
+    assert.equal(later, true);
+    assert.deepEqual(calls, ['select', 'view', 'restore', 'publish']);
   }
 });
 

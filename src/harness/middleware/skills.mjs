@@ -3,9 +3,9 @@ import { lstat, open, readdir, realpath } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { parseDocument } from 'yaml';
 import { Type } from 'typebox';
-import { SkillRegistry, createSkillResourceTool } from '../intools/skill-resource-read.mjs';
-import { createSkillScriptTool } from '../intools/skill-script-command.mjs';
-import { expandHome, integer, requireText, textResult } from '../intools/common.mjs';
+import { SkillRegistry, createSkillResourceTool } from '../intools/skills/resources.mjs';
+import { createSkillScriptTool } from '../intools/skills/scripts.mjs';
+import { expandHome, integer, requireText, textResult } from '../intools/shared/common.mjs';
 
 const NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const clone = value => structuredClone(value);

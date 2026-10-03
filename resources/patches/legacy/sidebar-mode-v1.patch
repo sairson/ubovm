@@ -1,0 +1,142 @@
+diff --git a/src/vs/workbench/browser/parts/views/treeView.ts b/src/vs/workbench/browser/parts/views/treeView.ts
+index fa8d7ae..77b463f 100644
+--- a/src/vs/workbench/browser/parts/views/treeView.ts
++++ b/src/vs/workbench/browser/parts/views/treeView.ts
+@@ -129,6 +129,129 @@ export class TreeViewPane extends ViewPane {
+ 
+ 	protected override renderBody(container: HTMLElement): void {
+ 		this._container = container;
++		if (this.id === 'ubovm.sessions') {
++			container.classList.add('ubovm-sessions-body');
++			const root = container.ownerDocument.documentElement;
++			const loading = container.ownerDocument.createElement('div');
++			loading.className = 'ubovm-session-loading';
++			loading.setAttribute('role', 'status');
++			loading.textContent = '正在读取会话…';
++			const retry = container.ownerDocument.createElement('button');
++			retry.textContent = '重新加载窗口';
++			retry.hidden = true;
++			const reload = () => { void this.openerService.open('command:workbench.action.reloadWindow', { allowCommands: ['workbench.action.reloadWindow'] }); };
++			retry.addEventListener('click', reload);
++			loading.appendChild(retry);
++			const slowTimer = container.ownerDocument.defaultView?.setTimeout(() => {
++				if (root.classList.contains('ubovm-content-ready')) { return; }
++				root.classList.add('ubovm-content-slow');
++				if (loading.firstChild) { loading.firstChild.textContent = '会话加载时间较长，可以重新加载窗口。'; }
++				retry.hidden = false;
++			}, 12000);
++			this._register({ dispose: () => { container.ownerDocument.defaultView?.clearTimeout(slowTimer); retry.removeEventListener('click', reload); } });
++			const bar = container.ownerDocument.createElement('div');
++			bar.className = 'ubovm-sidebar-modes';
++			bar.setAttribute('role', 'group');
++			bar.setAttribute('aria-label', '工作模式');
++			let pending = '';
++			let disposed = false;
++			this._register({ dispose: () => { disposed = true; } });
++			const buttons = ['assist', 'goal'].map(mode => {
++				const button = container.ownerDocument.createElement('button');
++				button.type = 'button';
++				button.dataset.mode = mode;
++				button.textContent = mode === 'goal' ? '探索模式' : '协助模式';
++				const select = async () => {
++					if (pending || !this.contextKeyService.getContextKeyValue('ubovm.mode')) { return; }
++					const settings = !!this.contextKeyService.getContextKeyValue('ubovm.settingsPage');
++					if (!settings && this.contextKeyService.getContextKeyValue('ubovm.mode') === mode) { return; }
++					pending = 'mode:' + mode;
++					update();
++					try {
++						if (settings) { await this.openerService.open('command:ubovm.closeSettings?' + encodeURIComponent(JSON.stringify([mode])), { allowCommands: ['ubovm.closeSettings'] }); }
++						else { await this.openerService.open('command:ubovm.setMode?' + encodeURIComponent(JSON.stringify([mode])), { allowCommands: ['ubovm.setMode'] }); }
++					} finally { pending = ''; update(); }
++				};
++				button.addEventListener('click', select);
++				this._register({ dispose: () => button.removeEventListener('click', select) });
++				bar.appendChild(button);
++				return button;
++			});
++			const management = container.ownerDocument.createElement('nav');
++			management.className = 'ubovm-sidebar-management';
++			management.setAttribute('aria-label', '管理配置');
++			const heading = container.ownerDocument.createElement('div');
++			heading.className = 'ubovm-management-heading';
++			heading.textContent = '管理配置';
++			management.appendChild(heading);
++			const managementButtons = [['mcp', 'MCP', 'plug', 'ubovm.openMcp'], ['skills', 'Skills', 'book', 'ubovm.openSkills'], ['settings', '系统配置', 'settings-gear', 'ubovm.openSettings']].map(([page, label, icon, command]) => {
++				const button = container.ownerDocument.createElement('button');
++				button.type = 'button';
++				button.dataset.settingsPage = page;
++				const symbol = container.ownerDocument.createElement('span');
++				symbol.className = 'codicon codicon-' + icon;
++				symbol.setAttribute('aria-hidden', 'true');
++				const text = container.ownerDocument.createElement('span');
++				text.textContent = label;
++				button.append(symbol, text);
++				const open = async () => {
++					if (pending || !this.contextKeyService.getContextKeyValue('ubovm.mode') || this.contextKeyService.getContextKeyValue('ubovm.settingsPage') === page) { return; }
++					pending = 'page:' + page;
++					update();
++					try { await this.openerService.open('command:' + command, { allowCommands: [command] }); }
++					finally { pending = ''; update(); }
++				};
++				button.addEventListener('click', open);
++				this._register({ dispose: () => button.removeEventListener('click', open) });
++				management.appendChild(button);
++				return button;
++			});
++			const update = () => {
++				if (disposed) { return; }
++				const mode = this.contextKeyService.getContextKeyValue('ubovm.mode');
++				const ready = this.contextKeyService.getContextKeyValue('ubovm.contentReady') === true;
++				root.classList.toggle('ubovm-content-ready', ready);
++				container.classList.toggle('ubovm-sessions-loading', !mode);
++				loading.hidden = ready;
++				if (ready) { container.ownerDocument.defaultView?.clearTimeout(slowTimer); }
++				const page = this.contextKeyService.getContextKeyValue('ubovm.settingsPage');
++				for (const button of managementButtons) {
++					button.disabled = !!pending || !mode;
++					button.setAttribute('aria-busy', String(pending === 'page:' + button.dataset.settingsPage));
++					if (button.dataset.settingsPage === page) {
++						button.setAttribute('aria-current', 'page');
++					} else {
++						button.removeAttribute('aria-current');
++					}
++				}
++				bar.classList.toggle('ubovm-settings-navigation', !!page);
++				for (const button of buttons) {
++					button.setAttribute('aria-pressed', String(button.dataset.mode === mode));
++					button.disabled = !!pending || !mode;
++					button.setAttribute('aria-disabled', String(button.disabled));
++					button.setAttribute('aria-busy', String(pending === 'mode:' + button.dataset.mode));
++				}
++			};
++			const navigationKeys = new Set(['ubovm.mode', 'ubovm.settingsPage', 'ubovm.contentReady']);
++			this._register(this.contextKeyService.onDidChangeContext(event => {
++				if (event.affectsSome(navigationKeys)) { update(); }
++			}));
++			const navigate = (event: KeyboardEvent) => {
++				if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) { return; }
++				event.preventDefault();
++				const available = buttons.filter(button => !button.hidden && !button.disabled);
++				if (!available.length) { return; }
++				const button = available[event.key === 'Home' ? 0 : event.key === 'End' ? available.length - 1 : container.ownerDocument.activeElement === available[0] ? available.length - 1 : 0];
++				button.focus();
++				button.click();
++			};
++			bar.addEventListener('keydown', navigate);
++			this._register({ dispose: () => bar.removeEventListener('keydown', navigate) });
++			container.appendChild(bar);
++			container.appendChild(management);
++			container.appendChild(loading);
++			update();
++		}
+ 		super.renderBody(container);
+ 		this.renderTreeView(container);
+ 	}
+@@ -138,6 +261,7 @@ export class TreeViewPane extends ViewPane {
+ 	}
+ 
+ 	protected override layoutBody(height: number, width: number): void {
++		if (this.id === 'ubovm.sessions') { height = Math.max(0, height - 206); }
+ 		super.layoutBody(height, width);
+ 		this.layoutTreeView(height, width);
+ 	}

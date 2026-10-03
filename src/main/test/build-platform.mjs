@@ -31,3 +31,21 @@ test('shared PowerShell functions handle source startup, smoke results and manag
   assert.ifError(result.error);
   assert.equal(result.status, 0, result.stdout + result.stderr);
 });
+
+test('installer retries only resource-access errors and restores the compiler environment', { skip: process.platform !== 'win32' }, () => {
+  const plan = buildCommand({ args: ['help'] });
+  const result = spawnSync(plan.command, [...plan.args.slice(0, -1),
+    fileURLToPath(new URL('./installer-compiler.ps1', import.meta.url))],
+  { encoding: 'utf8', env: plan.env });
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+});
+
+test('managed keyboard policy upgrades and ambiguity rejection run in the platform suite', () => {
+  const plan = buildCommand({ args: ['help'] });
+  const result = spawnSync(plan.command, [...plan.args.slice(0, -1),
+    fileURLToPath(new URL('./keyboard-policy-upgrade.ps1', import.meta.url))],
+  { encoding: 'utf8', env: plan.env });
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+});

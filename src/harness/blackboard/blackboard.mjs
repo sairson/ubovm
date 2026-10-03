@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { writeSnapshot } from './persistence.mjs';
+import { assertIntentCapacity, MAX_OPEN_INTENTS, normalizeOpenIntents } from './intent-capacity.mjs';
 
 const clone = value => structuredClone(value);
 const now = () => new Date().toISOString();
@@ -28,13 +29,16 @@ export function normalizePriority(value = 'medium') {
 
 export function normalizeKeyPoints(values = []) {
   const seen = new Set();
-  return strings(values, 'keyPoints').map(value => Array.from(value.replace(/\s+/gu, ' ')).slice(0, 180).join('').trim())
+  const points = strings(values, 'keyPoints').map(value => value.replace(/\s+/gu, ' ').trim())
     .filter(value => {
       const key = value.toLowerCase();
       if (!value || seen.has(key)) return false;
       seen.add(key);
       return true;
-    }).slice(0, 6);
+    });
+  if (points.length > 6) throw new RangeError('keyPoints must contain at most 6 distinct checks; split the task without dropping requirements');
+  if (points.some(point => point.length > 2048)) throw new RangeError('Each key point must be at most 2048 characters; shorten it without dropping acceptance conditions');
+  return points;
 }
 
 function provenance(value) {
@@ -208,13 +212,15 @@ function validateSnapshot(input) {
 export class Blackboard {
   #state;
   #persist;
+  #openIntents = MAX_OPEN_INTENTS;
   #queue = Promise.resolve();
   #listeners = new Set();
 
-  constructor({ sessionId, goal, persist = async () => {} } = {}) {
+  constructor({ sessionId, goal, persist = async () => {}, openIntents = MAX_OPEN_INTENTS } = {}) {
     sessionId = required(sessionId, 'sessionId');
     goal = required(goal, 'goal');
     if (typeof persist !== 'function') throw new TypeError('persist must be a function');
+    this.#openIntents = normalizeOpenIntents(openIntents);
     const timestamp = now();
     const rootId = `n_${randomUUID()}`;
     this.#state = {
@@ -225,15 +231,17 @@ export class Blackboard {
     this.#persist = persist;
   }
 
-  static fromSnapshot({ snapshot, persist = async () => {} } = {}) {
+  get openIntents() { return this.#openIntents; }
+
+  static fromSnapshot({ snapshot, persist = async () => {}, openIntents = MAX_OPEN_INTENTS } = {}) {
     const state = validateSnapshot(snapshot);
-    const board = new Blackboard({ sessionId: state.sessionId, goal: state.goal, persist });
+    const board = new Blackboard({ sessionId: state.sessionId, goal: state.goal, persist, openIntents });
     board.#state = state;
     return board;
   }
 
   /** One live owner per file; cross-process arbitration belongs to the session host. */
-  static async open({ filePath, sessionId, goal } = {}) {
+  static async open({ filePath, sessionId, goal, openIntents = MAX_OPEN_INTENTS } = {}) {
     const path = resolve(required(filePath, 'filePath'));
     let saved;
     try { saved = JSON.parse(await readFile(path, 'utf8')); }
@@ -242,7 +250,7 @@ export class Blackboard {
     if (state && ((sessionId !== undefined && state.sessionId !== sessionId.trim()) || (goal !== undefined && state.goal !== goal.trim()))) {
       throw new Error('Blackboard session or goal does not match the persisted graph');
     }
-    const board = new Blackboard({ sessionId: sessionId ?? state?.sessionId, goal: goal ?? state?.goal, persist: snapshot => writeSnapshot(path, snapshot) });
+    const board = new Blackboard({ sessionId: sessionId ?? state?.sessionId, goal: goal ?? state?.goal, openIntents, persist: snapshot => writeSnapshot(path, snapshot) });
     if (state) board.#state = state;
     else await board.#persist(clone(board.#state));
     return board;
@@ -299,6 +307,7 @@ export class Blackboard {
     const copied = clone(specs);
     return this.#commit('blackboard.intents.created', state => {
       if (!Array.isArray(copied)) throw new TypeError('intents must be an array');
+      assertIntentCapacity(state.nodes, copied.length, this.#openIntents);
       return copied.map(spec => makeNode(state, spec, 'intent'));
     }, expectedRevision);
   }
@@ -389,6 +398,7 @@ export class Blackboard {
     return this.#commit('blackboard.intent.reopened', state => {
       const node = intentNode(state, id);
       if (!['failed', 'interrupted'].includes(node.intent.status)) throw new Error('Only failed or interrupted intents can be retried');
+      assertIntentCapacity(state.nodes, 1, this.#openIntents);
       node.intent.status = 'pending';
       touch(node);
       return node;

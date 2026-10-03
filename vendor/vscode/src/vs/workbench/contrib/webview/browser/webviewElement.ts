@@ -557,6 +557,10 @@ export class WebviewElement extends Disposable implements IWebviewElement, Webvi
 	}
 
 	private _startBlockingIframeDragEvents() {
+		// UBOVM owns file drops inside its conversation composer.
+		if (this.providedViewType === 'ubovm.welcome') {
+			return;
+		}
 		if (this.element) {
 			this.element.style.pointerEvents = 'none';
 		}

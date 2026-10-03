@@ -159,10 +159,11 @@ export async function createMcpMiddleware({ servers = [], connectTimeoutMs = 20_
   const close = () => {
     if (closePromise) return closePromise;
     closed = true;
+    for (const diagnostic of diagnostics) diagnostic.connected = false;
     closePromise = Promise.resolve().then(async () => {
       signal?.removeEventListener('abort', abortListener);
       lifetime.abort(failure('MCP_CLOSED', 'MCP middleware is closed'));
-      const results = await Promise.allSettled(clients.map(client => client.close()));
+      const results = await Promise.allSettled(clients.map(client => Promise.resolve().then(() => client.close())));
       await Promise.allSettled([...active]);
       const errors = results.filter(result => result.status === 'rejected').map(result => result.reason);
       if (errors.length) throw new AggregateError(errors, 'Could not close all MCP clients');
@@ -179,7 +180,7 @@ export async function createMcpMiddleware({ servers = [], connectTimeoutMs = 20_
         signal: activeSignal, timeout: callTimeoutMs, maxTotalTimeout: callTimeoutMs,
         onprogress: onUpdate ? progress => {
           if (closed || activeSignal.aborted) return;
-          try { onUpdate({ content: [{ type: 'text', text: progress.message ?? `Progress: ${progress.progress}${progress.total === undefined ? '' : `/${progress.total}`}` }], details: { server: server.name, tool: remoteName, progress: progress.progress, ...(progress.total === undefined ? {} : { total: progress.total }) } }); } catch { /* Progress is observational. */ }
+          try { Promise.resolve(onUpdate({ content: [{ type: 'text', text: progress.message ?? `Progress: ${progress.progress}${progress.total === undefined ? '' : `/${progress.total}`}` }], details: { server: server.name, tool: remoteName, progress: progress.progress, ...(progress.total === undefined ? {} : { total: progress.total }) } })).catch(() => {}); } catch { /* Progress is observational. */ }
         } : undefined,
       });
       activeSignal.throwIfAborted();

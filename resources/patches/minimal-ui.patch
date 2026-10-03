@@ -1,0 +1,128 @@
+diff --git a/src/vs/platform/actions/common/actions.ts b/src/vs/platform/actions/common/actions.ts
+index 2f404600..20d9abe7 100644
+--- a/src/vs/platform/actions/common/actions.ts
++++ b/src/vs/platform/actions/common/actions.ts
+@@ -539,6 +539,27 @@ export const MenuRegistry: IMenuRegistry = new class implements IMenuRegistry {
+ 			// all commands by default
+ 			this._appendImplicitItems(result);
+ 		}
++		if (id.id === 'TitleBar' && !result.some(item => 'command' in item && item.command.id === 'ubovm.toggleTheme')) {
++			result.push({ command: { id: 'ubovm.toggleTheme', title: '切换浅色 / 暗色主题', icon: { id: 'color-mode' } }, group: 'navigation', order: 100 });
++		}
++		// UBOVM exposes only its conversations, file operations and pane toggles.
++		const compactMenus = /^(CommandPalette|EditorContext.*|SimpleEditorContext|EditorLineNumberContext|EditorTitle.*|EditorTabsBar.*|EditorSplitMoveSubmenu|EmptyEditorGroup.*|ExplorerContext.*|OpenEditorsContext.*|GlobalActivity|CommandCenter.*|LayoutControl.*|Menubar.*|TitleBar.*|ViewTitle.*|ViewContainerTitle.*)$/;
++		if (id.id !== 'MenubarMainMenu' && compactMenus.test(id.id)) {
++			const allowed = new Set([
++				'undo', 'redo', 'editor.action.clipboardCutAction', 'editor.action.clipboardCopyAction', 'editor.action.clipboardPasteAction', 'editor.action.selectAll',
++				'ubovm.expandFileEditor', 'ubovm.restoreFileEditor', 'ubovm.validateCodeChanges', 'ubovm.attachSelection', 'ubovm.reviewCodeChanges', 'ubovm.toggleTheme', 'ubovm.openSettings', 'ubovm.selectSettings', 'ubovm.closeSettings', 'ubovm.openMcp', 'ubovm.openSkills', 'ubovm.newChat', 'ubovm.newProject', 'ubovm.openProject', 'ubovm.manageProjects', 'ubovm.newProjectConversation', 'ubovm.changeProjectWorkspace', 'ubovm.renameProject', 'ubovm.deleteProject', 'ubovm.newGoal', 'ubovm.openAssistant', 'ubovm.selectConversation', 'ubovm.openTerminal', 'ubovm.openLocalTerminal', 'ubovm.selectTerminal', 'ubovm.resetLayout', 'ubovm.reloadConversation', 'ubovm.searchConversations', 'ubovm.hideSessions', 'ubovm.hideFiles', 'ubovm.createFirstFile',
++				'workbench.action.alignQuickInputCenter', 'workbench.action.alignQuickInputTop',
++				'workbench.action.toggleSidebarVisibility', 'workbench.action.toggleAuxiliaryBar', 'workbench.action.togglePanel',
++				'workbench.action.closeSidebar', 'workbench.action.closeAuxiliaryBar', 'workbench.action.closePanel',
++				'workbench.action.closeActiveEditor', 'workbench.action.closeOtherEditors', 'workbench.action.closeAllEditors',
++				'workbench.action.files.openFolder', 'workbench.action.files.newUntitledFile', 'workbench.action.files.save', 'workbench.action.files.saveAs', 'saveAll',
++				'explorer.newFile', 'explorer.newFolder', 'filesExplorer.cut', 'filesExplorer.copy', 'filesExplorer.paste',
++				'renameFile', 'moveFileToTrash', 'deleteFile', 'copyFilePath', 'copyRelativeFilePath',
++				'workbench.files.action.createFileFromExplorer', 'workbench.files.action.createFolderFromExplorer',
++				'workbench.files.action.refreshFilesExplorer', 'workbench.files.action.collapseExplorerFolders',
++				'workbench.action.terminal.new', 'workbench.action.terminal.kill', 'workbench.action.terminal.focus'
++			]);
++			return result.filter(item => 'command' in item && allowed.has(item.command.id));
++		}
+ 		return result;
+ 	}
+ 
+diff --git a/src/vs/workbench/browser/parts/paneCompositePart.ts b/src/vs/workbench/browser/parts/paneCompositePart.ts
+index f870dd7e..67fe427c 100644
+--- a/src/vs/workbench/browser/parts/paneCompositePart.ts
++++ b/src/vs/workbench/browser/parts/paneCompositePart.ts
+@@ -717,39 +717,16 @@ export abstract class AbstractPaneCompositePart extends CompositePart<PaneCompos
+ 		return toolBarWidth + globalToolBarWidth + 8; // 8px padding left
+ 	}
+ 
+-	private onTitleAreaContextMenu(event: StandardMouseEvent): void {
+-		if (this.shouldShowCompositeBar() && this.getCompositeBarPosition() === CompositeBarPosition.TITLE) {
+-			return this.onCompositeBarContextMenu(event);
+-		} else {
+-			const activePaneComposite = this.getActivePaneComposite() as PaneComposite;
+-			const activePaneCompositeActions = activePaneComposite ? activePaneComposite.getContextMenuActions() : [];
+-			if (activePaneCompositeActions.length) {
+-				this.contextMenuService.showContextMenu({
+-					getAnchor: () => event,
+-					getActions: () => activePaneCompositeActions,
+-					getActionViewItem: (action, options) => this.actionViewItemProvider(action, options),
+-					actionRunner: activePaneComposite.getActionRunner(),
+-					skipTelemetry: true
+-				});
+-			}
+-		}
++	private onTitleAreaContextMenu(_event: StandardMouseEvent): void {
++		// UBOVM keeps pane visibility controls, not workbench reconfiguration menus.
+ 	}
+ 
+ 	private onCompositeBarAreaContextMenu(event: StandardMouseEvent): void {
+ 		return this.onCompositeBarContextMenu(event);
+ 	}
+ 
+-	private onCompositeBarContextMenu(event: StandardMouseEvent): void {
+-		if (this.paneCompositeBar.value) {
+-			const actions: IAction[] = [...this.paneCompositeBar.value.getContextMenuActions()];
+-			if (actions.length) {
+-				this.contextMenuService.showContextMenu({
+-					getAnchor: () => event,
+-					getActions: () => actions,
+-					skipTelemetry: true
+-				});
+-			}
+-		}
++	private onCompositeBarContextMenu(_event: StandardMouseEvent): void {
++		// Hidden view containers cannot be restored through the pane header.
+ 	}
+ 
+ 	protected getViewsSubmenuAction(): SubmenuAction | undefined {
+diff --git a/src/vs/workbench/browser/parts/panel/panelActions.ts b/src/vs/workbench/browser/parts/panel/panelActions.ts
+index 01242285..c5f4f62b 100644
+--- a/src/vs/workbench/browser/parts/panel/panelActions.ts
++++ b/src/vs/workbench/browser/parts/panel/panelActions.ts
+@@ -65,7 +65,12 @@ export class TogglePanelAction extends Action2 {
+ 
+ 	override async run(accessor: ServicesAccessor): Promise<void> {
+ 		const layoutService = accessor.get(IWorkbenchLayoutService);
+-		layoutService.setPartHidden(layoutService.isVisible(Parts.PANEL_PART), Parts.PANEL_PART);
++		if (layoutService.isVisible(Parts.PANEL_PART)) {
++			layoutService.setPartHidden(true, Parts.PANEL_PART);
++		} else {
++			// The compact UBOVM panel only exposes the terminal.
++			await accessor.get(IViewsService).openView('terminal', true);
++		}
+ 	}
+ }
+ 
+diff --git a/src/vs/workbench/services/commands/common/commandService.ts b/src/vs/workbench/services/commands/common/commandService.ts
+index 9e38f1ff..a7de5fb1 100644
+--- a/src/vs/workbench/services/commands/common/commandService.ts
++++ b/src/vs/workbench/services/commands/common/commandService.ts
+@@ -50,6 +50,11 @@ export class CommandService extends Disposable implements ICommandService {
+ 	}
+ 
+ 	async executeCommand<T>(id: string, ...args: unknown[]): Promise<T> {
++		// Keep the shell focused even when a removed action has a key binding.
++		const hiddenActions = /^(?:workbench\.action\.(?:splitEditor|newGroup|editorLayout|toggleEditorGroupLayout|toggleEditorVisibility|toggleMaximizedPanel|toggleMaximizedAuxiliaryBar|maximizeAuxiliaryBar|toggleZenMode|findInFiles|replaceInFiles|quickOpen|showCommands|debug|openSettings|openGlobalKeybindings|toggleKeepEditors|unlockEditorGroup|toggleEditorGroupLock)|workbench\.view\.(?:search|debug|scm|extensions)|workbench\.action\.accounts|markdown\.showPreview|vscode\.previewHtml|search\.|testing\.|debug\.)/;
++		if (hiddenActions.test(id)) {
++			return undefined as T;
++		}
+ 		this._logService.trace('CommandService#executeCommand', id);
+ 
+ 		const activationEvent = `onCommand:${id}`;
+diff --git a/src/vs/workbench/browser/parts/titlebar/titlebarPart.ts b/src/vs/workbench/browser/parts/titlebar/titlebarPart.ts
+index 9d2e8a85..5270a6d3 100644
+--- a/src/vs/workbench/browser/parts/titlebar/titlebarPart.ts
++++ b/src/vs/workbench/browser/parts/titlebar/titlebarPart.ts
+@@ -233,7 +233,7 @@ export class BrowserTitlebarPart extends Part implements ITitlebarPart {
+ 
+ 	get minimumHeight(): number {
+ 		const wcoEnabled = isWeb && isWCOEnabled();
+-		let value = this.isCommandCenterVisible || wcoEnabled ? DEFAULT_CUSTOM_TITLEBAR_HEIGHT : 30;
++		let value = Math.max(44, this.isCommandCenterVisible || wcoEnabled ? DEFAULT_CUSTOM_TITLEBAR_HEIGHT : 30);
+ 		if (wcoEnabled) {
+ 			value = Math.max(value, getWCOTitlebarAreaRect(getWindow(this.element))?.height ?? 0);
+ 		}

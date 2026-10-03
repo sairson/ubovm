@@ -51,8 +51,9 @@ export class CommandService extends Disposable implements ICommandService {
 
 	async executeCommand<T>(id: string, ...args: unknown[]): Promise<T> {
 		// Keep the shell focused even when a removed action has a key binding.
-		const hiddenActions = /^(?:workbench\.action\.(?:splitEditor|newGroup|editorLayout|toggleEditorGroupLayout|toggleEditorVisibility|toggleMaximizedPanel|toggleMaximizedAuxiliaryBar|maximizeAuxiliaryBar|toggleZenMode|findInFiles|replaceInFiles|quickOpen|showCommands|debug|openSettings|openGlobalKeybindings|toggleKeepEditors|unlockEditorGroup|toggleEditorGroupLock)|workbench\.view\.(?:search|debug|scm|extensions)|workbench\.action\.accounts|markdown\.showPreview|vscode\.previewHtml|search\.|testing\.|debug\.)/;
-		if (hiddenActions.test(id)) {
+		const hiddenActions = /^(?:workbench\.action\.(?:splitEditor|newGroup|editorLayout|toggleEditorGroupLayout|toggleEditorVisibility|toggleMaximizedPanel|toggleMaximizedAuxiliaryBar|maximizeAuxiliaryBar|toggleZenMode|findInFiles|replaceInFiles|quickOpen|showCommands|debug|openSettings|openGlobalKeybindings|toggleKeepEditors|unlockEditorGroup|toggleEditorGroupLock)|workbench\.view\.(?:search|debug|scm|extensions)|workbench\.action\.accounts|vscode\.previewHtml|search\.|testing\.|debug\.)/;
+		const fileSearch = /^(?:(?:closeReplaceInFilesWidget|toggleSearch(?:CaseSensitive|WholeWord|Regex|PreserveCase)|addCursorsAtSearchResults)$|filesExplorer\.(?:findInFolder|findInWorkspace)$|search\.|workbench\.action\.(?:findInFiles|replaceInFiles|quickOpen|quickTextSearch|toggleSearchOnType|search\.)|workbench\.view\.search$|actions\.find(?:WithSelection)?$|editor\.actions\.findWithArgs$|(?:closeFindWidget|toggleFindCaseSensitive|toggleFindWholeWord|toggleFindRegex|toggleFindInSelection|togglePreserveCase)$|editor\.action\.(?:startFindReplaceAction|nextMatchFindAction|previousMatchFindAction|goToMatchFindAction|nextSelectionMatchFindAction|previousSelectionMatchFindAction|replaceOne|replaceAll|selectAllMatches|selectHighlights)$)/;
+		if (hiddenActions.test(id) && !fileSearch.test(id)) {
 			return undefined as T;
 		}
 		this._logService.trace('CommandService#executeCommand', id);

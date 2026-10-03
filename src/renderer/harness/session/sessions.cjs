@@ -37,10 +37,17 @@ const MAX_CRITERIA = 20;
 const MAX_CRITERION_LENGTH = 300;
 const MAX_NOTES = 50;
 const MAX_NOTE_LENGTH = 2000;
+const MAX_ASSIST_EVIDENCE = 50;
+const MAX_EVIDENCE_STATEMENT = 2000;
+const MAX_EVIDENCE_OBSERVATIONS = 16;
+const MAX_EVIDENCE_OBSERVATION = 2000;
+const MAX_EVIDENCE_TOOL_CALL_IDS = 16;
+const MAX_EVIDENCE_TOOL_CALL_ID = 128;
 const STORAGE_VERSION = 3;
 const MAX_SESSION_MESSAGE_BYTES = 2 << 20;
 const MAX_ALL_MESSAGE_BYTES = 12 << 20;
 const { cleanTimelineParts, formatToolValue, redactDisplayObject } = require('../../host/agent/agent-backend.cjs').backendModule('projection.cjs');
+const { normalizeEvidenceLists: normalizeSharedEvidenceLists, formatAssistSourceEvidenceSeed } = require('../../host/agent/agent-backend.cjs').harnessModule('assist-evidence.cjs');
 
 function requireMode(mode) {
   if (mode !== 'assist' && mode !== 'goal') throw new Error('请选择协助模式或探索模式。');
@@ -52,6 +59,91 @@ function requireText(value, limit, label) {
   const text = value.trim();
   if (text.length > limit) throw new Error(`${label}不能超过 ${limit} 个字符。`);
   return text;
+}
+
+function normalizeEvidenceLists(observations, toolCallIds) {
+  return normalizeSharedEvidenceLists(observations, toolCallIds, {
+    maxObservations: MAX_EVIDENCE_OBSERVATIONS,
+    maxObservation: MAX_EVIDENCE_OBSERVATION,
+    maxToolCallIds: MAX_EVIDENCE_TOOL_CALL_IDS,
+    maxToolCallId: MAX_EVIDENCE_TOOL_CALL_ID
+  });
+}
+
+function evidenceContentKey(statement, observations, toolCallIds) {
+  const lists = normalizeEvidenceLists(observations, toolCallIds);
+  return createHash('sha256').update(JSON.stringify([
+    String(statement || '').trim(),
+    lists.observations,
+    lists.toolCallIds
+  ])).digest('hex');
+}
+
+function cleanEvidenceEntry(item, seen) {
+  if (!item || typeof item.statement !== 'string' || !item.statement.trim()) return null;
+  const id = typeof item.id === 'string' && item.id.trim() ? item.id.trim().slice(0, 200) : randomUUID();
+  if (seen.has(id)) return null;
+  seen.add(id);
+  const statement = item.statement.trim().slice(0, MAX_EVIDENCE_STATEMENT);
+  const lists = normalizeEvidenceLists(item.observations, item.toolCallIds);
+  return {
+    id,
+    statement,
+    observations: lists.observations,
+    ...(lists.toolCallIds.length ? { toolCallIds: lists.toolCallIds } : {}),
+    contentKey: typeof item.contentKey === 'string' && /^[a-f0-9]{64}$/.test(item.contentKey)
+      ? item.contentKey
+      : evidenceContentKey(statement, lists.observations, lists.toolCallIds),
+    createdAt: Number.isFinite(item.createdAt) ? item.createdAt : Date.now()
+  };
+}
+
+function cleanAssistEvidence(value) {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set();
+  return value.map(item => cleanEvidenceEntry(item, seen)).filter(Boolean).slice(-MAX_ASSIST_EVIDENCE);
+}
+
+function evidenceSnapshot(entries) {
+  return (entries || []).map(item => ({
+    id: item.id,
+    statement: item.statement,
+    observations: [...(item.observations || [])],
+    ...(item.toolCallIds?.length ? { toolCallIds: [...item.toolCallIds] } : {}),
+    ...(item.contentKey ? { contentKey: item.contentKey } : {}),
+    createdAt: item.createdAt
+  }));
+}
+
+function selectAssistEvidence(source, evidenceIds) {
+  if (evidenceIds === undefined) return [];
+  if (!Array.isArray(evidenceIds)) throw new Error('证据标识必须为数组。');
+  if (evidenceIds.length > MAX_ASSIST_EVIDENCE) throw new Error(`最多选择 ${MAX_ASSIST_EVIDENCE} 条证据。`);
+  const ledger = cleanAssistEvidence(source.assistEvidence);
+  const byId = new Map(ledger.map(item => [item.id, item]));
+  const seen = new Set();
+  const selected = [];
+  for (const raw of evidenceIds) {
+    const id = requireText(raw, 200, '证据标识');
+    if (seen.has(id)) continue;
+    const entry = byId.get(id);
+    if (!entry) throw new Error(`证据不存在：${id}`);
+    seen.add(id);
+    selected.push(entry);
+  }
+  return evidenceSnapshot(selected);
+}
+
+function mergeSourceEvidence(existing, incoming) {
+  const byId = new Map();
+  for (const item of [...(Array.isArray(existing) ? existing : []), ...incoming]) {
+    if (item?.id) byId.set(item.id, item);
+  }
+  return cleanAssistEvidence([...byId.values()]);
+}
+
+function attachedEvidenceIdsForGoal(goal) {
+  return new Set((goal?.sourceEvidence || []).map(item => item.id).filter(Boolean));
 }
 
 function cleanGoal(value) {
@@ -88,16 +180,23 @@ function cleanGoal(value) {
       text: item.text.trim().slice(0, MAX_NOTE_LENGTH),
       createdAt: Number.isFinite(item.createdAt) ? item.createdAt : Date.now()
     }));
+  const sourceEvidence = cleanAssistEvidence(value.sourceEvidence);
   return {
     objective: value.objective.trim().slice(0, MAX_OBJECTIVE_LENGTH), criteria, notes,
     initialFacts: typeof value.initialFacts === 'string' ? value.initialFacts.trim().slice(0, 8000) : '',
+    ...(sourceEvidence.length ? { sourceEvidence } : {}),
     createdAt: Number.isFinite(value.createdAt) ? value.createdAt : Date.now(),
     updatedAt: Number.isFinite(value.updatedAt) ? value.updatedAt : Date.now()
   };
 }
 
 function goalSnapshot(goal) {
-  return goal ? { ...goal, criteria: goal.criteria.map(item => ({ ...item })), notes: goal.notes.map(item => ({ ...item })) } : null;
+  return goal ? {
+    ...goal,
+    criteria: goal.criteria.map(item => ({ ...item })),
+    notes: goal.notes.map(item => ({ ...item })),
+    ...(goal.sourceEvidence?.length ? { sourceEvidence: evidenceSnapshot(goal.sourceEvidence) } : {})
+  } : null;
 }
 
 function cleanMessages(value) {
@@ -135,11 +234,21 @@ function goalTitle(goal, fallback = '新对话') {
 
 function newSession(messages = [], mode = 'assist') {
   const now = Date.now();
-  return { id: randomUUID(), title: titleFrom(messages, mode === 'goal' ? '新探索' : '新对话'), messages, mode, goal: null, placeholder: messages.length === 0, createdAt: now, updatedAt: now };
+  return {
+    id: randomUUID(), title: titleFrom(messages, mode === 'goal' ? '新探索' : '新对话'), messages, mode, goal: null,
+    ...(mode === 'assist' ? { assistEvidence: [] } : {}),
+    placeholder: messages.length === 0, createdAt: now, updatedAt: now
+  };
 }
 
 function snapshot(session) {
-  return { ...session, inputQueue: structuredClone(session.inputQueue ?? []), messages: session.messages.map(message => ({ ...message, ...(message.parts ? { parts: message.parts.map(part => ({ ...part })) } : {}) })), goal: goalSnapshot(session.goal) };
+  return {
+    ...session,
+    inputQueue: structuredClone(session.inputQueue ?? []),
+    messages: session.messages.map(message => ({ ...message, ...(message.parts ? { parts: message.parts.map(part => ({ ...part })) } : {}) })),
+    goal: goalSnapshot(session.goal),
+    ...(session.mode === 'assist' ? { assistEvidence: evidenceSnapshot(session.assistEvidence) } : {})
+  };
 }
 
 function restoreState(stored, legacyMessages) {
@@ -176,9 +285,11 @@ function restoreState(stored, legacyMessages) {
       createdAt: Number.isFinite(session.createdAt) ? session.createdAt : Date.now(),
       updatedAt: Number.isFinite(session.updatedAt) ? session.updatedAt : Date.now()
     };
+    const assistEvidence = mode === 'assist' ? cleanAssistEvidence(session.assistEvidence) : [];
     if (modern) {
       candidates.push({
         ...base, mode, goal: mode === 'goal' ? goal : null,
+        ...(mode === 'assist' ? { assistEvidence } : {}),
         ...(typeof session.legacyDraftId === 'string' && session.legacyDraftId ? { legacyDraftId: session.legacyDraftId } : {})
       });
       continue;
@@ -189,7 +300,7 @@ function restoreState(stored, legacyMessages) {
     // session. The old ID also lets the webview recover a saved local goal draft.
     const preserveGoalId = mode === 'goal' && messages.length === 0;
     if (!preserveGoalId) {
-      candidates.push({ ...base, mode: 'assist', goal: null });
+      candidates.push({ ...base, mode: 'assist', goal: null, assistEvidence: cleanAssistEvidence(session.assistEvidence) });
       migratedIds.assist.set(session.id, session.id);
     }
     if (goal || mode === 'goal') {
@@ -457,7 +568,15 @@ function createSessions(vscode, context, onDidChange, { isBusy = () => false, cr
       return state.sessions.filter(item => source.mode === 'assist'
         ? item.mode === 'goal' && item.sourceConversationId === id
         : item.mode === 'assist' && item.id === source.sourceConversationId)
-        .map(item => ({ id: item.id, title: item.title, mode: item.mode }));
+        .map(item => ({
+          id: item.id,
+          title: item.title,
+          mode: item.mode,
+          ...(item.mode === 'goal' ? {
+            sourceEvidenceCount: item.goal?.sourceEvidence?.length || 0,
+            sourceEvidenceIds: (item.goal?.sourceEvidence || []).map(entry => entry.id)
+          } : {})
+        }));
     },
     createLinkedGoal(sourceId, input, signal) {
       const draft = structuredClone(input);
@@ -470,20 +589,113 @@ function createSessions(vscode, context, onDidChange, { isBusy = () => false, cr
         const initialFacts = draft.context === undefined ? '' : requireText(draft.context, 8000, '目标背景');
         if (!Array.isArray(draft.criteria) || draft.criteria.length > MAX_CRITERIA) throw new Error('验收标准必须为数组，最多 20 条。');
         const texts = draft.criteria.map(text => requireText(text, MAX_CRITERION_LENGTH, '验收标准'));
+        const incomingEvidence = selectAssistEvidence(source, draft.evidence_ids);
         const fingerprint = goalRequestFingerprint(objective, initialFacts, texts);
         const existing = state.sessions.find(item => item.mode === 'goal' && item.sourceConversationId === sourceId && item.goalRequestKey === key);
         if (existing) {
           const original = existing.goalRequestFingerprint ?? goalRequestFingerprint(existing.goal.objective, existing.goal.initialFacts, existing.goal.criteria.map(item => item.text));
           if (original !== fingerprint) throw new Error('请求标识已用于不同目标，请使用新的标识。');
-          return snapshot(existing);
+          if (!incomingEvidence.length || !existing.goal) return snapshot(existing);
+          const before = attachedEvidenceIdsForGoal(existing.goal);
+          const sourceEvidence = mergeSourceEvidence(existing.goal.sourceEvidence, incomingEvidence);
+          const added = sourceEvidence.filter(item => !before.has(item.id)).length;
+          if (!added) return snapshot(existing);
+          const now = Date.now();
+          const goal = { ...existing.goal, sourceEvidence, updatedAt: now };
+          await commit({
+            ...state,
+            sessions: state.sessions.map(item => item.id === existing.id ? { ...item, goal, updatedAt: now } : item)
+          });
+          return snapshot(state.sessions.find(item => item.id === existing.id));
         }
         if (state.sessions.filter(item => item.mode === 'goal').length >= MAX_SESSIONS) throw new Error('目标数量已达到上限，请先清理不再需要的目标。');
         const session = newSession([], 'goal');
-        session.goal = { objective, initialFacts, criteria: texts.map(text => ({ id: randomUUID(), text, done: false })), notes: [], createdAt: session.createdAt, updatedAt: session.updatedAt };
+        session.goal = {
+          objective, initialFacts, criteria: texts.map(text => ({ id: randomUUID(), text, done: false })), notes: [],
+          ...(incomingEvidence.length ? { sourceEvidence: incomingEvidence } : {}),
+          createdAt: session.createdAt, updatedAt: session.updatedAt
+        };
         Object.assign(session, { title: goalTitle(session.goal), placeholder: false, sourceConversationId: sourceId, goalRequestKey: key, goalRequestFingerprint: fingerprint,
           ...(source.workspace ? { workspace: source.workspace } : {}), ...(source.projectId ? { projectId: source.projectId } : {}) });
         await commit({ ...state, sessions: [session, ...state.sessions.map(item => item.id === sourceId ? { ...item, placeholder: false } : item)] });
         return snapshot(session);
+      });
+    },
+    recordAssistEvidence(sessionId, input, signal) {
+      const draft = structuredClone(input);
+      return enqueue(async () => {
+        signal?.throwIfAborted();
+        const source = state.sessions.find(item => item.id === sessionId && item.mode === 'assist');
+        if (!source) throw new Error('来源聊天已不存在。');
+        const statement = requireText(draft?.statement, MAX_EVIDENCE_STATEMENT, '证据陈述');
+        if (draft.observations !== undefined && !Array.isArray(draft.observations)) throw new Error('观察记录必须为数组。');
+        if (draft.tool_call_ids !== undefined && !Array.isArray(draft.tool_call_ids)) throw new Error('工具调用标识必须为数组。');
+        if (!(draft.observations || []).length) throw new Error('观察记录至少需要 1 条。');
+        const lists = normalizeEvidenceLists(
+          (draft.observations || []).map(value => requireText(value, MAX_EVIDENCE_OBSERVATION, '观察记录')),
+          (draft.tool_call_ids || []).map(value => requireText(value, MAX_EVIDENCE_TOOL_CALL_ID, '工具调用标识'))
+        );
+        const contentKey = evidenceContentKey(statement, lists.observations, lists.toolCallIds);
+        const existing = cleanAssistEvidence(source.assistEvidence).find(item => item.contentKey === contentKey);
+        if (existing) return { ...evidenceSnapshot([existing])[0], reused: true };
+        const entry = {
+          id: randomUUID(),
+          statement,
+          observations: lists.observations,
+          ...(lists.toolCallIds.length ? { toolCallIds: lists.toolCallIds } : {}),
+          contentKey,
+          createdAt: Date.now()
+        };
+        const assistEvidence = cleanAssistEvidence([...(source.assistEvidence || []), entry]);
+        await commit({
+          ...state,
+          sessions: state.sessions.map(item => item.id === sessionId
+            ? { ...item, assistEvidence, placeholder: false, updatedAt: entry.createdAt }
+            : item)
+        });
+        return { ...evidenceSnapshot([entry])[0], reused: false };
+      });
+    },
+    listAssistEvidence(sessionId) {
+      const source = state.sessions.find(item => item.id === sessionId && item.mode === 'assist');
+      if (!source) throw new Error('来源聊天已不存在。');
+      const linked = state.sessions.filter(item => item.mode === 'goal' && item.sourceConversationId === sessionId && item.goal);
+      return evidenceSnapshot(source.assistEvidence).map(item => ({
+        ...item,
+        attachedGoalIds: linked.filter(goal => (goal.goal.sourceEvidence || []).some(entry => entry.id === item.id)).map(goal => goal.id)
+      }));
+    },
+    attachAssistEvidenceToGoal(sourceId, goalId, evidenceIds, signal) {
+      const ids = structuredClone(evidenceIds);
+      return enqueue(async () => {
+        signal?.throwIfAborted();
+        const source = state.sessions.find(item => item.id === sourceId && item.mode === 'assist');
+        if (!source) throw new Error('来源聊天已不存在。');
+        const target = state.sessions.find(item => item.id === goalId && item.mode === 'goal');
+        if (!target || target.sourceConversationId !== sourceId) throw new Error('关联目标已不存在。');
+        if (!target.goal) throw new Error('关联目标尚未保存。');
+        const incoming = selectAssistEvidence(source, ids);
+        if (!incoming.length) throw new Error('请选择要附加的证据。');
+        const before = attachedEvidenceIdsForGoal(target.goal);
+        const sourceEvidence = mergeSourceEvidence(target.goal.sourceEvidence, incoming);
+        const addedIds = sourceEvidence.filter(item => !before.has(item.id)).map(item => item.id);
+        if (!addedIds.length) {
+          const current = snapshot(target);
+          return { ...current, attachedCount: 0, addedEvidenceIds: [], alreadyAttachedIds: incoming.map(item => item.id) };
+        }
+        const now = Date.now();
+        const goal = { ...target.goal, sourceEvidence, updatedAt: now };
+        await commit({
+          ...state,
+          sessions: state.sessions.map(item => item.id === goalId ? { ...item, goal, updatedAt: now } : item)
+        });
+        const current = snapshot(state.sessions.find(item => item.id === goalId));
+        return {
+          ...current,
+          attachedCount: addedIds.length,
+          addedEvidenceIds: addedIds,
+          alreadyAttachedIds: incoming.map(item => item.id).filter(id => !addedIds.includes(id))
+        };
       });
     },
     openRelated(sourceId, targetId) {
@@ -500,7 +712,9 @@ function createSessions(vscode, context, onDidChange, { isBusy = () => false, cr
       const terms = String(query).normalize('NFKC').toLocaleLowerCase().trim().split(/\s+/).filter(Boolean);
       return history().filter(session => {
         const text = [session.title, ...session.messages.map(message => message.text), session.goal?.objective, session.goal?.initialFacts,
-          ...(session.goal?.criteria || []).map(item => item.text), ...(session.goal?.notes || []).map(item => item.text)]
+          ...(session.goal?.criteria || []).map(item => item.text), ...(session.goal?.notes || []).map(item => item.text),
+          ...(session.assistEvidence || []).flatMap(item => [item.statement, ...(item.observations || [])]),
+          ...(session.goal?.sourceEvidence || []).flatMap(item => [item.statement, ...(item.observations || [])])]
           .filter(Boolean).join('\n').normalize('NFKC').toLocaleLowerCase();
         return terms.every(term => text.includes(term));
       });
@@ -770,8 +984,10 @@ function createSessions(vscode, context, onDidChange, { isBusy = () => false, cr
           return { id, text, done: previous?.done === true };
         });
         const now = Date.now();
+        const sourceEvidence = evidenceSnapshot(existing.goal?.sourceEvidence);
         const goal = {
           objective, initialFacts, criteria, notes: existing.goal?.notes.map(note => ({ ...note })) || [],
+          ...(sourceEvidence.length ? { sourceEvidence } : {}),
           createdAt: existing.goal?.createdAt ?? now, updatedAt: now
         };
         return commitSession({
@@ -810,4 +1026,7 @@ function createSessions(vscode, context, onDidChange, { isBusy = () => false, cr
   };
 }
 
-module.exports = { createSessions, cleanTimelineParts, formatToolValue, redactDisplayObject, inputMessageId, inputMessageIds };
+module.exports = {
+  createSessions, cleanTimelineParts, formatToolValue, redactDisplayObject, inputMessageId, inputMessageIds,
+  formatAssistSourceEvidenceSeed, evidenceContentKey
+};

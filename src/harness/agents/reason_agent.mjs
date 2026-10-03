@@ -5,6 +5,24 @@ import { reasonEvidencePrompt, reasonSystemPrompt } from './prompts.mjs';
 const failure = (code, message, cause) => Object.assign(new Error(message, cause === undefined ? undefined : { cause }), { code });
 const aborted = signal => Object.assign(failure('ABORT_ERR', 'Reason execution was interrupted.', signal?.reason), { name: 'AbortError' });
 
+// A provider may annotate parent aliases despite the schema. Discard only this
+// known textual annotation; never interpret it as instructions or repair IDs.
+function discardParentNotes(source, maxResponseBytes) {
+  if (Buffer.byteLength(source, 'utf8') > maxResponseBytes) return { source, fields: [] };
+  let value;
+  try { value = JSON.parse(source); } catch { return { source, fields: [] }; }
+  const fields = [];
+  if (value && !Array.isArray(value) && Array.isArray(value.intents)) {
+    for (const [index, item] of value.intents.entries()) {
+      if (item && !Array.isArray(item) && typeof item.parentIds_note === 'string' && item.parentIds_note.length <= 2048) {
+        delete item.parentIds_note;
+        fields.push(`intents[${index}].parentIds_note`);
+      }
+    }
+  }
+  return { source: fields.length ? JSON.stringify(value) : source, fields };
+}
+
 function raceAbort(operation, signal) {
   if (!signal) return operation;
   return new Promise((resolve, reject) => {
@@ -18,7 +36,7 @@ function raceAbort(operation, signal) {
 /** A real pi Agent adapter for BlackboardCoordinator.reason, with no execution tools. */
 export function createPiReason({
   model, streamFn, getApiKey, thinkingLevel = 'off', systemPrompt = '',
-  maxIntents = 8, maxResponseBytes = 32768, maxRepairs = 1, onEvent, beforeModel
+  maxIntents = 5, openIntents = 5, maxResponseBytes = 32768, maxRepairs = 1, onEvent, beforeModel
 } = {}) {
   if (!model || !['id', 'api', 'provider'].every(key => typeof model[key] === 'string' && model[key])) throw new TypeError('A pi model is required.');
   if (typeof streamFn !== 'function') throw new TypeError('A pi streamFn is required.');
@@ -27,7 +45,7 @@ export function createPiReason({
     if (value !== undefined && typeof value !== 'function') throw new TypeError(`${name} must be a function.`);
   }
   if (!['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].includes(thinkingLevel)) throw new TypeError('Invalid thinkingLevel.');
-  for (const [name, value] of Object.entries({ maxIntents, maxResponseBytes })) {
+  for (const [name, value] of Object.entries({ maxIntents, openIntents, maxResponseBytes })) {
     if (!Number.isSafeInteger(value) || value < 1) throw new TypeError(`${name} must be a positive integer.`);
   }
   if (!Number.isSafeInteger(maxRepairs) || maxRepairs < 0 || maxRepairs > 4) throw new TypeError('maxRepairs must be an integer from 0 to 4.');
@@ -61,7 +79,7 @@ export function createPiReason({
         check();
         agent = new Agent({
           initialState: {
-            systemPrompt: reasonSystemPrompt({ goal: snapshot.data.goal, maxIntents, systemPrompt }),
+            systemPrompt: reasonSystemPrompt({ goal: snapshot.data.goal, nodes: snapshot.data.nodes, maxIntents, openIntents, systemPrompt }),
             model, thinkingLevel, tools: []
           },
           getApiKey,
@@ -113,7 +131,9 @@ export function createPiReason({
         try {
           if (message.stopReason === 'length') throw failure('MODEL_RESPONSE_TRUNCATED', 'Reason output reached the model token limit. Return a shorter complete JSON decision; reduce plan detail without dropping required work.');
           if (message.stopReason !== 'stop' || message.content.some(part => !['text', 'thinking'].includes(part.type))) throw failure('INVALID_REASON_DECISION', 'Reason must produce JSON text, without tool calls.');
-          const decision = parseReasonDecision(source, { context: snapshot, maxIntents, maxResponseBytes });
+          const normalized = discardParentNotes(source, maxResponseBytes);
+          const decision = parseReasonDecision(normalized.source, { context: snapshot, maxIntents, openIntents, maxResponseBytes });
+          if (normalized.fields.length) report({ type: 'reason_normalized', fields: normalized.fields });
           report({ type: 'reason_decision', decision, modelCalls });
           return decision;
         } catch (error) {

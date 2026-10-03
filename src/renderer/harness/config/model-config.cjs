@@ -3,7 +3,7 @@
 const { createHash } = require('node:crypto');
 const copy = value => value === undefined ? undefined : structuredClone(value);
 const APIS = ['openai-completions', 'openai-responses', 'anthropic-messages', 'google-generative-ai', 'azure-openai-responses', 'google-vertex', 'mistral-conversations', 'bedrock-converse-stream', 'pi-messages', 'openai-codex-responses'];
-const MODEL_KEYS = new Set(['provider', 'modelId', 'api', 'baseUrl', 'contextWindow', 'maxTokens', 'reasoning', 'input', 'compat', 'streamOptions']);
+const MODEL_KEYS = new Set(['backend', 'provider', 'modelId', 'api', 'baseUrl', 'contextWindow', 'maxTokens', 'reasoning', 'input', 'compat', 'streamOptions']);
 const configurationStates = new WeakMap();
 // Both configuration entry points share a transaction queue and revision. A
 // credential-only update must invalidate an already open settings form too.
@@ -49,6 +49,19 @@ function object(value, label) {
 function modelConfig(value) {
   object(value, '模型');
   const model = copy(value);
+  const backend = model.backend ?? 'pi';
+  if (!['pi', 'claude', 'codex'].includes(backend)) throw new Error('仅支持 Pi Agent。');
+  if (backend !== 'pi') {
+    if (backend === 'claude' && typeof model.modelId === 'string') model.modelId = model.modelId.replace(/\[1m\]$/i, '');
+    const provider = model.provider || (backend === 'claude' ? 'anthropic' : 'openai'), api = backend === 'claude' ? 'anthropic-messages' : 'openai-responses';
+    model.provider = provider; model.api ??= api;
+    model.baseUrl ||= backend === 'codex'
+      ? new Map([['openai', 'https://api.openai.com/v1'], ['deepseek', 'https://api.deepseek.com'], ['openrouter', 'https://openrouter.ai/api/v1']]).get(provider)
+      : provider === 'deepseek' ? 'https://api.deepseek.com/anthropic' : provider === 'anthropic' ? 'https://api.anthropic.com' : undefined;
+    if (!model.baseUrl) throw new Error(`自定义 ${backend} SDK 服务商需要填写 ${api} 兼容 API 地址。`);
+
+  }
+  model.backend = 'pi';
   for (const key of Object.keys(model)) if (!MODEL_KEYS.has(key)) throw new Error(`不支持模型配置 ${key}；API Key 请通过“配置模型”保存在凭据库中。`);
   for (const key of ['provider', 'modelId']) if (typeof model[key] !== 'string' || !model[key].trim()) throw new Error('请先配置模型的服务商和模型名称。');
   model.provider = model.provider.trim(); model.modelId = model.modelId.trim();
@@ -81,7 +94,7 @@ function createModelConfiguration(vscode, context) {
   function status() {
     try {
       const model = modelConfig(setting('model', {}));
-      return { connected: true, configured: true, label: `${model.modelId} · 已配置`, provider: model.provider };
+      return { connected: true, configured: true, label: `${model.backend ?? 'pi'} · ${model.modelId} · 已配置`, provider: model.provider, backend: model.backend ?? 'pi' };
     } catch (error) { return { connected: false, configured: false, label: '配置模型', error: error.message }; }
   }
   async function credentialModel(value) {
@@ -91,10 +104,42 @@ function createModelConfiguration(vscode, context) {
   }
   async function read() {
     const result = { model: await credentialModel(setting('model', {})) };
+    const backendSelection = setting('worker', {}).swarmBackendSelection ?? 'fixed';
+    if (!['fixed', 'autonomous'].includes(backendSelection)) throw new Error('Swarm 后端选择模式无效。');
+    const library = backendSelection === 'autonomous' ? setting('modelProfiles', []) : [];
+    if (!Array.isArray(library) || library.length > 30) throw new Error('模型配置库格式无效。');
+    result.collaboration = { backendSelection, models: {} };
+    for (const profile of library) {
+      if (!profile || typeof profile.id !== 'string' || !/^[\w.-]{1,80}$/.test(profile.id)
+        || Object.hasOwn(result.collaboration.models, `saved.${profile.id}`)) throw new Error('协作模型配置标识无效或重复。');
+      Object.defineProperty(result.collaboration.models, `saved.${profile.id}`, { value: await credentialModel(profile.model), enumerable: true });
+    }
     for (const role of ['reason', 'worker']) {
       const value = object(setting(role, {}), role);
       result[role] = { ...value, ...(value.model ? { model: await credentialModel(value.model) } : {}) };
+      if (role === 'worker') delete result.worker.swarmBackendSelection;
     }
+    const reason = result.reason;
+    const openIntents = Number.isSafeInteger(reason.openIntents) ? reason.openIntents : 5;
+    const maxConcurrency = Number.isSafeInteger(reason.maxConcurrency) ? reason.maxConcurrency : 3;
+    const maxRounds = Number.isSafeInteger(reason.maxRounds) ? reason.maxRounds : 20;
+    const maxIntents = Number.isSafeInteger(reason.maxIntents) ? reason.maxIntents : 5;
+    for (const [name, value, min, max] of [
+      ['openIntents', openIntents, 1, 20],
+      ['maxConcurrency', maxConcurrency, 1, 10],
+      ['maxRounds', maxRounds, 1, 100],
+      ['maxIntents', maxIntents, 1, 20]
+    ]) {
+      if (!Number.isSafeInteger(value) || value < min || value > max) throw new Error(`${name} 必须在 ${min} 至 ${max} 之间。`);
+    }
+    if (maxConcurrency > openIntents) throw new Error('并行 Worker 数不能超过开放意图上限。');
+    if (maxIntents > openIntents) throw new Error('每轮新增意图上限不能超过开放意图上限。');
+    result.openIntents = openIntents;
+    result.maxConcurrency = maxConcurrency;
+    result.maxRounds = maxRounds;
+    result.reason = { ...reason, openIntents, maxIntents };
+    delete result.reason.maxConcurrency;
+    delete result.reason.maxRounds;
     result.contextSummary = setting('summaryEnabled', true) === false ? false : setting('contextSummary', true);
     if (result.contextSummary && typeof result.contextSummary === 'object' && result.contextSummary.model) {
       result.contextSummary.model = await credentialModel(result.contextSummary.model);
@@ -107,7 +152,7 @@ function createModelConfiguration(vscode, context) {
     // switches must not silently disable them after upgrading the UI.
     const intools = result.intools && typeof result.intools === 'object' ? result.intools : {};
     result.intools = { ...intools, allowedTools: [...require('./settings-schema.cjs').tools] };
-    for (const name of ['browser', 'webSearch', 'fetchContent', 'skillResource', 'skillScript']) {
+    for (const name of ['browser', 'webSearch', 'fetchContent', 'skillResource', 'skillScript', 'python']) {
       if (result.intools[name] === false || result.intools[name] === undefined) result.intools[name] = {};
     }
     await require('./settings-config.cjs').hydrateRuntime(result, context);
@@ -141,7 +186,8 @@ function createModelConfiguration(vscode, context) {
       if (key !== undefined) await apply({ ...model, apiKey: key });
       return status();
     }
-    const provider = await vscode.window.showInputBox({ title: '服务商标识', value: current.provider ?? 'custom', prompt: '内置服务商名称，或自定义端点的标识', ignoreFocusOut: true, validateInput: v => v.trim() ? undefined : '请输入服务商标识。' });
+    const backend = 'pi';
+    const provider = await vscode.window.showInputBox({ title: '服务商标识', value: current.provider ?? 'custom', prompt: '例如 deepseek、openrouter，或自定义端点的标识', ignoreFocusOut: true, validateInput: v => v.trim() ? undefined : '请输入服务商标识。' });
     if (provider === undefined) return status();
     const modelId = await vscode.window.showInputBox({ title: '模型名称', value: current.modelId ?? '', prompt: '服务商提供的模型 ID', ignoreFocusOut: true, validateInput: v => v.trim() ? undefined : '请输入模型名称。' });
     if (modelId === undefined) return status();
@@ -149,11 +195,12 @@ function createModelConfiguration(vscode, context) {
     if (!api) return status();
     let baseUrl;
     if (api.api) {
-      baseUrl = await vscode.window.showInputBox({ title: '模型 API 地址', value: current.baseUrl ?? '', placeHolder: 'https://your-provider.example/v1', ignoreFocusOut: true,
+      const presetUrl = require('./model-presets.cjs')[provider]?.baseUrl ?? '';
+      baseUrl = await vscode.window.showInputBox({ title: '模型 API 地址', value: current.provider === provider && current.backend === backend ? current.baseUrl ?? '' : presetUrl, placeHolder: 'https://your-provider.example/v1', ignoreFocusOut: true,
         validateInput: value => { try { const url = new URL(value); return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password && !url.hash ? undefined : '请输入不含凭据的 HTTP(S) 地址。'; } catch { return '请输入完整的 HTTP(S) 地址。'; } } });
       if (baseUrl === undefined) return status();
     }
-    const model = modelConfig({ provider, modelId, ...(api.api ? { api: api.api, baseUrl } : {}) });
+    const model = modelConfig({ backend, provider, modelId, ...(api.api ? { api: api.api, baseUrl } : {}) });
     const existing = await context.secrets.get(keyFor(model));
     const apiKey = await vscode.window.showInputBox({ title: 'API Key', prompt: existing ? '留空保留该端点已保存的密钥。' : '密钥保存在凭据库中；无需认证的兼容服务可填任意占位值。', password: true, ignoreFocusOut: true });
     if (apiKey === undefined) return status();

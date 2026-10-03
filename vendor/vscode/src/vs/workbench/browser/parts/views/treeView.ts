@@ -130,8 +130,24 @@ export class TreeViewPane extends ViewPane {
 	protected override renderBody(container: HTMLElement): void {
 		this._container = container;
 		if (this.id === 'ubovm.sessions') {
+			let disposed = false;
 			container.classList.add('ubovm-sessions-body');
 			const root = container.ownerDocument.documentElement;
+			let pageSuspended = false;
+			const syncAnimation = () => root.classList.toggle('ubovm-loading-paused', pageSuspended || container.ownerDocument.hidden);
+			const pauseAnimation = () => { pageSuspended = true; syncAnimation(); };
+			const resumeAnimation = () => { pageSuspended = false; syncAnimation(); };
+			const ownerWindow = container.ownerDocument.defaultView;
+			ownerWindow?.addEventListener('pagehide', pauseAnimation);
+			ownerWindow?.addEventListener('pageshow', resumeAnimation);
+			container.ownerDocument.addEventListener('visibilitychange', syncAnimation);
+			syncAnimation();
+			this._register({ dispose: () => {
+				ownerWindow?.removeEventListener('pagehide', pauseAnimation);
+				ownerWindow?.removeEventListener('pageshow', resumeAnimation);
+				container.ownerDocument.removeEventListener('visibilitychange', syncAnimation);
+				root.classList.remove('ubovm-loading-paused');
+			} });
 			const loading = container.ownerDocument.createElement('div');
 			loading.className = 'ubovm-session-loading';
 			loading.setAttribute('role', 'status');
@@ -139,22 +155,41 @@ export class TreeViewPane extends ViewPane {
 			const retry = container.ownerDocument.createElement('button');
 			retry.textContent = '重新加载窗口';
 			retry.hidden = true;
-			const reload = () => { void this.openerService.open('command:workbench.action.reloadWindow', { allowCommands: ['workbench.action.reloadWindow'] }); };
+			const reload = async () => {
+				if (disposed || retry.disabled) { return; }
+				retry.disabled = true;
+				try {
+					if (await this.openerService.open('command:workbench.action.reloadWindow', { allowCommands: ['workbench.action.reloadWindow'] }) === false) { throw new Error('Reload unavailable'); }
+				} catch {
+					if (!disposed && loading.firstChild) { loading.firstChild.textContent = '重新加载未成功，请重试。'; }
+				} finally { if (!disposed) { retry.disabled = false; } }
+			};
 			retry.addEventListener('click', reload);
 			loading.appendChild(retry);
-			const slowTimer = container.ownerDocument.defaultView?.setTimeout(() => {
+			let slowTimer: number | undefined;
+			let slowGeneration = 0;
+			const startSlowTimer = () => {
+				if (disposed || slowTimer !== undefined) { return; }
+				if (root.classList.contains('ubovm-content-slow')) {
+					if (loading.firstChild) { loading.firstChild.textContent = '会话加载时间较长，可以重新加载窗口。'; }
+					retry.hidden = false; return;
+				}
+				const generation = ++slowGeneration;
+				slowTimer = container.ownerDocument.defaultView?.setTimeout(() => {
+					if (disposed || generation !== slowGeneration) { return; }
+					slowTimer = undefined;
 				if (root.classList.contains('ubovm-content-ready')) { return; }
 				root.classList.add('ubovm-content-slow');
 				if (loading.firstChild) { loading.firstChild.textContent = '会话加载时间较长，可以重新加载窗口。'; }
 				retry.hidden = false;
-			}, 12000);
-			this._register({ dispose: () => { container.ownerDocument.defaultView?.clearTimeout(slowTimer); retry.removeEventListener('click', reload); } });
+				}, 12000);
+			};
+			this._register({ dispose: () => { disposed = true; slowGeneration++; container.ownerDocument.defaultView?.clearTimeout(slowTimer); retry.removeEventListener('click', reload); } });
 			const bar = container.ownerDocument.createElement('div');
 			bar.className = 'ubovm-sidebar-modes';
 			bar.setAttribute('role', 'group');
 			bar.setAttribute('aria-label', '工作模式');
 			let pending = '';
-			let disposed = false;
 			this._register({ dispose: () => { disposed = true; } });
 			const buttons = ['assist', 'goal'].map(mode => {
 				const button = container.ownerDocument.createElement('button');
@@ -162,13 +197,13 @@ export class TreeViewPane extends ViewPane {
 				button.dataset.mode = mode;
 				button.textContent = mode === 'goal' ? '探索模式' : '协助模式';
 				const select = async () => {
-					if (pending || !this.contextKeyService.getContextKeyValue('ubovm.mode')) { return; }
+					if (disposed || pending || this.contextKeyService.getContextKeyValue('ubovm.contentReady') !== true || !this.contextKeyService.getContextKeyValue('ubovm.mode')) { return; }
 					const settings = !!this.contextKeyService.getContextKeyValue('ubovm.settingsPage');
 					if (!settings && this.contextKeyService.getContextKeyValue('ubovm.mode') === mode) { return; }
 					pending = 'mode:' + mode;
 					update();
 					try {
-						if (settings) { await this.openerService.open('command:ubovm.closeSettings', { allowCommands: ['ubovm.closeSettings'] }); }
+						if (settings) { await this.openerService.open('command:ubovm.closeSettings?' + encodeURIComponent(JSON.stringify([mode])), { allowCommands: ['ubovm.closeSettings'] }); }
 						else { await this.openerService.open('command:ubovm.setMode?' + encodeURIComponent(JSON.stringify([mode])), { allowCommands: ['ubovm.setMode'] }); }
 					} finally { pending = ''; update(); }
 				};
@@ -188,14 +223,17 @@ export class TreeViewPane extends ViewPane {
 				const button = container.ownerDocument.createElement('button');
 				button.type = 'button';
 				button.dataset.settingsPage = page;
+				button.setAttribute('aria-label', label);
+				button.title = label;
 				const symbol = container.ownerDocument.createElement('span');
 				symbol.className = 'codicon codicon-' + icon;
 				symbol.setAttribute('aria-hidden', 'true');
 				const text = container.ownerDocument.createElement('span');
+				text.className = 'ubovm-management-label';
 				text.textContent = label;
 				button.append(symbol, text);
 				const open = async () => {
-					if (pending || !this.contextKeyService.getContextKeyValue('ubovm.mode') || this.contextKeyService.getContextKeyValue('ubovm.settingsPage') === page) { return; }
+					if (disposed || pending || this.contextKeyService.getContextKeyValue('ubovm.contentReady') !== true || !this.contextKeyService.getContextKeyValue('ubovm.mode') || this.contextKeyService.getContextKeyValue('ubovm.settingsPage') === page) { return; }
 					pending = 'page:' + page;
 					update();
 					try { await this.openerService.open('command:' + command, { allowCommands: [command] }); }
@@ -206,18 +244,49 @@ export class TreeViewPane extends ViewPane {
 				management.appendChild(button);
 				return button;
 			});
+			const pane = container.closest('.part') || container.closest('.pane') || container;
+			const locked = new Map<HTMLElement, boolean>();
+			const syncInteraction = () => {
+				const ready = this.contextKeyService.getContextKeyValue('ubovm.contentReady') === true;
+				if (container.getAttribute('aria-busy') !== String(!ready)) { container.setAttribute('aria-busy', String(!ready)); }
+				for (const [target, inert] of locked) { if (!pane.contains(target)) { target.inert = inert; locked.delete(target); } }
+				const targets = [...container.children, ...pane.querySelectorAll('.pane-header, .title-actions')];
+				for (const target of targets) {
+					if (!(target instanceof HTMLElement) || [bar, management, loading].includes(target)) { continue; }
+					if (!ready && !locked.has(target)) { locked.set(target, target.inert); target.inert = true; }
+				}
+				if (ready) { for (const [target, inert] of locked) { target.inert = inert; } locked.clear(); }
+			};
+			const blockNavigation = (event: globalThis.Event) => {
+				if (this.contextKeyService.getContextKeyValue('ubovm.contentReady') === true || loading.contains(event.target as Node)) { return; }
+				event.preventDefault(); event.stopImmediatePropagation();
+			};
+			const blockedEvents = ['pointerdown', 'click', 'dblclick', 'contextmenu', 'keydown'];
+			for (const type of blockedEvents) { pane.addEventListener(type, blockNavigation, true); }
+			const interactionObserver = new MutationObserver(syncInteraction);
+			interactionObserver.observe(container, { childList: true });
+			this._register({ dispose: () => {
+				interactionObserver.disconnect();
+				for (const type of blockedEvents) { pane.removeEventListener(type, blockNavigation, true); }
+				for (const [target, inert] of locked) { target.inert = inert; } locked.clear();
+			} });
 			const update = () => {
 				if (disposed) { return; }
 				const mode = this.contextKeyService.getContextKeyValue('ubovm.mode');
 				const ready = this.contextKeyService.getContextKeyValue('ubovm.contentReady') === true;
 				root.classList.toggle('ubovm-content-ready', ready);
-				container.classList.toggle('ubovm-sessions-loading', !mode);
+				if (ready) { root.classList.remove('ubovm-shell-loading'); }
+				container.classList.toggle('ubovm-sessions-loading', !ready);
+				syncInteraction();
 				loading.hidden = ready;
-				if (ready) { container.ownerDocument.defaultView?.clearTimeout(slowTimer); }
+				if (ready) {
+					container.ownerDocument.defaultView?.clearTimeout(slowTimer); slowTimer = undefined; slowGeneration++;
+					root.classList.remove('ubovm-content-slow'); retry.hidden = true;
+					if (loading.firstChild) { loading.firstChild.textContent = '正在读取会话…'; }
+				} else { startSlowTimer(); }
 				const page = this.contextKeyService.getContextKeyValue('ubovm.settingsPage');
-				const settings = !!page;
 				for (const button of managementButtons) {
-					button.disabled = !!pending || !mode;
+					button.disabled = !!pending || !mode || !ready;
 					button.setAttribute('aria-busy', String(pending === 'page:' + button.dataset.settingsPage));
 					if (button.dataset.settingsPage === page) {
 						button.setAttribute('aria-current', 'page');
@@ -225,14 +294,10 @@ export class TreeViewPane extends ViewPane {
 						button.removeAttribute('aria-current');
 					}
 				}
-				bar.classList.toggle('ubovm-settings-navigation', settings);
-				bar.setAttribute('aria-label', settings ? '设置导航' : '工作模式');
+				bar.classList.toggle('ubovm-settings-navigation', !!page);
 				for (const button of buttons) {
-					button.hidden = settings && button.dataset.mode === 'goal';
-					const label = settings ? '← 返回对话' : button.dataset.mode === 'goal' ? '探索模式' : '协助模式';
-					if (button.textContent !== label) { button.textContent = label; }
 					button.setAttribute('aria-pressed', String(button.dataset.mode === mode));
-					button.disabled = !!pending || !mode;
+					button.disabled = !!pending || !mode || !ready;
 					button.setAttribute('aria-disabled', String(button.disabled));
 					button.setAttribute('aria-busy', String(pending === 'mode:' + button.dataset.mode));
 				}
@@ -266,7 +331,7 @@ export class TreeViewPane extends ViewPane {
 	}
 
 	protected override layoutBody(height: number, width: number): void {
-		if (this.id === 'ubovm.sessions') { height = Math.max(0, height - 206); }
+		if (this.id === 'ubovm.sessions') { height = Math.max(0, height - 90); }
 		super.layoutBody(height, width);
 		this.layoutTreeView(height, width);
 	}

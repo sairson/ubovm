@@ -1,16 +1,20 @@
 .board-live { display: block; }
-.graph-acceptance { margin-top: 18px; border-top: 1px solid var(--border); padding-top: 10px; }
-.graph-acceptance > summary { cursor: pointer; color: var(--muted); font-size: 12px; padding: 6px 0; }
-.graph-acceptance .board-root { margin-top: 10px; }
+.graph-navigation { display: flex; flex-shrink: 0; flex-wrap: wrap; align-items: center; gap: 6px; padding-bottom: 10px; }
+.graph-navigation input, .graph-navigation select, .graph-navigation button { min-width: 0; border: 1px solid var(--border); border-radius: 5px; padding: 6px 8px; background: var(--canvas); color: var(--ink); font: inherit; font-size: 12px; }
+.graph-search { flex: 1; }
+.graph-search-count { color: var(--muted); font-size: 11px; }
+.graph-navigation button:disabled { opacity: .5; }
+.graph-workspace .graph-node.is-muted, .graph-workspace .graph-frontier.is-muted, .graph-workspace .graph-edges .is-muted { opacity: .18; }
 .graph-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
 .graph-caption { color: var(--muted); font-size: 11px; }
 .graph-reset, .graph-parent-links button { border: 0; border-radius: 5px; background: var(--wash); padding: 5px 8px; font-size: 11px; }
 .graph-reset { white-space: nowrap; }
 .graph-viewport { max-width: 100%; height: max(420px, calc(100vh - 270px)); overflow: auto; overscroll-behavior: contain; border-radius: 10px; background: color-mix(in srgb, var(--canvas) 95%, var(--muted)); }
-.graph-canvas { position: relative; margin-inline: auto; }
+.graph-canvas { position: absolute; top: 0; left: 0; margin: 0; transform-origin: 0 0; overflow: visible; }
+.graph-viewport { position: relative; overflow: clip; overflow-anchor: none; }
 .graph-viewport { cursor: grab; touch-action: none; }
 .graph-viewport.is-panning, .graph-viewport.is-panning * { cursor: grabbing; user-select: none; }
-.graph-edges { position: absolute; inset: 0; pointer-events: none; }
+.graph-edges { position: absolute; inset: 0; pointer-events: none; overflow: visible; }
 .graph-edges path { stroke: var(--muted); stroke-opacity: .7; stroke-width: 1.1; fill: none; }
 .graph-edge-label { fill: var(--muted); stroke: none; font-size: 9px; opacity: .8; }
 .graph-edge-label.is-selected { opacity: 1; fill: var(--ink); }
@@ -22,6 +26,8 @@
 .graph-node-title { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; flex-shrink: 0; min-width: 0; max-height: 60px; overflow: hidden; font-size: 13px; line-height: 20px; font-weight: 500; white-space: normal; word-break: normal; overflow-wrap: anywhere; }
 .graph-node-info { display: block; margin-top: auto; color: var(--muted); font-size: 10px; line-height: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .graph-node[data-kind="fact"] { background: var(--canvas); border-color: color-mix(in srgb, var(--muted) 40%, var(--canvas)); }
+.graph-node[data-outcome="partial"] .graph-node-state, .graph-node[data-outcome="blocked"] .graph-node-state { color: var(--vscode-problemsWarningIcon-foreground, #a87930); }
+.graph-node[data-outcome="confirmed"] .graph-node-state { color: var(--accent); }
 .graph-node[data-kind="root"] { background: var(--accent-wash); color: var(--accent); border-color: var(--border); width: 88px; height: 48px; margin-left: calc((var(--graph-node-width, 240px) - 88px) / 2); margin-top: calc((var(--graph-node-height, 128px) - 48px) / 2); justify-content: center; text-align: center; border-radius: 24px; }
 .graph-node[data-kind="root"] .graph-node-info { display: none; }
 .graph-node[data-kind="root"] .graph-node-state { display: none; }
@@ -107,10 +113,7 @@
 #goal-board .goal-page-heading { display: none; }
 #goal-board .graph-workspace { display: flex; flex: 1; min-height: 0; }
 #goal-board .graph-viewport { flex: 1; min-width: 0; min-height: 0; height: auto; }
-#goal-board .graph-acceptance { flex-shrink: 0; margin-top: 12px; max-height: 35%; overflow: auto; }
-#goal-board .graph-acceptance[open] { padding-bottom: 8px; }
 @media (max-height: 540px) {
   #goal-board .graph-caption, #goal-board .goal-page-heading { display: none; }
   #goal-board .graph-toolbar { margin-bottom: 6px; }
-  #goal-board .graph-acceptance { margin-top: 6px; }
 }

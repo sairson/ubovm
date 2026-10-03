@@ -18,6 +18,7 @@
     "updateUrl": ""
   },
   "settings": {
+    "security.workspace.trust.enabled": false,
     "window.title": "${dirty}${activeEditorShort}${separator}${rootName}${separator}UBOVM IDE",
     "workbench.colorTheme": "UBOVM Light",
     "window.autoDetectColorScheme": false,
@@ -46,19 +47,21 @@
     },
     "window.titleBarStyle": "custom",
     "window.menuBarVisibility": "hidden",
+    "window.enableMenuBarMnemonics": false,
+    "window.customMenuBarAltFocus": false,
     "window.commandCenter": false,
     "workbench.navigationControl.enabled": false,
     "window.density.editorTabHeight": "compact",
     "workbench.experimental.modernUI": true,
     "workbench.experimental.modernUIUppercaseViewHeaders": false,
-    "workbench.activityBar.location": "hidden",
+    "workbench.activityBar.location": "top",
     "workbench.sideBar.location": "right",
     "workbench.secondarySideBar.defaultVisibility": "visible",
     "workbench.secondarySideBar.forceMaximized": false,
     "workbench.secondarySideBar.showLabels": true,
     "workbench.layoutControl.type": "toggles",
     "workbench.layoutControl.enabled": true,
-    "workbench.editor.editorActionsLocation": "hidden",
+    "workbench.editor.editorActionsLocation": "default",
     "workbench.editor.dragToOpenWindow": false,
     "workbench.editor.enablePreview": false,
     "workbench.editor.enablePreviewFromQuickOpen": false,
@@ -95,6 +98,7 @@
       "archive": "VSCodium-win32-x64-1.135.06055.zip",
       "url": "https://github.com/VSCodium/vscodium/releases/download/1.135.06055/VSCodium-win32-x64-1.135.06055.zip",
       "mirrorUrls": [
+        "https://ghfast.top/https://github.com/VSCodium/vscodium/releases/download/1.135.06055/VSCodium-win32-x64-1.135.06055.zip",
         "https://ghproxy.net/https://github.com/VSCodium/vscodium/releases/download/1.135.06055/VSCodium-win32-x64-1.135.06055.zip"
       ],
       "sha256": "0bec978f201238624bc9ad43966f5e201ed8afacc37d77035a822252d9c9c200"

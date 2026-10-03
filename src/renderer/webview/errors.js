@@ -9,9 +9,18 @@
       .replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi, '$1[已隐藏]@')
       .replace(/\bsk-[a-zA-Z0-9_-]{8,}/g, '[已隐藏]');
   }
-  const actions = Object.freeze({ prompt: '发送消息', setMode: '切换模式', newChat: '新建会话', saveGoal: '保存目标', runGoal: '开始执行', cancelRun: '停止执行', resumeRun: '恢复执行', addGoalNote: '保存笔记', toggleGoalCriterion: '更新验收项', attachFile: '添加附件', clearFileContext: '移除附件', selectWorkspace: '选择工作空间', openExploration: '打开探索记录', copyText: '复制内容', openMessageLink: '打开链接', reviewCodeChanges: '查看代码更改', validateCodeChanges: '验证代码更改', setTheme: '切换主题', settingsRead: '读取配置', settingsSave: '保存配置', settingsTestSSH: '测试 SSH 连接', settingsInstallBrowser: '安装浏览器' });
+  const actions = Object.freeze({ prompt: '发送消息', setMode: '切换模式', newChat: '新建会话', saveGoal: '保存目标', runGoal: '开始执行', cancelRun: '停止执行', interruptCommand: '中断命令', backgroundCommand: '放在一边', resumeRun: '恢复执行', addGoalNote: '保存笔记', toggleGoalCriterion: '更新验收项', attachFile: '添加附件', clearFileContext: '移除附件', selectWorkspace: '选择工作空间', openExploration: '打开探索记录', copyText: '复制内容', openMessageLink: '打开链接', reviewCodeChanges: '查看代码更改', validateCodeChanges: '验证代码更改', setTheme: '切换主题', settingsRead: '读取配置', settingsSave: '保存配置', settingsTestSSH: '测试 SSH 连接', settingsInstallBrowser: '安装浏览器' });
   function title(error) { const value = normalize(error); return (actions[value.action] || '操作') + (value.cancelled ? '已取消' : '未完成'); }
   function normalize(error, action = '') {
+    try { return normalizeValue(error, action); }
+    catch {
+      // SDKs and extensions can reject with arbitrary objects. A throwing
+      // accessor or conversion must not break the error recovery surface.
+      return { code: 'OPERATION_FAILED', message: '操作未能完成，请稍后重试。', hint: '', detail: '',
+        action: typeof action === 'string' ? action : '', cancelled: false };
+    }
+  }
+  function normalizeValue(error, action = '') {
     const source = error && typeof error === 'object' ? error : {};
     action = action || (typeof source.action === 'string' ? source.action : '');
     if (typeof source.message === 'string' && typeof source.hint === 'string' && typeof source.detail === 'string') {
@@ -33,6 +42,9 @@
     let message = detail.split(/\n\s*at /)[0].slice(0, 800) || '操作未能完成，请稍后重试。';
     let hint = '', category = 'OPERATION_FAILED';
     if (/AbortError|ABORT_ERR|^CANCELLED\b|^(?:Error )?(?:cancelled|canceled)(?:$|[.:])/i.test(match.trim())) { category = 'CANCELLED'; message = '操作已取消。'; }
+    else if (/AGENT_HEARTBEAT_TIMEOUT|AGENT_THREAD_EXIT/i.test(match)) { category = code || (/AGENT_HEARTBEAT_TIMEOUT/i.test(match) ? 'AGENT_HEARTBEAT_TIMEOUT' : 'AGENT_THREAD_EXIT'); message = 'Agent 后端连接已中断。'; hint = '运行中的任务已停止；若出现“继续执行”，可从检查点恢复，请勿重复提交。'; }
+    else if (/SERVICE_CLOSED/i.test(match)) { category = 'SERVICE_CLOSED'; message = 'Agent 服务已关闭。'; hint = '请重新打开面板或重启应用后再试。'; }
+    else if (/RPC_BUSY/i.test(match)) { category = 'RPC_BUSY'; message = 'Agent 正在处理其他请求。'; hint = '请稍候再试，或先停止当前执行。'; }
     else if (status === 401 || /unauthorized|invalid.api.key|authentication failed|all configured authentication methods failed/i.test(match)) { category = 'AUTHENTICATION_FAILED'; message = '身份验证失败。'; hint = '请检查对应服务的密钥或登录凭据。'; }
     else if (status === 403 || /forbidden|EACCES|EPERM|permission denied/i.test(match)) { category = 'PERMISSION_DENIED'; message = '没有执行此操作的权限。'; hint = '请检查文件权限或服务账号的访问权限。'; }
     else if (status === 429 || /rate.limit|quota.exceeded|insufficient.quota/i.test(match)) { category = 'RATE_LIMITED'; message = '服务请求受限或额度不足。'; hint = '请稍后重试，并检查服务额度。'; }

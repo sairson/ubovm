@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  function createProjectSwitcher(vscode, { request, getProjects, getWorkspace } = {}) {
+  function createProjectSwitcher(vscode, { request, getProjects, getWorkspace, modal } = {}) {
     const $ = id => document.getElementById(id);
     const dialog = $('project-switcher');
     const search = $('project-switcher-search');
@@ -212,21 +212,47 @@
       });
     }
 
-    function renameProject(id) {
+    async function renameProject(id) {
       if (!id || busy) return;
+      const project = projects.find(item => item.id === id);
+      if (!project) return;
+      const name = await modal?.prompt?.({
+        title: '重命名项目',
+        label: '项目名称',
+        value: project.name,
+        maxLength: 60,
+        confirmLabel: '保存',
+        validate: value => !value.trim() || value.trim().length > 60 ? '请输入 1–60 个字符的项目名称。' : undefined
+      });
+      if (name === undefined) return;
       busy = true;
       showError(error, '');
-      request?.('projectSwitcherRename', { projectId: id }, () => { busy = false; }, failure => {
+      request?.('projectSwitcherRename', { projectId: id, name: name.trim() }, () => { busy = false; }, failure => {
         busy = false;
         showError(error, failure?.message || '重命名失败，请重试。');
       });
     }
 
-    function deleteProject(id) {
+    async function deleteProject(id) {
       if (!id || busy) return;
+      const project = projects.find(item => item.id === id);
+      if (!project) return;
+      if (project.running) {
+        showError(error, '项目中有会话正在运行，请先停止后再删除。');
+        return;
+      }
+      const sessions = Number(project.sessionCount) || 0;
+      const confirmed = await modal?.confirm?.({
+        title: '删除项目',
+        message: `删除项目“${project.name}”？`,
+        detail: `将删除 ${sessions} 个会话及其草稿和本地执行记录，包含协助和探索两个模式。\n项目目录：${project.workspace || ''}\n目录中的文件不会被删除。此操作无法撤销。`,
+        confirmLabel: '删除项目',
+        danger: true
+      });
+      if (confirmed !== true) return;
       busy = true;
       showError(error, '');
-      request?.('projectSwitcherDelete', { projectId: id }, () => { busy = false; }, failure => {
+      request?.('projectSwitcherDelete', { projectId: id, confirmed: true }, () => { busy = false; closeDialog(); }, failure => {
         busy = false;
         showError(error, failure?.message || '删除失败，请重试。');
       });
@@ -372,6 +398,20 @@
         }
         if (message?.type === 'closeProjectSwitcher') {
           closeDialog();
+          return true;
+        }
+        if (message?.type === 'openProjectRename') {
+          const id = typeof message.projectId === 'string' ? message.projectId : '';
+          if (!id) return true;
+          projects = Array.isArray(getProjects?.()) ? getProjects().map(item => ({ ...item })) : projects;
+          void renameProject(id);
+          return true;
+        }
+        if (message?.type === 'openProjectDelete') {
+          const id = typeof message.projectId === 'string' ? message.projectId : '';
+          if (!id) return true;
+          projects = Array.isArray(getProjects?.()) ? getProjects().map(item => ({ ...item })) : projects;
+          void deleteProject(id);
           return true;
         }
         return false;

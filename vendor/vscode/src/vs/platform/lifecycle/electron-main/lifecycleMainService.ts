@@ -431,6 +431,12 @@ export class LifecycleMainService extends Disposable implements ILifecycleMainSe
 		const win = assertReturnsDefined(window.win);
 		windowListeners.add(Event.fromNodeEventEmitter<electron.Event>(win, 'close')(e => {
 
+			// UBOVM may hide the window without unloading its running tasks.
+			win.emit('ubovm-before-close', e, this._quitRequested);
+			if (e.defaultPrevented) {
+				return;
+			}
+
 			// The window already acknowledged to be closed
 			const windowId = window.id;
 			if (this.windowToCloseRequest.delete(windowId)) {

@@ -1,0 +1,8 @@
+diff --git a/src/vs/workbench/browser/parts/views/treeView.ts b/src/vs/workbench/browser/parts/views/treeView.ts
+--- a/src/vs/workbench/browser/parts/views/treeView.ts
++++ b/src/vs/workbench/browser/parts/views/treeView.ts
+@@ -257,3 +257,3 @@
+-			const blockNavigation = (event: Event) => {
++			const blockNavigation = (event: globalThis.Event) => {
+ 				if (this.contextKeyService.getContextKeyValue('ubovm.contentReady') === true || loading.contains(event.target as Node)) { return; }
+ 				event.preventDefault(); event.stopImmediatePropagation();

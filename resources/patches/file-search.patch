@@ -1,0 +1,24 @@
+diff --git a/src/vs/platform/actions/common/actions.ts b/src/vs/platform/actions/common/actions.ts
+--- a/src/vs/platform/actions/common/actions.ts
++++ b/src/vs/platform/actions/common/actions.ts
+@@ -562,2 +562,3 @@
+-			return result.filter(item => 'command' in item && allowed.has(item.command.id));
++			const fileSearch = /^(?:(?:closeReplaceInFilesWidget|toggleSearch(?:CaseSensitive|WholeWord|Regex|PreserveCase)|addCursorsAtSearchResults)$|filesExplorer\.(?:findInFolder|findInWorkspace)$|search\.|workbench\.action\.(?:findInFiles|replaceInFiles|quickOpen|quickTextSearch|toggleSearchOnType|search\.)|workbench\.view\.search$|actions\.find(?:WithSelection)?$|editor\.actions\.findWithArgs$|(?:closeFindWidget|toggleFindCaseSensitive|toggleFindWholeWord|toggleFindRegex|toggleFindInSelection|togglePreserveCase)$|editor\.action\.(?:startFindReplaceAction|nextMatchFindAction|previousMatchFindAction|goToMatchFindAction|nextSelectionMatchFindAction|previousSelectionMatchFindAction|replaceOne|replaceAll|selectAllMatches|selectHighlights)$)/;
++			return result.filter(item => 'command' in item && (allowed.has(item.command.id) || fileSearch.test(item.command.id)));
+ 		}
+diff --git a/src/vs/workbench/services/commands/common/commandService.ts b/src/vs/workbench/services/commands/common/commandService.ts
+--- a/src/vs/workbench/services/commands/common/commandService.ts
++++ b/src/vs/workbench/services/commands/common/commandService.ts
+@@ -55,2 +55,3 @@
+-		if (hiddenActions.test(id)) {
++		const fileSearch = /^(?:(?:closeReplaceInFilesWidget|toggleSearch(?:CaseSensitive|WholeWord|Regex|PreserveCase)|addCursorsAtSearchResults)$|filesExplorer\.(?:findInFolder|findInWorkspace)$|search\.|workbench\.action\.(?:findInFiles|replaceInFiles|quickOpen|quickTextSearch|toggleSearchOnType|search\.)|workbench\.view\.search$|actions\.find(?:WithSelection)?$|editor\.actions\.findWithArgs$|(?:closeFindWidget|toggleFindCaseSensitive|toggleFindWholeWord|toggleFindRegex|toggleFindInSelection|togglePreserveCase)$|editor\.action\.(?:startFindReplaceAction|nextMatchFindAction|previousMatchFindAction|goToMatchFindAction|nextSelectionMatchFindAction|previousSelectionMatchFindAction|replaceOne|replaceAll|selectAllMatches|selectHighlights)$)/;
++		if (hiddenActions.test(id) && !fileSearch.test(id)) {
+ 			return undefined as T;
+diff --git a/src/vs/platform/keybinding/common/abstractKeybindingService.ts b/src/vs/platform/keybinding/common/abstractKeybindingService.ts
+--- a/src/vs/platform/keybinding/common/abstractKeybindingService.ts
++++ b/src/vs/platform/keybinding/common/abstractKeybindingService.ts
+@@ -394,2 +394,3 @@
+-					if (/^(?:workbench\.|editor\.action\.|actions\.find|editor\.debug\.|debug\.|testing\.|search\.|references-view\.)/.test(command) && !basicEditing.test(command)) {
++					const fileSearch = /^(?:(?:closeReplaceInFilesWidget|toggleSearch(?:CaseSensitive|WholeWord|Regex|PreserveCase)|addCursorsAtSearchResults)$|filesExplorer\.(?:findInFolder|findInWorkspace)$|search\.|workbench\.action\.(?:findInFiles|replaceInFiles|quickOpen|quickTextSearch|toggleSearchOnType|search\.)|workbench\.view\.search$|actions\.find(?:WithSelection)?$|editor\.actions\.findWithArgs$|(?:closeFindWidget|toggleFindCaseSensitive|toggleFindWholeWord|toggleFindRegex|toggleFindInSelection|togglePreserveCase)$|editor\.action\.(?:startFindReplaceAction|nextMatchFindAction|previousMatchFindAction|goToMatchFindAction|nextSelectionMatchFindAction|previousSelectionMatchFindAction|replaceOne|replaceAll|selectAllMatches|selectHighlights)$)/;
++					if (/^(?:workbench\.|editor\.action\.|actions\.find|editor\.debug\.|debug\.|testing\.|search\.|references-view\.)/.test(command) && !basicEditing.test(command) && !fileSearch.test(command)) {
+ 						this._currentlyDispatchingCommandId = null;

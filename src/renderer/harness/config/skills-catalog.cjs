@@ -4,8 +4,10 @@ const path = require('node:path');
 const { homedir } = require('node:os');
 const defaultDirectory = path.join(homedir(), '.ubovm', 'skills');
 const bundled = {
+  'self-learning': '从任务执行证据提炼方法，跨会话检索并验证可复用能力。',
   'browser-bridge': '通过浏览器工具执行有状态的网页操作、检查与验证。',
-  'ceye-dnslog': '通过 ceye.io 的 DNS / HTTP 回连记录辅助带外安全验证。'
+  'ceye-dnslog': '通过 ceye.io 的 DNS / HTTP 回连记录辅助带外安全验证。',
+  'attack-surface': '发现并登记关联域名（子域名、同证书、DNS、跳转），用域名台账保证安全覆盖不漏测。'
 };
 const expand = directory => path.resolve(directory.replace(/^~(?=[\\/]|$)/, homedir()));
 async function regularDirectory(directory) {
@@ -26,7 +28,15 @@ async function installBundledSkills(source, destination = defaultDirectory) {
     try {
       const packagePath = path.join(stage, name);
       await fs.cp(path.join(source, name), packagePath, { recursive: true, errorOnExist: true, force: false });
-      await fs.rename(packagePath, target);
+      try { await fs.rename(packagePath, target); }
+      catch (error) {
+        // Another extension host may have published the complete package
+        // after our initial absence check. Preserve its directory and discard
+        // only our own staging copy; genuine permission failures still fail.
+        if (!['EEXIST', 'ENOTEMPTY', 'EPERM'].includes(error.code)) throw error;
+        const winner = await fs.lstat(target).catch(() => null);
+        if (!winner?.isDirectory() || winner.isSymbolicLink()) throw error;
+      }
     } finally { await fs.rm(stage, { recursive: true, force: true }); }
   }
 }

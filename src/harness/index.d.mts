@@ -88,18 +88,31 @@ export interface ContextNode {
   parents: string[];
   intent?: Pick<Intent, 'description' | 'hint' | 'priority' | 'keyPoints' | 'status'>;
   fact?: string;
+  /** Structural evidence gaps; a null issue does not establish the overall goal. */
+  assessment?: { unresolvedKeyPoints: string[]; completionIssue: string | null };
   result?: string;
   producer?: string;
+  /** Detached, read-only observation of the latest running attempt, not verified evidence. */
+  progress?: { phase: 'plan' | 'execute' | 'replan' | 'conclude' | 'done'; completedSteps: number; remainingSteps: number; currentStep?: string };
   attempts?: { count: number; latestStatus: AttemptStatus; failures: { attempt: number; status: 'failed' | 'interrupted'; error?: string }[] };
   evidence?: { sourceType: string; noteCount: number; workerCount: number; toolCallCount: number };
 }
 export interface BlackboardContext {
   revision: number;
-  data: { revision: number; goal: string; root: string; focus?: string; nodes: ContextNode[] };
+  data: { revision: number; goal: string; root: string; focus?: string; nodes: ContextNode[]; exploration?: ExplorationIndex };
   text: string;
   /** Resolve a model-facing alias (n1, n2, ...) into the durable node ID. */
   resolveId(alias: string): string;
   aliasFor(id: string): string;
+}
+/** Navigation over structured Worker results; eligibility is not proof of goal completion. */
+export interface ExplorationIndex {
+  findings: { ref: string; statement: string; outcome: string; completionEligible: boolean }[];
+  gaps: { ref: string; unresolvedKeyPoints: string[]; nextSteps: string[]; followUpRefs: string[] }[];
+  /** Follow-up lifecycle only; no state automatically closes a source gap. */
+  frontier: { sourceRef: string; status: 'unassigned' | 'in_progress' | 'review_results' | 'needs_replan'; activeRefs: string[]; resultRefs: string[]; failedRefs: string[] }[];
+  activeIntents: string[];
+  failedIntents: string[];
 }
 export class Blackboard {
   constructor(options: { sessionId: string; goal: string; persist?: (snapshot: BlackboardSnapshot) => Awaitable<void> });
@@ -129,6 +142,7 @@ export function createContextMessage(snapshot: BlackboardSnapshot, options?: { f
 
 export type ReasonIntent = Omit<IntentSpec, 'id' | 'hint' | 'provenance'>;
 export type ReasonDecision =
+  | { wait: true }
   | { complete: true; summary: string; evidenceIds: string[]; intents?: [] }
   | { complete?: false; intents: ReasonIntent[] };
 export interface ReasonInput { context: BlackboardContext; signal?: AbortSignal }
@@ -139,6 +153,8 @@ export interface WorkerInput {
   checkpoint?: JsonValue;
   signal?: AbortSignal;
   getContext(): BlackboardContext;
+  getMessages(): Array<{ type: 'goal_completed'; completion: CoordinatorResult }>;
+  onMessage(listener: (message: { type: 'goal_completed'; completion: CoordinatorResult }) => void): () => void;
   saveCheckpoint(checkpoint: JsonValue): Promise<Attempt>;
 }
 export interface WorkerResult { content: string; provenance?: Provenance }
@@ -162,6 +178,8 @@ export type ModelStreamOptions = Pick<SimpleStreamOptions,
   'metadata' | 'env' | 'reasoning' | 'thinkingBudgets' | 'toolChoice'>;
 /** Select a catalog provider/modelId, a complete model, or an explicit custom endpoint. */
 export interface ModelClientOptions {
+  /** Pi Agent transport; the host owns tools, approvals and checkpoints. */
+  backend?: 'pi';
   model?: Model<Api>;
   provider?: string;
   modelId?: string;
@@ -179,6 +197,7 @@ export interface ModelClientOptions {
   streamOptions?: ModelStreamOptions;
 }
 export interface ModelClient {
+  readonly backend: 'pi';
   readonly model: Model<Api>;
   readonly streamFn: StreamFn;
   readonly getApiKey?: GetApiKey;
@@ -287,6 +306,7 @@ export interface ReasonAdapterOptions {
 export type ReasonEvent = { revision: number } & (
   | { type: 'reason_start' }
   | { type: 'reason_repair'; attempt: number; error: string }
+  | { type: 'reason_normalized'; fields: string[] }
   | { type: 'reason_decision'; decision: ReasonDecision; modelCalls: number }
   | { type: 'pi_event'; attempt: number; event: AgentEvent }
 );
@@ -316,6 +336,7 @@ export type HarnessEvent = EventEnvelope & (
   | { type: 'reason.error'; revision: number; error: HarnessError }
   | { type: 'reason.event'; event: ReasonEvent }
   | { type: 'worker.start'; intentId: string; attemptId: string }
+  | { type: 'worker.goal_completed'; intentId: string; attemptId: string; completion: CoordinatorResult }
   | { type: 'worker.result'; intentId: string; attemptId: string; result: string | WorkerResult }
   | { type: 'worker.error'; intentId: string; attemptId: string; error: HarnessError }
   | { type: 'worker.event'; event: WorkerEvent }
@@ -383,6 +404,10 @@ export interface CollaborationAgentOptions {
 }
 export interface CollaborationHistoryLimits { maxHistoryMessages?: number; maxHistoryBytes?: number }
 export interface CollaborationSettings extends CollaborationAgentOptions, CollaborationHistoryLimits {
+  /** Defaults to fixed. Explicitly enable autonomous for per-worker Pi model selection. */
+  backendSelection?: 'fixed' | 'autonomous';
+  /** Host-approved models selectable via a Harness profile's modelProfile. */
+  models?: Record<string, ModelClientOptions>;
   /** Shared executing worker limit, excluding workers waiting for descendants. Default 3. */
   maxConcurrency?: number;
   /** Newly spawned workers per turn across all levels. Default 12. */
@@ -408,6 +433,7 @@ export interface CollaborationConfiguration {
 }
 export type SwarmWorkerStatus = 'queued' | 'running' | 'waiting' | 'completed' | 'failed' | 'interrupted';
 export interface SwarmWorkerSnapshot {
+  modelProfile?: string;
   id: string;
   parentId: string;
   name?: string;
@@ -423,6 +449,10 @@ export interface SwarmWorkerSnapshot {
   createdAt: number;
   startedAt?: number;
   finishedAt?: number;
+  /** Cancellation was requested; running cleanup may still be in progress. */
+  cancelRequestedAt?: number;
+  cancelReason?: string;
+  cancelReasonTruncated?: boolean;
 }
 export interface SwarmSnapshot {
   version: 1;
@@ -437,12 +467,15 @@ export interface SwarmStatusEvent {
   omittedWorkerCount?: number;
   omittedInterruptedWorkerCount?: number;
 }
-export type CollaborationEvent = { type: 'tool_approval'; toolCallId: string; toolName: string; approved: boolean } | AgentEvent | ContextSummaryEvent | SkillsEvent | SwarmStatusEvent
+export type CollaborationEvent = { type: 'tool_approval'; toolCallId: string; toolName: string; approved: boolean } | AgentEvent | ContextSummaryEvent | SkillsEvent | SwarmStatusEvent | KnowledgeEvent
+  | { type: 'agent.backend'; workerId: string; backend: 'pi'; modelId: string; modelProfile?: string }
   | { type: 'swarm.worker.event'; workerId: string; parentId: string; event: AgentEvent }
   | { type: 'middleware.status'; status: { contextSummary: boolean; mcp: McpDiagnostic[]; skills: SkillCatalogEntry[] } }
   | { type: 'memory.status'; memory: MemorySnapshot };
 export interface ToolApprovalRequest { workerId: string; toolCallId: string; toolName: string; args: JsonValue; signal?: AbortSignal }
 export interface CollaborationTurnOptions {
+  /** Register the current root agent's steering handler; cleared when the turn ends. */
+  registerSteering?: (handler: ((input: { text: string; context?: JsonValue }) => void) | undefined) => void;
   /** Host approval hook for every root/worker tool call. Only true permits execution. */
   requestToolApproval?: (request: ToolApprovalRequest) => Awaitable<boolean>;
   configuration?: CollaborationConfiguration;
@@ -462,7 +495,7 @@ export interface SwarmOptions {
   maxConcurrency?: number;
   maxWorkers?: number;
   maxDepth?: number;
-  runWorker: (input: { workerId: string; parentId: string; task: string; depth: number; signal: AbortSignal }) => Awaitable<string>;
+  runWorker: (input: { workerId: string; parentId: string; task: string; depth: number; signal: AbortSignal; modelProfile?: string }) => Awaitable<string>;
   onEvent?: (event: SwarmStatusEvent) => unknown;
   signal?: AbortSignal;
   persist?: (snapshot: SwarmSnapshot) => Awaitable<void>;
@@ -472,7 +505,7 @@ export interface SwarmRuntime {
   toolsFor(workerId?: string): AgentTool[];
   snapshot(): SwarmSnapshot;
   /** Await descendants, yielding the calling worker's concurrency slot while waiting. */
-  settle(workerId?: string): Promise<SwarmWorkerSnapshot[]>;
+  settle(workerId?: string, signal?: AbortSignal): Promise<SwarmWorkerSnapshot[]>;
   /** Cancel every active worker and await cleanup. No saved work is replayed. */
   close(): Promise<void>;
 }
@@ -565,9 +598,17 @@ export interface ContextSummaryRequest {
 export type ContextSummaryEvent =
   | { type: 'context.summary_start'; scope: string; operationId: string; startedAt: number }
   | { type: 'context.summary_end'; scope: string; operationId: string; startedAt: number; endedAt: number; status: 'completed' | 'failed' | 'interrupted'; text: string; fallback: boolean; truncated: boolean; beforeTokens: number; afterTokens?: number }
-  | { type: 'context.summary'; scope: string; kind: ContextSummaryRequest['kind']; artifactId: string; fallback: boolean }
+  | { type: 'context.summary'; scope: string; kind: ContextSummaryRequest['kind']; artifactId: string; fallback: boolean; partial: boolean; truncated: boolean; coverage: ContextSummaryCoverage[] }
   /** Emitted for newly applied compression, never for unchanged or cached projections. */
   | { type: 'context.compacted'; scope: string; beforeTokens: number; afterTokens: number; summaryCalls: number };
+/** Host-observed source coverage; summarized does not imply factual verification. */
+export interface ContextSummaryCoverage {
+  /** UTF-16 source range in the archived artifact. */
+  offset: number;
+  length: number;
+  state: 'summarized' | 'truncated' | 'excerpt';
+  reason?: 'summary_output_limit' | 'source_call_limit' | 'timeout' | 'summary_unavailable';
+}
 export interface ContextSummaryOptions {
   model?: ModelClientOptions;
   summarize?: (request: ContextSummaryRequest) => Awaitable<string>;
@@ -722,6 +763,10 @@ export interface ToolEvidence {
   digest: string;
   observations: string;
   imageCount: number;
+  learningInputKeys?: string[];
+  /** Host-derived identity-independent execution hashes; absent on legacy records. */
+  learningFingerprint?: string;
+  learningRequestFingerprint?: string;
 }
 export interface MemorySnapshot {
   schemaVersion: 1;
@@ -733,13 +778,157 @@ export interface MemorySnapshot {
   workers: { worker_id: string; root_worker_id: string }[];
   audit: { type: string; note_id: string; note_type: string; source_worker: string; deleted_by: string; reason: string; created_at: string }[];
   toolEvidence?: ToolEvidence[];
+  delivery?: DeliveryRecord;
+  agentKnowledge?: { version: 1; lessons: KnowledgeLesson[]; reflectionKeys?: string[]; queue?: LearningQueueState };
 }
+export type DeliveryStage = 'develop' | 'audit' | 'security' | 'deploy' | 'operate';
+export interface DeliveryEvidence { workerId: string; toolCallId: string; toolName: string; digest: string }
+export interface DeliveryAcceptance {
+  artifact: string; summary: string; evidence: DeliveryEvidence[];
+  scope?: string; endpoint?: string; vantage?: string; rollback?: string; monitoring?: string; owner?: string;
+}
+export interface DeliveryRecord {
+  revision: number; projectType: 'new-development'; objective: string; artifact: string;
+  acceptance: Partial<Record<DeliveryStage, DeliveryAcceptance>>;
+  blocked?: Partial<Record<DeliveryStage, { summary: string; owner: string }>>;
+  findings: { id: string; severity: 'critical' | 'high' | 'medium' | 'low'; summary: string; evidence: DeliveryEvidence[];
+    status: 'open' | 'resolved'; assessment?: { summary: string; evidence: DeliveryEvidence[]; artifact: string } }[];
+  history: { revision: number; action: string; workerId: string; artifact: string; stage: string | null;
+    findingId: string | null; summary: string | null; evidence: { workerId: string; toolCallId: string }[]; acceptance?: DeliveryAcceptance | null; at: string }[];
+  evidenceFloor?: number; staleEvidence?: string[];
+}
+export interface LearningQueueState {
+  version: 1;
+  cursor: number;
+  jobs: {
+    id: string; kind: 'base' | 'reflection'; workerId: string;
+    refs: { toolCallId: string; digest: string }[];
+    status: 'pending' | 'running' | 'completed' | 'failed';
+    attempts: number; nextAttemptAt: number; createdAt: number; completedAt?: number; error?: string; errorCode?: string;
+    candidates?: KnowledgeCandidate[];
+  }[];
+  windows: { workerId: string; refs: { toolCallId: string; digest: string }[]; successes: boolean[]; unreflected: number;
+    fingerprints?: (string | null)[]; reflectedFingerprints?: string[] }[];
+}
+export interface KnowledgeCandidate {
+  title: string; trigger: string; steps: string[]; tool_call_ids: string[]; failure_call_ids?: string[]; portable?: boolean;
+}
+export interface KnowledgeOptions {
+  maxLessons?: number;
+  maxContextChars?: number;
+  /** False disables shared persistence; the SDK otherwise opens only an explicitly configured file. */
+  libraryFile?: string | false;
+  maxSharedLessons?: number;
+  background?: boolean;
+  /** Host-managed tool-free model reflection; the desktop enables it by default. */
+  reflection?: boolean;
+  reflect?: (input: { records: ToolEvidence[]; previousLessons: RecalledKnowledgeLesson[]; signal: AbortSignal }) => Promise<KnowledgeCandidate[]>;
+  maxPending?: number;
+  maxReflections?: number;
+  reflectionTimeoutMs?: number;
+  reflectionIntervalMs?: number;
+  maxAttempts?: number;
+  retryBaseMs?: number;
+  onEvent?: (event: KnowledgeEvent) => unknown;
+}
+export interface KnowledgeEvent {
+  type: 'knowledge.learned' | 'knowledge.failed' | 'knowledge.deferred' | 'knowledge.reflection_start' | 'knowledge.reflection_end' | 'knowledge.recovered';
+  workerId?: string;
+  toolName?: string;
+  message?: string;
+  sessionId?: string;
+  pending?: number;
+  code?: string;
+}
+export interface KnowledgeLesson {
+  id: string;
+  workerId: string;
+  title: string;
+  trigger: string;
+  steps: string[];
+  status: 'candidate';
+  evidence: { workerId: string; toolCallId: string; tool: string; digest: string; learningFingerprint?: string; learningRequestFingerprint?: string }[];
+  failureEvidence?: KnowledgeLesson['evidence'];
+  updatedAt: string;
+}
+export interface KnowledgeCapability {
+  tool: string;
+  successes: number;
+  failures: number;
+  lastFailed: boolean;
+  lastFailure?: { workerId: string; toolCallId: string; observation: string };
+  lastSuccess?: { workerId: string; toolCallId: string; observation: string };
+  successRate: number;
+  metric: 'tool-execution-only';
+  distinctPracticeAttempts: number;
+  novelObservations: number;
+  unresolvedFailureRequests: number;
+  failurePattern?: { count: number; workerId: string; toolCallId: string; observation: string };
+  retryAdvice: 'none' | 'check-prerequisites' | 'change-method-or-prerequisite';
+  needsPractice: boolean;
+  score: number;
+}
+export interface SharedKnowledgeLesson {
+  id: string;
+  title: string;
+  trigger: string;
+  steps: string[];
+  source: { sessionId: string; workerId: string; evidence: KnowledgeLesson['evidence']; failureEvidence?: KnowledgeLesson['evidence'] };
+  updatedAt: string;
+  successes: number;
+  failures: number;
+  familyId: string;
+  parentId: string | null;
+  familyFailures: number;
+  independentSessions: number;
+  needsValidation: boolean;
+  status: 'candidate' | 'practiced' | 'needs-review';
+  scope: 'library';
+}
+export type RecalledKnowledgeLesson = ((Omit<KnowledgeLesson, 'status'> & { scope: 'session'; status: 'candidate' | 'needs-review' }) | SharedKnowledgeLesson) & { score: number };
+export interface KnowledgeWarning {
+  id: string; title: string; status: 'candidate' | 'practiced' | 'needs-review';
+  familyFailures: number; needsValidation: boolean; reason: string;
+}
+export class LearningLibrary {
+  private constructor();
+  static open(options: { filePath: string; maxLessons?: number }): Promise<LearningLibrary>;
+  list(options?: { title: string; trigger: string }): SharedKnowledgeLesson[];
+  registerSource(source: { filePath: string; sessionId: string; reflection?: boolean; enabled?: boolean }): void;
+  sources(): { filePath: string; sessionId: string; reflection: boolean; enabled: boolean }[];
+  publish(lesson: KnowledgeLesson, sessionId: string): { id: string; scope: 'library' };
+  feedback(id: string, input: { sessionId: string; workerId: string; records: ToolEvidence[]; outcome: 'success' | 'failure' }): { id: string; outcome: 'success' | 'failure'; recorded: boolean };
+  close(): void;
+}
+export function startLocalLearningRecovery(options: Pick<KnowledgeOptions, 'maxLessons' | 'maxSharedLessons' | 'maxContextChars' | 'maxPending' | 'maxAttempts' | 'retryBaseMs' | 'onEvent' | 'reflection'> & {
+  libraryFile: string; storageDirectory?: string; intervalMs?: number; maxSourcesPerPass?: number;
+}): Promise<{
+  runOnce(): Promise<void>;
+  status(): { running: boolean; paused: boolean; restored: number; busy: number; failures: number };
+  pause(): Promise<() => void>;
+  close(): Promise<void>;
+}>;
+export function createKnowledge(options: Pick<KnowledgeOptions, 'maxLessons' | 'maxContextChars'> & { store: MemoryStore; sessionId?: string; library?: LearningLibrary }): {
+  readonly libraryAvailable: boolean;
+  inspect(options?: { query?: string; limit?: number }): { libraryAvailable: boolean; capabilities: KnowledgeCapability[]; lessons: RecalledKnowledgeLesson[]; warnings: KnowledgeWarning[] };
+  context(options?: { query?: string; signal?: AbortSignal }): Promise<string>;
+  methods(options: { title: string; trigger: string }): ((KnowledgeLesson & { scope: 'session' }) | SharedKnowledgeLesson)[];
+  tool(workerId: string): AgentTool;
+};
 export class MemoryStore {
   constructor(options: { sessionId: string; persist?: (snapshot: MemorySnapshot) => Awaitable<void> });
   static open(options: { filePath: string; sessionId?: string }): Promise<MemoryStore>;
   static fromSnapshot(options: { snapshot: MemorySnapshot; persist?: (snapshot: MemorySnapshot) => Awaitable<void> }): MemoryStore;
   readonly sessionId: string;
   snapshot(): MemorySnapshot;
+  snapshot<K extends keyof MemorySnapshot>(fields: K[]): Pick<MemorySnapshot, K>;
+  toolEvidence(workerId: string, toolCallId: string): ToolEvidence | undefined;
+  toolCallIds(workerId: string): string[];
+  knowledgeSnapshot(): { sessionId: string; agentKnowledge?: { version: 1; lessons: KnowledgeLesson[] } };
+  deliverySnapshot(): (Omit<DeliveryRecord, 'staleEvidence' | 'evidenceFloor'> & { historyCount: number }) | undefined;
+  deliveryHistory(options?: { offset?: number; limit?: number; expectedRevision?: number }): {
+    revision: number; total: number; items: DeliveryRecord['history']; nextOffset: number | null;
+  };
   subscribe(listener: (event: { revision: number }) => unknown): () => boolean;
   flush(): Promise<void>;
   commit<T>(mutate: (snapshot: MemorySnapshot) => T): Promise<T>;
@@ -760,6 +949,7 @@ export interface NoteEvidence {
   isError?: boolean;
 }
 export function createTodoTool(options: { store: MemoryStore; sessionId: string; workerId?: string }): TodoTool;
+export function createDeliveryTool(options: { store: MemoryStore; sessionId: string; workerId?: string }): AgentTool & { summary(): string };
 export function createNoteTool(options: {
   store: MemoryStore; sessionId: string; workerId?: string; blackboard?: Blackboard; canPromote?: boolean;
   evidenceProvider?: (binding: { toolCallId: string; sessionId: string; workerId: string }) => Awaitable<NoteEvidence | undefined>;
@@ -767,6 +957,8 @@ export function createNoteTool(options: {
 
 export interface HTTPToolOptions { fetch?: typeof fetch; timeoutMs?: number; maxResponseBytes?: number; maxRedirects?: number }
 export interface WebSearchOptions extends HTTPToolOptions {
+  /** Per-provider budget including retries/backoff; public providers run concurrently. Default: 15000 ms. */
+  timeoutMs?: number;
   apiKey?: string;
   baseURL?: string;
   tavily?: { enabled?: boolean; apiKey?: string; baseURL?: string; projectID?: string; searchDepth?: 'basic' | 'advanced' | 'fast' | 'ultra-fast'; topic?: 'general' | 'news' | 'finance'; includeAnswer?: boolean };
@@ -831,10 +1023,10 @@ export class SSHCommands {
   summary(isDefault?: boolean): SSHProfileSummary;
   connect(): Promise<SSHConnection>;
   waitForConnection(signal?: AbortSignal): Promise<SSHConnection>;
-  execute(input: { command: string; timeout_seconds?: number }, signal?: AbortSignal, onUpdate?: (result: AgentToolResult<unknown>) => void): Promise<AgentToolResult<unknown>>;
+  execute(input: { command: string; timeout_seconds?: number; session?: string; reset_session?: boolean }, signal?: AbortSignal, onUpdate?: (result: AgentToolResult<unknown>) => void): Promise<AgentToolResult<unknown>>;
   openInteractive(options?: { columns?: number; rows?: number; signal?: AbortSignal }): Promise<SSHInteractiveSession>;
   close(): Promise<void>;
-  tool(): AgentTool;
+  tool(): AgentTool & { close(): Promise<void> };
 }
 export interface SSHCommandsPoolOptions { profiles?: SSHProfile[]; defaultId?: string }
 export class SSHCommandsPool {
@@ -845,7 +1037,7 @@ export class SSHCommandsPool {
   summaries(): SSHProfileSummary[];
   close(): Promise<void>;
 }
-export function createSSHTool(options: SSHProfile | SSHCommands): AgentTool;
+export function createSSHTool(options: SSHProfile | SSHCommands): AgentTool & { close(): Promise<void> };
 export interface SFTPUploadInput { local_path: string; remote_path: string; timeout_seconds?: number; file_mode?: number }
 export function uploadSFTP(commands: SSHCommands, input: SFTPUploadInput, signal?: AbortSignal, onUpdate?: (result: AgentToolResult<unknown>) => void): Promise<AgentToolResult<unknown>>;
 export function createSFTPUploadTool(commands: SSHCommands): AgentTool;
@@ -854,16 +1046,16 @@ export function shellQuote(value: unknown): string;
 export function buildRemoteCommand(command: string, seconds?: number): string;
 export function knownHostsVerifier(contents: string, host: string, port?: number): (key: Uint8Array) => boolean;
 
-export type BrowserAction = 'status' | 'tabs' | 'tab_new' | 'tab_close' | 'tab_activate' | 'navigate' | 'back' | 'forward' | 'reload' |
-  'accessibility' | 'snapshot' | 'click' | 'fill' | 'select' | 'press' | 'hover' | 'scroll' | 'wait' | 'evaluate' |
+export type BrowserAction = 'status' | 'tabs' | 'tab_new' | 'tab_close' | 'tab_activate' | 'popup_policy' | 'console' | 'navigate' | 'back' | 'forward' | 'reload' |
+  'accessibility' | 'snapshot' | 'click' | 'fill' | 'select' | 'check' | 'press' | 'hover' | 'scroll' | 'wait' | 'evaluate' |
   'cdp' | 'cdp_events' | 'cdp_detach' | 'network_start' | 'network' | 'network_body' | 'network_stop' |
   'script_scan' | 'sitemap_start' | 'sitemap' | 'sitemap_entry' | 'sitemap_clear' |
   'identity_capture' | 'identity_list' | 'identity_delete' | 'request_save' | 'request_replay' | 'object_catalog' | 'authz_compare' | 'screenshot';
 export const BROWSER_ACTIONS: readonly BrowserAction[];
-export type BrowserActionInput = { action: BrowserAction; timeout_seconds?: number; mutations?: Record<string, unknown>; command_params?: Record<string, unknown> }
-  & Partial<Record<'page_id' | 'url' | 'ref' | 'query' | 'role' | 'value' | 'key' | 'wait_for' | 'script' | 'pattern' | 'flags' | 'source' | 'name' | 'identity_ref' | 'owner_identity_ref' | 'other_identity_ref' | 'request_ref' | 'method' | 'request_id' | 'parent_id' | 'entry_id' | 'depth', string>>
+export type BrowserActionInput = { action: BrowserAction; timeout_seconds?: number; values?: string[]; mutations?: Record<string, unknown>; command_params?: Record<string, unknown> }
+  & Partial<Record<'page_id' | 'url' | 'ref' | 'query' | 'role' | 'value' | 'key' | 'wait_for' | 'script' | 'pattern' | 'flags' | 'source' | 'name' | 'identity_ref' | 'owner_identity_ref' | 'other_identity_ref' | 'request_ref' | 'method' | 'request_id' | 'parent_id' | 'entry_id' | 'depth' | 'level', string>>
   & Partial<Record<'backend_node_id' | 'page' | 'page_size' | 'limit' | 'after_sequence' | 'max_bytes' | 'offset' | 'max_chars' | 'max_elements' | 'max_nodes' | 'max_matches' | 'max_source_chars' | 'max_candidates' | 'delta_x' | 'delta_y', number>>
-  & Partial<Record<'clear' | 'include_text' | 'include_ignored' | 'include_anonymous' | 'include_credentials' | 'allow_unsafe', boolean>>;
+  & Partial<Record<'clear' | 'include_text' | 'include_ignored' | 'include_anonymous' | 'include_credentials' | 'allow_unsafe' | 'checked' | 'full_page' | 'allow_popups', boolean>>;
 export interface BrowserBinding { sessionId: string; workerId: string; target?: string }
 export interface BrowserManagerOptions { browser?: Browser; context?: BrowserContext; executablePath?: string; channel?: string; cdpEndpoint?: string; launchOptions?: LaunchOptions }
 export interface BrowserStatus {
@@ -894,7 +1086,7 @@ export class BrowserManager implements BrowserBackend {
 }
 export function createBrowserTools(options: BrowserBinding & { manager?: Pick<BrowserBackend, 'status' | 'call'> }): AgentTool[];
 
-export type InternalToolName = 'browser_action' | 'browser_connection_status' | 'fetch_web_content' | 'note' | 'todo' | 'web_search' | 'read_skills_resource' | 'run_local_skill_script' | 'run_linux_ssh_command' | 'run_local_shell_command' | 'upload_sftp' | 'deploy_remote_service';
+export type InternalToolName = 'delivery_workflow' | 'browser_action' | 'browser_connection_status' | 'fetch_web_content' | 'note' | 'todo' | 'web_search' | 'read_skills_resource' | 'run_local_skill_script' | 'run_linux_ssh_command' | 'run_local_shell_command' | 'run_python' | 'manage_python_environment' | 'upload_sftp' | 'deploy_remote_service' | 'learn_capability';
 export const INTERNAL_TOOL_NAMES: readonly InternalToolName[];
 export interface LocalShellOptions {
   cwd?: string;
@@ -902,9 +1094,26 @@ export interface LocalShellOptions {
   maxTimeoutSeconds?: number;
   maxOutputBytes?: number;
 }
-export function createLocalShellTool(options?: LocalShellOptions): AgentTool;
+export function createLocalShellTool(options?: LocalShellOptions): AgentTool & { close(): Promise<void> };
+export interface PythonToolOptions extends LocalShellOptions {
+  /** Absolute CPython override; by default prefer bundled Python, then host PATH. */
+  executable?: string;
+  allowedDomains?: string[];
+  /** Default false. Writes bypass IDE change snapshots when explicitly enabled. */
+  allowWorkspaceWrite?: boolean;
+  /** Default true: use the workspace's successfully synchronized environment. */
+  useManagedEnvironment?: boolean;
+}
+export function createPythonTool(options?: PythonToolOptions): AgentTool;
+export function createPythonEnvironmentTool(options?: PythonToolOptions): AgentTool;
 export interface InternalToolsOptions {
+  knowledge?: false | KnowledgeOptions;
+  /** Host-provided session SQLite path for offline startup learning recovery. */
+  learningSource?: string;
   localShell?: false | LocalShellOptions;
+  /** Host-only command registration; return a cleanup callback. Interrupt targets one call, including a queued call. */
+  onCommand?: (command: { id: string; workerId: string; toolCallId: string; name: string; interrupt(): boolean }) => void | (() => void);
+  python?: false | PythonToolOptions;
   sessionId?: string;
   blackboard?: Blackboard;
   memoryFile?: string;
@@ -929,6 +1138,8 @@ export interface InternalToolsHooks {
   onToolResult: NonNullable<WorkerAdapterOptions['onToolResult']>;
 }
 export interface InternalToolsRuntime extends InternalToolsHooks {
+  learningStatus(): { pending: number; running: boolean; processed: number; failures: number; dropped: number; reflections: number; completed: number; failed: number } | undefined;
+  flushLearning(): Promise<void>;
   readonly sessionId: string;
   readonly store: MemoryStore;
   readonly browserManager?: BrowserBackend;

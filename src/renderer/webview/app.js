@@ -2,6 +2,15 @@
   'use strict';
   const vscode = window.UBOVMRuntime?.api ?? acquireVsCodeApi();
   let connectionStatus = 'connecting';
+  let readyResyncTimer;
+  function requestReadyResync() {
+    // pageshow + visibilitychange + probe reconnect can all fire together; one ready is enough.
+    if (readyResyncTimer) return;
+    readyResyncTimer = setTimeout(() => {
+      readyResyncTimer = undefined;
+      try { vscode.postMessage({ action: 'ready' }); } catch { /* Bridge may be unavailable during teardown. */ }
+    }, 48);
+  }
   const connection = window.createConnectionMonitor({ send: value => vscode.postMessage(value), onChange: (status, previous) => {
     connectionStatus = status;
     if (status === 'disconnected') {
@@ -9,9 +18,15 @@
       const interrupted = [...pending.values()];
       pending.clear();
       for (const item of interrupted) { clearTimeout(item.timer); completeCallback(item.onError, failure, item.sessionId); }
+      // Hard disconnect must disable submit controls via a full paint.
+      scheduleRender();
+    } else if (status === 'backend-disconnected') {
+      scheduleRender();
+    } else {
+      // Soft reconnect ticks only need the connection strip; avoid relayout storms.
+      scheduleRender(true);
     }
-    scheduleRender();
-    if (status === 'connected' && ['disconnected', 'backend-disconnected', 'reconnecting'].includes(previous)) vscode.postMessage({ action: 'ready' });
+    if (status === 'connected' && ['disconnected', 'backend-disconnected', 'reconnecting'].includes(previous)) requestReadyResync();
   } });
   createSettingsPanel(vscode);
   const elements = new Map();
@@ -29,11 +44,15 @@
   function renderConnectionStatus() {
     const offline = ['disconnected', 'backend-disconnected'].includes(connectionStatus);
     byId('connection-warning').hidden = !offline;
+    const canResume = executionState().canResume === true;
     setText(byId('connection-warning-text'), connectionStatus === 'disconnected'
       ? '与 IDE 后端的连接已中断，任务状态未知。草稿已保留，请勿重复提交；连接恢复后将同步状态。'
-      : 'Agent 后端已断开，运行中的任务可能已中断。请检查执行错误，再手动重新发起或恢复任务。');
+      : canResume
+        ? 'Agent 后端已断开，运行中的任务可能已中断。连接恢复后请点击“继续执行”从检查点恢复，请勿重复提交。'
+        : 'Agent 后端已断开，运行中的任务可能已中断。请检查执行错误，再手动重新发起或恢复任务。');
     if (!offline) return;
     if (busy) for (const id of ['busy-status', 'header-execution-status', 'goal-run-status', 'execution-phase']) setText(byId(id), '连接中断 · 任务状态待确认');
+    // Hard IDE disconnect freezes actions; backend flaps still allow explicit resume.
     if (connectionStatus === 'disconnected') for (const id of ['submit-prompt', 'goal-run', 'goal-resume', 'assist-resume', 'goal-stop']) byId(id).disabled = true;
   }
   const form = byId('prompt-form');
@@ -304,10 +323,12 @@
     } catch { failed(); return; }
     return requestId;
   }
+  const modalDialog = window.createModalDialog();
   const projectSwitcher = window.createProjectSwitcher(vscode, {
     request: (action, payload, onSuccess, onError) => request(action, payload, onSuccess, onError),
     getProjects: () => Array.isArray(hostState?.projects) ? hostState.projects : [],
-    getWorkspace: () => hostState?.context?.workspace || ''
+    getWorkspace: () => hostState?.context?.workspace || '',
+    modal: modalDialog
   });
   const renderRequests = new Map();
   function renderRequest(action, payload) {
@@ -458,7 +479,6 @@
     const promptPending = hasPending('prompt');
     setProperty(input, 'disabled', unavailable);
     setProperty(byId('new-create-chat'), 'disabled', unavailable || hasPending());
-    setProperty(byId('new-create-project'), 'disabled', unavailable || hasPending());
     setAttribute(byId('new-create').querySelector('summary'), 'aria-disabled', String(unavailable || hasPending()));
     renderNavigationFeedback();
     byId('new-create').querySelector('summary').setAttribute('aria-busy', String(navigationPending()));
@@ -1239,10 +1259,126 @@
       setProperty(byId('goal-progress-caption'), 'hidden', criteria.length === 0);
       setText(byId('goal-note-count'), String(notes.length));
       setText(byId('goal-nav-notes'), String(notes.length));
+      const sourceEvidence = Array.isArray(goal.sourceEvidence) ? goal.sourceEvidence : [];
+      setText(byId('goal-source-evidence-count'), String(sourceEvidence.length));
+      setProperty(byId('goal-source-evidence'), 'hidden', sourceEvidence.length === 0);
+      setProperty(byId('goal-note-count').closest('.goal-meta'), 'hidden', false);
+      const evidencePanel = byId('goal-source-evidence-panel');
+      setProperty(evidencePanel, 'hidden', sourceEvidence.length === 0);
+      const evidenceList = byId('goal-source-evidence-list');
+      const evidenceKey = JSON.stringify(sourceEvidence.map(item => [item.id, item.statement, item.observations]));
+      if (evidenceList.dataset.key !== evidenceKey) {
+        evidenceList.dataset.key = evidenceKey;
+        evidenceList.replaceChildren(...sourceEvidence.map(item => {
+          const row = document.createElement('li');
+          const title = document.createElement('strong');
+          title.textContent = item.statement;
+          const meta = document.createElement('small');
+          const observations = Array.isArray(item.observations) ? item.observations.filter(Boolean) : [];
+          meta.textContent = (observations.length ? observations.map(value => '• ' + value).join('\n') + '\n' : '') + 'id ' + item.id.slice(0, 8) + ' · 种子证据，不可单独完成目标';
+          row.append(title, meta);
+          return row;
+        }));
+      }
       setText(byId('goal-provider-label'), hostState.provider?.label || '未连接模型');
       if (draftFor().view === 'overview') renderCriteria(criteria);
       if (draftFor().view === 'notes') renderNotes(notes);
     }
+  }
+  function selectedAssistEvidenceIds() {
+    return [...byId('assist-evidence-list').querySelectorAll('input[type="checkbox"]:checked:not(:disabled)')].map(item => item.value);
+  }
+  function assistEvidenceAttachedIds(goalId) {
+    const goal = (hostState?.relatedConversations || []).find(item => item.id === goalId && item.mode === 'goal');
+    return new Set(Array.isArray(goal?.sourceEvidenceIds) ? goal.sourceEvidenceIds : []);
+  }
+  function updateAssistEvidenceActions() {
+    const panel = byId('assist-evidence');
+    if (panel.hidden) return;
+    const goals = (hostState?.relatedConversations || []).filter(item => item.mode === 'goal');
+    const selected = selectedAssistEvidenceIds();
+    const goalId = byId('assist-evidence-goal').value;
+    const attached = assistEvidenceAttachedIds(goalId);
+    const pendingSelected = selected.filter(id => !attached.has(id));
+    byId('assist-evidence-attach').disabled = !pendingSelected.length || !goalId || !goals.length || navigationPending() || hasPending('attachAssistEvidence');
+    byId('assist-evidence-select-pending').disabled = !goals.length || !goalId;
+    byId('assist-evidence-clear').disabled = !selectedAssistEvidenceIds().length && ![...byId('assist-evidence-list').querySelectorAll('input[type="checkbox"]:checked')].length;
+    const hint = byId('assist-evidence-hint');
+    if (!goals.length) {
+      hint.hidden = false;
+      setText(hint, '尚无关联探索。可先让助手创建关联目标，或从会话栏打开已有探索。');
+    } else if (!pendingSelected.length) {
+      hint.hidden = false;
+      setText(hint, selected.length ? '所选证据已附加到当前探索；可改选目标或勾选未附加项。' : '勾选尚未附加的证据，再注入探索模式。');
+    } else {
+      hint.hidden = false;
+      setText(hint, '将附加 ' + pendingSelected.length + ' 条新证据到所选探索。');
+    }
+  }
+  function renderAssistEvidence() {
+    const panel = byId('assist-evidence');
+    const goalMode = hostState?.mode === 'goal';
+    const evidence = Array.isArray(hostState?.assistEvidence) ? hostState.assistEvidence : [];
+    if (goalMode || !evidence.length) {
+      panel.hidden = true;
+      return;
+    }
+    panel.hidden = false;
+    setText(byId('assist-evidence-count'), String(evidence.length));
+    const selected = new Set(selectedAssistEvidenceIds());
+    const goals = (hostState?.relatedConversations || []).filter(item => item.mode === 'goal');
+    const select = byId('assist-evidence-goal');
+    const previous = select.value;
+    const goalKey = JSON.stringify(goals.map(item => [item.id, item.title, item.sourceEvidenceCount || 0, ...(item.sourceEvidenceIds || [])]));
+    if (select.dataset.key !== goalKey) {
+      select.dataset.key = goalKey;
+      select.replaceChildren(...(goals.length
+        ? goals.map(item => {
+          const option = document.createElement('option');
+          option.value = item.id;
+          const count = item.sourceEvidenceCount || 0;
+          option.textContent = (item.title || '关联探索') + (count ? '（已附 ' + count + '）' : '');
+          return option;
+        })
+        : [Object.assign(document.createElement('option'), { value: '', textContent: '暂无关联探索' })]));
+      if (goals.some(item => item.id === previous)) select.value = previous;
+    }
+    const goalId = select.value;
+    const attached = assistEvidenceAttachedIds(goalId);
+    const list = byId('assist-evidence-list');
+    const key = JSON.stringify([goalId, evidence.map(item => [item.id, item.statement, item.observations?.length || 0, item.attachedGoalIds || []])]);
+    if (list.dataset.key !== key) {
+      list.dataset.key = key;
+      list.replaceChildren(...evidence.map(item => {
+        const row = document.createElement('label');
+        row.className = 'assist-evidence-item';
+        row.setAttribute('role', 'listitem');
+        const isAttached = attached.has(item.id);
+        row.dataset.attached = String(isAttached);
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.value = item.id;
+        checkbox.checked = selected.has(item.id) && !isAttached;
+        checkbox.disabled = isAttached;
+        checkbox.addEventListener('change', updateAssistEvidenceActions);
+        const body = document.createElement('span');
+        const title = document.createElement('strong');
+        title.textContent = item.statement;
+        if (isAttached) {
+          const badge = document.createElement('span');
+          badge.className = 'assist-evidence-badge';
+          badge.textContent = '已附加';
+          title.append(badge);
+        }
+        const meta = document.createElement('small');
+        const observations = Array.isArray(item.observations) ? item.observations.length : 0;
+        meta.textContent = (observations ? observations + ' 条观察 · ' : '') + 'id ' + item.id.slice(0, 8);
+        body.append(title, meta);
+        row.append(checkbox, body);
+        return row;
+      }));
+    }
+    updateAssistEvidenceActions();
   }
   function sendPrompt() {
     const field = input;
@@ -1277,7 +1413,8 @@
   let inputQueueKey = '';
   let inputQueueSession = '';
   function queueControlsBlocked() {
-    return !currentSessionId || hostState?.recovering || ['disconnected', 'backend-disconnected', 'reconnecting'].includes(connectionStatus)
+    // Brief probe resync (`reconnecting`) must not freeze queue/input controls.
+    return !currentSessionId || hostState?.recovering || ['disconnected', 'backend-disconnected'].includes(connectionStatus)
       || navigationPending() || ['cancelRun', 'rewindInput', 'removeInput', 'steerInput', 'resumeInputs'].some(action => hasPending(action));
   }
   function rewindControlsBlocked() {
@@ -1458,16 +1595,39 @@
     closeNewCreate();
     if (!hasPending()) request('newChat');
   });
-  byId('new-create-project').addEventListener('click', () => {
-    closeNewCreate();
-    if (!hasPending()) projectSwitcher.openCreate();
-  });
   byId('goal-run').addEventListener('click', () => {
     if (hostState?.goal && !busy && !hasPending('runGoal') && !navigationPending()) request('runGoal');
   });
   byId('goal-stop').addEventListener('click', cancelRun);
   byId('goal-resume').addEventListener('click', resumeRun);
   byId('assist-resume').addEventListener('click', resumeRun);
+  byId('assist-evidence-goal').addEventListener('change', () => {
+    byId('assist-evidence-list').dataset.key = '';
+    renderAssistEvidence();
+  });
+  byId('assist-evidence-select-pending').addEventListener('click', () => {
+    const goalId = byId('assist-evidence-goal').value;
+    const attached = assistEvidenceAttachedIds(goalId);
+    byId('assist-evidence-list').querySelectorAll('input[type="checkbox"]').forEach(item => {
+      item.checked = !item.disabled && !attached.has(item.value);
+    });
+    updateAssistEvidenceActions();
+  });
+  byId('assist-evidence-clear').addEventListener('click', () => {
+    byId('assist-evidence-list').querySelectorAll('input[type="checkbox"]').forEach(item => { item.checked = false; });
+    updateAssistEvidenceActions();
+  });
+  byId('assist-evidence-attach').addEventListener('click', () => {
+    if (hostState?.mode !== 'assist' || hasPending('attachAssistEvidence') || navigationPending()) return;
+    const goalId = byId('assist-evidence-goal').value;
+    const attached = assistEvidenceAttachedIds(goalId);
+    const evidenceIds = selectedAssistEvidenceIds().filter(id => !attached.has(id));
+    if (!evidenceIds.length || !goalId) return;
+    request('attachAssistEvidence', { goalId, evidenceIds }, () => {
+      byId('assist-evidence-list').dataset.key = '';
+      renderAssistEvidence();
+    });
+  });
   byId('assist-notes-toggle').addEventListener('click', () => {
     setGoalView(draftFor().view === 'notes' ? 'overview' : 'notes');
   });
@@ -1488,8 +1648,6 @@
   document.querySelectorAll('[data-action]').forEach(button => button.addEventListener('click', () => {
     if (button.dataset.action === 'selectWorkspace') {
       if (!busy && !hasPending()) request('selectWorkspace');
-    } else if (button.dataset.action === 'manageProjects') {
-      projectSwitcher.open();
     } else if (button.dataset.action === 'attachFile') {
       if (busy || contextPending() || !currentSessionId) return;
       const sessionId = currentSessionId;
@@ -1667,8 +1825,8 @@
     const failures = [];
     for (const render of [
       () => { if (hostState.mode !== 'goal') renderMessages(Array.isArray(hostState.messages) ? hostState.messages : []); },
-      () => deliveryView.update(hostState.execution?.memory?.delivery, currentSessionId),
-      renderConversationOutline, renderGoal, renderExecution, updateControls
+      () => deliveryView.update(hostState.execution?.memory?.delivery, currentSessionId, hostState.execution?.memory?.domainInventory),
+      renderConversationOutline, renderGoal, renderAssistEvidence, renderExecution, updateControls
     ]) {
       try { render(); } catch (error) { failures.push(error); }
     }
@@ -1728,7 +1886,9 @@
   function cancelVisualFrames() {
     committedRender = undefined;
     cancelPaintAcknowledgement();
-    if (contentReadyPending && hostState) { renderPending = true; fullRenderPending = true; }
+    // Hidden/idle suspension must force a full paint after restore even when
+    // contentReady already completed, otherwise a discarded compositor stays blank.
+    if (hostState) { renderPending = true; fullRenderPending = true; contentReadyPending = true; }
     renderGeneration++;
     window.UBOVMRuntime?.cancel();
     cancelRenderTimer(); cancelPageAnimation(); cancelScroll();
@@ -1738,7 +1898,7 @@
   }
   function resumeVisuals() {
     if (visualSuspended()) return;
-    if (renderPending) scheduleRender();
+    scheduleRender(true);
     scheduleInput(); refreshLatest(); queueContentReady();
   }
   byId('ui-render-retry').addEventListener('click', () => {
@@ -1955,14 +2115,21 @@
     if (draftTimer) persistDrafts();
     cancelVisualFrames();
   });
-  window.addEventListener('pageshow', () => { suspended = false; resumeVisuals(); });
+  window.addEventListener('pageshow', () => {
+    suspended = false;
+    resumeVisuals();
+    requestReadyResync();
+  });
   window.addEventListener('blur', () => { if (draftTimer) persistDrafts(); });
   document.addEventListener('visibilitychange', () => {
     document.body.classList.toggle('page-background', document.hidden);
     if (document.hidden) {
       if (draftTimer) persistDrafts();
       cancelVisualFrames();
-    } else resumeVisuals();
+    } else {
+      resumeVisuals();
+      requestReadyResync();
+    }
   });
   window.addEventListener('ubovm-settings-visibility', event => {
     if (event.detail?.open) cancelVisualFrames();
@@ -1989,9 +2156,61 @@
       try { finishPageTransition(); } catch { /* Independent recovery controls remain usable. */ }
     }
   });
+  async function handleHostDialog(state) {
+    if (!state || typeof state.type !== 'string') return false;
+    if (modalDialog.handleMessage(state)) return true;
+    if (state.type === 'openConversationDelete') {
+      const title = typeof state.title === 'string' ? state.title : '会话';
+      const label = state.mode === 'goal' ? '探索会话' : '会话';
+      const confirmed = await modalDialog.confirm({
+        title: `删除${label}`,
+        message: `删除${label}“${title}”？`,
+        detail: '将删除此会话的消息、草稿和本地执行记录。工作区文件不会被删除。此操作无法撤销。',
+        confirmLabel: '删除',
+        danger: true
+      });
+      if (confirmed !== true) return true;
+      request('confirmConversationDelete', {
+        conversationId: state.conversationId,
+        confirmed: true
+      }, () => {}, failure => showError(failure?.message || '删除失败，请重试。'));
+      return true;
+    }
+    if (state.type === 'openConversationSearch') {
+      const items = Array.isArray(state.items) ? state.items : [];
+      const selected = await modalDialog.searchList({
+        title: state.mode === 'goal' ? '搜索探索会话' : '搜索协助会话',
+        items
+      });
+      if (selected?.id) {
+        request('selectConversationFromSearch', { conversationId: selected.id }, () => {},
+          failure => showError(failure?.message || '打开会话失败，请重试。'));
+      }
+      return true;
+    }
+    if (state.type === 'showUbomAlert') {
+      await modalDialog.confirm({
+        title: state.title || '提示',
+        message: state.message || '',
+        detail: state.detail || '',
+        confirmLabel: '知道了',
+        hideCancel: true
+      });
+      return true;
+    }
+    return false;
+  }
   function receiveHostMessage(event) {
     let state = event.data;
     if (projectSwitcher.handleMessage(state)) return;
+    if (state?.type?.startsWith?.('openConversation') || state?.type === 'showUbomAlert' || state?.type === 'closeUbomModal') {
+      void handleHostDialog(state);
+      return;
+    }
+    if (state?.type === 'windowFocused') {
+      if (!document.hidden) resumeVisuals();
+      return;
+    }
     if (state?.type === 'selectBlackboardNode') {
       if (state.sessionId === currentSessionId) blackboardGraph?.select(state.id);
       return;
@@ -2056,6 +2275,7 @@
       cleanup(() => conversationOutline?.reset());
       cleanup(closeNoteEditor);
       cleanup(() => projectSwitcher.close());
+      cleanup(() => modalDialog.close());
       cleanup(() => { byId('new-create').open = false; });
     }
     hostState = state;

@@ -1,0 +1,14 @@
+diff --git a/src/vs/workbench/contrib/webview/browser/webviewElement.ts b/src/vs/workbench/contrib/webview/browser/webviewElement.ts
+--- a/src/vs/workbench/contrib/webview/browser/webviewElement.ts
++++ b/src/vs/workbench/contrib/webview/browser/webviewElement.ts
+@@ -559,6 +559,10 @@
+ 	private _startBlockingIframeDragEvents() {
++		// UBOVM owns file drops inside its conversation composer.
++		if (this.providedViewType === 'ubovm.welcome') {
++			return;
++		}
+ 		if (this.element) {
+ 			this.element.style.pointerEvents = 'none';
+ 		}
+ 	}
+ 

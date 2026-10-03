@@ -4,6 +4,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { createHash, randomUUID } = require('node:crypto');
 const { createCodeNavigation } = require('./code-navigation.cjs');
+const { createCallChain } = require('./call-chain.cjs');
 const { createRenamePreview } = require('./rename-preview.cjs');
 const { createProjectContext } = require('./project-context.cjs');
 const { lineChanges } = require('./line-changes.cjs');
@@ -94,7 +95,11 @@ function createCodingService(vscode, context, { beforeEdit, turnId = () => undef
     for (const doc of vscode.workspace.textDocuments) {
       if (doc.uri.scheme !== 'file' || !doc.isDirty) continue;
       const resolved = await fs.realpath(doc.uri.fsPath).catch(() => path.resolve(doc.uri.fsPath));
-      if (identity(resolved) === identity(file)) throw new Error('文件有未保存的编辑，请先保存后重试。');
+      if (identity(resolved) === identity(file)) {
+        throw Object.assign(new Error('文件有未保存的编辑，请先保存后调用 read_workspace_code 再修改。reason=dirty recovery=save_then_read_workspace_code'), {
+          details: { reason: 'dirty', recovery: 'save_then_read_workspace_code' }
+        });
+      }
     }
   }
   async function recordTarget(record) {
@@ -192,7 +197,11 @@ function createCodingService(vscode, context, { beforeEdit, turnId = () => undef
         after = input.newText;
       } else {
         if (before === null) throw new Error('文件不存在。');
-        if (typeof input.expectedHash !== 'string' || input.expectedHash !== hash(before)) throw new Error('文件版本不匹配，请先调用 read_workspace_code 获取最新 hash。');
+        if (typeof input.expectedHash !== 'string' || input.expectedHash !== hash(before)) {
+          throw Object.assign(new Error('文件版本不匹配，请先调用 read_workspace_code 获取最新 hash。reason=hash_mismatch recovery=read_workspace_code'), {
+            details: { reason: 'hash_mismatch', recovery: 'read_workspace_code', path: target.path }
+          });
+        }
         if (input.operation === 'delete') after = null;
         else if (input.operation === 'ranges') {
           if (!Array.isArray(input.edits) || !input.edits.length || input.edits.length > 100) throw new Error('ranges 需要 1 至 100 个替换。');
@@ -279,6 +288,7 @@ function createCodingService(vscode, context, { beforeEdit, turnId = () => undef
     return items;
   }
   const navigation = createCodeNavigation(vscode, { locate, workspaceFolders });
+  const callChain = createCallChain(vscode, { locate, workspaceFolders });
   const renamePreview = createRenamePreview(vscode, { locate, read, assertClean, workspaceFolders, hash });
   const projectContext = createProjectContext({ locate, read, stat: fs.stat, hash, assertClean });
   function tools(sessionId) {
@@ -286,6 +296,7 @@ function createCodingService(vscode, context, { beforeEdit, turnId = () => undef
     const paging = { offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 65536 } };
     const list = [
       navigation(sessionId),
+      callChain(sessionId),
       renamePreview(sessionId),
       projectContext(sessionId),
       { name: 'read_workspace_change', recovery: 'retry-read-only', label: '读取代码修改快照',
@@ -303,7 +314,20 @@ function createCodingService(vscode, context, { beforeEdit, turnId = () => undef
         }); } },
       { name: 'read_workspace_code', recovery: 'retry-read-only', label: '读取待编辑代码', description: 'Read UTF-8 code up to 256 KiB with hash and scoped project instructions. Optional offset/limit paginate by UTF-16 character offsets; pass expectedHash on continuation. Follow nextOffset to read all needed context; truncated means this is not the whole file. Dirty buffers are rejected.',
         parameters: { type: 'object', properties: { ...base, ...paging, expectedHash: { type: 'string', description: 'Require this version when continuing paged reads.' } }, required: ['path'], additionalProperties: false },
-        async execute(_id, input, signal) { signal?.throwIfAborted(); const target = await locate(input, sessionId), content = await read(target.file); await assertClean(target.file); const version = hash(content); if (input.expectedHash !== undefined && input.expectedHash !== version) throw new Error('文件版本不匹配，请从头重新读取。'); const projectInstructions = await instructions(target, signal); signal?.throwIfAborted(); return output({ path: target.path, root: target.rootIndex, exists: content !== null, ...(input.offset !== undefined || input.limit !== undefined ? page(content, input) : { content, truncated: false }), hash: version, projectInstructions }); } },
+        async execute(_id, input, signal) {
+          signal?.throwIfAborted();
+          const target = await locate(input, sessionId), content = await read(target.file);
+          await assertClean(target.file);
+          const version = hash(content);
+          if (input.expectedHash !== undefined && input.expectedHash !== version) {
+            throw Object.assign(new Error('文件版本不匹配，请从头重新读取。reason=hash_mismatch recovery=read_workspace_code'), {
+              details: { reason: 'hash_mismatch', recovery: 'read_workspace_code', path: target.path }
+            });
+          }
+          const projectInstructions = await instructions(target, signal);
+          signal?.throwIfAborted();
+          return output({ path: target.path, root: target.rootIndex, exists: content !== null, ...(input.offset !== undefined || input.limit !== undefined ? page(content, input) : { content, truncated: false }), hash: version, projectInstructions });
+        } },
       { name: 'edit_workspace_file', label: '编辑工作区文件', description: 'Coding Agent: create, precisely replace once, patch multiple unique text fragments, edit exact UTF-16 ranges, or delete a workspace UTF-8 file. Patch edits all match the original file, are prevalidated together, and use one saved edit and undo record. Changes are immediately saved and retained for native diff review/undo. Use only for user-requested coding. Read with read_workspace_code first; replace/patch/ranges/delete require its expectedHash. Preserve newline style. Never claim tests ran using this tool. For new files, set createParents=true to create missing directories; empty directories remain after undo or failed save.',
         parameters: { type: 'object', properties: { ...base, createParents: { type: 'boolean', description: 'Create missing parent directories for create. Empty directories remain after undo or failed save.' }, operation: { type: 'string', enum: ['create', 'replace', 'patch', 'ranges', 'delete'] }, expectedHash: { type: 'string' }, oldText: { type: 'string' }, newText: { type: 'string' }, edits: { type: 'array', minItems: 1, maxItems: 100, items: { type: 'object', properties: { oldText: { type: 'string', minLength: 1 }, start: { type: 'integer', minimum: 0 }, end: { type: 'integer', minimum: 0 }, newText: { type: 'string' } }, required: ['newText'], additionalProperties: false }, description: 'For patch: unique oldText replacements. For ranges: zero-based UTF-16 start/end offsets (end exclusive); insertion uses equal offsets. All edits target the same original hash and must not overlap.' } }, required: ['path', 'operation'], additionalProperties: false },
         execute: (_id, input, signal) => editFile(sessionId, input, signal) },

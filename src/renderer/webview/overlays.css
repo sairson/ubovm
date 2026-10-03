@@ -52,6 +52,16 @@ body #project-switcher { background: transparent; box-shadow: none; }
 body #project-switcher::backdrop { background: var(--overlay-backdrop); }
 body #project-switcher[open] { animation: overlay-appear 140ms ease-out; }
 body .project-switcher-shell { border-color: var(--overlay-border); background: var(--overlay-surface); box-shadow: var(--modal-shadow); }
+body #ubovm-modal { background: transparent; box-shadow: none; }
+body #ubovm-modal::backdrop { background: var(--overlay-backdrop); }
+body #ubovm-modal[open] {
+  display: flex; align-items: center; justify-content: center;
+  animation: overlay-appear 140ms ease-out;
+}
+body .ubovm-modal-shell { border-color: var(--overlay-border); background: var(--overlay-surface); box-shadow: var(--modal-shadow); }
+body #project-switcher[open] {
+  display: flex; align-items: center; justify-content: center;
+}
 body #settings-discard { padding: 16px; gap: 12px; }
 body .html-preview { border-color: var(--overlay-border); border-radius: 16px; box-shadow: var(--modal-shadow); }
 body #settings-dialog { box-shadow: none; }
@@ -78,6 +88,7 @@ body #settings-dialog { box-shadow: none; }
 @media (max-width: 700px) {
   body #note-editor { border-radius: 0; }
   body #project-switcher { border-radius: 0; }
+  body #ubovm-modal { border-radius: 0; }
 }
 @media (max-width: 650px) {
   body .goal-view-switcher { position: static; }
@@ -87,7 +98,7 @@ body #settings-dialog { box-shadow: none; }
   body .html-preview { border-radius: 0; }
 }
 @media (prefers-reduced-motion: reduce) {
-  body #note-editor[open], body #project-switcher[open] { animation: none; }
+  body #note-editor[open], body #project-switcher[open], body #ubovm-modal[open] { animation: none; }
   body :is(.goal-tabs, .worker-options-menu) button, #settings-dialog select,
   body :is(.goal-view-switcher, .exploration-runs) > summary { transition: none; }
 }

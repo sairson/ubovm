@@ -1,35 +1,171 @@
 function createSettingsPanel(vscode) {
   const $ = id => document.getElementById(id);
   const dialog = $('settings-dialog'), form = $('settings-form'), fields = $('settings-fields');
+  // Responses from a previous webview generation can arrive after a reload.
+  const requestScope = [...crypto.getRandomValues(new Uint32Array(4))].map(value => value.toString(16)).join('-');
   let data, section = 'model', page = 'settings', dirty = false, saving = false, closeAction, lastFocus, requestId = '', sequence = 0;
   let operation = '', requestView, renderedSection = '', renderedFingerprint = '', navigation = '', pendingOpen;
   let requestTimer;
+  let renderFailure;
+  let saveUncertain = false;
+  let initialStepPending = false;
+  let discardView;
+  let contentReadySent = false, contentReadyFrame = 0, pageSuspended = false;
+  const cancelContentReady = () => { cancelAnimationFrame(contentReadyFrame); contentReadyFrame = 0; };
+  function queueContentReady() {
+    const visible = () => !pageSuspended && !document.hidden && dialog.open && data && renderedFingerprint && !renderFailure && $('settings-skeleton').hidden && !fields.hidden;
+    if (contentReadySent || contentReadyFrame || !visible()) return;
+    contentReadyFrame = requestAnimationFrame(() => {
+      contentReadyFrame = 0;
+      if (!visible()) return;
+      contentReadyFrame = requestAnimationFrame(() => {
+        contentReadyFrame = 0;
+        if (!visible()) return;
+        try { vscode.postMessage({ action: 'contentReady' }); contentReadySent = true; }
+        catch { /* A later render or visibility recovery retries the acknowledgement. */ }
+      });
+    });
+  }
+  window.addEventListener('pagehide', () => { pageSuspended = true; cancelContentReady(); });
+  window.addEventListener('pageshow', () => { pageSuspended = false; queueContentReady(); });
+  document.addEventListener('visibilitychange', () => { if (document.hidden) cancelContentReady(); else queueContentReady(); });
+  const setText = (node, value) => { if (node.textContent !== value) node.textContent = value; };
+  const setAttribute = (node, name, value) => { if (node.getAttribute(name) !== value) node.setAttribute(name, value); };
+  function validateSnapshot(snapshot, targetPage = page, targetSection = section) {
+    const record = value => value && typeof value === 'object' && !Array.isArray(value);
+    if (!record(snapshot) || typeof snapshot.revision !== 'string' || !record(snapshot.values) || !record(snapshot.sections) || !record(snapshot.secretState)) {
+      throw new Error('配置数据不完整，请重新载入后重试。');
+    }
+    const initialization = snapshot.initialization;
+    if ((targetPage === 'initialize' || initialization !== undefined) && (!record(initialization)
+      || ['model', 'ssh', 'complete'].some(key => typeof initialization[key] !== 'boolean')
+      || initialization.complete !== (initialization.model && initialization.ssh))) {
+      throw new Error('初始化状态无效，请重新载入后重试。');
+    }
+    const required = targetPage === 'initialize' ? ['model', 'ssh', 'web'] : [targetSection];
+    if (required.some(key => !record(snapshot.sections[key]) || !Array.isArray(snapshot.sections[key].fields) || !record(snapshot.values[key]))) {
+      throw new Error('配置分组不完整，请重新载入后重试。');
+    }
+    return snapshot;
+  }
+  function acceptSnapshot(snapshot) {
+    const previousRevision = data?.revision;
+    data = validateSnapshot(snapshot);
+    if (previousRevision !== data.revision) invalidateSSHVerification();
+    saveUncertain = false;
+    if (data.browserInstallation) {
+      browserInstallation = data.browserInstallation;
+      trackBrowserInstallation(browserInstallation.state === 'installing');
+      browserInstallFailed = false; browserInstallResult = '';
+    }
+  }
   const views = new Map();
+  // Snapshots are immutable; cache per-section keys without retaining old snapshots.
+  const fingerprints = new WeakMap();
   const selectedModels = new Map();
   const sshTests = new Map();
+  const sshTestResults = new WeakMap();
+  function invalidateSSHVerification() {
+    for (const [id, pending] of sshTests) if (pending.revision !== data.revision) finishSSHTest(id, { ok: false });
+    const groups = new Set(fields.querySelectorAll('.settings-ssh-profile'));
+    for (const view of views.values()) for (const node of view.nodes) {
+      if (node.matches('.settings-ssh-profile')) groups.add(node);
+      for (const group of node.querySelectorAll('.settings-ssh-profile')) groups.add(group);
+    }
+    for (const group of groups) {
+      const result = sshTestResults.get(group);
+      if (!result || result.revision === data.revision) continue;
+      sshTestResults.delete(group);
+      const note = group.querySelector('.settings-ssh-test-status');
+      note.dataset.error = 'false'; setText(note, '已保存配置发生变化，请重新测试连接。');
+    }
+  }
   let browserInstalling = false, browserTimer;
   let browserInstallResult = '';
   let browserInstallation = {}, browserInstallFailed = false;
+  function trackBrowserInstallation(installing) {
+    browserInstalling = installing;
+    if (!installing) { clearTimeout(browserTimer); browserTimer = undefined; return; }
+    // Snapshot restoration and status notifications share the same bounded wait.
+    // Repeated progress must not keep extending the watchdog indefinitely.
+    if (browserTimer !== undefined) return;
+    browserTimer = setTimeout(() => {
+      browserTimer = undefined; browserInstalling = false; browserInstallFailed = true;
+      browserInstallResult = '安装结果尚未返回。请查看安装日志并刷新状态，确认是否仍在下载。'; refreshBrowserInstall();
+    }, 600000);
+  }
+  function browserAction(action) {
+    try { vscode.postMessage({ action }); }
+    catch (error) { status(error, true); }
+  }
+  const setupSteps = [['model', '模型'], ['ssh', 'SSH 环境'], ['web', '可选工具']];
+  const nextSetupSection = () => !data?.initialization?.model ? 'model' : !data?.initialization?.ssh ? 'ssh' : 'web';
+  function focusSetupSection() {
+    if (page !== 'initialize') return;
+    $('settings-section-title').focus({ preventScroll: true }); form.scrollTop = 0;
+  }
+  function refreshInitialization() {
+    const initializing = page === 'initialize', ready = data?.initialization;
+    $('settings-initialization').hidden = !initializing;
+    $('settings-finish').hidden = !initializing;
+    $('settings-finish').disabled = saving || saveUncertain || Boolean(renderFailure) || !ready?.complete;
+    setText($('settings-finish'), operation === 'finish' ? '正在确认配置…' : '完成初始化');
+    setText($('settings-close').querySelector('span'), initializing ? '稍后配置' : '返回对话');
+    $('settings-close').setAttribute('aria-label', initializing ? '稍后配置' : '返回对话');
+    if (!initializing) return;
+    setText($('settings-title'), '首次初始化');
+    setText($('settings-section-kicker'), 'GET STARTED');
+    setText($('settings-save'), saveUncertain ? '请先确认保存状态' : saving && operation === 'save' ? '正在保存…' : section === 'web' ? '保存可选配置' : !dirty && ready?.[section] ? '继续下一步' : '保存并继续');
+    setText($('settings-initialization-status'), !ready ? '正在读取已保存的配置…' : ready.complete
+      ? '基础配置已保存。可选工具可以稍后配置；保存状态不代表连接测试已通过。'
+      : `基础配置 ${Number(ready.model) + Number(ready.ssh)}/2 · 请完成` + [!ready.model && '模型', !ready.ssh && 'SSH 环境'].filter(Boolean).join('和') + '配置。模型凭据按服务商要求填写；SSH 支持在保存前测试连接。');
+    for (const [key, label] of setupSteps) {
+      const button = dialog.querySelector(`[data-setup-step="${key}"]`);
+      button.disabled = saving || !data;
+      setText(button, `${ready?.[key] ? '✓' : setupSteps.findIndex(([step]) => step === key) + 1} · ${label}`);
+      if (section === key) { if (button.getAttribute('aria-current') !== 'step') button.setAttribute('aria-current', 'step'); } else button.removeAttribute('aria-current');
+    }
+  }
+  for (const button of dialog.querySelectorAll('[data-setup-step]')) button.addEventListener('click', () => switchTo(button.dataset.setupStep));
+  $('settings-finish').addEventListener('click', () => {
+    if (!saveUncertain && data?.initialization?.complete) guard(() => {
+      // A discarded draft must not survive a failed completion read as a clean form.
+      if (!render()) return;
+      if (request('settingsRead', {}, 'finish')) status('正在确认最新保存的基础配置…');
+    });
+  });
   function refreshBrowserInstall() {
     const state = browserInstalling ? 'installing' : browserInstallFailed ? 'error' : browserInstallation.state || 'unknown';
     const button = fields.querySelector('[data-install-browser]');
-    if (button) { button.disabled = browserInstalling || state === 'ready'; button.textContent = browserInstalling ? '正在下载并安装…' : state === 'ready' ? '已安装' : browserInstallFailed ? '重试安装' : '下载并安装内置浏览器'; }
+    if (button) {
+      const disabled = browserInstalling || state === 'ready';
+      if (button.disabled !== disabled) button.disabled = disabled;
+      setText(button, browserInstalling ? '正在下载并安装…' : state === 'ready' ? '已安装' : browserInstallFailed ? '重试安装' : '下载并安装内置浏览器');
+    }
     const note = fields.querySelector('[data-browser-install-status]');
-    if (note) { note.textContent = browserInstalling ? '正在下载 Chromium，可继续配置其他选项。详细进度请查看安装日志。' : browserInstallResult || browserInstallation.message || (state === 'ready' ? '内置 Chromium 已就绪，下次运行可自动使用。' : '安装后，Agent 可使用浏览器工具访问和操作网页。'); note.dataset.error = String(state === 'error'); }
+    if (note) { setText(note, browserInstalling ? '正在下载 Chromium，可继续配置其他选项。详细进度请查看安装日志。' : browserInstallResult || browserInstallation.message || (state === 'ready' ? '内置 Chromium 已就绪，下次运行可自动使用。' : '安装后，Agent 可使用浏览器工具访问和操作网页。')); setAttribute(note, 'data-error', String(state === 'error')); }
     const badge = fields.querySelector('[data-browser-badge]');
-    if (badge) { badge.textContent = { installing: '安装中', ready: '已就绪', missing: '未安装', error: '需要处理', unknown: '尚未检测' }[state] || '尚未检测'; badge.dataset.state = state; }
+    if (badge) { setText(badge, { installing: '安装中', ready: '已就绪', missing: '未安装', error: '需要处理', unknown: '尚未检测' }[state] || '尚未检测'); setAttribute(badge, 'data-state', state); }
     const location = fields.querySelector('[data-browser-location]');
-    if (location) { location.textContent = browserInstallation.executablePath || ''; location.title = location.textContent; location.parentElement.hidden = !browserInstallation.executablePath; }
+    if (location) {
+      const path = browserInstallation.executablePath || '';
+      setText(location, path); setAttribute(location, 'title', path);
+      if (location.parentElement.hidden !== !path) location.parentElement.hidden = !path;
+    }
   }
   function finishSSHTest(id, result) {
     const pending = sshTests.get(id); if (!pending) return;
     sshTests.delete(id); clearTimeout(pending.timer);
     pending.button.disabled = false; pending.button.textContent = '测试连接';
-    if (!pending.group.isConnected) return;
+    // Cached steps are detached but still owned by this panel. Keep their
+    // results current; eviction/removal already unregisters pending tests.
+    const currentRevision = pending.revision === data?.revision;
     let unchanged = false;
     try { unchanged = JSON.stringify(readFields(pending.group)) === pending.signature; } catch {}
+    unchanged = unchanged && currentRevision;
+    if (unchanged) sshTestResults.set(pending.group, { signature: pending.signature, revision: pending.revision }); else sshTestResults.delete(pending.group);
     pending.status.dataset.error = String(unchanged && !result.ok);
-    pending.status.textContent = unchanged ? (result.ok ? result.message || '连接成功。' : window.UBOVMErrors.text(result.failure || result.message)) + (result.ok && Number.isFinite(result.durationMs) ? `（${result.durationMs} ms）` : '') : '配置已更改，请重新测试连接。';
+    pending.status.textContent = unchanged ? (result.ok ? result.message || '连接成功。' : window.UBOVMErrors.text(result.failure || result.message)) + (result.ok && Number.isFinite(result.durationMs) ? `（${result.durationMs} ms）` : '') : currentRevision ? '配置已更改，请重新测试连接。' : '已保存配置发生变化，请重新测试连接。';
   }
   const modelRoles = [['model', '默认模型'], ['reasonModel', '思考Agent'], ['workerModel', '执行Agent'], ['summaryModel', '摘要模型']];
   const iconTemplates = new Map();
@@ -57,28 +193,79 @@ function createSettingsPanel(vscode) {
     return svg;
   }
   function element(tag, className, text) { const node = document.createElement(tag); if (className) node.className = className; if (text !== undefined) node.textContent = text; return node; }
-  function status(text, error = false) { const node = $('settings-status'); node.setAttribute('role', error ? 'alert' : 'status'); node.setAttribute('aria-live', error ? 'assertive' : 'polite'); node.textContent = error ? window.UBOVMErrors.text(text) : text; node.dataset.error = String(error); }
+  function status(text, error = false) {
+    const node = $('settings-status'), value = error ? window.UBOVMErrors.text(text) : text;
+    if (node.textContent === value && node.dataset.error === String(error)) return;
+    node.setAttribute('role', error ? 'alert' : 'status'); node.setAttribute('aria-live', error ? 'assertive' : 'polite'); node.textContent = value; node.dataset.error = String(error);
+  }
   function busy(value, kind = '') {
     saving = value; operation = value ? kind : ''; dialog.dataset.operation = operation;
     form.setAttribute('aria-busy', String(value)); $('settings-progress').hidden = !value;
-    $('settings-save').disabled = value || !data; $('settings-reload').disabled = value;
-    $('settings-save').textContent = kind === 'save' && value ? '正在保存…' : '保存更改';
-    $('settings-reload').textContent = kind === 'read' && value ? '正在载入…' : '重新载入';
-    fields.inert = value; roles.inert = value;
+    $('settings-save').disabled = value || saveUncertain || !data || Boolean(renderFailure); $('settings-reload').disabled = value;
+    $('settings-render-retry').disabled = value;
+    if (page !== 'initialize') setText($('settings-save'), saveUncertain ? '请先确认保存状态' : kind === 'save' && value ? '正在保存…' : '保存更改');
+    setText($('settings-reload'), kind === 'read' && value ? '正在载入…' : '重新载入');
+    fields.inert = value || Boolean(renderFailure); roles.inert = value;
+    refreshInitialization();
   }
-  function guard(action) { if (saving && operation !== 'open') return; if (!dirty) return action(); closeAction = action; $('settings-discard').hidden = false; $('settings-keep').focus(); }
-  function invalidateView() { views.delete(renderedSection); renderedFingerprint = ''; }
-  function close() {
+  function guard(action) {
+    if (saving && operation !== 'open') { status('正在处理配置，请完成后重试。'); return; }
+    if (!dirty) return action();
+    if ($('settings-discard').hidden) discardView = viewState();
+    closeAction = action; $('settings-discard').hidden = false; $('settings-keep').focus();
+  }
+  function evictView(key) {
+    const expired = views.get(key); views.delete(key);
+    if (!expired) return;
+    releaseViewResources(expired);
+  }
+  function releaseViewResources(expired) {
+    for (const [id, pending] of sshTests) if (expired.nodes.some(node => node.contains(pending.group))) finishSSHTest(id, { ok: false, message: '' });
+  }
+  function cacheView(key, view) {
+    evictView(key);
+    // Count serialized metadata as well as DOM text: a collapsed skill can still own a large preview.
+    view.bytes = view.fingerprint.length * 2;
+    view.nodeCount = 0;
+    for (const node of view.nodes) {
+      view.nodeCount += 1 + node.querySelectorAll('*').length;
+      view.bytes += (node.textContent?.length || 0) * 2;
+    }
+    if (view.bytes > 1024 * 1024 || view.nodeCount > 1500) { releaseViewResources(view); return; }
+    views.set(key, view);
+    let bytes = 0, nodes = 0;
+    for (const item of views.values()) { bytes += item.bytes; nodes += item.nodeCount; }
+    while (views.size > 4 || bytes > 1024 * 1024 || nodes > 1500) {
+      const oldest = views.keys().next().value, item = views.get(oldest);
+      bytes -= item.bytes; nodes -= item.nodeCount; evictView(oldest);
+    }
+  }
+  function invalidateView() {
+    releaseViewResources({ nodes: [...fields.children] });
+    evictView(renderedSection); renderedFingerprint = '';
+  }
+  function close(destination) {
+    cancelContentReady();
+    try {
+      vscode.postMessage({ action: 'settingsNavigation', page: '',
+        ...(['assist', 'goal'].includes(destination?.mode) && typeof destination?.sessionId === 'string' ? { mode: destination.mode, sessionId: destination.sessionId } : {}) });
+    } catch (error) {
+      // Keep the panel usable if the bridge cannot send the close navigation.
+      // An explicitly discarded draft must still revert to saved values.
+      if (data && !dirty) render();
+      status(error, true); return;
+    }
     for (const id of sshTests.keys()) finishSSHTest(id, { ok: false, message: '' });
     clearTimeout(requestTimer);
-    dialog.close(); data = undefined; pendingOpen = undefined; requestId = ''; requestView = undefined;
+    renderFailure = undefined; $('settings-render-retry').hidden = true;
+    dialog.close(); data = undefined; pendingOpen = undefined; initialStepPending = false; requestId = ''; requestView = undefined;
     fields.replaceChildren(); views.clear(); selectedModels.clear(); renderedSection = ''; renderedFingerprint = ''; dirty = false; navigation = ''; busy(false);
-    $('settings-discard').hidden = true; closeAction = undefined; lastFocus?.focus();
+    $('settings-discard').hidden = true; closeAction = undefined; discardView = undefined; lastFocus?.focus();
     window.dispatchEvent(new CustomEvent('ubovm-settings-visibility', { detail: { open: false } }));
-    vscode.postMessage({ action: 'settingsNavigation', page: '' });
   }
   function showDialog() {
     if (dialog.open) return;
+    window.UBOVMHtmlPreview?.close();
     lastFocus = document.activeElement; dialog.showModal(); $('settings-close').focus();
     window.dispatchEvent(new CustomEvent('ubovm-settings-visibility', { detail: { open: true } }));
   }
@@ -99,8 +286,14 @@ function createSettingsPanel(vscode) {
     form.scrollTop = view.scroll;
   }
   function switchTo(key, focusTab = false) {
-    if (key === section || !data || saving) return;
-    guard(() => { section = key; dirty = false; render(); if (focusTab) $('settings-tab-' + key)?.focus({ preventScroll: true }); });
+    if (page === 'initialize' && !setupSteps.some(([step]) => step === key)) return;
+    if (pendingOpen?.started && operation === 'open') {
+      initialStepPending = false;
+      section = key; pendingOpen.section = key; refreshInitialization(); publishNavigation(); return;
+    }
+    if (saving) { status('正在处理配置，请完成后重试。'); return; }
+    if (key === section || !data) return;
+    guard(() => { section = key; dirty = false; if (render()) focusSetupSection(); if (focusTab) $('settings-tab-' + key)?.focus({ preventScroll: true }); });
   }
   const roles = $('settings-model-roles');
   for (const [key, label] of modelRoles) {
@@ -149,6 +342,7 @@ function createSettingsPanel(vscode) {
       if (spec.type === 'number') { control.min = spec.min ?? 1; if (spec.max) control.max = spec.max; control.step = '1'; }
     }
     control.id = id; control.dataset.setting = spec.key; control.dataset.kind = spec.type;
+    if (page === 'initialize' && (section === 'model' && spec.key === 'modelId' || section === 'ssh' && ['host', 'username'].includes(spec.key))) control.required = true;
     if ('placeholder' in control) control.placeholder = spec.type === 'secret' && secretState?.[spec.key] ? '已保存 · 留空保留，输入新值替换' : spec.placeholder ?? '';
     control.autocomplete = 'off'; control.spellcheck = false;
     root.append(...(spec.type === 'checkbox' ? [control, label] : [label, control]));
@@ -199,15 +393,22 @@ function createSettingsPanel(vscode) {
     const root = element('div', 'settings-mcp-library'); root.id = 'setting-servers'; root.dataset.setting = spec.key; root.dataset.kind = 'servers';
     const toolbar = element('div', 'settings-library-toolbar');
     const list = element('div', 'settings-extension-list');
+    const search = element('input', 'settings-library-search'); search.type = 'search'; search.placeholder = '搜索服务名称或协议'; search.setAttribute('aria-label', '搜索 MCP 服务');
+    const noMatch = element('p', 'settings-empty', '没有匹配的服务，请调整搜索条件。'); noMatch.hidden = true;
+    const filter = () => { const query = search.value.trim().toLocaleLowerCase(); const cards = [...list.querySelectorAll('[data-server-card]')]; for (const card of cards) card.hidden = !card.querySelector('.settings-extension-info').textContent.toLocaleLowerCase().includes(query); noMatch.hidden = !cards.length || cards.some(card => !card.hidden); };
+    search.addEventListener('input', event => { event.stopPropagation(); filter(); });
+    search.addEventListener('change', event => event.stopPropagation());
+    search.addEventListener('keydown', event => { if (event.key === 'Enter') event.preventDefault(); });
     const summary = element('div', 'settings-library-summary'); summary.setAttribute('role', 'status');
     const refresh = () => {
       const cards = [...root.querySelectorAll('[data-server-card]')];
       const enabled = cards.filter(card => card.querySelector('[data-setting="enabled"]').checked).length;
       summary.textContent = cards.length + ' 个服务 · ' + enabled + ' 个已启用';
-      root.querySelector('.settings-empty')?.remove();
+      list.querySelector('.settings-empty')?.remove();
       if (!cards.length) list.append(element('div', 'settings-empty', '尚未添加服务。连接本地工具或远程 MCP 服务，扩展 Agent 的能力。'));
+      filter();
     };
-    root.append(toolbar, list, element('p', 'settings-library-hint', '服务在任务运行时连接，启用状态不代表已连接。'));
+    root.append(toolbar, search, list, noMatch, element('p', 'settings-library-hint', '保存后在下次任务运行时连接。已启用仅表示允许加载，不代表连接成功。')); 
     const add = element('button', '', '+ 添加 MCP 服务'); add.id = 'settings-add-mcp'; add.type = 'button';
     function appendServer(server = { name: 'server-' + (++sequence) }, expanded = false) {
       const group = element('article', 'settings-server-row'); group.dataset.serverCard = '';
@@ -231,7 +432,7 @@ function createSettingsPanel(vscode) {
       advanced.append(advancedGrid); grid.append(advanced);
       const transport = grid.querySelector('[data-setting="transport"]');
       const update = () => {
-        for (const item of grid.querySelectorAll('[data-setting]')) if (['command', 'args', 'cwd', 'url'].includes(item.dataset.setting)) item.closest('.settings-field').hidden = item.dataset.setting === 'cwd' || (item.dataset.setting === 'url' ? transport.value === 'stdio' : transport.value !== 'stdio');
+        for (const item of grid.querySelectorAll('[data-setting]')) if (['command', 'args', 'cwd', 'url'].includes(item.dataset.setting)) item.closest('.settings-field').hidden = item.dataset.setting === 'url' ? transport.value === 'stdio' : transport.value !== 'stdio';
         legend.textContent = grid.querySelector('[data-setting="name"]').value.trim() || '新服务';
         const enabled = group.querySelector('[data-setting="enabled"]').checked;
         group.dataset.enabled = String(enabled);
@@ -249,42 +450,64 @@ function createSettingsPanel(vscode) {
     }
     toolbar.append(summary, add); for (const server of servers) appendServer(server);
     refresh();
-    add.addEventListener('click', () => { appendServer({ name: 'server-' + (++sequence), enabled: true }, true); refresh(); dirty = true; root.querySelector('[data-server-card]:last-of-type [data-setting="name"]')?.focus(); }); return root;
+    add.addEventListener('click', () => { search.value = ''; appendServer({ name: 'server-' + (++sequence), enabled: true }, true); refresh(); dirty = true; root.querySelector('[data-server-card]:last-of-type [data-setting="name"]')?.focus(); }); return root;
   }
   function skillLibrary() {
     const catalog = data.skillsCatalog;
+    const items = catalog?.items ?? [];
     const root = element('section', 'settings-skill-library wide'); root.setAttribute('aria-label', '已发现的技能');
     const toolbar = element('div', 'settings-library-toolbar');
-    toolbar.append(element('div', 'settings-library-summary', '已安装 · ' + (catalog?.items.length ?? 0)), element('span', 'settings-library-hint', '点击技能查看内容'));
-    root.append(toolbar);
+    const summary = element('div', 'settings-library-summary'); summary.setAttribute('role', 'status');
+    const search = element('input', 'settings-library-search'); search.type = 'search'; search.placeholder = '搜索技能名称或描述'; search.setAttribute('aria-label', '搜索技能');
+    toolbar.append(summary, search); root.append(toolbar);
     const grid = element('div', 'settings-skill-grid');
-    for (const skill of catalog?.items ?? []) {
-      const card = element('details', 'settings-skill-card');
-      const heading = element('summary', 'settings-extension-header');
-      const icon = element('span', 'settings-extension-icon', '◇'); icon.setAttribute('aria-hidden', 'true');
-      const info = element('div', 'settings-extension-info');
-      info.append(element('h4', '', skill.name), element('p', '', skill.description));
-      const chevron = element('span', 'settings-row-chevron', '›'); chevron.setAttribute('aria-hidden', 'true');
-      heading.append(icon, info, element('span', 'settings-skill-badge', skill.builtin ? '内置' : '已安装'), chevron);
-      const detail = element('div', 'settings-skill-detail');
-      detail.append(element('p', '', '技能内容'));
-      if (typeof skill.content === 'string') {
-        const content = element('pre', 'settings-skill-content', skill.content || '此技能暂无内容。');
-        content.tabIndex = 0; content.setAttribute('role', 'region'); content.setAttribute('aria-label', skill.name + ' 技能内容');
-        detail.append(content);
-      } else detail.append(element('p', 'settings-catalog-error', skill.contentError || '暂时无法读取技能内容，请重新载入。'));
-      card.append(heading, detail); grid.append(card);
+    const pager = element('div', 'settings-library-toolbar settings-library-pagination');
+    const previous = element('button', '', '上一页'), next = element('button', '', '下一页'); previous.type = next.type = 'button';
+    const range = element('span', 'settings-library-hint'); range.setAttribute('role', 'status');
+    pager.append(previous, range, next);
+    let offset = 0;
+    function renderSkills() {
+      const query = search.value.trim().toLocaleLowerCase();
+      const filtered = items.filter(skill => (skill.name + ' ' + skill.description).toLocaleLowerCase().includes(query));
+      offset = Math.min(offset, Math.max(0, Math.ceil(filtered.length / 30) - 1) * 30);
+      summary.textContent = query ? '找到 ' + filtered.length + ' / ' + items.length + ' 个技能' : '已发现 ' + items.length + ' 个技能';
+      grid.replaceChildren();
+      for (const skill of filtered.slice(offset, offset + 30)) {
+        const card = element('details', 'settings-skill-card');
+        const heading = element('summary', 'settings-extension-header');
+        const icon = element('span', 'settings-extension-icon', '◇'); icon.setAttribute('aria-hidden', 'true');
+        const info = element('div', 'settings-extension-info'); info.append(element('h4', '', skill.name), element('p', '', skill.description));
+        const chevron = element('span', 'settings-row-chevron', '›'); chevron.setAttribute('aria-hidden', 'true');
+        heading.append(icon, info, element('span', 'settings-skill-badge', skill.contentError ? '预览不可用' : skill.builtin ? '内置' : '已安装'), chevron);
+        const detail = element('div', 'settings-skill-detail');
+        card.addEventListener('toggle', () => {
+          detail.replaceChildren();
+          if (!card.open || !card.isConnected) return;
+          detail.append(element('p', '', '技能内容 · 任务运行时按需激活'));
+          if (typeof skill.content === 'string') {
+            const content = element('pre', 'settings-skill-content', skill.content || '此技能暂无内容。');
+            content.tabIndex = 0; content.setAttribute('role', 'region'); content.setAttribute('aria-label', skill.name + ' 技能内容'); detail.append(content);
+          } else detail.append(element('p', 'settings-catalog-error', skill.contentError || '暂时无法读取技能内容，请重新载入。'));
+        });
+        card.append(heading, detail); grid.append(card);
+      }
+      if (!filtered.length) grid.append(element('p', 'settings-empty', query ? '没有匹配的技能，请调整搜索条件。' : '尚未发现技能，安装后点击“重新载入”。'));
+      pager.hidden = filtered.length <= 30; previous.disabled = offset === 0; next.disabled = offset + 30 >= filtered.length;
+      range.textContent = filtered.length ? (offset + 1) + '–' + Math.min(offset + 30, filtered.length) + ' / ' + filtered.length : '0 个技能';
     }
-    root.append(grid);
-    root.append(element('p', 'settings-library-hint', '技能由应用统一管理。更新后，点击“重新载入”刷新内容。'));
-    if (!catalog?.items.length) root.append(element('p', 'settings-empty', '尚未发现技能，请重新载入。'));
+    search.addEventListener('input', event => { event.stopPropagation(); offset = 0; renderSkills(); });
+    search.addEventListener('change', event => event.stopPropagation());
+    search.addEventListener('keydown', event => { if (event.key === 'Enter') event.preventDefault(); });
+    previous.addEventListener('click', () => { offset -= 30; renderSkills(); });
+    next.addEventListener('click', () => { offset += 30; renderSkills(); });
+    root.append(grid, pager, element('p', 'settings-library-hint', '列表表示已发现的技能，不代表已激活。点击展开预览；更新文件后点击“重新载入”。'));
     for (const error of catalog?.errors ?? []) root.append(element('p', 'settings-catalog-error', error));
-    return root;
+    renderSkills(); return root;
   }
   function bindProviderPresets() {
     const provider = fields.querySelector('[data-setting="provider"]'); if (!provider) return;
     provider.addEventListener('change', () => {
-      const preset = data.modelPresets[provider.value] ?? data.modelPresets.custom;
+      const preset = { ...(data.modelPresets[provider.value] ?? data.modelPresets.custom) };
       for (const [key, value] of Object.entries(preset)) {
         if (key === 'provider' || key === 'label') continue;
         const control = fields.querySelector(`[data-setting="${key}"]`); if (!control) continue;
@@ -298,7 +521,7 @@ function createSettingsPanel(vscode) {
       key.closest('.settings-field').querySelector('.settings-secret-help span').textContent = '清除当前端点已保存的凭据';
       fields.querySelector('[data-setting="compat"]').value = '{}';
       fields.querySelector('[data-setting="streamOptions"]').value = '{}';
-      dirty = true; status('已填入服务商预设；检查配置后保存。');
+      markDirty(); status('已填入服务商预设；检查配置后保存。');
     });
   }
   function refreshSSHList() {
@@ -336,7 +559,7 @@ function createSettingsPanel(vscode) {
     label.append(radio, element('span', '', '默认连接'));
     const remove = element('button', 'settings-ssh-remove', '移除连接'); remove.type = 'button'; remove.addEventListener('click', () => {
       for (const [id, pending] of sshTests) if (pending.group === group) { clearTimeout(pending.timer); sshTests.delete(id); }
-      group.remove(); dirty = true;
+      group.remove(); markDirty();
       if (!fields.querySelector('[data-default-ssh]:checked')) { const first = fields.querySelector('[data-default-ssh]'); if (first) first.checked = true; }
       refreshSSHList(); $('settings-add-ssh').focus();
     });
@@ -344,12 +567,16 @@ function createSettingsPanel(vscode) {
     const testStatus = element('p', 'settings-ssh-test-status'); testStatus.setAttribute('role', 'status');
     test.addEventListener('click', () => {
       let id;
+      sshTestResults.delete(group);
       try {
-        const profile = readFields(group); id = 'ssh-test-' + (++sequence);
+        const profile = readFields(group); id = 'ssh-test-' + requestScope + '-' + (++sequence);
         test.disabled = true; test.textContent = '正在测试…'; testStatus.dataset.error = 'false'; testStatus.textContent = '正在验证连接与登录认证（最多 30 秒）…';
         const timer = setTimeout(() => finishSSHTest(id, { ok: false, message: '连接测试超时，请重试。' }), 35000);
-        sshTests.set(id, { group, button: test, status: testStatus, signature: JSON.stringify(profile), timer });
-        vscode.postMessage({ action: 'settingsTestSSH', requestId: id, profile });
+        sshTests.set(id, { group, button: test, status: testStatus, signature: JSON.stringify(profile), revision: data.revision, timer });
+        const failed = () => finishSSHTest(id, { ok: false, message: '连接测试请求发送失败，请重试。' });
+        Promise.resolve(vscode.postMessage({ action: 'settingsTestSSH', requestId: id, profile })).then(value => {
+          if (value === false) failed();
+        }, failed);
       } catch (error) { if (id) { clearTimeout(sshTests.get(id)?.timer); sshTests.delete(id); } test.disabled = false; test.textContent = '测试连接'; testStatus.dataset.error = 'true'; testStatus.textContent = window.UBOVMErrors.text(error); }
     });
     const duplicate = element('button', '', '复制连接'); duplicate.type = 'button';
@@ -358,7 +585,7 @@ function createSettingsPanel(vscode) {
         const copy = readFields(group);
         delete copy.password; delete copy.private_key_passphrase;
         addProfile({ ...copy, id: 'server-' + Date.now().toString(36) + '-' + (++sequence), name: (copy.name || copy.host || 'SSH') + ' 副本' });
-        dirty = true; status('已复制连接参数，请为新连接填写密码或私钥口令后保存。');
+        markDirty(); status('已复制连接参数，请为新连接填写密码或私钥口令后保存。');
       } catch (error) { status(error.message, true); }
     });
     const identity = element('div', 'settings-ssh-identity'); identity.append(title, endpoint);
@@ -368,38 +595,76 @@ function createSettingsPanel(vscode) {
     group.append(header, actions, testStatus, grid); fields.append(group);
     const updateIdentity = () => {
       const read = key => group.querySelector(`[data-setting="${key}"]`).value.trim();
-      title.textContent = read('name') || read('host') || '新 SSH 连接';
-      endpoint.textContent = read('host') ? (read('username') ? read('username') + '@' : '') + read('host') + ':' + (read('port') || '22') : '填写主机地址与登录信息';
+      setText(title, read('name') || read('host') || '新 SSH 连接');
+      setText(endpoint, read('host') ? (read('username') ? read('username') + '@' : '') + read('host') + ':' + (read('port') || '22') : '填写主机地址与登录信息');
+      const signature = sshTestResults.get(group)?.signature;
+      if (signature !== undefined) {
+        let unchanged = false;
+        try { unchanged = JSON.stringify(readFields(group)) === signature; } catch {}
+        if (!unchanged) {
+          sshTestResults.delete(group);
+          testStatus.dataset.error = 'false';
+          setText(testStatus, '配置已更改，请重新测试连接。');
+        }
+      }
     };
-    group.addEventListener('input', updateIdentity); updateIdentity(); refreshSSHList();
+    group.addEventListener('input', updateIdentity); group.addEventListener('change', updateIdentity); updateIdentity(); refreshSSHList();
     return group;
+  }
+  function savedModelProfile(value) {
+    const library = data.modelProfiles ?? [];
+    const matches = p => Object.keys(p.model).every(key => JSON.stringify(p.model[key]) === JSON.stringify(value[key]));
+    return library.find(p => p.id === selectedModels.get(section) && matches(p)) ?? library.find(matches);
   }
   function modelLibrary(value, draft) {
     const library = data.modelProfiles ?? [];
-    const matches = p => Object.keys(p.model).every(key => JSON.stringify(p.model[key]) === JSON.stringify(value[key]));
-    const matched = draft ?? library.find(p => p.id === selectedModels.get(section) && matches(p)) ?? library.find(matches);
+    const matched = draft ?? savedModelProfile(value);
     const card = element('section', 'settings-model-library');
     const heading = element('div', 'settings-model-heading');
-    heading.append(element('h4', '', '配置库'), element('span', 'settings-model-count', library.length + ' 个已保存配置'));
+    heading.append(element('h4', '', '已保存的模型'), element('span', 'settings-model-count', library.length + ' 个配置'));
+    const search = element('input'); search.type = 'search'; search.placeholder = '搜索配置、服务商或模型'; search.setAttribute('aria-label', '搜索已保存模型');
+    const preview = element('p', 'settings-model-preview'); preview.setAttribute('role', 'status');
+    const load = element('button', '', '加载到当前角色'); load.type = 'button';
     const label = element('label', '', '已保存的模型配置'), select = element('select'); select.id = 'settings-model-profile'; label.htmlFor = select.id;
-    select.append(new Option('当前配置 / 新配置', ''));
+    select.size = 3;
+    select.append(new Option('选择一份配置以查看详情', ''));
     for (const profile of library) select.append(new Option(profile.name + ' · ' + profile.model.modelId, profile.id));
     select.value = matched?.id ?? '';
     const nameLabel = element('label', '', '配置名称'), name = element('input'); name.id = 'settings-model-profile-name'; nameLabel.htmlFor = name.id;
     name.type = 'text'; name.maxLength = 80; name.placeholder = '例如：日常对话、代码模型'; name.value = matched?.name ?? '';
     card.dataset.profileId = matched?.id ?? '';
+    const hint = element('p', 'settings-model-hint'); hint.setAttribute('role', 'status');
+    const refreshSaveHint = () => {
+      const saved = library.find(p => p.id === card.dataset.profileId);
+      hint.textContent = (saved ? `保存将更新“${saved.name}”` : '保存将新增一份配置') + '，应用到' + modelRoles.find(([key]) => key === section)[1] + '。';
+    };
+    const previewSelection = () => {
+      const selected = library.find(p => p.id === select.value);
+      load.disabled = !selected;
+      preview.textContent = selected ? `${data.modelPresets[selected.model.provider]?.label ?? selected.model.provider} · ${selected.model.modelId}\n${selected.model.baseUrl || '使用默认服务地址'}`
+        : library.length ? '先选择，再加载。浏览列表不会修改当前配置。' : '首次使用：填写连接设置并保存，之后可从这里复用。';
+    };
+    search.addEventListener('input', event => {
+      event.stopPropagation();
+      const query = search.value.trim().toLocaleLowerCase(), previous = select.value;
+      const found = library.filter(p => [p.name, p.model.backend ?? 'pi', p.model.provider, p.model.modelId].join(' ').toLocaleLowerCase().includes(query));
+      select.replaceChildren(new Option(found.length ? '选择一份配置以查看详情' : '没有匹配的配置', ''), ...found.map(p => new Option(p.name + ' · ' + p.model.modelId, p.id)));
+      select.value = found.some(p => p.id === previous) ? previous : '';
+      previewSelection();
+    });
+    search.addEventListener('change', event => event.stopPropagation());
     select.addEventListener('input', event => event.stopPropagation());
     select.addEventListener('change', event => {
-      event.stopPropagation();
+      event.stopPropagation(); previewSelection();
+    });
+    load.addEventListener('click', () => {
       const next = library.find(p => p.id === select.value);
-      // Restore the selection if the user keeps the current unsaved form.
-      select.value = card.dataset.profileId;
       if (!next) return;
       guard(() => { invalidateView(); dirty = false; render(undefined, next); dirty = true; });
     });
     const actions = element('div', 'settings-model-actions');
     const add = element('button', '', '另存为新配置'); add.type = 'button';
-    add.addEventListener('click', () => { card.dataset.profileId = ''; select.value = ''; name.value = name.value ? name.value + ' 副本' : ''; remove.disabled = true; dirty = true; name.focus(); });
+    add.addEventListener('click', () => { card.dataset.profileId = ''; name.value = name.value ? (name.value.slice(0, 77) + ' 副本') : ''; remove.disabled = true; dirty = true; refreshSaveHint(); status('正在编辑副本，保存后新增配置。'); name.focus(); });
     const remove = element('button', 'settings-model-remove', '删除已保存配置'); remove.type = 'button'; remove.disabled = !library.some(p => p.id === card.dataset.profileId);
     remove.title = '从配置库移除，角色当前使用的模型仍会保留';
     remove.addEventListener('click', () => guard(() => {
@@ -407,79 +672,167 @@ function createSettingsPanel(vscode) {
     }));
     actions.append(add, remove);
     const controls = element('div', 'settings-model-library-fields');
-    const choice = element('div'), naming = element('div'); choice.append(label, select); naming.append(nameLabel, name); controls.append(choice, naming);
-    card.append(heading, controls, actions, element('p', 'settings-model-hint', '保存后应用到' + modelRoles.find(([key]) => key === section)[1] + '。可加载已有配置，或另存一份新配置。'));
+    const choice = element('div'), naming = element('div'); choice.className = 'settings-model-browser'; naming.className = 'settings-model-editing';
+    choice.append(label, search, select, preview, load); naming.append(element('span', 'settings-model-editing-title', '当前编辑'), nameLabel, name, hint, actions); controls.append(choice, naming);
+    previewSelection(); refreshSaveHint();
+    card.append(heading, controls);
     return card;
   }
   function modelConnection(spec, value, secretState) {
     const card = element('section', 'settings-model-connection'); card.setAttribute('aria-label', '模型连接设置');
     const heading = element('div', 'settings-model-heading'), badge = element('span', 'settings-model-credential');
-    badge.setAttribute('role', 'status'); heading.append(element('h4', '', '连接设置'), badge);
+    badge.setAttribute('role', 'status'); heading.append(element('h4', '', '连接参数'), badge);
     const common = element('div', 'settings-model-connection-fields');
     const advanced = element('details', 'settings-advanced settings-model-advanced');
     advanced.append(element('summary', '', '高级选项 · 容量、推理与请求参数'));
     const extra = element('div', 'settings-advanced-fields'); advanced.append(extra);
     for (const entry of spec.fields) {
       if (entry.key === 'inherit') continue;
-      (['provider', 'modelId', 'api', 'baseUrl', 'apiKey'].includes(entry.key) ? common : extra).append(field(entry, value[entry.key], secretState));
+      const row = field(entry.key === 'modelId' ? { ...entry, label: '模型 ID' } : entry, value[entry.key], secretState);
+      (['provider', 'modelId', 'api', 'baseUrl', 'apiKey'].includes(entry.key) ? common : extra).append(row);
+      const help = { modelId: '填写服务商提供的模型标识。', api: '与服务商接口一致；通常可保留预设。', baseUrl: '自建或代理服务请填写对应的 API 根地址。' }[entry.key];
+      if (help) row.append(element('p', 'settings-model-hint', help));
     }
     const keyRow = common.querySelector('[data-field="apiKey"]');
-    keyRow.append(element('p', 'settings-model-hint', '密钥加密保存，留空保留。同一服务商和 API 地址共用密钥。'));
-    card.append(heading, common, advanced);
+    keyRow.append(element('p', 'settings-model-hint', '留空保留已存密钥。同一服务商、同一 API 地址共用凭据。'));
+    const protocolNote = element('p', 'settings-model-hint'); protocolNote.dataset.sdkProtocol = '';
+    protocolNote.textContent = '选择服务商后会填入预设，确认模型与地址，再填写 API Key。';
+    card.append(heading, protocolNote, common, advanced);
+    const provider = common.querySelector('[data-setting="provider"]');
+    const custom = common.querySelector(`[data-custom-for="${provider.id}"]`);
+    const baseUrl = common.querySelector('[data-setting="baseUrl"]');
+    const clearKey = common.querySelector('[data-clear-secret="apiKey"]');
+    const key = common.querySelector('[data-setting="apiKey"]');
+    const clearLabel = keyRow.querySelector('.settings-secret-help span');
+    let credentialState, keyPresent;
     const refresh = () => {
-      const provider = common.querySelector('[data-setting="provider"]');
-      const custom = common.querySelector(`[data-custom-for="${provider.id}"]`);
       const endpointChanged = (provider.value === '__custom__' ? custom.value.trim() : provider.value) !== value.provider
-        || common.querySelector('[data-setting="baseUrl"]').value.trim() !== (value.baseUrl ?? '');
-      const clear = common.querySelector('[data-clear-secret="apiKey"]').checked;
-      const key = common.querySelector('[data-setting="apiKey"]');
-      const entered = key.value.trim();
-      badge.textContent = clear ? '凭据待清除' : entered ? '新凭据待保存' : endpointChanged ? '端点已更改' : secretState?.apiKey ? '凭据已保存' : '未填写凭据';
-      badge.dataset.saved = String(!clear && !endpointChanged && Boolean(secretState?.apiKey));
-      key.placeholder = !endpointChanged && secretState?.apiKey ? '已保存 · 留空保留，输入新值替换' : '填写当前端点的密钥；留空保留该端点已存凭据';
-      keyRow.querySelector('.settings-secret-help span').textContent = !endpointChanged && secretState?.apiKey ? '清除已保存的凭据' : '清除当前端点已保存的凭据';
+        || baseUrl.value.trim() !== (value.baseUrl ?? '');
+      const clear = clearKey.checked, entered = Boolean(key.value.trim());
+      keyPresent = entered;
+      const next = `${endpointChanged}:${clear}:${entered}`;
+      if (next === credentialState) return;
+      credentialState = next;
+      const label = clear ? '凭据待清除' : entered ? '新凭据待保存' : endpointChanged ? '端点已更改' : secretState?.apiKey ? '凭据已保存' : '未填写凭据';
+      if (badge.textContent !== label) badge.textContent = label;
+      const saved = String(!clear && !endpointChanged && Boolean(secretState?.apiKey));
+      if (badge.dataset.saved !== saved) badge.dataset.saved = saved;
+      const placeholder = !endpointChanged && secretState?.apiKey ? '已保存 · 留空保留，输入新值替换' : '填写当前端点的密钥；留空保留该端点已存凭据';
+      if (key.placeholder !== placeholder) key.placeholder = placeholder;
+      const help = !endpointChanged && secretState?.apiKey ? '清除已保存的凭据' : '清除当前端点已保存的凭据';
+      if (clearLabel.textContent !== help) clearLabel.textContent = help;
     };
-    card.addEventListener('input', refresh); card.addEventListener('change', refresh); refresh();
+    const refreshCredentials = event => {
+      // Ordinary typing changes the secret, not its UI state. Avoid consulting
+      // the styled provider select or writing DOM again until emptiness changes.
+      if (event.target === key && Boolean(key.value.trim()) === keyPresent) return;
+      if ([provider, custom, baseUrl, key, clearKey].includes(event.target)) refresh();
+    };
+    card.addEventListener('input', refreshCredentials); card.addEventListener('change', refreshCredentials); refresh();
     return card;
   }
+  function collaborationGuide() {
+    const card = element('section', 'settings-cooperation-guide');
+    card.dataset.cooperationGuide = ''; card.setAttribute('aria-label', '模型与协作关系');
+    const help = element('details', 'settings-model-help');
+    help.append(element('summary', '', '模型角色与 Swarm 如何配合？'));
+    const steps = element('ol');
+    for (const [title, text] of [
+      ['连接', '统一使用 Pi Agent。配置库保存可重复使用的模型连接。'],
+      ['角色', '默认模型用于对话，思考模型用于规划，执行模型用于子任务，摘要模型用于压缩上下文。继承时无需重复配置。'],
+      ['协作', 'Swarm 将任务分派给多个 Agent。固定模式共用执行模型，自主选择模式可选用配置库中的模型。'],
+    ]) { const row = element('li'); row.append(element('strong', '', title), element('span', '', text)); steps.append(row); }
+    help.append(steps);
+    const current = element('p', 'settings-cooperation-current'); current.setAttribute('role', 'status');
+    const describe = model => `Pi · ${model?.modelId || '尚未配置模型'}`;
+    const main = data.values.model, worker = data.values.workerModel;
+    const workerModel = worker?.inherit === false ? worker : main;
+    const refresh = () => {
+      const mode = fields.querySelector('[data-setting="swarmBackendSelection"]')?.value ?? data.values.worker?.swarmBackendSelection ?? 'fixed';
+      current.textContent = `主对话：${describe(main)}\n子任务：${describe(workerModel)}`;
+      const note = mode === 'autonomous'
+        ? '自主选择：主对话模型保持不变，子任务可选择默认、执行、思考角色及配置库中的模型。请先保存要使用的模型与密钥；所有子任务均使用 Pi Agent。'
+        : '固定模式：子任务统一使用执行 Agent 模型。只想用一个模型时，配置默认模型并保持执行 Agent 继承即可。';
+      explanation.textContent = note + ' 更改保存后，下一轮对话生效。';
+    };
+    const explanation = element('p', 'settings-model-hint');
+    const action = element('button', '', section === 'worker' ? '选择执行 Agent 模型 →' : '设置 Swarm 协作模式 →'); action.type = 'button';
+    action.addEventListener('click', () => switchTo(section === 'worker' ? 'workerModel' : 'worker', true));
+    help.append(explanation); card.append(current, help, action);
+    card.refresh = refresh; refresh(); return card;
+  }
   function render(preserve, modelDraft) {
-    if (data.browserInstallation) {
-      browserInstallation = data.browserInstallation;
-      browserInstalling = browserInstallation.state === 'installing';
-      browserInstallFailed = false; browserInstallResult = '';
-      delete data.browserInstallation;
+    const previous = { section: renderedSection, nodes: [...fields.children], view: viewState() }, recovering = Boolean(renderFailure);
+    renderFailure = undefined;
+    try {
+      renderContent(preserve, modelDraft);
+      $('settings-render-retry').hidden = true;
+      if (recovering) busy(false);
+      queueContentReady();
+      return true;
     }
+    catch {
+      evictView(section); renderedFingerprint = '';
+      renderFailure = { preserve: preserve ?? previous.view, modelDraft };
+      busy(false);
+      // Keep the existing form available when rebuilding the same section fails.
+      if (previous.section === section) fields.replaceChildren(...previous.nodes);
+      else { fields.replaceChildren(); renderedSection = ''; }
+      fields.hidden = !fields.children.length;
+      $('settings-skeleton').hidden = true; $('settings-load-error').hidden = false;
+      $('settings-load-error').textContent = '当前步骤显示失败，已保留可用输入。可重新显示当前步骤，或重新载入配置。';
+      $('settings-render-retry').hidden = false;
+      $('settings-save').disabled = true;
+      status('页面渲染失败，请恢复当前步骤后继续。', true);
+      return false;
+    }
+  }
+  function renderContent(preserve, modelDraft) {
     const spec = data.sections[section], value = modelDraft ? { ...modelDraft.model, ...(section === 'model' ? {} : { inherit: false }) } : data.values[section] ?? {};
     const modelSecretState = modelDraft?.secretState ?? data.secretState[section];
-    const fingerprint = JSON.stringify([spec, value, data.secretState[section], section === 'ssh' ? data.sshFields : section === 'mcp' ? data.mcpFields : null,
-      modelRoles.some(([key]) => key === section) ? [data.modelPresets, data.values.model, section === 'summaryModel' ? data.values.reasonModel : null, data.modelProfiles, modelDraft?.id] : null, section === 'skills' ? data.skillsCatalog : null]);
-    if (renderedSection && renderedFingerprint && !dirty) views.set(renderedSection, { fingerprint: renderedFingerprint, nodes: [...fields.children], view: viewState() });
+    let keys = fingerprints.get(data);
+    if (!keys) { keys = new Map(); fingerprints.set(data, keys); }
+    const fingerprintKey = page + ':' + section;
+    let fingerprint = modelDraft ? undefined : keys.get(fingerprintKey);
+    if (fingerprint === undefined) {
+      fingerprint = JSON.stringify([page, spec, value, data.secretState[section], [data.values.model, data.values.workerModel, data.values.worker?.swarmBackendSelection], section === 'ssh' ? data.sshFields : section === 'mcp' ? data.mcpFields : null,
+        modelRoles.some(([key]) => key === section) ? [data.modelPresets, data.values.model, section === 'summaryModel' ? data.values.reasonModel : null, data.modelProfiles, modelDraft?.id] : null, section === 'skills' ? data.skillsCatalog : null]);
+      if (!modelDraft) keys.set(fingerprintKey, fingerprint);
+    }
+    const unchanged = renderedSection === section && renderedFingerprint === fingerprint;
+    if (!unchanged && renderedSection && renderedFingerprint && !dirty) {
+      cacheView(renderedSection, { fingerprint: renderedFingerprint, nodes: [...fields.children], view: viewState() });
+    }
     const cached = views.get(section);
     dialog.dataset.page = page;
     $('settings-skeleton').hidden = true; $('settings-load-error').hidden = true; fields.hidden = false;
-    $('settings-title').textContent = page === 'mcp' ? 'MCP 服务' : page === 'skills' ? 'Skills' : '系统配置';
-    $('settings-section-kicker').textContent = page === 'settings' ? 'PREFERENCES' : 'EXTENSIONS';
+    setText($('settings-title'), page === 'initialize' ? '首次初始化' : page === 'mcp' ? 'MCP 服务' : page === 'skills' ? 'Skills' : '系统配置');
+    setText($('settings-section-kicker'), page === 'initialize' ? 'GET STARTED' : page === 'settings' ? 'PREFERENCES' : 'EXTENSIONS');
     const isModel = modelRoles.some(([key]) => key === section);
-    $('settings-section-title').textContent = isModel ? data.sections.model.title : section === 'web' ? '浏览器与搜索' : spec.title;
-    $('settings-description').textContent = isModel ? spec.description : section === 'web' ? '管理 Agent 的网页浏览能力与网络搜索服务。' : spec.description;
-    const nextNavigation = page + ':' + (section.endsWith('Model') ? 'model' : section);
-    if (navigation !== nextNavigation) { navigation = nextNavigation; vscode.postMessage({ action: 'settingsNavigation', page, section: section.endsWith('Model') ? 'model' : section }); }
+    setText($('settings-section-title'), isModel ? data.sections.model.title : section === 'web' ? '浏览器与搜索' : spec.title);
+    const description = page === 'initialize' && section === 'ssh' ? '连接用于侦察、探测和运行解题脚本的 Linux 环境。填写主机、用户名和认证信息，可先测试连接，再保存为默认环境。'
+      : page === 'initialize' && section === 'web' ? '浏览器与网络搜索均为可选项，可按需配置，也可以直接完成初始化。'
+      : isModel ? spec.description : section === 'web' ? '管理 Agent 的网页浏览能力与网络搜索服务。' : spec.description;
+    setText($('settings-description'), description);
+    publishNavigation();
     roles.hidden = !isModel;
+    refreshInitialization();
     for (const button of roles.children) { const selected = button.dataset.role === section; button.setAttribute('aria-selected', String(selected)); button.tabIndex = selected ? 0 : -1; }
-    fields.setAttribute('role', isModel ? 'tabpanel' : 'group');
-    fields.setAttribute('aria-labelledby', isModel ? 'settings-tab-' + section : 'settings-section-title');
-    if (cached?.fingerprint === fingerprint) {
-      if (renderedSection !== section) fields.replaceChildren(...cached.nodes);
+    fields.setAttribute('role', isModel && page !== 'initialize' ? 'tabpanel' : 'group');
+    fields.setAttribute('aria-labelledby', isModel && page !== 'initialize' ? 'settings-tab-' + section : 'settings-section-title');
+    if (unchanged || cached?.fingerprint === fingerprint) {
+      if (!unchanged) { fields.replaceChildren(...cached.nodes); views.delete(section); }
       renderedSection = section; renderedFingerprint = fingerprint;
       refreshBrowserInstall();
-      restoreView(preserve ?? cached.view, Boolean(preserve)); status('更改将在下一次运行时生效。'); return;
+      restoreView(preserve ?? (unchanged ? viewState() : cached.view), Boolean(preserve)); status('更改将在下一次运行时生效。'); return;
     }
+    evictView(section);
     fields.replaceChildren();
-    renderedSection = section; renderedFingerprint = fingerprint;
+    renderedSection = section; renderedFingerprint = '';
     if (isModel) {
       const inheritField = spec.fields.find(entry => entry.key === 'inherit');
       if (inheritField) { const row = field(inheritField, value.inherit); row.classList.add('settings-model-inherit'); fields.append(row); }
-      fields.append(modelLibrary(value, modelDraft));
+      if (page !== 'initialize') fields.append(modelLibrary(value, modelDraft));
     }
     if (section === 'skills') fields.append(skillLibrary());
     if (section === 'web') {
@@ -495,19 +848,14 @@ function createSettingsPanel(vscode) {
       const note = element('p', 'settings-card-status'); note.dataset.browserInstallStatus = ''; note.setAttribute('role', 'status');
       button.addEventListener('click', () => {
         if (browserInstalling) return;
-        browserInstalling = true; browserInstallFailed = false; browserInstallResult = ''; refreshBrowserInstall();
-        clearTimeout(browserTimer);
-        browserTimer = setTimeout(() => {
-          browserInstalling = false; browserInstallFailed = true;
-          browserInstallResult = '安装结果尚未返回。请查看安装日志并刷新状态，确认是否仍在下载。'; refreshBrowserInstall();
-        }, 600000);
+        trackBrowserInstallation(true); browserInstallFailed = false; browserInstallResult = ''; refreshBrowserInstall();
         try { vscode.postMessage({ action: 'settingsInstallBrowser' }); }
-        catch (error) { clearTimeout(browserTimer); browserInstalling = false; browserInstallFailed = true; browserInstallResult = window.UBOVMErrors.text(error); refreshBrowserInstall(); }
+        catch (error) { trackBrowserInstallation(false); browserInstallFailed = true; browserInstallResult = window.UBOVMErrors.text(error); refreshBrowserInstall(); }
       });
       const actions = element('div', 'settings-browser-actions'), check = element('button', '', '检查状态'), logs = element('button', '', '查看安装日志');
       check.type = logs.type = 'button';
-      check.addEventListener('click', () => vscode.postMessage({ action: 'settingsBrowserStatus' }));
-      logs.addEventListener('click', () => vscode.postMessage({ action: 'settingsBrowserLogs' }));
+      check.addEventListener('click', () => browserAction('settingsBrowserStatus'));
+      logs.addEventListener('click', () => browserAction('settingsBrowserLogs'));
       actions.append(button, check, logs);
       const details = element('details', 'settings-browser-details'), location = element('code'); location.dataset.browserLocation = '';
       location.tabIndex = 0; location.setAttribute('aria-label', '浏览器可执行文件完整路径');
@@ -519,10 +867,11 @@ function createSettingsPanel(vscode) {
       const row = element('div', 'settings-ssh-toolbar'), add = element('button', '', '+ 添加 SSH 连接'); add.id = 'settings-add-ssh'; add.type = 'button';
       const summary = element('span'); summary.dataset.sshCount = '';
       add.addEventListener('click', () => {
-        const group = addProfile({ id: 'server-' + Date.now().toString(36) + '-' + (++sequence) }); dirty = true;
+        const group = addProfile({ id: 'server-' + Date.now().toString(36) + '-' + (++sequence) }); markDirty();
         group.querySelector('[data-setting="name"]').focus();
       }); row.append(summary, add); fields.append(row);
       for (const profile of value.profiles) addProfile(profile);
+      if (page === 'initialize' && !value.profiles.length) addProfile({ id: 'server-' + Date.now().toString(36) + '-' + (++sequence) });
       refreshSSHList();
     } else if (section === 'web') {
       const card = element('section', 'settings-search-card'); card.setAttribute('aria-label', '网络搜索配置');
@@ -561,13 +910,13 @@ function createSettingsPanel(vscode) {
         const saved = !clearing && !changedEndpoint && data.secretState.web?.apiKey;
         const entered = !clearing && Boolean(key.value.trim());
         const fallback = card.querySelector('[data-setting="fallbackToPublicProviders"]').checked;
-        badge.textContent = entered ? '新凭据待保存' : saved ? '已保存凭据' : fallback ? '公共搜索回退' : '待配置凭据';
-        badge.dataset.state = saved || entered ? 'ready' : fallback ? 'missing' : 'error';
-        summary.dataset.error = String(badge.dataset.state === 'error');
-        summary.textContent = (changedEndpoint ? '服务地址已修改，原地址的凭据不会自动带入。' : '') +
-          (entered ? '保存后将使用新凭据。' : saved ? '当前地址已有凭据，连接可用性以实际请求结果为准。' : fallback ? '未填写 Tavily Key，允许尝试公共搜索服务。' : '没有 Tavily 凭据且已关闭回退，搜索请求可能无法完成。');
-        key.placeholder = saved ? '已保存 · 留空保留，输入新值替换' : '填写当前服务地址的 API Key';
-        card.querySelector('.settings-secret-help span').textContent = '清除当前服务地址的凭据';
+        setText(badge, entered ? '新凭据待保存' : saved ? '已保存凭据' : fallback ? '公共搜索回退' : '待配置凭据');
+        setAttribute(badge, 'data-state', saved || entered ? 'ready' : fallback ? 'missing' : 'error');
+        setAttribute(summary, 'data-error', String(badge.dataset.state === 'error'));
+        setText(summary, (changedEndpoint ? '服务地址已修改，原地址的凭据不会自动带入。' : '') +
+          (entered ? '保存后将使用新凭据。' : saved ? '当前地址已有凭据，连接可用性以实际请求结果为准。' : fallback ? '未填写 Tavily Key，允许尝试公共搜索服务。' : '没有 Tavily 凭据且已关闭回退，搜索请求可能无法完成。'));
+        setAttribute(key, 'placeholder', saved ? '已保存 · 留空保留，输入新值替换' : '填写当前服务地址的 API Key');
+        setText(card.querySelector('.settings-secret-help span'), '清除当前服务地址的凭据');
       };
       card.append(heading, element('p', 'settings-card-description', '配置 Tavily 搜索服务，为 Agent 获取网页信息。'), summary, common, advanced); fields.append(card);
       card.addEventListener('input', refresh); card.addEventListener('change', refresh); refresh();
@@ -588,40 +937,64 @@ function createSettingsPanel(vscode) {
       const note = element('div', 'settings-inherit-note');
       const model = section === 'summaryModel' && !data.values.reasonModel.inherit ? data.values.reasonModel : data.values.model;
       const source = section === 'summaryModel' ? '思考 Agent 模型' : '默认模型';
-      note.append(providerIcon(model.provider), element('div', '', '使用' + source + ' · ' + (data.modelPresets[model.provider]?.label ?? model.provider) + ' / ' + model.modelId));
+      note.append(providerIcon(model.provider), element('div', '', '使用' + source + ' · ' + (model.backend ?? 'pi') + ' · ' + (data.modelPresets[model.provider]?.label ?? model.provider) + ' / ' + model.modelId));
       note.append(element('p', '', '关闭上方继承开关，即可为此角色选择已有配置或设置独立模型。')); fields.append(note);
-      const update = () => { for (const row of fields.children) if (!row.contains(inherit)) row.hidden = row === note ? !inherit.checked : inherit.checked; };
+      const update = () => { for (const row of fields.children) if (!row.contains(inherit) && !row.hasAttribute('data-cooperation-guide')) row.hidden = row === note ? !inherit.checked : inherit.checked; };
       inherit.addEventListener('change', update); update();
     }
+    if (page !== 'initialize' && (isModel || section === 'worker')) {
+      const guide = collaborationGuide(); fields.prepend(guide);
+      fields.querySelector('[data-setting="swarmBackendSelection"]')?.addEventListener('change', guide.refresh);
+    }
     restoreView(preserve, Boolean(preserve)); status('更改将在下一次运行时生效。');
+    renderedFingerprint = fingerprint;
   }
-  function request(action, payload = {}) {
+  function request(action, payload = {}, kind = '') {
+    // Saving supersedes a previously requested navigation/discard decision.
+    // Its deferred action must not survive into the newly saved form.
+    $('settings-discard').hidden = true; closeAction = undefined; discardView = undefined;
     pendingOpen = undefined;
-    requestView = viewState(); requestId = 'settings-' + (++sequence); busy(true, action === 'settingsSave' ? 'save' : 'read');
+    requestView = viewState(); requestId = 'settings-' + requestScope + '-' + (++sequence); busy(true, kind || (action === 'settingsSave' ? 'save' : 'read'));
     $('settings-load-error').hidden = true;
     if (!data) { $('settings-skeleton').hidden = false; fields.hidden = true; }
     clearTimeout(requestTimer);
     const id = requestId;
     const fail = error => {
       if (requestId !== id) return;
+      if (action === 'settingsSave') saveUncertain = true;
       requestId = ''; clearTimeout(requestTimer); busy(false); $('settings-skeleton').hidden = true;
       if (!data) { $('settings-load-error').hidden = false; $('settings-load-error').textContent = window.UBOVMErrors.text(error) + ' 点击“重新载入”重试。'; }
       restoreView(requestView, true); requestView = undefined; status(error, true);
     };
     requestTimer = setTimeout(() => fail('等待配置操作结果超时。输入已保留；请先重新载入确认保存状态，再决定是否重试。'), 30000);
-    try { vscode.postMessage({ action, requestId, ...payload }); }
+    try {
+      Promise.resolve(vscode.postMessage({ action, requestId, page, ...payload })).then(value => {
+        if (value === false) fail('配置操作未能发送。输入已保留，请重新载入确认状态。');
+      }, () => fail('配置操作发送失败。输入已保留，请重新载入确认状态。'));
+    }
     catch (error) { fail(error); }
     return Boolean(requestId);
   }
-  function reload() { guard(() => { dirty = false; if (request('settingsRead')) status('正在读取配置…'); }); }
-  form.addEventListener('input', () => { dirty = true; status('有未保存的更改。'); });
-  form.addEventListener('change', () => { dirty = true; });
+  function reload() {
+    const discardDraft = dirty;
+    guard(() => {
+      // Discard means restore the saved form even if the subsequent read fails.
+      if (discardDraft && data) render();
+      dirty = false; if (request('settingsRead')) status('正在读取配置…');
+    });
+  }
+  function markDirty() { const changed = !dirty; dirty = true; if (changed) refreshInitialization(); }
+  form.addEventListener('input', () => { markDirty(); status('有未保存的更改。'); });
+  form.addEventListener('change', markDirty);
   // Native validation must be able to reveal invalid advanced fields.
   form.addEventListener('invalid', event => {
     for (let parent = event.target.parentElement; parent && parent !== form; parent = parent.parentElement) if (parent.tagName === 'DETAILS') parent.open = true;
   }, true);
   form.addEventListener('submit', event => {
-    event.preventDefault(); if (saving || !data) return;
+    event.preventDefault(); if (saving || saveUncertain || !data || !renderedFingerprint) return;
+    if (page === 'initialize' && !dirty && data.initialization?.[section]) {
+      section = nextSetupSection(); if (render()) focusSetupSection(); return;
+    }
     try {
       let value;
       if (section === 'ssh') {
@@ -631,77 +1004,175 @@ function createSettingsPanel(vscode) {
       } else value = fields.querySelector('[data-setting="inherit"]')?.checked ? { inherit: true } : readFields(fields);
       if (modelRoles.some(([key]) => key === section) && !value.inherit) {
         const library = fields.querySelector('.settings-model-library');
-        value.profile = { id: library.dataset.profileId || 'model-' + Date.now().toString(36) + '-' + (++sequence), name: $('settings-model-profile-name').value.trim() || value.modelId };
+        const saved = page === 'initialize' ? savedModelProfile(data.values[section] ?? {}) : undefined;
+        value.profile = { id: (library?.dataset.profileId ?? saved?.id) || 'model-' + Date.now().toString(36) + '-' + (++sequence),
+          name: (library ? $('settings-model-profile-name').value.trim() : saved?.name) || value.modelId };
         selectedModels.set(section, value.profile.id);
       }
       if (request('settingsSave', { section, value, revision: data.revision })) status('正在保存…');
     } catch (error) { status(error.message, true); }
   });
   $('settings-close').addEventListener('click', () => guard(close));
-  dialog.addEventListener('cancel', event => { event.preventDefault(); guard(close); });
+  dialog.addEventListener('cancel', event => { event.preventDefault(); if (!$('settings-discard').hidden) keepDraft(); else guard(close); });
   $('settings-reload').addEventListener('click', reload);
-  $('settings-keep').addEventListener('click', () => { $('settings-discard').hidden = true; closeAction = undefined; if (pendingOpen && !pendingOpen.started) pendingOpen = undefined; $('settings-save').focus(); });
-  $('settings-discard-confirm').addEventListener('click', () => { $('settings-discard').hidden = true; invalidateView(); dirty = false; const action = closeAction; closeAction = undefined; action?.(); });
+  $('settings-render-retry').addEventListener('click', () => {
+    if (saving || !renderFailure) return;
+    const retry = renderFailure;
+    if (render(retry.preserve, retry.modelDraft)) {
+      status('当前步骤已恢复，配置未重新读取。');
+      focusSetupSection();
+    }
+  });
+  function keepDraft() {
+    $('settings-discard').hidden = true; closeAction = undefined;
+    if (pendingOpen && !pendingOpen.started) pendingOpen = undefined;
+    if (discardView?.focus) restoreView(discardView, true); else $('settings-save').focus();
+    discardView = undefined;
+  }
+  $('settings-keep').addEventListener('click', keepDraft);
+  $('settings-discard-confirm').addEventListener('click', () => {
+    const action = closeAction;
+    if (!action || saving && operation !== 'open') return;
+    $('settings-discard').hidden = true; closeAction = undefined; discardView = undefined;
+    invalidateView(); dirty = false; action();
+  });
   function finishOpen(pending) {
     if (pending !== pendingOpen || !pending.started) return;
     if (pending.error) {
       clearTimeout(requestTimer);
+      pendingOpen = undefined;
       busy(false); $('settings-skeleton').hidden = true; $('settings-load-error').hidden = false;
       $('settings-load-error').textContent = pending.error + ' 点击“重新载入”重试。'; status(pending.error, true); return;
     }
     if (!pending.data) return;
     clearTimeout(requestTimer);
-    data = pending.data; dirty = false; busy(false); render(); pendingOpen = undefined;
+    acceptSnapshot(pending.data); dirty = false; busy(false);
+    if (initialStepPending) section = nextSetupSection();
+    initialStepPending = false;
+    if (render()) focusSetupSection(); pendingOpen = undefined;
+  }
+  function publishNavigation() {
+    const nextNavigation = page + ':' + (section.endsWith('Model') ? 'model' : section);
+    if (navigation !== nextNavigation) {
+      vscode.postMessage({ action: 'settingsNavigation', page, section: section.endsWith('Model') ? 'model' : section });
+      navigation = nextNavigation;
+    }
+  }
+  function openTarget(pending) {
+    const targetPage = ['mcp', 'skills', 'initialize'].includes(pending.page) ? pending.page : 'settings';
+    const targetSection = targetPage === 'initialize' ? (setupSteps.some(([key]) => key === pending.section) ? pending.section : pending.data?.initialization?.model ? 'ssh' : 'model') : targetPage === 'settings' ? (['model', 'ssh', 'web', 'python', 'summary', 'reason', 'worker'].includes(pending.section) ? pending.section : 'model') : targetPage;
+    return { targetPage, targetSection };
+  }
+  function validatePendingOpen(pending) {
+    const { targetPage, targetSection } = openTarget(pending);
+    if (pending.data && data) validateSnapshot(pending.data, targetPage, targetSection);
   }
   function beginOpen(pending) {
     if (pending !== pendingOpen) return;
-    pending.started = true; page = ['mcp', 'skills'].includes(pending.page) ? pending.page : 'settings'; section = page === 'settings' ? (['model', 'ssh', 'web', 'summary', 'reason', 'worker'].includes(pending.section) ? pending.section : 'model') : page;
+    const { targetPage, targetSection } = openTarget(pending);
+    // Reject invalid direct navigation before changing the binding of an
+    // existing form. Its visible inputs must never be submitted to a new group.
+    validatePendingOpen(pending);
+    pending.started = true; page = targetPage; section = targetSection;
+    initialStepPending = page === 'initialize' && !setupSteps.some(([key]) => key === pending.section);
     if (pending.data) { showDialog(); finishOpen(pending); return; }
+    renderFailure = undefined; $('settings-render-retry').hidden = true;
     data = undefined; dirty = false; dialog.dataset.page = page;
     $('settings-title').textContent = page === 'mcp' ? 'MCP 服务' : page === 'skills' ? 'Skills' : '系统配置';
     $('settings-section-kicker').textContent = page === 'settings' ? 'PREFERENCES' : 'EXTENSIONS';
-    $('settings-section-title').textContent = page === 'settings' ? '系统配置' : page === 'mcp' ? 'MCP 服务' : 'Skills';
-    $('settings-description').textContent = '正在读取配置…'; roles.hidden = true; fields.hidden = true;
+    $('settings-section-title').textContent = page === 'initialize' ? '首次初始化' : page === 'settings' ? '系统配置' : page === 'mcp' ? 'MCP 服务' : 'Skills';
+    const loadingText = page === 'skills' ? '正在扫描已安装技能并读取预览…' : page === 'mcp' ? '正在读取 MCP 服务与连接配置…' : '正在读取配置…';
+    $('settings-description').textContent = loadingText; roles.hidden = true; fields.hidden = true;
     $('settings-skeleton').hidden = false; $('settings-load-error').hidden = true;
     clearTimeout(requestTimer);
     requestTimer = setTimeout(() => { if (pending !== pendingOpen) return; pending.error = '配置读取超时，请检查服务状态后重试。'; finishOpen(pending); }, 30000);
-    busy(true, 'open'); status('正在读取配置…'); showDialog(); finishOpen(pending);
+    busy(true, 'open'); status(loadingText); showDialog(); publishNavigation(); finishOpen(pending);
   }
-  window.addEventListener('message', event => {
-    const message = event.data;
+  function receiveSettingsMessage(message) {
     if (message?.type === 'settingsBrowserStatus') {
-      if (message.installation?.state !== 'installing') clearTimeout(browserTimer);
-      browserInstallation = message.installation || {}; browserInstalling = browserInstallation.state === 'installing'; browserInstallFailed = false; browserInstallResult = ''; refreshBrowserInstall(); return;
+      browserInstallation = message.installation || {}; trackBrowserInstallation(browserInstallation.state === 'installing'); browserInstallFailed = false; browserInstallResult = ''; refreshBrowserInstall(); return;
     }
-    if (message?.type === 'settingsBrowserInstallResult') { clearTimeout(browserTimer); browserInstalling = false; browserInstallFailed = !message.ok; browserInstallation = message.installation || { state: message.ok ? 'ready' : 'error' }; browserInstallResult = message.ok ? message.message || '浏览器已安装。' : window.UBOVMErrors.text(message.failure || message.message); refreshBrowserInstall(); return; }
+    if (message?.type === 'settingsBrowserInstallResult') { trackBrowserInstallation(false); browserInstallFailed = !message.ok; browserInstallation = message.installation || { state: message.ok ? 'ready' : 'error' }; browserInstallResult = message.ok ? message.message || '浏览器已安装。' : window.UBOVMErrors.text(message.failure || message.message); refreshBrowserInstall(); return; }
     if (message?.type === 'settingsSSHTestResult') { finishSSHTest(message.requestId, message); return; }
     if (message?.type === 'settingsLoading') {
-      if (saving && operation !== 'open') return;
+      if (saving && operation !== 'open') { status('正在处理配置，请完成后重试。'); return; }
       const pending = pendingOpen = { requestId: message.requestId, page: message.page, section: message.section, started: false };
       if (dialog.open) guard(() => beginOpen(pending)); else beginOpen(pending);
     } else if (message?.type === 'settingsLoadError') {
       if (!pendingOpen || message.requestId !== pendingOpen.requestId) return;
       pendingOpen.error = window.UBOVMErrors.text(message.failure || message.error || '配置加载失败。'); finishOpen(pendingOpen);
     } else if (message?.type === 'openSettings') {
+      if (!message.requestId && saving && operation !== 'open') { status('正在处理配置，请完成后重试。'); return; }
       if (message.requestId) {
         if (!pendingOpen || message.requestId !== pendingOpen.requestId) return;
+        // A deferred navigation must be validated while edits are still dirty,
+        // not later inside the discard button's DOM event handler.
+        validatePendingOpen({ ...pendingOpen, data: message.data });
         pendingOpen.data = message.data; finishOpen(pendingOpen);
       } else {
-        const pending = pendingOpen = { page: message.page, data: message.data, started: false };
+        const pending = { page: message.page, data: message.data, started: false };
+        validatePendingOpen(pending);
+        pendingOpen = pending;
         if (dialog.open) guard(() => beginOpen(pending)); else beginOpen(pending);
       }
-    } else if (message?.type === 'closeSettings' && dialog.open) { guard(close);
-    } else if (message?.type === 'settingsSection' && dialog.open && page === 'settings' && ['model', 'ssh', 'web', 'summary', 'reason', 'worker'].includes(message.section)) { switchTo(message.section);
+    } else if (message?.type === 'closeSettings' && dialog.open) { guard(() => close(message));
+    } else if (message?.type === 'settingsSection' && dialog.open && ['settings', 'initialize'].includes(page) && ['model', 'ssh', 'web', 'python', 'summary', 'reason', 'worker'].includes(message.section)) { switchTo(message.section);
     } else if (message?.type === 'settingsResult' && requestId && message.requestId === requestId && dialog.open) {
+      const finishing = operation === 'finish';
+      const saveResult = operation === 'save';
       clearTimeout(requestTimer); requestId = ''; busy(false); $('settings-skeleton').hidden = true;
       if (message.ok === false || message.error || !message.data) {
+        if (saveResult && message.ok !== false && !message.error) { saveUncertain = true; busy(false); }
         const failure = message.failure || message.error || '未收到有效的配置结果，请重新载入。';
         if (!data) { $('settings-load-error').hidden = false; $('settings-load-error').textContent = window.UBOVMErrors.text(failure) + ' 点击“重新载入”重试。'; }
         restoreView(requestView, true); requestView = undefined; status(failure, true); return;
       }
+      if (saveResult) saveUncertain = true;
+      validateSnapshot(message.data);
       if (dirty) invalidateView();
-      data = message.data; dirty = false; busy(false); render(requestView); requestView = undefined;
-      status(message.saved ? '已保存。后续运行将使用新配置。' : '已重新载入配置。');
+      acceptSnapshot(message.data); dirty = false;
+      if (finishing && data.initialization?.complete) { close(); return; }
+      const advance = page === 'initialize' && (initialStepPending || finishing || message.saved && data.initialization?.[section]);
+      initialStepPending = false;
+      if (advance) {
+        section = nextSetupSection(); requestView = undefined;
+      }
+      busy(false); const rendered = render(requestView); requestView = undefined;
+      if (rendered) {
+        if (advance) focusSetupSection();
+        status(finishing ? '基础配置已发生变化，请完成当前步骤后重试。' : message.saved ? '已保存。后续运行将使用新配置。' : '已重新载入配置。', finishing);
+      }
     }
+  }
+  window.addEventListener('message', event => {
+    const message = event.data;
+    const saveInFlight = operation === 'save';
+    try { receiveSettingsMessage(message); }
+    catch (error) {
+      // A bad snapshot or one failed message must not tear down the application
+      // or leave a request permanently busy. Unrelated notifications cannot
+      // cancel an in-flight save.
+      if (['settingsLoading', 'openSettings', 'settingsLoadError', 'settingsResult'].includes(message?.type)) {
+        if (saveInFlight) saveUncertain = true;
+        clearTimeout(requestTimer); requestId = ''; pendingOpen = undefined;
+        closeAction = undefined; discardView = undefined; $('settings-discard').hidden = true;
+        busy(false); $('settings-skeleton').hidden = true;
+        if (!data) {
+          fields.hidden = true; $('settings-load-error').hidden = false;
+          $('settings-load-error').textContent = '配置未能载入，请重新载入后重试。';
+        }
+        restoreView(requestView, true); requestView = undefined;
+        showDialog();
+      }
+      status(error, true);
+    }
+  });
+  let wasHidden = document.hidden;
+  document.addEventListener('visibilitychange', () => {
+    const resumed = wasHidden && !document.hidden; wasHidden = document.hidden;
+    if (!resumed || !dialog.open || section !== 'web') return;
+    // Refresh the installer only; never reload or overwrite unsaved form data.
+    try { vscode.postMessage({ action: 'settingsBrowserStatus' }); }
+    catch { status('无法刷新浏览器安装状态，可稍后点击“检查状态”重试。', true); }
   });
 }

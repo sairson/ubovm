@@ -6,6 +6,14 @@
     if (timeout <= interval) throw new TypeError('Heartbeat timeout must exceed interval');
     let sequence = 0, pending, timer, disposed = false, suspended = false, status = 'connecting', lastTick = Date.now();
     let wasHidden = document.hidden;
+    // One missed probe is usually UI/extension-host churn; require two consecutive
+    // failures before declaring hard disconnect so operating the IDE does not flash offline.
+    let missCount = 0;
+    // Transient agent-runtime flaps (respawn / RPC heartbeat) must not banner the page
+    // until confirmed across consecutive acknowledgements.
+    let backendMissCount = 0;
+    // After show/resume, discard late bridge stalls once without counting toward disconnect.
+    let graceUntil = 0;
     const prefix = Math.random().toString(36).slice(2) + ':';
     function change(next) {
       if (status === next) return;
@@ -15,6 +23,20 @@
     function startClock() {
       if (!disposed && !suspended && !document.hidden && timer === undefined) timer = setInterval(tick, interval);
     }
+    function openGrace() {
+      graceUntil = Date.now() + Math.min(timeout, Math.max(interval * 2, 500));
+    }
+    function noteMiss(fromTimeout = false) {
+      // One post-show timeout is usually a discarded probe after panel churn.
+      if (fromTimeout && Date.now() < graceUntil) {
+        graceUntil = 0;
+        change('reconnecting');
+        return;
+      }
+      missCount += 1;
+      if (missCount >= 2) change('disconnected');
+      else change('reconnecting');
+    }
     function probe() {
       if (disposed || suspended || document.hidden) return;
       if (!pending) {
@@ -22,10 +44,15 @@
         const request = pending;
         const failed = () => {
           if (disposed || suspended || pending !== request) return;
-          pending = undefined; change('disconnected');
+          pending = undefined;
+          noteMiss(false);
+          if (!disposed && !suspended && !document.hidden && missCount < 2) queueMicrotask(probe);
         };
-        try { Promise.resolve(send({ action: 'connectionProbe', probeId: request.id })).then(result => { if (result === false) failed(); }, failed); }
-        catch { failed(); }
+        try {
+          Promise.resolve(send({ action: 'connectionProbe', probeId: request.id })).then(result => {
+            if (result === false) failed();
+          }, failed);
+        } catch { failed(); }
       }
     }
     function tick() {
@@ -41,7 +68,10 @@
       }
       lastTick = now;
       if (document.hidden) { pending = undefined; return; }
-      if (pending && now - pending.sent >= timeout) { pending = undefined; change('disconnected'); }
+      if (pending && now - pending.sent >= timeout) {
+        pending = undefined;
+        noteMiss(true);
+      }
       probe();
     }
     function receive(event) {
@@ -49,24 +79,34 @@
       if (disposed || message?.type !== 'connectionStatus' || !pending || message.probeId !== pending.id) return;
       if (!['idle', 'connected', 'disconnected', 'closed'].includes(message.backend?.status)) return;
       pending = undefined;
-      change(['disconnected', 'closed'].includes(message.backend.status) ? 'backend-disconnected' : 'connected');
+      missCount = 0;
+      if (['disconnected', 'closed'].includes(message.backend.status)) {
+        backendMissCount += 1;
+        if (backendMissCount >= 2) change('backend-disconnected');
+        else change('reconnecting');
+        return;
+      }
+      backendMissCount = 0;
+      change('connected');
     }
     function visible() {
       // Duplicate lifecycle notifications must not discard the current probe
       // or keep moving its deadline forward while the peer is unresponsive.
       if (disposed || wasHidden === document.hidden) return;
       wasHidden = document.hidden;
-      pending = undefined; lastTick = Date.now();
+      pending = undefined; lastTick = Date.now(); missCount = 0; backendMissCount = 0;
       if (document.hidden) { clearInterval(timer); timer = undefined; return; }
       if (disposed || suspended) return;
       // A hidden page may have missed backend changes; require a fresh acknowledgement.
+      openGrace();
       change('reconnecting'); startClock(); probe();
     }
     function suspend() { suspended = true; clearInterval(timer); timer = undefined; pending = undefined; }
     function resume() {
       if (disposed || !suspended) return;
-      suspended = false; wasHidden = document.hidden; lastTick = Date.now();
+      suspended = false; wasHidden = document.hidden; lastTick = Date.now(); missCount = 0; backendMissCount = 0;
       // Require fresh confirmation and trigger the consumer's state resync.
+      openGrace();
       change('reconnecting');
       startClock(); probe();
     }

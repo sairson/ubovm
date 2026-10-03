@@ -55,7 +55,11 @@ class FileUriLabelContribution implements IWorkbenchContribution {
 	}
 }
 
+import { CommandsRegistry } from '../../../../platform/commands/common/commands.js';
+
 registerSingleton(IExplorerService, ExplorerService, InstantiationType.Delayed);
+// Initialize session roots without opening or focusing the file sidebar.
+CommandsRegistry.registerCommand('_ubovm.initializeExplorer', accessor => { void accessor.get(IExplorerService).roots; });
 
 // Register file editors
 

@@ -300,13 +300,13 @@ class ViewWelcomeController {
 
 	private getContentDescriptors(): IViewContentDescriptor[] {
 		if (this.delegate.id === 'workbench.explorer.fileView' && this.contextKeyService.getContextKeyValue('ubovm.noWorkspace') === true) {
-			return [{ content: '$(folder-opened)\n尚未选择工作空间\n请在当前会话顶部选择工作空间，文件列表将随会话自动更新。' }];
+			return [{ content: '$(folder-opened)\n尚未选择工作空间\n请在项目行或会话顶部选择目录，文件列表将随会话自动更新。' }];
 		}
 		if (this.delegate.id === 'workbench.explorer.emptyView') {
-			return [{ content: '$(folder-opened)\n尚未选择工作空间\n请在当前会话顶部选择工作空间，文件列表将随会话自动更新。' }];
+			return [{ content: '$(folder-opened)\n尚未选择工作空间\n请在项目行或会话顶部选择目录，文件列表将随会话自动更新。' }];
 		}
 		if (this.delegate.id === 'workbench.explorer.fileView' && this.contextKeyService.getContextKeyValue('ubovm.emptyFolder') === true) {
-			return [{ content: '$(new-file)\n文件夹还是空的\n创建第一个文件，开始你的项目。\n[新建文件](command:ubovm.createFirstFile)' }];
+			return [{ content: '$(new-file)\n文件夹还是空的\n创建第一个文件，开始你的项目。\n[新建文件](command:explorer.newFile)' }];
 		}
 		const visibleItems = this.items.filter(v => v.visible);
 

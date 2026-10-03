@@ -312,7 +312,7 @@ export class ViewsService extends Disposable implements IViewsService {
 		const location = this.viewDescriptorService.getViewContainerLocation(viewContainer);
 		const compositeDescriptor = this.getComposite(viewContainer.id, location!);
 		if (compositeDescriptor) {
-			const paneComposite = await this.openComposite(compositeDescriptor.id, location!) as IPaneComposite | undefined;
+			const paneComposite = await this.openComposite(compositeDescriptor.id, location!, id === 'terminal' ? focus : undefined) as IPaneComposite | undefined;
 			if (paneComposite?.openView) {
 				return paneComposite.openView<T>(id, focus) || null;
 			} else if (focus) {

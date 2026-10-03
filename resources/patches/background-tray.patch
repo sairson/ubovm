@@ -1,0 +1,16 @@
+diff --git a/src/vs/platform/lifecycle/electron-main/lifecycleMainService.ts b/src/vs/platform/lifecycle/electron-main/lifecycleMainService.ts
+--- a/src/vs/platform/lifecycle/electron-main/lifecycleMainService.ts
++++ b/src/vs/platform/lifecycle/electron-main/lifecycleMainService.ts
+@@ -432,6 +432,12 @@
+ 		windowListeners.add(Event.fromNodeEventEmitter<electron.Event>(win, 'close')(e => {
+ 
++			// UBOVM may hide the window without unloading its running tasks.
++			win.emit('ubovm-before-close', e, this._quitRequested);
++			if (e.defaultPrevented) {
++				return;
++			}
++
+ 			// The window already acknowledged to be closed
+ 			const windowId = window.id;
+ 			if (this.windowToCloseRequest.delete(windowId)) {
+ 				return;

@@ -1,0 +1,72 @@
+diff --git a/src/vs/workbench/browser/parts/compositeBarActions.ts b/src/vs/workbench/browser/parts/compositeBarActions.ts
+--- a/src/vs/workbench/browser/parts/compositeBarActions.ts
++++ b/src/vs/workbench/browser/parts/compositeBarActions.ts
+@@ -556,12 +556,13 @@ export class CompositeActionViewItem extends CompositeBarActionViewItem {
+ 			close.title = localize('ubovm.closeSidebarTab', "关闭 {0}", this.compositeBarActionItem.name);
+ 			close.setAttribute('aria-label', close.title);
+ 			const closeTab = () => {
+-				if (!container.closest('.part.sidebar')) { return; }
++				const sidebar = container.closest('.part.sidebar');
++				if (!sidebar) { return; }
+ 				const tabBar = container.parentElement;
+ 				const restoreFocus = container.contains(container.ownerDocument.activeElement);
+ 				this.compositeBar.unpin(this.compositeBarActionItem.id);
+ 				if (!this.compositeBar.getPinnedCompositeIds().some(id => ['workbench.view.explorer', 'workbench.view.search', 'workbench.view.extension.ubovm-workers', 'workbench.view.extension.ubovm-blackboard'].includes(id))) {
+-					void this.commandService.executeCommand('workbench.action.closeSidebar');
++					sidebar.dispatchEvent(new CustomEvent('ubovm-empty-sidebar'));
+ 				} else if (restoreFocus) {
+ 					queueMicrotask(() => {
+ 						const next = tabBar?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]') ?? tabBar?.querySelector<HTMLElement>('[role="tab"]');
+diff --git a/src/vs/workbench/browser/parts/paneCompositePart.ts b/src/vs/workbench/browser/parts/paneCompositePart.ts
+--- a/src/vs/workbench/browser/parts/paneCompositePart.ts
++++ b/src/vs/workbench/browser/parts/paneCompositePart.ts
+@@ -210,6 +210,10 @@ export abstract class AbstractPaneCompositePart extends CompositePart<PaneCompos
+ 	}
+ 
+ 	private onDidOpen(composite: IComposite): void {
++		if (this.partId === 'workbench.parts.sidebar') {
++			delete this.element.dataset.ubovmEmpty;
++			this.storageService.remove('ubovm.sidebar.empty', 1);
++		}
+ 		const compositeId = composite.getId();
+ 		this.activePaneContextKey.set(compositeId);
+ 		this.element.dataset.activeComposite = compositeId;
+@@ -249,10 +253,30 @@ export abstract class AbstractPaneCompositePart extends CompositePart<PaneCompos
+ 		this.updateCompositeBar();
+ 
+ 		const focusTracker = this._register(trackFocus(parent));
++		this.initializeUbovmEmptySidebar();
+ 		this._register(focusTracker.onDidFocus(() => this.paneFocusContextKey.set(true)));
+ 		this._register(focusTracker.onDidBlur(() => this.paneFocusContextKey.set(false)));
+ 	}
+ 
++	private initializeUbovmEmptySidebar(): void {
++		if (this.partId !== 'workbench.parts.sidebar') { return; }
++		// Workspace-scoped state survives hiding the sidebar and restarting the IDE.
++		if (this.storageService.getBoolean('ubovm.sidebar.empty', 1, false)) { this.element.dataset.ubovmEmpty = 'true'; }
++		const button = this.element.ownerDocument.createElement('button');
++		button.className = 'ubovm-open-file-tree';
++		button.type = 'button';
++		button.textContent = '打开文件树';
++		this._register(addDisposableListener(button, 'click', () => { void this.openPaneComposite('workbench.view.explorer', true); }));
++		this.emptyPaneMessageElement?.replaceChildren(button);
++		this._register(addDisposableListener(this.element, 'ubovm-empty-sidebar', () => {
++			this.element.dataset.ubovmEmpty = 'true';
++			this.storageService.store('ubovm.sidebar.empty', true, 1, 1);
++			this.hideActiveComposite();
++			this.layoutEmptyMessage();
++			button.focus();
++		}));
++	}
++
+ 	private createEmptyPaneMessage(parent: HTMLElement): void {
+ 		this.emptyPaneMessageElement = $('.empty-pane-message-area');
+ 
+@@ -581,6 +605,7 @@ export abstract class AbstractPaneCompositePart extends CompositePart<PaneCompos
+ 	}
+ 
+ 	getLastActivePaneCompositeId(): string {
++		if (this.partId === 'workbench.parts.sidebar' && this.element.dataset.ubovmEmpty === 'true') { return ''; }
+ 		return this.getLastActiveCompositeId();
+ 	}
+ 

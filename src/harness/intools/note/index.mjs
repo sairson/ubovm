@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { Type } from 'typebox';
-import { assertSession, checkAbort, required, toolResult } from '../memory-store.mjs';
+import { assertSession, checkAbort, required, toolResult } from '../shared/store/memory-store.mjs';
 
 const MAX_CONTENT = 16 * 1024;
 const string = Type.String();
@@ -20,11 +20,7 @@ const parameters = Type.Object({
   action: enumSchema(['write', 'list', 'get', 'promote', 'delete']),
   note_type: Type.Optional({ ...enumSchema(noteTypes), description: 'Record category. On write, omit to infer from asset/vulnerability, otherwise defaults to note. On list, omit for all categories. fact and intent belong in promotion_kind, not note_type.' }), asset_type: Type.Optional(subtypeSchema), vulnerability_type: Type.Optional(subtypeSchema),
   asset: Type.Optional(Type.Union([assetSchema, Type.String({ description: 'Compatibility: JSON-encoded asset object' })])), vulnerability: Type.Optional(vulnerabilitySchema),
-  // Accept vulnerability fields at the top level as well as in `vulnerability`.
-  // Some model/tool adapters flatten discriminated payloads before validation.
-  type: Type.Optional(subtypeSchema), title: optionalString, target: optionalString, status: Type.Optional(enumSchema(['candidate', 'verified', 'exploitable'])), severity: Type.Optional(enumSchema(['unknown', 'info', 'low', 'medium', 'high', 'critical'])), vector: optionalString,
-  effects: optionalStrings, preconditions: optionalStrings, constraints: optionalStrings, chain_hints: optionalStrings, related_note_ids: optionalStrings,
-  locator: optionalString, method: optionalString, operation: optionalString, protocol: optionalString, details: Type.Optional(objectSchema),
+  type: Type.Optional(subtypeSchema), locator: optionalString, method: optionalString, operation: optionalString, protocol: optionalString, details: Type.Optional(objectSchema),
   content: optionalString, query: optionalString, limit: Type.Optional(Type.Integer()), offset: Type.Optional(Type.Integer()), note_id: optionalString, delete_reason: optionalString,
   promotion_kind: optionalString, outcome: optionalString, statement: optionalString, evidence: optionalStrings, failed_checks: optionalStrings, limitations: optionalStrings, description: optionalString, hint: optionalString, tool_call_ids: optionalStrings
 }, { additionalProperties: false });
@@ -145,11 +141,7 @@ function parseInput(input) {
       normalized.content ||= [normalized.asset.type, normalized.asset.method, normalized.asset.locator, normalized.asset.operation].filter(Boolean).join(' ');
       bounded(normalized.asset, 'asset');
     } else if (normalized.note_type === 'vulnerability') {
-      const v = { ...(value.vulnerability ?? {}) };
-      // Normalize the flattened form into the canonical nested payload.
-      for (const key of vulnerabilityKeys) if (v[key] === undefined && value[key] !== undefined) v[key] = value[key];
-      v.type ||= value.vulnerability_type || value.type;
-      fields(v, vulnerabilityKeys, 'vulnerability');
+      const v = value.vulnerability; fields(v, vulnerabilityKeys, 'vulnerability');
       normalized.vulnerability = { type: subtype(v.type, 'vulnerability.type'), title: required(text(v.title, 'vulnerability.title'), 'vulnerability.title'), target: required(text(v.target, 'vulnerability.target'), 'vulnerability.target'), vector: text(v.vector, 'vulnerability.vector'), status: text(v.status, 'vulnerability.status').toLowerCase() || 'candidate', severity: text(v.severity, 'vulnerability.severity').toLowerCase() || 'unknown', details: details(v.details) };
       const out = normalized.vulnerability;
       if (!['candidate', 'verified', 'exploitable'].includes(out.status) || !['unknown', 'info', 'low', 'medium', 'high', 'critical'].includes(out.severity)) throw new Error('Invalid vulnerability status or severity');
@@ -216,7 +208,7 @@ export function createNoteTool({ store, sessionId, workerId = 'worker', blackboa
 
   function parentFor(note) {
     if (blackboard.node(note.worker_id)) return note.worker_id;
-    const registration = store.snapshot().workers.find(item => item.worker_id === note.worker_id);
+    const registration = store.snapshot(['workers']).workers.find(item => item.worker_id === note.worker_id);
     if (registration && blackboard.node(registration.root_worker_id)) return registration.root_worker_id;
     throw new Error(`Source Worker node ${note.worker_id} was not found; register its root Worker before promotion`);
   }
@@ -250,7 +242,7 @@ export function createNoteTool({ store, sessionId, workerId = 'worker', blackboa
     if (request.promotion_kind === 'fact' && (!request.statement || !request.evidence.length)) throw Object.assign(new Error('Fact promotion requires a nonempty statement and at least one concrete evidence item'), { code: 'INCOMPLETE_FACT_PROMOTION' });
     return store.serial('promotions', async () => {
       checkAbort(signal);
-      const snapshot = store.snapshot();
+      const snapshot = store.snapshot(['notes', 'promotions']);
       const note = snapshot.notes.find(item => item.id === request.note_id);
       if (!note) throw new Error(`Note ${request.note_id} was not found in this session`);
       const reserved = snapshot.promotions.find(item => item.note_id === note.id && item.kind === request.promotion_kind);
@@ -291,7 +283,7 @@ export function createNoteTool({ store, sessionId, workerId = 'worker', blackboa
         if (payload) {
           payload.tool_call_ids = await verifyEvidence(payload.tool_call_ids, workerId, warnings);
           if (kind === 'vulnerability') {
-            const ids = new Set(store.snapshot().notes.map(note => note.id));
+            const ids = new Set(store.snapshot(['notes']).notes.map(note => note.id));
             payload.related_note_ids = payload.related_note_ids.filter(id => { if (ids.has(id)) return true; warnings.push(`Unavailable related note ${JSON.stringify(id)} was omitted.`); return false; });
           }
         }
@@ -315,17 +307,18 @@ export function createNoteTool({ store, sessionId, workerId = 'worker', blackboa
           try { result = { status: 'promoted', count: 1, note: await promote({ ...request, note_id: result.note.id }, warnings, signal) }; }
           catch (error) {
             checkAbort(signal);
-            const state = store.snapshot();
+            const state = store.snapshot(['notes', 'promotions']);
             result = { status: error.code === 'INCOMPLETE_FACT_PROMOTION' ? 'saved_promotion_skipped' : 'saved_promotion_pending', count: 1, note: publicNote(state, state.notes.find(note => note.id === result.note.id)), error: error.message };
           }
         }
       } else if (request.action === 'list') {
-        const state = store.snapshot();
+        const state = store.snapshot(['notes', 'promotions']);
         const notes = state.notes.filter(note => (!request.note_type || note.note_type === request.note_type) && (!request.asset_type || note.asset_type === request.asset_type) && (!request.vulnerability_type || note.vulnerability_type === request.vulnerability_type) && (!request.query || [note.content, JSON.stringify(note.asset ?? {}), JSON.stringify(note.vulnerability ?? {})].join(' ').toLowerCase().includes(request.query))).reverse();
         const page = notes.slice(request.offset, request.offset + request.limit).map(note => publicNote(state, note));
-        result = { status: 'ok', count: page.length, total: notes.length, offset: request.offset, notes: page };
+        result = { status: 'ok', count: page.length, total: notes.length, offset: request.offset,
+          next_offset: request.offset + page.length < notes.length ? request.offset + page.length : null, notes: page };
       } else if (request.action === 'get') {
-        const state = store.snapshot(); const note = state.notes.find(note => note.id === request.note_id);
+        const state = store.snapshot(['notes', 'promotions']); const note = state.notes.find(note => note.id === request.note_id);
         result = note ? { status: 'ok', count: 1, note: publicNote(state, note) } : { status: 'not_found', count: 0, error: `Note ${request.note_id} was not found in this session` };
       } else if (request.action === 'delete') {
         result = await store.commit(state => {
@@ -346,11 +339,11 @@ export function createNoteTool({ store, sessionId, workerId = 'worker', blackboa
       return toolResult(result);
     },
     async recoverPromotions() {
-      if (!blackboard) { if (store.snapshot().promotions.length) throw new Error('blackboard is required to recover promotions'); return []; }
+      if (!blackboard) { if (store.snapshot(['promotions']).promotions.length) throw new Error('blackboard is required to recover promotions'); return []; }
       return store.serial('promotions', async () => {
         await store.flush();
         const recovered = [];
-        for (const entry of store.snapshot().promotions) { await applyPromotion(entry); recovered.push(entry.node_id); }
+        for (const entry of store.snapshot(['promotions']).promotions) { await applyPromotion(entry); recovered.push(entry.node_id); }
         return recovered;
       });
     }

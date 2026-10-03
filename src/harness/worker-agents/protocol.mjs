@@ -97,8 +97,12 @@ function outcome(value, label) {
 }
 
 function stringList(value, label) {
-  return [...new Set(list(value, label, 'INVALID_FACT').map((item, index) =>
-    required(item, `${label}[${index}]`, 'INVALID_FACT')))];
+  return [...new Set(list(value, label, 'INVALID_FACT').flatMap((item, index) => {
+    // Empty model-generated placeholders carry no information. Keep validating
+    // non-string entries and text limits rather than silently dropping data.
+    if (typeof item === 'string' && item.length <= MAX_TEXT && !item.trim()) return [];
+    return [required(item, `${label}[${index}]`, 'INVALID_FACT')];
+  }))];
 }
 
 function validateNodeRef(nodeRef, context, label) {
@@ -160,7 +164,7 @@ export function parseWorkerFact(text, { keyPoints = [], ledger = [], context, ma
     if (hasTool) {
       const toolCallId = required(item.toolCallId, `${label}.toolCallId`, code);
       const entries = ledger.filter((entry) => entry?.toolCallId === toolCallId);
-      if (entries.length !== 1 || entries[0].status !== 'completed' || entries[0].isError !== false) {
+      if (entries.length !== 1 || entries[0].status !== 'completed' || entries[0].isError !== false || entries[0].result?.isError === true) {
         throw invalid(code, `${label}.toolCallId must identify one successfully completed tool call in the evidence ledger.`);
       }
       return { toolCallId, observation };

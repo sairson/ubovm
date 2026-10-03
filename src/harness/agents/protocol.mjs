@@ -1,5 +1,7 @@
+import { intentCapacity } from '../blackboard/intent-capacity.mjs';
+import { completionEvidenceIssue } from '../blackboard/evidence.mjs';
+
 const ALIAS = /^n[1-9]\d*$/u;
-const TERMINAL = new Set(['confirmed', 'negative']);
 const normalize = value => value.trim().replace(/\s+/gu, ' ').toLowerCase();
 
 function invalid(message, cause) {
@@ -14,7 +16,7 @@ function record(value, label) {
 function fields(value, names, label) {
   record(value, label);
   const unknown = Object.keys(value).find(name => !names.includes(name));
-  if (unknown !== undefined) throw invalid(`${label} contains unsupported field ${JSON.stringify(unknown)}. Human hints cannot be authored by Reason.`);
+  if (unknown !== undefined) throw invalid(`${label} contains unsupported field ${JSON.stringify(unknown)}. Allowed fields: ${names.join(', ')}. Remove unsupported fields; human hints cannot be authored by Reason.`);
 }
 
 function text(value, label, max = 8192) {
@@ -64,21 +66,12 @@ function completionEvidence(node, nodes) {
       (node.kind === 'fact' && producer.result !== node.ref) || typeof node.fact !== 'string' || !node.fact.trim()) {
     throw invalid('Evidence is not a completed Worker fact.');
   }
-  let fact;
-  try { fact = JSON.parse(node.fact); } catch { /* Legacy facts may be plain text. */ }
-  const structured = fact?.version === 1 && typeof fact.statement === 'string' && typeof fact.outcome === 'string';
-  if (!structured && node.evidence?.sourceType !== 'pi-worker') return;
-  if (!structured || !fact.statement.trim() || !TERMINAL.has(fact.outcome) ||
-      !Array.isArray(fact.evidence) || !fact.evidence.length || !Array.isArray(fact.coverage) ||
-      fact.coverage.some(item => !item || typeof item.point !== 'string' || !TERMINAL.has(item.status) || typeof item.result !== 'string' || !item.result.trim())) {
-    throw invalid(`${node.ref} contains unresolved or malformed Worker evidence; obtain decisive coverage before completion.`);
-  }
-  const covered = new Set(fact.coverage.map(item => item.point));
-  if ((producer.intent.keyPoints ?? []).some(point => !covered.has(point))) throw invalid(`${node.ref} does not cover every required key point.`);
+  const issue = completionEvidenceIssue(node.fact, producer.intent.keyPoints ?? [], node.evidence?.sourceType);
+  if (issue) throw invalid(`${node.ref} ${issue}; obtain decisive coverage before completion.`);
 }
 
 /** Parse exactly one JSON decision, retaining aliases for coordinator revision fencing. */
-export function parseReasonDecision(source, { context, maxIntents = 8, maxResponseBytes = 32768 } = {}) {
+export function parseReasonDecision(source, { context, maxIntents = 5, maxResponseBytes = 32768, openIntents } = {}) {
   for (const [name, value] of Object.entries({ maxIntents, maxResponseBytes })) {
     if (!Number.isSafeInteger(value) || value < 1) throw new TypeError(`${name} must be a positive integer.`);
   }
@@ -90,15 +83,22 @@ export function parseReasonDecision(source, { context, maxIntents = 8, maxRespon
   record(value, 'Decision');
   if (value.complete === true) {
     fields(value, ['complete', 'evidenceIds', 'summary'], 'Completion');
-    if ([...nodes.values()].some(node => ['pending', 'running'].includes(node.intent?.status))) throw invalid('Pending or running intents must finish before completion.');
     const evidenceIds = [...new Set(refs(value.evidenceIds, 'evidenceIds', nodes, context).map(ref => nodes.get(ref).result || ref))];
     for (const ref of evidenceIds) completionEvidence(nodes.get(ref), nodes);
     return { complete: true, evidenceIds, summary: text(value.summary, 'summary') };
   }
+  if (value.wait === true) {
+    fields(value, ['wait'], 'Wait');
+    if (![...nodes.values()].some(node => ['pending', 'running'].includes(node.intent?.status))) throw invalid('Waiting requires pending or running workers.');
+    return { wait: true };
+  }
   fields(value, ['complete', 'intents'], 'Decision');
+  const capacity = intentCapacity([...nodes.values()], openIntents);
+  if (Array.isArray(value.intents) && value.intents.length > capacity.available) throw invalid(`There are ${capacity.open} open intents (limit ${capacity.limit}); at most ${capacity.available} new intents are allowed. Return {"wait":true} when capacity is full, or completion with valid evidence.`);
   if (value.complete !== undefined && value.complete !== false) throw invalid('complete must be a boolean.');
   if (!Array.isArray(value.intents) || !value.intents.length || value.intents.length > maxIntents) throw invalid(`An unfinished decision requires 1 to ${maxIntents} intents.`);
-  const seen = new Set([...nodes.values()].filter(node => node.intent).map(node => intentKey(node.intent, node.parents)));
+  const seen = new Set([...nodes.values()].filter(node => node.intent)
+    .map(node => intentKey(node.intent, [...new Set(node.parents.map(ref => nodes.get(ref)?.result || ref))])));
   const intents = value.intents.map((item, index) => {
     const label = `intents[${index}]`;
     fields(item, ['description', 'parentIds', 'priority', 'keyPoints'], label);

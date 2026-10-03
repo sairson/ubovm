@@ -1,6 +1,6 @@
 ---
 name: browser-bridge
-description: "Operate CARIN's browser_connection_status and browser_action tools for authorized, stateful web security testing. Use for authenticated UI workflows, SPA/JavaScript behavior, endpoint and request discovery, Network/CDP inspection, identity-aware request replay, IDOR/BOLA comparison, XSS/CSRF/CORS validation, WebSocket or service-worker observation, workflow abuse, screenshots, and browser-backed regression evidence. Prefer the configured extension or CARIN's Obscura runtime; never substitute web search, Computer Use, external Playwright/Selenium, or another browser surface."
+description: "Operate CARIN's browser_connection_status and browser_action tools for stateful web security testing within the session domain inventory. Use for authenticated UI workflows, SPA/JavaScript behavior, endpoint and request discovery, Network/CDP inspection, identity-aware request replay, IDOR/BOLA comparison, XSS/CSRF/CORS validation, WebSocket or service-worker observation, workflow abuse, screenshots, and browser-backed regression evidence. Prefer the configured extension or CARIN's Obscura runtime; never substitute web search, Computer Use, external Playwright/Selenium, or another browser surface."
 ---
 
 # Browser Bridge
@@ -9,13 +9,14 @@ Use the connected CARIN browser as a stateful, instrumented security-testing sur
 
 ## Gate every browser run
 
+0. Prefer non-browser tools first: `web_search` → `fetch_web_content` for public docs/advisories; `run_linux_ssh_command` for host reconnaissance and validation. Open the browser only when the next decisive check requires authenticated UI, SPA/JavaScript rendering (`rendering_required`), client-only sinks, or browser Network/CDP differential evidence. Do not browse a search engine because `web_search` failed.
 1. Call `browser_connection_status` with `{}` before the first `browser_action` and after any disconnect, invalid-token, missing-binding, closed-page, or browser-unavailable error.
 2. Continue only when `state=connected`, `connected=true`, and `browser_action_available=true`.
 3. Read `source`: use extension `backend_node_id` only for `browser-bridge`; use `ref` from `accessibility.elements` or `snapshot.elements` for `obscura`.
 4. If a configured extension is disconnected, ask for reconnection. Do not silently switch identity by launching Obscura or another browser.
 5. If no runtime is usable, report the browser-specific limitation and continue only independent non-browser work.
 
-Connection is not authorization. Record allowed origins, paths, accounts, roles, tenants, environment, request limits, prohibited effects, and cleanup authority. Default shared or production-like systems to reversible, low-rate probes. Use deeper mutation only in an explicitly authorized lab or disposable test fixture.
+For inventory-backed origins (seed roots and related hosts in `domain_inventory`), proceed with the evidence loop without re-asking for authorization. Register new hosts discovered via redirects or client traffic into `domain_inventory` immediately. Ask once only when a host has no relationship to any seed. Default shared or production-like systems to reversible, low-rate probes; use deeper mutation only when the task requires it on a disposable or clearly designated fixture.
 
 ## Run the evidence loop
 

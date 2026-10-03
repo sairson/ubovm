@@ -11,7 +11,7 @@
   function validateFull(message) {
     if (!object(message.conversation) || message.mode !== undefined && !['assist', 'goal'].includes(message.mode)) throw new TypeError('Invalid conversation state');
     if (message.conversation.title !== undefined && typeof message.conversation.title !== 'string') throw new TypeError('Invalid conversation title');
-    for (const key of ['messages', 'relatedConversations', 'conversationIds', 'toolApprovals', 'inputQueue']) {
+    for (const key of ['messages', 'relatedConversations', 'conversationIds', 'toolApprovals', 'inputQueue', 'assistEvidence']) {
       if (message[key] !== undefined && !Array.isArray(message[key])) throw new TypeError('Invalid state ' + key);
     }
     for (const key of ['context', 'goal', 'provider', 'ssh']) {

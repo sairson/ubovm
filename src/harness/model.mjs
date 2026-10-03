@@ -8,7 +8,7 @@ const APIS = new Set([
 ]);
 const OPTIONS = new Set([
   'model', 'provider', 'modelId', 'api', 'baseUrl', 'contextWindow', 'maxTokens', 'reasoning',
-  'input', 'compat', 'headers', 'apiKey', 'getApiKey', 'streamFn', 'streamOptions',
+  'input', 'compat', 'headers', 'apiKey', 'getApiKey', 'streamFn', 'streamOptions', 'backend',
 ]);
 const STREAM_OPTIONS = new Set([
   'temperature', 'maxTokens', 'timeoutMs', 'maxRetries', 'maxRetryDelayMs', 'websocketConnectTimeoutMs',
@@ -120,7 +120,40 @@ function streamDefaults(value = {}) {
     if (key === 'env' && Object.values(item).some(value => typeof value !== 'string')) throw new TypeError('streamOptions.env values must be strings');
     if (key === 'thinkingBudgets') for (const budget of Object.values(item)) positive(budget, 'streamOptions.thinkingBudgets value');
   }
+  // Explicit 0 still disables retries; omit means a small transient-network budget.
+  if (!Object.hasOwn(result, 'maxRetries')) result.maxRetries = 2;
+  if (!Object.hasOwn(result, 'maxRetryDelayMs')) result.maxRetryDelayMs = 2000;
   return result;
+}
+
+function isTransientNetworkError(error) {
+  if (!error || typeof error !== 'object') return false;
+  if (error.name === 'AbortError' || error.code === 'ABORT_ERR' || error.code === 'CANCELLED') return false;
+  const status = Number(error.status || error.statusCode || error.response?.status);
+  if ([408, 425, 429, 500, 502, 503, 504].includes(status)) return true;
+  if (['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'EPIPE', 'EAI_AGAIN', 'ENOTFOUND', 'UND_ERR_SOCKET'].includes(error.code)) return true;
+  return /ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|fetch failed|network error|socket hang up|Failed to fetch/i.test(String(error.message || error));
+}
+
+/** Retry only when the transport fails before any assistant content is observed. */
+async function withPreTokenRetry(transport, model, context, options) {
+  const signal = options?.signal;
+  signal?.throwIfAborted();
+  try {
+    return await transport(model, context, options);
+  } catch (error) {
+    signal?.throwIfAborted();
+    if (!isTransientNetworkError(error)) throw error;
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(resolve, 250);
+      const abort = () => { clearTimeout(timer); reject(signal.reason instanceof Error ? signal.reason : Object.assign(new Error('Aborted'), { name: 'AbortError', code: 'ABORT_ERR' })); };
+      if (!signal) return;
+      if (signal.aborted) { clearTimeout(timer); abort(); return; }
+      signal.addEventListener('abort', abort, { once: true });
+    });
+    signal?.throwIfAborted();
+    return transport(model, context, options);
+  }
 }
 
 function deepFreeze(value) {
@@ -142,6 +175,19 @@ function deepFreeze(value) {
 export function createModelClient(configuration = {}) {
   object(configuration, 'configuration');
   for (const key of Object.keys(configuration)) if (!OPTIONS.has(key)) throw new TypeError(`Unknown model configuration field: ${key}`);
+  const legacyBackend = configuration.backend ?? 'pi';
+  const backend = 'pi';
+  if (!['pi', 'claude', 'codex'].includes(legacyBackend)) throw new TypeError('Only Pi Agent is supported');
+  // Read legacy SDK settings as ordinary Pi API connections, preserving endpoint credentials.
+  if (legacyBackend !== 'pi') {
+    const provider = configuration.provider ?? (legacyBackend === 'claude' ? 'anthropic' : 'openai');
+    const api = configuration.api ?? (legacyBackend === 'claude' ? 'anthropic-messages' : 'openai-responses');
+    const baseUrl = configuration.baseUrl ?? (legacyBackend === 'claude'
+      ? provider === 'deepseek' ? 'https://api.deepseek.com/anthropic' : provider === 'anthropic' ? 'https://api.anthropic.com' : undefined
+      : new Map([['openai', 'https://api.openai.com/v1'], ['deepseek', 'https://api.deepseek.com'], ['openrouter', 'https://openrouter.ai/api/v1']]).get(provider));
+    configuration = { ...configuration, backend: 'pi', provider, api, baseUrl,
+      modelId: legacyBackend === 'claude' ? configuration.modelId?.replace(/\[1m\]$/i, '') : configuration.modelId };
+  }
   const { apiKey, getApiKey, streamFn } = configuration;
   if (apiKey !== undefined) string(apiKey, 'apiKey');
   if (getApiKey !== undefined && typeof getApiKey !== 'function') throw new TypeError('getApiKey must be a function');
@@ -214,6 +260,7 @@ export function createModelClient(configuration = {}) {
     return key;
   };
   const client = {
+    backend,
     model,
     async streamFn(selected, context, options = {}) {
       if (!selected || selected.id !== model.id || selected.provider !== model.provider || selected.api !== model.api || selected.baseUrl !== model.baseUrl) {
@@ -229,7 +276,7 @@ export function createModelClient(configuration = {}) {
       // Agent resolves getApiKey before calling streamFn. Direct stream consumers
       // receive the same behavior without resolving a rotating key twice.
       if (merged.apiKey === undefined && resolveKey && options.getApiKey !== resolveKey) merged.apiKey = await resolveKey(model.provider);
-      return transport(model, context, merged);
+      return withPreTokenRetry(transport, model, context, merged);
     },
     ...(resolveKey ? { getApiKey: resolveKey } : {}),
   };

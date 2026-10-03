@@ -16,8 +16,39 @@
     if (stage === 'operate' && ['rollback', 'monitoring', 'owner'].some(key => !text(item[key]))) return false;
     return true;
   }
+  function domainCoverage(inventory, record) {
+    const acceptedCoverage = record?.acceptance?.security?.domainCoverage;
+    if (acceptedCoverage && typeof acceptedCoverage === 'object') {
+      return {
+        seedRoots: Array.isArray(acceptedCoverage.seedRoots) ? acceptedCoverage.seedRoots : [],
+        total: Number(acceptedCoverage.total) || 0,
+        counts: acceptedCoverage.counts || {},
+        incomplete: Array.isArray(acceptedCoverage.incomplete) ? acceptedCoverage.incomplete : [],
+        coverageRate: Number(acceptedCoverage.coverageRate) || 0,
+        complete: acceptedCoverage.complete === true
+      };
+    }
+    if (!inventory || !Array.isArray(inventory.domains)) return null;
+    const counts = { pending: 0, in_progress: 0, tested: 0, skipped: 0, out_of_scope: 0 };
+    const incomplete = [];
+    for (const item of inventory.domains) {
+      const status = item?.test_status;
+      if (counts[status] !== undefined) counts[status]++;
+      if (status === 'pending' || status === 'in_progress') incomplete.push(item.hostname);
+    }
+    const total = inventory.domains.length;
+    const closed = counts.tested + counts.skipped + counts.out_of_scope;
+    return {
+      seedRoots: Array.isArray(inventory.seedRoots) ? inventory.seedRoots : [],
+      total,
+      counts,
+      incomplete,
+      coverageRate: total ? closed / total : 0,
+      complete: total > 0 && incomplete.length === 0
+    };
+  }
   window.createDeliveryView = root => {
-    let currentRecord, session = '';
+    let currentRecord, currentInventory, session = '';
     const label = node('strong', '', '新项目交付'), status = node('span', 'delivery-status');
     const summary = node('summary', 'delivery-heading'); summary.append(label, status);
     const details = node('details', 'delivery-panel');
@@ -26,19 +57,42 @@
     details.append(summary, body); root.append(details);
     root.hidden = true;
     return {
-      update(record, sessionId) {
-        if (sessionId !== session) { details.open = false; currentRecord = undefined; session = sessionId; }
+      update(record, sessionId, inventory) {
+        if (sessionId !== session) { details.open = false; currentRecord = undefined; currentInventory = undefined; session = sessionId; }
         const visible = record?.projectType === 'new-development' && record.acceptance && Array.isArray(record.findings);
         root.hidden = !visible;
-        if (!visible) { body.replaceChildren(); currentRecord = undefined; return; }
-        if (currentRecord === record || currentRecord && Number.isSafeInteger(record.revision) && currentRecord.revision === record.revision) return;
+        if (!visible) { body.replaceChildren(); currentRecord = undefined; currentInventory = undefined; return; }
+        if ((currentRecord === record || (currentRecord && Number.isSafeInteger(record.revision) && currentRecord.revision === record.revision))
+          && currentInventory === inventory) return;
         currentRecord = record;
+        currentInventory = inventory;
         const open = record.findings.filter(item => item.status === 'open');
         const blocking = open.filter(item => ['critical', 'high'].includes(item.severity));
         const passed = stages.filter(([stage]) => accepted(record, stage)).length;
-        status.textContent = `${passed}/5 已记录验收${blocking.length ? ` · ${blocking.length} 项发布阻塞` : passed === 5 ? ' · 交付验收已记录' : ''}`;
+        const coverage = domainCoverage(inventory, record);
+        const coverageLabel = coverage
+          ? (coverage.complete
+            ? ` · 域名覆盖 ${coverage.total}/${coverage.total}`
+            : ` · 域名待测 ${coverage.incomplete.length}/${coverage.total || 0}`)
+          : '';
+        status.textContent = `${passed}/5 已记录验收${blocking.length ? ` · ${blocking.length} 项发布阻塞` : passed === 5 ? ' · 交付验收已记录' : ''}${coverageLabel}`;
         const fragment = document.createDocumentFragment();
         fragment.append(node('p', 'delivery-objective', text(record.objective)), node('p', 'delivery-artifact', '当前版本 · ' + text(record.artifact)));
+        if (coverage && (coverage.total || coverage.seedRoots.length)) {
+          const section = node('section', 'delivery-domains');
+          section.append(node('h3', '', '域名覆盖'));
+          const rate = Math.round((coverage.coverageRate || 0) * 100);
+          section.append(node('p', 'delivery-detail',
+            coverage.complete
+              ? `已完成 · ${coverage.total} 个主机 · 覆盖率 ${rate}%`
+              : `未完成 · 待测 ${coverage.incomplete.length} · 共 ${coverage.total} · 覆盖率 ${rate}%`));
+          if (coverage.seedRoots.length) section.append(node('p', 'delivery-detail', '种子域 · ' + coverage.seedRoots.slice(0, 12).join(', ')));
+          if (coverage.incomplete.length) section.append(node('p', 'delivery-detail', '待测 · ' + coverage.incomplete.slice(0, 20).join(', ')));
+          const counts = coverage.counts || {};
+          section.append(node('p', 'delivery-detail',
+            `已测 ${counts.tested || 0} · 跳过 ${counts.skipped || 0} · 范围外 ${counts.out_of_scope || 0} · 进行中 ${counts.in_progress || 0}`));
+          fragment.append(section);
+        }
         const timeline = node('ol', 'delivery-stages');
         for (const [stage, title] of stages) {
           const entry = record.acceptance[stage], blocked = record.blocked?.[stage];
@@ -71,7 +125,7 @@
           if (open.length > 50) section.append(node('p', 'delivery-detail', '更多问题请通过交付记录工具查看。'));
           fragment.append(section);
         }
-        fragment.append(node('p', 'delivery-caption', '阶段验收由 Agent 根据执行证据记录；单项任务可独立运行。模型与 SSH 是所有任务的基础配置。'));
+        fragment.append(node('p', 'delivery-caption', '阶段验收由 Agent 根据执行证据记录；安全阶段需域名台账覆盖完整。单项任务可独立运行。'));
         const scrollTop = body.scrollTop;
         body.replaceChildren(fragment);
         body.scrollTop = scrollTop;

@@ -1,0 +1,64 @@
+diff --git a/build/npm/postinstall.ts b/build/npm/postinstall.ts
+index e610d7a..91c8310 100644
+--- a/build/npm/postinstall.ts
++++ b/build/npm/postinstall.ts
+@@ -245,8 +245,8 @@ async function runWithConcurrency(tasks: (() => Promise<void>)[], concurrency: n
+ async function main() {
+ 	if (!process.env['VSCODE_FORCE_INSTALL'] && isUpToDate()) {
+ 		log('.', 'All dependencies up to date, skipping postinstall.');
+-		child_process.execSync('git config pull.rebase merges');
+-		child_process.execSync('git config blame.ignoreRevsFile .git-blame-ignore-revs');
++		child_process.execFileSync('git', ['-c', `safe.directory=${root}`, '-C', root, 'config', '--local', 'pull.rebase', 'merges']);
++		child_process.execFileSync('git', ['-c', `safe.directory=${root}`, '-C', root, 'config', '--local', 'blame.ignoreRevsFile', '.git-blame-ignore-revs']);
+ 		return;
+ 	}
+ 
+@@ -320,8 +320,8 @@ async function main() {
+ 	log('.', `Running ${parallelTasks.length} npm installs with concurrency ${concurrency}...`);
+ 	await runWithConcurrency(parallelTasks, concurrency);
+ 
+-	child_process.execSync('git config pull.rebase merges');
+-	child_process.execSync('git config blame.ignoreRevsFile .git-blame-ignore-revs');
++	child_process.execFileSync('git', ['-c', `safe.directory=${root}`, '-C', root, 'config', '--local', 'pull.rebase', 'merges']);
++	child_process.execFileSync('git', ['-c', `safe.directory=${root}`, '-C', root, 'config', '--local', 'blame.ignoreRevsFile', '.git-blame-ignore-revs']);
+ 
+ 	// Symlink .claude/ files to their canonical locations to test Claude agent harness
+ 	const claudeDir = path.join(root, '.claude');
+diff --git a/build/npm/installStateHash.ts b/build/npm/installStateHash.ts
+index 0b3d989..5c8d1a6 100644
+--- a/build/npm/installStateHash.ts
++++ b/build/npm/installStateHash.ts
+@@ -27,6 +27,10 @@ export function collectInputFiles(): string[] {
+ 	}
+ 
+ 	files.push(path.join(root, '.nvmrc'));
++	// Changes to installation logic must invalidate an older successful install.
++	for (const file of ['postinstall.ts', 'preinstall.ts', 'dirs.ts', 'installStateHash.ts']) {
++		files.push(path.join(root, 'build', 'npm', file));
++	}
+ 
+ 	return files;
+ }
+@@ -126,6 +130,22 @@ export function isUpToDate(): boolean {
+ 	if (!saved) {
+ 		return false;
+ 	}
++	// A matching input hash does not prove that dependencies survived cleanup.
++	for (const dir of dirs) {
++		try {
++			const manifest = JSON.parse(fs.readFileSync(path.join(root, dir, 'package.json'), 'utf8'));
++			const hasDependencies = ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies']
++				.some(key => Object.keys(manifest[key] ?? {}).length > 0);
++			if (!hasDependencies) {
++				continue;
++			}
++			if (!fs.statSync(path.join(root, dir, 'node_modules')).isDirectory()) {
++				return false;
++			}
++		} catch {
++			return false;
++		}
++	}
+ 	const current = computeState();
+ 	return saved.nodeVersion === current.nodeVersion
+ 		&& JSON.stringify(saved.fileHashes) === JSON.stringify(current.fileHashes);

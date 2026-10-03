@@ -8,7 +8,18 @@
 
   function sourceDocument(source) {
     const parsed = new DOMParser().parseFromString(source, 'text/html');
+    // Bound sanitizer/layout work even when short markup expands to many DOM
+    // nodes. Walk without recursion or allocating a full node collection.
+    let node = parsed, depth = 0, count = 0;
+    while (node) {
+      if (++count > 20000 || depth > 128) throw new Error('HTML 结构过于复杂，请减少节点或嵌套层级后预览。');
+      if (node.firstChild) { node = node.firstChild; depth++; continue; }
+      while (node !== parsed && !node.nextSibling) { node = node.parentNode; depth--; }
+      if (node === parsed) break;
+      node = node.nextSibling;
+    }
     const inline = [];
+    let inlineChars = 0;
     for (const element of [...parsed.querySelectorAll('*')]) {
       const tag = element.localName.toLowerCase();
       if (discard.has(tag)) { element.remove(); continue; }
@@ -27,7 +38,10 @@
             element.setAttribute('data-ubovm-inline', identifier);
             // Preserve inline precedence for ordinary author selectors while
             // retaining !important semantics and the host nonce-only policy.
-            inline.push(`[data-ubovm-inline="${identifier}"]${':not(#ubovm-preview-inline-precedence)'.repeat(16)}{${css}}`);
+            const rule = `[data-ubovm-inline="${identifier}"]${':not(#ubovm-preview-inline-precedence)'.repeat(16)}{${css}}`;
+            inlineChars += rule.length;
+            if (inlineChars > 2 * 1024 * 1024) throw new Error('HTML 内联样式过多，请精简样式后预览。');
+            inline.push(rule);
           }
         } else if (!attributes.has(name) && !/^aria-[a-z-]+$/.test(name)) element.removeAttribute(attribute.name);
       }
@@ -51,14 +65,15 @@
     return '<!doctype html>\n' + parsed.documentElement.outerHTML;
   }
 
-  function close() {
+  function close(options = {}) {
     if (!current) return;
     const value = current; current = undefined;
+    clearTimeout(value.blurTimer);
     window.removeEventListener('blur', value.onBlur);
     document.removeEventListener('keydown', value.onKeydown, true);
     value.frame.srcdoc = ''; value.dialog.remove();
     for (const [element, inert] of value.background) if (element.isConnected) element.inert = inert;
-    if (value.returnFocus?.isConnected) value.returnFocus.focus({ preventScroll: true });
+    if (options.restoreFocus !== false && value.returnFocus?.isConnected) value.returnFocus.focus({ preventScroll: true });
   }
 
   function open(html, options = {}) {
@@ -66,7 +81,7 @@
     if (html.length > 2 * 1024 * 1024) throw new Error('HTML 预览最多支持 2 MiB 源码。');
     const restore = options.returnFocus ?? current?.returnFocus ?? document.activeElement;
     const srcdoc = sourceDocument(html);
-    close();
+    close({ restoreFocus: false });
     const dialog = document.createElement('section'); dialog.className = 'html-preview'; dialog.setAttribute('role', 'dialog'); dialog.setAttribute('aria-modal', 'true'); dialog.setAttribute('aria-label', 'HTML 预览');
     const header = document.createElement('header'); header.className = 'html-preview-header';
     const heading = document.createElement('strong'); heading.textContent = 'HTML 预览'; heading.className = 'html-preview-title';
@@ -88,20 +103,28 @@
     const background = [...document.body.children].filter(element => !['SCRIPT', 'STYLE'].includes(element.tagName)).map(element => [element, element.inert]);
     for (const [element] of background) element.inert = true;
     document.body.append(dialog);
+    const owner = { dialog, frame, background, returnFocus: restore, blurTimer: undefined };
+    const active = () => current === owner;
     const select = (kind, focus = false) => {
+      if (!active()) return;
       const isSource = kind === 'source'; rendered.hidden = isSource; code.hidden = !isSource;
       preview.setAttribute('aria-selected', String(!isSource)); source.setAttribute('aria-selected', String(isSource)); preview.tabIndex = isSource ? -1 : 0; source.tabIndex = isSource ? 0 : -1;
       if (focus) (isSource ? source : preview).focus();
     };
-    preview.addEventListener('click', () => select('preview')); source.addEventListener('click', () => select('source')); dismiss.addEventListener('click', close);
+    preview.addEventListener('click', () => select('preview')); source.addEventListener('click', () => select('source')); dismiss.addEventListener('click', () => { if (active()) close(); });
     tabs.addEventListener('keydown', event => { if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) { event.preventDefault(); select(event.key === 'Home' ? 'preview' : event.key === 'End' ? 'source' : source.getAttribute('aria-selected') === 'true' ? 'preview' : 'source', true); } });
     copy.addEventListener('click', async () => {
+      if (!active() || copy.disabled) return;
       copy.disabled = true;
-      try { await options.onCopy(html); status.textContent = '源码已复制'; }
-      catch { status.textContent = '复制失败，请切换源码后手动复制。'; }
-      finally { if (dialog.isConnected) copy.disabled = false; }
+      try {
+        const result = await options.onCopy(html);
+        if (active()) status.textContent = result === false ? '复制失败，请切换源码后手动复制。' : '源码已复制';
+      }
+      catch { if (active()) status.textContent = '复制失败，请切换源码后手动复制。'; }
+      finally { if (active()) copy.disabled = false; }
     });
     const onKeydown = event => {
+      if (!active()) return;
       if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close(); return; }
       if (event.key !== 'Tab') return;
       const focusable = [...dialog.querySelectorAll('button:not(:disabled), [tabindex="0"]')].filter(element => element.tabIndex >= 0 && !element.hidden && !element.closest('[hidden]'));
@@ -111,10 +134,14 @@
     };
     // A sandboxed opaque frame cannot forward Escape. Keep keyboard focus in
     // the host controls after a pointer click; wheel scrolling still works.
-    const onBlur = () => setTimeout(() => { if (current?.dialog === dialog && document.activeElement === frame) preview.focus({ preventScroll: true }); }, 0);
-    current = { dialog, frame, background, returnFocus: restore, onKeydown, onBlur };
+    const onBlur = () => {
+      clearTimeout(owner.blurTimer);
+      owner.blurTimer = setTimeout(() => { if (active() && document.activeElement === frame) preview.focus({ preventScroll: true }); }, 0);
+    };
+    Object.assign(owner, { onKeydown, onBlur }); current = owner;
     document.addEventListener('keydown', onKeydown, true); window.addEventListener('blur', onBlur);
     select('preview'); preview.focus({ preventScroll: true });
   }
-  window.UBOVMHtmlPreview = Object.freeze({ open, close });
+  window.addEventListener('pagehide', () => close({ restoreFocus: false }));
+  window.UBOVMHtmlPreview = Object.freeze({ open, close, get isOpen() { return Boolean(current); } });
 })();

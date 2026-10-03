@@ -396,7 +396,23 @@
             },
             "maxIntents": {
               "type": "integer",
-              "minimum": 1
+              "minimum": 1,
+              "maximum": 20
+            },
+            "openIntents": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 20
+            },
+            "maxConcurrency": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10
+            },
+            "maxRounds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
             },
             "maxRepairs": {
               "type": "integer",
@@ -875,6 +891,11 @@
           "group": "navigation@-1"
         },
         {
+          "command": "ubovm.newProject",
+          "when": "view == ubovm.sessions && !ubovm.settingsPage",
+          "group": "navigation@0"
+        },
+        {
           "command": "workbench.action.quickOpen",
           "when": "view == workbench.explorer.fileView",
           "group": "navigation@1"
@@ -965,11 +986,6 @@
           "command": "ubovm.newGoal",
           "when": "view == ubovm.sessions && ubovm.mode == goal && !ubovm.settingsPage",
           "group": "1_chat@1"
-        },
-        {
-          "command": "ubovm.newProject",
-          "when": "view == ubovm.sessions && !ubovm.settingsPage",
-          "group": "2_project@1"
         }
       ]
     },

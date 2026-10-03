@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { Type } from 'typebox';
-import { assertSession, checkAbort, required, toolResult } from '../memory-store.mjs';
+import { assertSession, checkAbort, required, toolResult } from '../shared/store/memory-store.mjs';
 
 const statuses = ['pending', 'in_progress', 'completed'];
 const text = value => Array.from(required(value, 'content')).slice(0, 500).join('');
@@ -37,7 +37,7 @@ export function createTodoTool({ store, sessionId, workerId = 'worker' } = {}) {
       if (!input || typeof input !== 'object' || Array.isArray(input)) throw new TypeError('todo arguments must be an object');
       for (const key of Object.keys(input)) if (!['action', 'items', 'todo_id', 'content', 'status'].includes(key)) throw new Error(`Unknown todo field: ${key}`);
       const action = required(input.action, 'action').toLowerCase();
-      if (action === 'list') { await store.flush(); checkAbort(signal); return toolResult(list(store.snapshot().todos, workerId, input.status ? status(input.status) : '')); }
+      if (action === 'list') { await store.flush(); checkAbort(signal); return toolResult(list(store.snapshot(['todos']).todos, workerId, input.status ? status(input.status) : '')); }
       const result = await store.commit(state => {
         checkAbort(signal);
         const now = new Date().toISOString();
@@ -94,7 +94,7 @@ export function createTodoTool({ store, sessionId, workerId = 'worker' } = {}) {
       });
     },
     summary(owner = workerId) {
-      const items = store.snapshot().todos;
+      const items = store.snapshot(['todos']).todos;
       if (!items.length) return '';
       const line = item => `- [${item.status}] (${item.worker_id === owner ? 'you' : item.worker_id}) ${item.content} #${item.id}`;
       const active = items.filter(item => item.status !== 'completed').slice(0, 40).map(line);

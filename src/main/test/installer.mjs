@@ -46,6 +46,8 @@ test('installer installs standalone app, launches packaged SDK and uninstalls wi
     const executable = path.join(installed, 'UBOVM.exe');
     await fs.access(executable);
     await fs.access(path.join(installed, 'resources/app/ubovm/node_modules/ssh2/package.json'));
+    await fs.access(path.join(installed, 'resources/app/ubovm/runtime/python/python.exe'));
+    await fs.access(path.join(installed, 'resources/app/ubovm/runtime/python/.ubovm-python-runtime.json'));
     await fs.writeFile(path.join(extension, 'package.json'), JSON.stringify({ name: 'installer-probe', publisher: 'ubovm-test', version: '0.0.1', engines: { vscode: '^1.100.0' }, main: './extension.cjs', activationEvents: ['onStartupFinished'] }));
     await fs.writeFile(path.join(extension, 'extension.cjs'), `
 const vscode = require('vscode');

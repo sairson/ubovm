@@ -290,6 +290,9 @@ export class PaneCompositeBar extends Disposable {
 
 			// Update the composite bar by adding
 			this.addComposite(viewContainer);
+			if (this.options.partContainerClass === 'sidebar') {
+				void this.compositeBar.pin(id);
+			}
 			this.compositeBar.activateComposite(viewContainer.id);
 
 			if (this.shouldBeHidden(viewContainer)) {
@@ -433,6 +436,12 @@ export class PaneCompositeBar extends Disposable {
 	private shouldBeHidden(viewContainerOrId: string | ViewContainer, cachedViewContainer?: ICachedViewContainer): boolean {
 		const viewContainer = isString(viewContainerOrId) ? this.getViewContainer(viewContainerOrId) : viewContainerOrId;
 		const viewContainerId = isString(viewContainerOrId) ? viewContainerOrId : viewContainerOrId.id;
+		if (this.options.partContainerClass === 'panel' && viewContainerId !== 'terminal' && viewContainerId !== 'workbench.view.extension.ubovm-workers') {
+			return true;
+		}
+		if (this.options.partContainerClass === 'sidebar' && viewContainerId !== 'workbench.view.explorer' && viewContainerId !== 'workbench.view.search' && viewContainerId !== 'workbench.view.extension.ubovm-workers' && viewContainerId !== 'workbench.view.extension.ubovm-blackboard') {
+			return true;
+		}
 
 		if (viewContainer) {
 			if (viewContainer.hideIfEmpty) {

@@ -1,4 +1,4 @@
-<!-- Copyright (C) Microsoft Corporation. All rights reserved. -->
+﻿<!-- Copyright (C) Microsoft Corporation. All rights reserved. -->
 <!DOCTYPE html>
 <html>
 	<head>
@@ -81,7 +81,7 @@
     position: fixed; inset: 0; z-index: 9999; display: grid; place-items: center;
     overflow: hidden; background: #f7f7f5; color: #252626;
     font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
-    transition: opacity 260ms cubic-bezier(.22, 1, .36, 1), visibility 260ms;
+    transition: opacity 140ms cubic-bezier(.22, 1, .36, 1), visibility 140ms;
   }
   #ubovm-startup::before {
     content: ""; position: absolute; inset: 0 0 auto; height: 44px; -webkit-app-region: drag;
@@ -99,7 +99,7 @@
   #ubovm-startup .startup-track { margin-top: 29px; width: 110px; height: 2px; overflow: hidden; border-radius: 4px; background: #e6e7e2; }
   #ubovm-startup .startup-track::after {
     content: ""; display: block; width: 40px; height: 100%; border-radius: inherit; background: #656a60;
-    animation: ubovm-startup-progress 1500ms ease-in-out infinite;
+    animation: ubovm-startup-progress 900ms ease-in-out infinite;
   }
   #ubovm-startup.ubovm-startup-exit { opacity: 0; visibility: hidden; pointer-events: none; }
   @keyframes ubovm-startup-breathe { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-3px); } }
@@ -109,7 +109,7 @@
     #ubovm-startup .startup-track::after { width: 100%; opacity: .4; }
   }
 </style>
-<div id="ubovm-startup" role="status" aria-live="polite" aria-label="正在打开工作空间">
+<div id="ubovm-startup" role="status" aria-live="polite" aria-label="姝ｅ湪鎵撳紑宸ヤ綔绌洪棿">
   <div class="startup-card">
     <div class="startup-mark" aria-hidden="true"><svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" fill="currentColor">
   <path d="M10 12h10v27a12 12 0 0 0 24 0V12h10v27a22 22 0 0 1-44 0V12Z"/>
@@ -117,7 +117,7 @@
 </svg>
 </div>
     <div class="startup-name" aria-hidden="true">UBOVM</div>
-    <div class="startup-caption">正在打开工作空间</div>
+    <div class="startup-caption">姝ｅ湪鎵撳紑宸ヤ綔绌洪棿</div>
     <div class="startup-track" aria-hidden="true"></div>
   </div>
 </div>

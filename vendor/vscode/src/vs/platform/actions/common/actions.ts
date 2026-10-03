@@ -547,7 +547,8 @@ export const MenuRegistry: IMenuRegistry = new class implements IMenuRegistry {
 		if (id.id !== 'MenubarMainMenu' && compactMenus.test(id.id)) {
 			const allowed = new Set([
 				'undo', 'redo', 'editor.action.clipboardCutAction', 'editor.action.clipboardCopyAction', 'editor.action.clipboardPasteAction', 'editor.action.selectAll',
-				'ubovm.validateCodeChanges', 'ubovm.attachSelection', 'ubovm.reviewCodeChanges', 'ubovm.toggleTheme', 'ubovm.openSettings', 'ubovm.selectSettings', 'ubovm.closeSettings', 'ubovm.openMcp', 'ubovm.openSkills', 'ubovm.newChat', 'ubovm.newGoal', 'ubovm.openAssistant', 'ubovm.selectConversation', 'ubovm.openTerminal', 'ubovm.openLocalTerminal', 'ubovm.selectTerminal', 'ubovm.resetLayout', 'ubovm.reloadConversation', 'ubovm.searchConversations', 'ubovm.hideSessions', 'ubovm.hideFiles', 'ubovm.createFirstFile',
+				'ubovm.expandFileEditor', 'ubovm.restoreFileEditor', 'ubovm.validateCodeChanges', 'ubovm.attachSelection', 'ubovm.reviewCodeChanges', 'ubovm.toggleTheme', 'ubovm.openSettings', 'ubovm.selectSettings', 'ubovm.closeSettings', 'ubovm.openMcp', 'ubovm.openSkills', 'ubovm.newChat', 'ubovm.newProject', 'ubovm.openProject', 'ubovm.manageProjects', 'ubovm.newProjectConversation', 'ubovm.changeProjectWorkspace', 'ubovm.renameProject', 'ubovm.deleteProject', 'ubovm.newGoal', 'ubovm.openAssistant', 'ubovm.selectConversation', 'ubovm.openTerminal', 'ubovm.openLocalTerminal', 'ubovm.selectTerminal', 'ubovm.resetLayout', 'ubovm.reloadConversation', 'ubovm.searchConversations', 'ubovm.hideSessions', 'ubovm.hideFiles', 'ubovm.createFirstFile',
+				'workbench.action.alignQuickInputCenter', 'workbench.action.alignQuickInputTop',
 				'workbench.action.toggleSidebarVisibility', 'workbench.action.toggleAuxiliaryBar', 'workbench.action.togglePanel',
 				'workbench.action.closeSidebar', 'workbench.action.closeAuxiliaryBar', 'workbench.action.closePanel',
 				'workbench.action.closeActiveEditor', 'workbench.action.closeOtherEditors', 'workbench.action.closeAllEditors',
@@ -558,7 +559,9 @@ export const MenuRegistry: IMenuRegistry = new class implements IMenuRegistry {
 				'workbench.files.action.refreshFilesExplorer', 'workbench.files.action.collapseExplorerFolders',
 				'workbench.action.terminal.new', 'workbench.action.terminal.kill', 'workbench.action.terminal.focus'
 			]);
-			return result.filter(item => 'command' in item && allowed.has(item.command.id));
+			for (const command of ['markdown.showPreview', 'markdown.showPreviewToSide', 'markdown.reopenAsPreview', 'markdown.showSource', 'markdown.reopenAsSource', 'markdown.preview.refresh', 'markdown.preview.toggleLock', 'markdown.showPreviewSecuritySelector']) { allowed.add(command); }
+			const fileSearch = /^(?:(?:closeReplaceInFilesWidget|toggleSearch(?:CaseSensitive|WholeWord|Regex|PreserveCase)|addCursorsAtSearchResults)$|filesExplorer\.(?:findInFolder|findInWorkspace)$|search\.|workbench\.action\.(?:findInFiles|replaceInFiles|quickOpen|quickTextSearch|toggleSearchOnType|search\.)|workbench\.view\.search$|actions\.find(?:WithSelection)?$|editor\.actions\.findWithArgs$|(?:closeFindWidget|toggleFindCaseSensitive|toggleFindWholeWord|toggleFindRegex|toggleFindInSelection|togglePreserveCase)$|editor\.action\.(?:startFindReplaceAction|nextMatchFindAction|previousMatchFindAction|goToMatchFindAction|nextSelectionMatchFindAction|previousSelectionMatchFindAction|replaceOne|replaceAll|selectAllMatches|selectHighlights)$)/;
+			return result.filter(item => 'command' in item && (allowed.has(item.command.id) || fileSearch.test(item.command.id)));
 		}
 		return result;
 	}

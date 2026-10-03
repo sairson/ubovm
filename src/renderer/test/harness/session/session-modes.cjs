@@ -227,9 +227,11 @@ test('project creation and deletion actions are exposed through native menus and
   const manifest = require('../../../package.json');
   const menus = manifest.contributes.menus;
   assert(menus['view/title'].some(item => item.submenu === 'ubovm.create' && item.when.includes('ubovm.sessions')));
+  assert(menus['view/title'].some(item => item.command === 'ubovm.manageProjects' && item.when.includes('ubovm.sessions')));
+  assert(menus['view/title'].some(item => item.command === 'ubovm.newProject' && item.when.includes('ubovm.sessions') && item.group === 'navigation@0'));
   assert(menus['ubovm.create'].some(item => item.command === 'ubovm.newChat'));
   assert(menus['ubovm.create'].some(item => item.command === 'ubovm.newGoal'));
-  assert(menus['ubovm.create'].some(item => item.command === 'ubovm.newProject'));
+  assert.equal(menus['ubovm.create'].some(item => item.command === 'ubovm.newProject'), false);
   assert.equal(manifest.contributes.submenus.some(item => item.id === 'ubovm.create'), true);
   for (const group of ['inline@2', '9_delete']) assert(menus['view/item/context'].some(item => item.command === 'ubovm.deleteProject' && item.group === group && item.when.includes('ubovm.project')));
   const patch = fsSync.readFileSync(path.join(__dirname, '../../../../../resources/patches/minimal-ui.patch'), 'utf8');
@@ -1058,6 +1060,136 @@ test('invalid modes, oversized drafts and duplicate criterion IDs do not partial
     assert.deepEqual(store.list(), before);
     assert.equal(publications.length, count);
   }
+});
+
+test('assist evidence records only through explicit API and attaches selected snapshots to linked goals', async () => {
+  const f = harness(); await f.store.ready;
+  const source = f.store.current();
+  const { goalTools } = require('../../../harness/session/goal-tools.cjs');
+  const tools = Object.fromEntries(goalTools(f.store, source.id).map(tool => [tool.name, tool]));
+  assert.match(tools.record_assist_evidence.description, /explicitly asks to record evidence/i);
+  assert.match(tools.create_linked_goal.description, /explicitly names which recorded evidence_ids/i);
+  assert.match(tools.attach_assist_evidence.description, /explicitly names which evidence_ids/i);
+  const first = await tools.record_assist_evidence.execute('a', {
+    statement: '发现可疑端点',
+    observations: ['GET /admin 返回 200'],
+    tool_call_ids: ['call-1']
+  });
+  const second = await tools.record_assist_evidence.execute('b', {
+    statement: '未选中的证据',
+    observations: ['仅保留在协助会话']
+  });
+  const listed = await tools.list_assist_evidence.execute('list', {});
+  assert.equal(listed.details.evidence.length, 2);
+  assert.equal(f.store.listAssistEvidence(source.id).length, 2);
+  const created = await tools.create_linked_goal.execute('create', {
+    request_key: 'with-evidence',
+    objective: '验证协助证据注入',
+    criteria: ['可读到选定基础证据'],
+    evidence_ids: [first.details.evidence_id]
+  });
+  assert.equal(created.details.source_evidence_count, 1);
+  const goal = f.store.get(created.details.goal_id);
+  assert.equal(goal.goal.sourceEvidence.length, 1);
+  assert.equal(goal.goal.sourceEvidence[0].id, first.details.evidence_id);
+  assert.equal(goal.goal.sourceEvidence[0].statement, '发现可疑端点');
+  assert.deepEqual(goal.goal.sourceEvidence[0].observations, ['GET /admin 返回 200']);
+  assert.ok(!goal.goal.sourceEvidence.some(item => item.id === second.details.evidence_id));
+  const attached = await tools.attach_assist_evidence.execute('attach', {
+    goal_id: goal.id,
+    evidence_ids: [second.details.evidence_id]
+  });
+  assert.equal(attached.details.attached_count, 1);
+  assert.equal(attached.details.source_evidence_count, 2);
+  await tools.record_assist_evidence.execute('c', {
+    statement: '创建后新增不应污染快照',
+    observations: ['协助侧后续记录']
+  });
+  const firstSnapshot = goal.goal.sourceEvidence[0].statement;
+  await f.store.recordAssistEvidence(source.id, {
+    statement: '直接改写陈述不会回写已附加目标',
+    observations: ['隔离检查']
+  });
+  const reloaded = harness(Object.fromEntries(f.persisted)); await reloaded.store.ready;
+  const restoredGoal = reloaded.store.get(goal.id);
+  assert.equal(restoredGoal.goal.sourceEvidence.length, 2);
+  assert.equal(restoredGoal.goal.sourceEvidence[0].statement, firstSnapshot);
+  assert.equal(reloaded.store.listAssistEvidence(source.id).length, 4);
+  await assert.rejects(f.store.attachAssistEvidenceToGoal(source.id, goal.id, ['missing-id']), /证据不存在/);
+  await assert.rejects(f.store.attachAssistEvidenceToGoal(source.id, goal.id, []), /请选择要附加的证据/);
+});
+
+test('create_linked_goal without evidence_ids leaves sourceEvidence empty', async () => {
+  const f = harness(); await f.store.ready;
+  const source = f.store.current().id;
+  await f.store.recordAssistEvidence(source, { statement: '保留但不自动附加', observations: ['观察'] });
+  const goal = await f.store.createLinkedGoal(source, { request_key: 'no-evidence', objective: '空证据目标', criteria: [] });
+  assert.equal(goal.goal.sourceEvidence, undefined);
+});
+
+test('assist evidence deduplicates identical content and retries merge newly named evidence', async () => {
+  const f = harness(); await f.store.ready;
+  const source = f.store.current().id;
+  const first = await f.store.recordAssistEvidence(source, {
+    statement: '同一陈述',
+    observations: ['观察 B', '观察 A'],
+    tool_call_ids: ['z', 'a']
+  });
+  const reused = await f.store.recordAssistEvidence(source, {
+    statement: '同一陈述',
+    observations: ['观察 A', '观察 B'],
+    tool_call_ids: ['a', 'z']
+  });
+  assert.equal(reused.id, first.id);
+  assert.equal(reused.reused, true);
+  assert.equal(f.store.listAssistEvidence(source).length, 1);
+  const second = await f.store.recordAssistEvidence(source, {
+    statement: '另一条证据',
+    observations: ['不同观察']
+  });
+  const created = await f.store.createLinkedGoal(source, {
+    request_key: 'merge-evidence',
+    objective: '合并证据目标',
+    criteria: [],
+    evidence_ids: [first.id]
+  });
+  assert.equal(created.goal.sourceEvidence.length, 1);
+  const retried = await f.store.createLinkedGoal(source, {
+    request_key: 'merge-evidence',
+    objective: '合并证据目标',
+    criteria: [],
+    evidence_ids: [first.id, second.id]
+  });
+  assert.equal(retried.id, created.id);
+  assert.equal(retried.goal.sourceEvidence.length, 2);
+  const related = f.store.related(source);
+  assert.equal(related[0].sourceEvidenceCount, 2);
+  assert.deepEqual(new Set(related[0].sourceEvidenceIds), new Set([first.id, second.id]));
+  const listed = f.store.listAssistEvidence(source);
+  assert.deepEqual(listed.find(item => item.id === first.id).attachedGoalIds, [created.id]);
+  const noop = await f.store.attachAssistEvidenceToGoal(source, created.id, [first.id]);
+  assert.equal(noop.attachedCount, 0);
+  assert.deepEqual(noop.alreadyAttachedIds, [first.id]);
+});
+
+test('assist evidence seed formatter marks foundational non-completion proof', () => {
+  const { formatAssistSourceEvidenceSeed } = require('../../../../harness/assist-evidence.cjs');
+  const text = formatAssistSourceEvidenceSeed({
+    id: 'ev-9',
+    statement: '端点可达',
+    observations: ['状态 200', ' 状态 200 '],
+    toolCallIds: ['b', 'a', 'a']
+  });
+  assert.match(text, /not completion proof/);
+  assert.match(text, /id=ev-9/);
+  assert.match(text, /Referenced assist tool calls: a, b/);
+  assert.equal((text.match(/状态 200/g) || []).length, 1);
+});
+
+test('reason prompt treats assist foundational seeds as non-completion evidence', () => {
+  const source = require('node:fs').readFileSync(require.resolve('../../../../harness/agents/prompts.mjs'), 'utf8');
+  assert.match(source, /Assist-mode foundational evidence/);
+  assert.match(source, /alone they never satisfy completion/);
 });
 
 test('bounded history retains 50 notes and 40 messages with an independent 50-session allowance per mode', async () => {

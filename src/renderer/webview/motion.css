@@ -17,8 +17,33 @@
 #settings-dialog[open] { opacity: 1; transform: none; animation: none; }
 /* The initial placeholder must paint immediately; only the progress bar waits. */
 .page-loading { animation: none; }
+.route-loading { position: absolute; inset: 0; z-index: 8; display: flex; flex-direction: column; justify-content: center; padding: clamp(20px, 6vw, 72px); background: var(--canvas); }
+.route-loading .panel-loading { margin: 0 0 20px; }
+.route-loading-lines { display: grid; gap: 12px; width: min(100%, 560px); }
+.route-loading-lines i { display: block; height: 10px; border-radius: 5px; background: var(--wash); overflow: hidden; contain: paint; position: relative; }
+.route-loading-lines i:nth-child(2) { width: 85%; }
+.route-loading-lines i:nth-child(3) { width: 65%; }
+.route-loading-lines i::after {
+  content: ''; position: absolute; inset: 0; pointer-events: none;
+  background: linear-gradient(100deg, transparent 18%, var(--skeleton-shine) 50%, transparent 82%);
+  transform: translateX(-120%);
+  animation: loading-sweep var(--skeleton-sweep-duration) var(--skeleton-sweep-ease) infinite;
+}
+.route-loading-lines i:nth-child(2)::after { animation-delay: 70ms; }
+.route-loading-lines i:nth-child(3)::after { animation-delay: 140ms; }
+body[data-switching="true"] :is(#assist-mode, #goal-mode) { pointer-events: none; }
+body[data-switching="true"] .page-progress { display: block; animation-delay: 0s; }
 .page-progress { animation: loading-reveal 160ms ease-out 180ms both; }
+/* Keep reduced-motion loading visible without a moving stripe. */
+@media (prefers-reduced-motion: reduce) {
+  .page-progress > span { width: 100%; opacity: .6; transform: none; }
+}
 @keyframes loading-reveal { from { opacity: 0; } to { opacity: 1; } }
+.composer.file-drag-over { outline: 2px solid var(--vscode-focusBorder, #5488ff); outline-offset: 2px; }
+#related-conversations { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 12px; flex-shrink: 0; max-height: 100px; overflow-y: auto; }
+#related-conversations[hidden] { display: none; }
+#related-conversations button { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 5px 10px; border: 1px solid var(--vscode-widget-border, #444); border-radius: 6px; background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); cursor: pointer; }
+#related-conversations button:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 2px; }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; scroll-behavior: auto !important; } }
 .page-background *, .page-background *::before, .page-background *::after,
 .settings-visible .shell *, .settings-visible .shell *::before, .settings-visible .shell *::after { animation-play-state: paused !important; }

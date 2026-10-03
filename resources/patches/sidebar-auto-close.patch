@@ -1,0 +1,13 @@
+diff --git a/src/vs/workbench/browser/parts/paneCompositePart.ts b/src/vs/workbench/browser/parts/paneCompositePart.ts
+--- a/src/vs/workbench/browser/parts/paneCompositePart.ts
++++ b/src/vs/workbench/browser/parts/paneCompositePart.ts
+@@ -273,7 +273,8 @@ export abstract class AbstractPaneCompositePart extends CompositePart<PaneCompos
+ 			this.storageService.store('ubovm.sidebar.empty', true, 1, 1);
+ 			this.hideActiveComposite();
+ 			this.layoutEmptyMessage();
+-			button.focus();
++			// Keep the sidebar visible with the empty CTA; only explicit hide collapses the pane.
++			button.focus();
+ 		}));
+ 	}
+ 

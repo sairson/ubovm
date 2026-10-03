@@ -55,15 +55,22 @@ export async function createWorkspaceTools(workspaceRoots = []) {
           let bytes = 0;
           while (bytes < buffer.length) { signal?.throwIfAborted(); const read = await handle.read(buffer, bytes, buffer.length - bytes, null); if (!read.bytesRead) break; bytes += read.bytesRead; }
           signal?.throwIfAborted();
-          const text = buffer.subarray(0, bytes).toString('utf8');
+          const fileTruncated = info.size > bytes;
+          let text;
+          try {
+            // A byte cap may bisect a valid character; with streaming decode
+            // only that unfinished suffix is omitted. Invalid interior bytes
+            // must never silently become replacement characters in evidence.
+            text = new TextDecoder('utf-8', { fatal: true }).decode(buffer.subarray(0, bytes), { stream: fileTruncated });
+          } catch { throw failure('WORKSPACE_BINARY_FILE', 'Only valid UTF-8 text files are supported'); }
           if (text.includes('\0')) throw failure('WORKSPACE_BINARY_FILE', 'Only UTF-8 text files are supported');
           const lines = text ? text.split(/\r?\n/) : [];
           if (text.endsWith('\n')) lines.pop();
           const selected = lines.slice(startLine - 1, startLine - 1 + lineCount);
           let content = '', count = 0, outputBytes = 0, lineTruncated = false;
           for (const line of selected) { const next = `${startLine + count}: ${line}\n`, size = Buffer.byteLength(next); if (outputBytes + size > 128 << 10) break; content += next; count++; outputBytes += size; }
-          if (!count && selected.length) { content = `${startLine}: ${selected[0].slice(0, 30000)}\n[line truncated]\n`; count = 1; lineTruncated = true; }
-          const fileTruncated = info.size > bytes, nextLine = count && startLine - 1 + count < lines.length ? startLine + count : null;
+          if (!count && selected.length) { content = `${startLine}: ${Array.from(selected[0]).slice(0, 30000).join('')}\n[line truncated]\n`; count = 1; lineTruncated = true; }
+          const nextLine = count && startLine - 1 + count < lines.length ? startLine + count : null;
           return result({ path: relative(roots[target.root], target.path), root: target.root, startLine, endLine: count ? startLine + count - 1 : null, content,
             truncated: fileTruncated || lineTruncated || nextLine !== null, fileTruncated, lineTruncated, accessibleLines: lines.length, nextLine });
         } finally { await handle.close(); }

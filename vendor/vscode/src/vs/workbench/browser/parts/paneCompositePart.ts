@@ -210,6 +210,10 @@ export abstract class AbstractPaneCompositePart extends CompositePart<PaneCompos
 	}
 
 	private onDidOpen(composite: IComposite): void {
+		if (this.partId === 'workbench.parts.sidebar') {
+			delete this.element.dataset.ubovmEmpty;
+			this.storageService.remove('ubovm.sidebar.empty', 1);
+		}
 		const compositeId = composite.getId();
 		this.activePaneContextKey.set(compositeId);
 		this.element.dataset.activeComposite = compositeId;
@@ -249,8 +253,29 @@ export abstract class AbstractPaneCompositePart extends CompositePart<PaneCompos
 		this.updateCompositeBar();
 
 		const focusTracker = this._register(trackFocus(parent));
+		this.initializeUbovmEmptySidebar();
 		this._register(focusTracker.onDidFocus(() => this.paneFocusContextKey.set(true)));
 		this._register(focusTracker.onDidBlur(() => this.paneFocusContextKey.set(false)));
+	}
+
+	private initializeUbovmEmptySidebar(): void {
+		if (this.partId !== 'workbench.parts.sidebar') { return; }
+		// Workspace-scoped state survives hiding the sidebar and restarting the IDE.
+		if (this.storageService.getBoolean('ubovm.sidebar.empty', 1, false)) { this.element.dataset.ubovmEmpty = 'true'; }
+		const button = this.element.ownerDocument.createElement('button');
+		button.className = 'ubovm-open-file-tree';
+		button.type = 'button';
+		button.textContent = '打开文件树';
+		this._register(addDisposableListener(button, 'click', () => { void this.openPaneComposite('workbench.view.explorer', true); }));
+		this.emptyPaneMessageElement?.replaceChildren(button);
+		this._register(addDisposableListener(this.element, 'ubovm-empty-sidebar', () => {
+			this.element.dataset.ubovmEmpty = 'true';
+			this.storageService.store('ubovm.sidebar.empty', true, 1, 1);
+			this.hideActiveComposite();
+			this.layoutEmptyMessage();
+			// Keep the sidebar visible with the empty CTA; only explicit hide collapses the pane.
+			button.focus();
+		}));
 	}
 
 	private createEmptyPaneMessage(parent: HTMLElement): void {
@@ -581,6 +606,7 @@ export abstract class AbstractPaneCompositePart extends CompositePart<PaneCompos
 	}
 
 	getLastActivePaneCompositeId(): string {
+		if (this.partId === 'workbench.parts.sidebar' && this.element.dataset.ubovmEmpty === 'true') { return ''; }
 		return this.getLastActiveCompositeId();
 	}
 

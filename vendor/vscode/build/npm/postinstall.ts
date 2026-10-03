@@ -186,12 +186,17 @@ function clearInheritedNpmrcConfig(dir: string, env: NodeJS.ProcessEnv): void {
 	}
 }
 
-function ensureAgentHarnessLink(sourceRelativePath: string, linkPath: string): 'existing' | 'junction' | 'symlink' | 'hard link' {
+function ensureAgentHarnessLink(sourceRelativePath: string, linkPath: string): 'existing' | 'missing' | 'junction' | 'symlink' | 'hard link' {
 	if (fs.existsSync(linkPath)) {
 		return 'existing';
 	}
 
 	const sourcePath = path.resolve(path.dirname(linkPath), sourceRelativePath);
+	// Vendored source distributions may omit optional agent instructions and skills.
+	if (!fs.existsSync(sourcePath)) {
+		log('.', `Skipping optional agent harness link ${linkPath}: source ${sourcePath} is missing`);
+		return 'missing';
+	}
 	const isDirectory = fs.statSync(sourcePath).isDirectory();
 
 	try {
@@ -240,22 +245,19 @@ async function runWithConcurrency(tasks: (() => Promise<void>)[], concurrency: n
 async function main() {
 	if (!process.env['VSCODE_FORCE_INSTALL'] && isUpToDate()) {
 		log('.', 'All dependencies up to date, skipping postinstall.');
-		child_process.execSync('git config pull.rebase merges');
-		child_process.execSync('git config blame.ignoreRevsFile .git-blame-ignore-revs');
+		child_process.execFileSync('git', ['-c', `safe.directory=${root}`, '-C', root, 'config', '--local', 'pull.rebase', 'merges']);
+		child_process.execFileSync('git', ['-c', `safe.directory=${root}`, '-C', root, 'config', '--local', 'blame.ignoreRevsFile', '.git-blame-ignore-revs']);
 		return;
 	}
 
 	const _state = computeState();
+	// A failed forced reinstall must not leave an older success marker behind.
+	fs.rmSync(stateFile, { force: true });
 
 	const nativeTasks: (() => Promise<void>)[] = [];
 	const parallelTasks: (() => Promise<void>)[] = [];
 
 	for (const dir of dirs) {
-		if (dir !== '' && !fs.existsSync(path.join(root, dir, 'package.json'))) {
-			log(dir, 'Skipping missing optional dependency directory.');
-			continue;
-		}
-
 		if (dir === '') {
 			removeParcelWatcherPrebuild(dir);
 			continue; // already executed in root
@@ -318,11 +320,8 @@ async function main() {
 	log('.', `Running ${parallelTasks.length} npm installs with concurrency ${concurrency}...`);
 	await runWithConcurrency(parallelTasks, concurrency);
 
-	child_process.execSync('git config pull.rebase merges');
-	child_process.execSync('git config blame.ignoreRevsFile .git-blame-ignore-revs');
-
-	fs.writeFileSync(stateFile, JSON.stringify(_state));
-	fs.writeFileSync(stateContentsFile, JSON.stringify(computeContents()));
+	child_process.execFileSync('git', ['-c', `safe.directory=${root}`, '-C', root, 'config', '--local', 'pull.rebase', 'merges']);
+	child_process.execFileSync('git', ['-c', `safe.directory=${root}`, '-C', root, 'config', '--local', 'blame.ignoreRevsFile', '.git-blame-ignore-revs']);
 
 	// Symlink .claude/ files to their canonical locations to test Claude agent harness
 	const claudeDir = path.join(root, '.claude');
@@ -330,13 +329,13 @@ async function main() {
 
 	const claudeMdLink = path.join(claudeDir, 'CLAUDE.md');
 	const claudeMdLinkType = ensureAgentHarnessLink(path.join('..', '.github', 'copilot-instructions.md'), claudeMdLink);
-	if (claudeMdLinkType !== 'existing') {
+	if (claudeMdLinkType !== 'existing' && claudeMdLinkType !== 'missing') {
 		log('.', `Created ${claudeMdLinkType} .claude/CLAUDE.md -> .github/copilot-instructions.md`);
 	}
 
 	const claudeSkillsLink = path.join(claudeDir, 'skills');
 	const claudeSkillsLinkType = ensureAgentHarnessLink(path.join('..', '.agents', 'skills'), claudeSkillsLink);
-	if (claudeSkillsLinkType !== 'existing') {
+	if (claudeSkillsLinkType !== 'existing' && claudeSkillsLinkType !== 'missing') {
 		log('.', `Created ${claudeSkillsLinkType} .claude/skills -> .agents/skills`);
 	}
 
@@ -401,6 +400,10 @@ async function main() {
 			log(dir || '.', 'Patched foundry-local-sdk coreInterop.js (on-demand native runtime override)');
 		}
 	}
+
+	// Mark installation complete only after links and dependency patches succeed.
+	fs.writeFileSync(stateContentsFile, JSON.stringify(computeContents()));
+	fs.writeFileSync(stateFile, JSON.stringify(_state));
 }
 
 main().catch(err => {

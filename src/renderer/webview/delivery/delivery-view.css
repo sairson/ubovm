@@ -15,8 +15,8 @@
 .delivery-stage span { color: var(--muted); font-size: 10px; }
 .delivery-stage[data-status="accepted"] { border-color: var(--accent); background: var(--accent-wash); }
 .delivery-stage[data-status="blocked"] { border-color: var(--vscode-editorWarning-foreground, #b78943); }
-.delivery-check, .delivery-findings { padding: 9px 0; border-top: 1px solid var(--border); }
-.delivery-check h3, .delivery-findings h3 { font-size: 12px; font-weight: 500; margin-bottom: 4px; }
+.delivery-check, .delivery-findings, .delivery-domains { padding: 9px 0; border-top: 1px solid var(--border); }
+.delivery-check h3, .delivery-findings h3, .delivery-domains h3 { font-size: 12px; font-weight: 500; margin-bottom: 4px; }
 .delivery-finding { display: flex; flex-direction: column; gap: 2px; padding: 6px 0; }
 .delivery-finding strong { font-weight: 500; }
 .delivery-finding[data-severity="high"] strong, .delivery-finding[data-severity="critical"] strong { color: var(--vscode-errorForeground, #c34d4d); }

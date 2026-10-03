@@ -213,7 +213,7 @@ export class SidebarPart extends AbstractPaneCompositePart {
 			pinnedViewContainersKey: ActivitybarPart.pinnedViewContainersKey,
 			placeholderViewContainersKey: ActivitybarPart.placeholderViewContainersKey,
 			viewContainersWorkspaceStateKey: ActivitybarPart.viewContainersWorkspaceStateKey,
-			icon: true,
+			icon: false,
 			orientation: ActionsOrientation.HORIZONTAL,
 			recomputeSizes: true,
 			activityHoverOptions: {
@@ -277,7 +277,8 @@ export class SidebarPart extends AbstractPaneCompositePart {
 	protected getCompositeBarPosition(): CompositeBarPosition {
 		const activityBarPosition = this.configurationService.getValue<ActivityBarPosition>(LayoutSettings.ACTIVITY_BAR_LOCATION);
 		switch (activityBarPosition) {
-			case ActivityBarPosition.TOP: return CompositeBarPosition.TOP;
+			// Tabs already identify the active view; use the title row instead of adding a header.
+			case ActivityBarPosition.TOP: return CompositeBarPosition.TITLE;
 			case ActivityBarPosition.BOTTOM: return CompositeBarPosition.BOTTOM;
 			case ActivityBarPosition.HIDDEN:
 			case ActivityBarPosition.DEFAULT: // noop

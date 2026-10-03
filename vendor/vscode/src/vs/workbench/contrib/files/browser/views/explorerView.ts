@@ -849,7 +849,7 @@ export class ExplorerView extends ViewPane implements IExplorerView {
 		const roots = this.explorerService.roots;
 		let input: ExplorerItem | ExplorerItem[] = roots[0];
 		this.updateTitle(this.name);
-		if (roots.length !== 1 || this.contextService.getWorkbenchState() !== WorkbenchState.FOLDER || roots[0]?.error) {
+		if (roots.length !== 1 || roots[0]?.error) {
 			// Display roots only when multi folder workspace
 			input = roots;
 		}

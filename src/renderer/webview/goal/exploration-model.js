@@ -1,5 +1,88 @@
 (() => {
   'use strict';
+  // Frame-local spatial index. Oversized rectangles use a bounded fallback so
+  // unusual canvas dimensions cannot allocate millions of grid buckets.
+  window.createGraphCollisionIndex = () => {
+    const cells = new Map(), all = [], oversized = [];
+    const range = (box, padding) => {
+      const values = [box.left - padding, box.top - padding, box.right + padding, box.bottom + padding];
+      if (!values.every(Number.isFinite)) return null;
+      const [left, top, right, bottom] = values.map(value => Math.floor(value / 256));
+      if (![left, top, right, bottom].every(Number.isSafeInteger) || right < left || bottom < top ||
+          (right - left + 1) * (bottom - top + 1) > 256) return null;
+      return { left, top, right, bottom };
+    };
+    const intersects = (a, b) => a.left < b.right + 4 && a.right > b.left - 4 && a.top < b.bottom + 4 && a.bottom > b.top - 4;
+    return {
+      add(box) {
+        all.push(box);
+        const area = range(box, 0);
+        if (!area) { oversized.push(box); return; }
+        for (let x = area.left; x <= area.right; x++) for (let y = area.top; y <= area.bottom; y++) {
+          const key = `${x}:${y}`;
+          if (!cells.has(key)) cells.set(key, []);
+          cells.get(key).push(box);
+        }
+      },
+      intersects(box) {
+        const area = range(box, 4);
+        if (!area) return all.some(other => intersects(box, other));
+        if (oversized.some(other => intersects(box, other))) return true;
+        const seen = new Set();
+        for (let x = area.left; x <= area.right; x++) for (let y = area.top; y <= area.bottom; y++) {
+          for (const other of cells.get(`${x}:${y}`) || []) {
+            if (seen.has(other)) continue;
+            seen.add(other);
+            if (intersects(box, other)) return true;
+          }
+        }
+        return false;
+      }
+    };
+  };
+  // Directional traversal keeps unrelated sibling branches out of evidence traces.
+  window.traceExplorationGraph = (graph, selected, direction) => {
+    const seeds = graph.graphNodes.filter(n => n.id === selected || n.intentId === selected).map(n => n.id);
+    for (const e of graph.edges) if (e.intentId === selected) seeds.push(direction === 'upstream' ? e.source : e.target);
+    const adjacent = new Map();
+    for (const edge of graph.edges) {
+      const from = direction === 'upstream' ? edge.target : edge.source;
+      const to = direction === 'upstream' ? edge.source : edge.target;
+      if (!adjacent.has(from)) adjacent.set(from, []);
+      adjacent.get(from).push(to);
+    }
+    const visited = new Set(seeds), queue = [...visited];
+    for (let i = 0; i < queue.length; i++) for (const id of adjacent.get(queue[i]) || []) {
+      if (!visited.has(id)) { visited.add(id); queue.push(id); }
+    }
+    return visited;
+  };
+  // Longest-parent layering in O(nodes + edges), including reverse-ordered chains.
+  // Cycles and their blocked descendants retain the previous rank-zero fallback.
+  window.rankExplorationGraph = nodes => {
+    const byId = new Map(nodes.map(node => [node.id, node]));
+    const ranks = new Map(), remaining = new Map(), children = new Map(), depth = new Map(), queue = [];
+    for (const [id, node] of byId) {
+      const parents = [...new Set(node.parentIds || [])].filter(parent => byId.has(parent));
+      remaining.set(id, parents.length);
+      if (!parents.length) queue.push(id);
+      for (const parent of parents) {
+        if (!children.has(parent)) children.set(parent, []);
+        children.get(parent).push(id);
+      }
+    }
+    for (let index = 0; index < queue.length; index++) {
+      const id = queue[index], rank = depth.get(id) || 0;
+      ranks.set(id, rank);
+      for (const child of children.get(id) || []) {
+        depth.set(child, Math.max(depth.get(child) || 0, rank + 1));
+        const count = remaining.get(child) - 1; remaining.set(child, count);
+        if (!count) queue.push(child);
+      }
+    }
+    for (const id of byId.keys()) if (!ranks.has(id)) ranks.set(id, 0);
+    return ranks;
+  };
   // Project legacy intent+result records without changing durable IDs or scheduler semantics.
   window.projectExplorationGraph = snapshot => {
     const source = [...new Map((snapshot?.nodes || []).filter(n => n && typeof n.id === 'string').map(n => [n.id, n])).values()];

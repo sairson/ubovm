@@ -1,6 +1,8 @@
 'use strict';
 
 const { createHash } = require('node:crypto');
+const path = require('node:path');
+const { homedir } = require('node:os');
 const { sections, sshFields, mcpFields, modelPresets, tools } = require('./settings-schema.cjs');
 const { modelConfig, keyFor, configurationState, updateConfiguration } = require('./model-config.cjs');
 const { defaultDirectory, readSkillsCatalog } = require('./skills-catalog.cjs');
@@ -43,6 +45,9 @@ async function hydrateRuntime(result, context) {
     delete result.skills.skills;
   }
   if (plain(result.intools)) {
+    if (result.intools.knowledge !== false) {
+      result.intools.knowledge = { libraryFile: path.join(homedir(), '.ubovm', 'learning', 'knowledge.sqlite'), reflection: true, ...object(result.intools.knowledge) };
+    }
     if (result.intools.ssh) {
       const ssh = result.intools.ssh;
       result.intools.ssh = { ...ssh, profiles: await Promise.all(profiles(ssh).map(async p => ({ ...p, ...await readVault(context, sshKey(p)) }))) };
@@ -126,33 +131,51 @@ function createSettingsConfiguration(vscode, context) {
   const get = name => { const entry = config().inspect(name); return clone(entry?.globalValue ?? entry?.defaultValue); };
   const raw = () => Object.fromEntries(['modelProfiles', 'model', 'reason', 'worker', 'contextSummary', 'summaryEnabled', 'intools', 'toolsEnabled', 'mcp', 'skills'].map(name => [name, get(name)]));
   const revision = () => digest([raw(), state.generation]);
-  async function snapshot() {
+  async function snapshot({ includeSkills = true } = {}) {
     const source = raw(), stamp = digest([source, state.generation]), values = {}, secretState = {};
+    // Vault calls cross the extension-host boundary. Read unique keys with a
+    // bounded pool once per snapshot instead of serializing every saved profile.
+    const models = Object.entries(modelSections).map(([section, setting]) => section === 'model' ? source.model : source[setting]?.model);
+    const sourceTools = object(source.intools);
+    const keys = [...new Set([
+      ...models.filter(model => model?.provider).map(keyFor),
+      ...(source.modelProfiles ?? []).map(profile => keyFor(profile.model)),
+      ...profiles(object(sourceTools.ssh)).map(sshKey), webKey(object(sourceTools.webSearch)),
+      ...(source.mcp?.servers ?? []).map(mcpKey),
+    ])];
+    const secrets = new Map(); let next = 0;
+    await Promise.all(Array.from({ length: Math.min(8, keys.length) }, async () => {
+      while (next < keys.length) { const key = keys[next++]; secrets.set(key, await context.secrets.get(key)); }
+    }));
+    const vaultContext = { secrets: { get: async key => secrets.get(key) } };
     for (const [section, setting] of Object.entries(modelSections)) {
       const model = section === 'model' ? object(source.model) : object(source[setting]?.model);
       values[section] = { ...scrub(model), ...(section === 'model' ? {} : { inherit: !source[setting]?.model }) };
-      secretState[section] = { apiKey: Boolean(model.provider && await context.secrets.get(keyFor(model))) };
+      secretState[section] = { apiKey: Boolean(model.provider && secrets.get(keyFor(model))) };
     }
     const intools = object(source.intools), web = object(intools.webSearch), ssh = object(intools.ssh);
+    values.python = scrub(object(intools.python));
     values.ssh = { defaultId: ssh.defaultId ?? profiles(ssh)[0]?.id ?? '', profiles: [] };
     for (const profile of profiles(ssh)) {
-      const saved = await readVault(context, sshKey(profile));
+      const saved = await readVault(vaultContext, sshKey(profile));
       values.ssh.profiles.push({ ...scrub(profile), secretState: Object.fromEntries(privateSSH.map(key => [key, Boolean(saved[key] || profile[key])])) });
     }
     values.web = { ...scrub(web.tavily ?? {}), ...scrub(web), baseURL: web.baseURL ?? web.tavily?.baseURL, headless: intools.browser?.launchOptions?.headless ?? true };
     delete values.web.enabled;
     delete values.web.tavily;
-    secretState.web = { apiKey: Boolean(await context.secrets.get(webKey(web)) || web.apiKey || web.tavily?.apiKey) };
+    secretState.web = { apiKey: Boolean(secrets.get(webKey(web)) || web.apiKey || web.tavily?.apiKey) };
     values.summary = { ...scrub(object(source.contextSummary)), enabled: source.contextSummary !== false && source.summaryEnabled !== false }; delete values.summary.model;
     for (const role of ['reason', 'worker']) { values[role] = scrub(object(source[role])); delete values[role].model; }
     values.mcp = scrub(object(source.mcp));
     secretState.mcp = { credentials: false };
-    for (const server of source.mcp?.servers ?? []) if (server.env || server.headers || await context.secrets.get(mcpKey(server))) secretState.mcp.credentials = true;
+    for (const server of source.mcp?.servers ?? []) if (server.env || server.headers || secrets.get(mcpKey(server))) secretState.mcp.credentials = true;
     values.skills = scrub(object(source.skills));
     delete values.skills.directories;
     delete values.skills.skills;
     for (const [section, spec] of Object.entries(sections)) {
-      const value = values[section] ?? {};
+      const stored = values[section] ?? {};
+      const value = Object.hasOwn(modelSections, section) && ['claude', 'codex'].includes(stored.backend)
+        ? { ...stored, ...modelConfig(Object.fromEntries(Object.entries(stored).filter(([key]) => key !== 'inherit'))) } : stored;
       const defaults = Object.fromEntries(spec.fields.filter(field => field.type !== 'secret').map(field => [field.key, clone(field.default)]));
       if (Object.hasOwn(modelSections, section)) {
         const { label, ...preset } = modelPresets[value.provider] ?? (value.provider ? modelPresets.custom : modelPresets.openai);
@@ -161,11 +184,16 @@ function createSettingsConfiguration(vscode, context) {
       // An explicit empty string / false / zero is a user choice, not a missing value.
       values[section] = { ...defaults, ...Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== undefined)) };
     }
-    const skillsCatalog = await readSkillsCatalog();
+    for (const key of Object.keys(modelSections)) values[key].backend = 'pi';
+    const skillsCatalog = includeSkills ? await readSkillsCatalog() : undefined;
     const modelProfiles = await Promise.all((source.modelProfiles ?? []).map(async profile => ({
-      ...scrub(profile), secretState: { apiKey: Boolean(await context.secrets.get(keyFor(profile.model))) }
+      ...scrub(profile), model: modelConfig(scrub(profile.model)), secretState: { apiKey: Boolean(secrets.get(keyFor(profile.model))) }
     })));
-    return { revision: stamp, values, secretState, sections, sshFields, mcpFields, modelPresets, skillsCatalog, modelProfiles };
+    let modelConfigured = false;
+    try { modelConfig(source.model); modelConfigured = true; } catch { /* Form defaults are not saved configuration. */ }
+    const initialization = { model: modelConfigured, ssh: sshConfigurationStatus(sourceTools.ssh).configured };
+    initialization.complete = initialization.model && initialization.ssh;
+    return { revision: stamp, values, secretState, sections, sshFields, mcpFields, modelPresets, skillsCatalog, modelProfiles, initialization };
   }
   async function commit(section, input, expectedRevision) {
     if (typeof expectedRevision !== 'string' || expectedRevision !== revision()) throw new Error('配置已发生变化，请重新载入后再保存。');
@@ -180,19 +208,19 @@ function createSettingsConfiguration(vscode, context) {
     const intools = object(old.intools);
     if (Object.hasOwn(modelSections, section)) {
       if (!plain(input)) throw new Error('配置内容必须是对象。');
-      const { profile: savedProfile, deleteProfileId, ...fields } = input;
+      const { profile: savedProfile, deleteProfileId, backend, ...fields } = input;
       if (deleteProfileId !== undefined) {
         if (typeof deleteProfileId !== 'string' || !old.modelProfiles?.some(p => p.id === deleteProfileId)) throw new Error('模型配置不存在。');
-        if (Object.keys(fields).length || savedProfile !== undefined) throw new Error('删除模型配置不能同时修改模型。');
+        if (Object.keys(fields).length || savedProfile !== undefined || backend !== undefined) throw new Error('删除模型配置不能同时修改模型。');
         changes.set('modelProfiles', old.modelProfiles.filter(p => p.id !== deleteProfileId));
         await updateConfiguration(vscode, context, changes, secrets);
-        return snapshot();
+        return snapshot({ includeSkills: section === 'skills' });
       }
       const value = validateFields(fields, sections[section].fields), setting = modelSections[section];
       const { apiKey, inherit, ...data } = value;
       if (inherit && section !== 'model') { const role = object(old[setting]); delete role.model; changes.set(setting, old[setting] === false ? false : role); }
       else {
-        const model = modelConfig(data); rejectSecrets(model);
+        const model = modelConfig({ ...data, ...(backend === undefined ? {} : { backend }) }); rejectSecrets(model);
         if (model.input && !model.input.length) throw new Error('请至少选择一种模型输入类型。');
         for (const key of ['compat', 'streamOptions']) if (model[key] !== undefined && !plain(model[key])) throw new Error(`${key} 必须是 JSON 对象。`);
         if (apiKey !== undefined) secrets.set(keyFor(model), apiKey === null ? undefined : apiKey.trim() || undefined);
@@ -233,6 +261,19 @@ function createSettingsConfiguration(vscode, context) {
       for (const previous of profiles(old.intools?.ssh)) if (!next.some(p => sshKey(p) === sshKey(previous))) secrets.set(sshKey(previous), undefined);
       intools.ssh = { profiles: next, ...(next.length ? { defaultId: input.defaultId || next[0].id } : {}) };
       intools.allowedTools = [...tools]; changes.set('intools', intools);
+    } else if (section === 'python') {
+      const value = validateFields(input, sections.python.fields);
+      if (value.executable && (!path.isAbsolute(value.executable) || value.executable.includes('\0'))) throw new Error('Python 解释器必须是绝对路径。');
+      if ((value.defaultTimeoutSeconds ?? 120) > (value.maxTimeoutSeconds ?? 600)) throw new Error('Python 默认超时不能超过上限。');
+      if (value.allowedDomains) {
+        value.allowedDomains = [...new Set(value.allowedDomains.map(domain => domain.trim().toLowerCase()))];
+        if (value.allowedDomains.length > 100 || value.allowedDomains.some(domain => {
+          const match = /^(?:\*\.)?([a-z0-9](?:[a-z0-9.-]*[a-z0-9])?)(?::([0-9]{1,5}))?$/.exec(domain);
+          return !match || domain.length > 253 || match[1].split('.').some(label => !label || label.length > 63 || label.startsWith('-') || label.endsWith('-'))
+            || match[2] && (+match[2] < 1 || +match[2] > 65535);
+        })) throw new Error('请填写有效域名，可使用 *.example.com 或 example.com:443，端口范围为 1–65535。');
+      }
+      intools.python = value; intools.allowedTools = [...tools]; changes.set('intools', intools);
     } else if (section === 'web') {
       if (!plain(input)) throw new Error('配置内容必须是对象。');
       const { enabled: legacyEnabled, ...currentInput } = input;
@@ -282,15 +323,20 @@ function createSettingsConfiguration(vscode, context) {
     } else {
       const value = validateFields(input, sections[section].fields); rejectSecrets(value);
       const next = patchFields(old[section], sections[section].fields, value);
+      if (section === 'reason') {
+        const openIntents = next.openIntents ?? 5;
+        if ((next.maxConcurrency ?? 3) > openIntents) throw new Error('并行 Worker 数不能超过开放意图上限。');
+        if ((next.maxIntents ?? 5) > openIntents) throw new Error('每轮新增意图上限不能超过开放意图上限。');
+      }
       if (section === 'skills') { delete next.directories; delete next.skills; }
       changes.set(section, next);
     }
     // Preparing SSH/MCP credentials may yield to an external settings edit.
     if (expectedRevision !== revision()) throw new Error('配置已发生变化，请重新载入后再保存。');
     await updateConfiguration(vscode, context, changes, secrets);
-    return snapshot();
+    return snapshot({ includeSkills: section === 'skills' });
   }
   function save(section, value, expectedRevision) { return state.run(() => commit(section, value, expectedRevision)); }
-  return { snapshot: () => state.run(snapshot), save };
+  return { snapshot: options => state.run(() => snapshot(options)), save };
 }
 module.exports = { createSettingsConfiguration, hydrateRuntime, readSSHConfiguration, resolveSSHTestProfile, sshConfigurationStatus, readSSHStatus };

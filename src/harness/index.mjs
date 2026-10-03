@@ -5,6 +5,9 @@ export { createContextSummaryMiddleware, estimateContextTokens } from './middlew
 export { createMcpMiddleware } from './middleware/mcp.mjs';
 export { createSkillsMiddleware } from './middleware/skills.mjs';
 export { createPiReason, parseReasonDecision } from './agents/index.mjs';
+export { createKnowledge } from './learning/index.mjs';
+export { LearningLibrary } from './learning/library.mjs';
+export { startLocalLearningRecovery } from './learning/recovery.mjs';
 export { runCollaboration, createSwarm } from './agents/collaboration/index.mjs';
 export { createPiWorker, parsePlan, parseWorkerFact } from './worker-agents/index.mjs';
 export { Blackboard, BlackboardCoordinator, buildBlackboardContext, createContextMessage } from './blackboard/index.mjs';

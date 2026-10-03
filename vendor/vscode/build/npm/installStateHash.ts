@@ -27,12 +27,18 @@ export function collectInputFiles(): string[] {
 	}
 
 	files.push(path.join(root, '.nvmrc'));
+	// Changes to installation logic must invalidate an older successful install.
+	for (const file of ['postinstall.ts', 'preinstall.ts', 'dirs.ts', 'installStateHash.ts']) {
+		files.push(path.join(root, 'build', 'npm', file));
+	}
 
 	return files;
 }
 
 export interface PostinstallState {
 	readonly nodeVersion: string;
+	readonly platform: string;
+	readonly arch: string;
 	readonly fileHashes: Record<string, string>;
 }
 
@@ -97,7 +103,7 @@ export function computeState(options?: { ignoreNodeVersion?: boolean }): Postins
 			// file may not be readable
 		}
 	}
-	return { nodeVersion: options?.ignoreNodeVersion ? '' : process.versions.node, fileHashes };
+	return { nodeVersion: options?.ignoreNodeVersion ? '' : process.versions.node, platform: process.platform, arch: process.arch, fileHashes };
 }
 
 export function computeContents(): Record<string, string> {
@@ -114,8 +120,8 @@ export function computeContents(): Record<string, string> {
 
 export function readSavedState(): PostinstallState | undefined {
 	try {
-		const { nodeVersion, fileHashes } = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
-		return { nodeVersion, fileHashes };
+		const { nodeVersion, platform, arch, fileHashes } = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+		return { nodeVersion, platform, arch, fileHashes };
 	} catch {
 		return undefined;
 	}
@@ -125,6 +131,49 @@ export function isUpToDate(): boolean {
 	const saved = readSavedState();
 	if (!saved) {
 		return false;
+	}
+	if (saved.nodeVersion !== process.versions.node || saved.platform !== process.platform || saved.arch !== process.arch) {
+		return false;
+	}
+	// A matching input hash does not prove that dependencies survived cleanup.
+	for (const dir of dirs) {
+		try {
+			const manifest = JSON.parse(fs.readFileSync(path.join(root, dir, 'package.json'), 'utf8'));
+			const hasDependencies = ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies']
+				.some(key => Object.keys(manifest[key] ?? {}).length > 0);
+			if (!hasDependencies) {
+				continue;
+			}
+			if (!fs.statSync(path.join(root, dir, 'node_modules')).isDirectory()) {
+				return false;
+			}
+			// npm may hoist required packages into an ancestor node_modules directory.
+			const required = { ...manifest.dependencies, ...manifest.devDependencies };
+			for (const name of Object.keys(required)) {
+				if (Object.hasOwn(manifest.optionalDependencies ?? {}, name)) {
+					continue;
+				}
+				let base = path.join(root, dir);
+				let found = false;
+				while (true) {
+					try {
+						if (fs.statSync(path.join(base, 'node_modules', name, 'package.json')).isFile()) {
+						found = true;
+						break;
+						}
+					} catch { /* Try the next ancestor inside the source checkout. */ }
+					if (base === root) {
+						break;
+					}
+					base = path.dirname(base);
+				}
+				if (!found) {
+					return false;
+				}
+			}
+		} catch {
+			return false;
+		}
 	}
 	const current = computeState();
 	return saved.nodeVersion === current.nodeVersion
@@ -157,7 +206,7 @@ if (import.meta.filename === process.argv[1]) {
 			root,
 			stateContentsFile,
 			current,
-			saved: saved && ignoreNodeVersion ? { nodeVersion: '', fileHashes: saved.fileHashes } : saved,
+			saved: saved && ignoreNodeVersion ? { ...saved, nodeVersion: '' } : saved,
 			files: [...collectInputFiles(), stateFile],
 		}));
 	}

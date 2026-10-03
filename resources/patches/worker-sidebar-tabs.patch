@@ -1,0 +1,25 @@
+diff --git a/src/vs/workbench/browser/parts/paneCompositeBar.ts b/src/vs/workbench/browser/parts/paneCompositeBar.ts
+--- a/src/vs/workbench/browser/parts/paneCompositeBar.ts
++++ b/src/vs/workbench/browser/parts/paneCompositeBar.ts
+@@ -436,6 +436,9 @@ export class PaneCompositeBar extends Disposable {
+ 		if (this.options.partContainerClass === 'panel' && viewContainerId !== 'terminal' && viewContainerId !== 'workbench.view.extension.ubovm-workers') {
+ 			return true;
+ 		}
++		if (this.options.partContainerClass === 'sidebar' && viewContainerId !== 'workbench.view.explorer' && viewContainerId !== 'workbench.view.extension.ubovm-workers') {
++			return true;
++		}
+ 
+ 		if (viewContainer) {
+ 			if (viewContainer.hideIfEmpty) {
+diff --git a/src/vs/workbench/browser/parts/sidebar/sidebarPart.ts b/src/vs/workbench/browser/parts/sidebar/sidebarPart.ts
+--- a/src/vs/workbench/browser/parts/sidebar/sidebarPart.ts
++++ b/src/vs/workbench/browser/parts/sidebar/sidebarPart.ts
+@@ -213,7 +213,7 @@ export class SidebarPart extends AbstractPaneCompositePart {
+ 			pinnedViewContainersKey: ActivitybarPart.pinnedViewContainersKey,
+ 			placeholderViewContainersKey: ActivitybarPart.placeholderViewContainersKey,
+ 			viewContainersWorkspaceStateKey: ActivitybarPart.viewContainersWorkspaceStateKey,
+-			icon: true,
++			icon: false,
+ 			orientation: ActionsOrientation.HORIZONTAL,
+ 			recomputeSizes: true,
+ 			activityHoverOptions: {

@@ -7,6 +7,7 @@ import { workerEvidence } from './blackboard/evidence.mjs';
 import { createInternalTools, MemoryStore } from './intools/index.mjs';
 import { createPiWorker } from './worker-agents/index.mjs';
 import { createPiReason } from './agents/index.mjs';
+import { createKnowledgeReflector } from './learning/background.mjs';
 import { createModelClient } from './model.mjs';
 import { HarnessDatabase } from './blackboard/database/database.mjs';
 import { createContextSummaryMiddleware } from './middleware/context-summary.mjs';
@@ -261,12 +262,15 @@ export class HarnessSession {
         worker: async args => {
           const identity = { intentId: args.node.id, attemptId: args.attempt.id };
           emit('worker.start', identity);
+          const unsubscribe = args.onMessage(message => {
+            if (message.type === 'goal_completed') emit('worker.goal_completed', { ...identity, completion: message.completion });
+          });
           try { const result = await worker(args); signal.throwIfAborted(); emit('worker.result', { ...identity, result }); return result; }
           catch (error) {
             emit('worker.error', { ...identity, error: errorData(error) });
             if (active && !signal.aborted && ['WORKER_HOOK_FAILED', 'WORKER_CHECKPOINT_FAILED'].includes(error.code)) { fatal ??= error; controller.abort(error); }
             throw error;
-          }
+          } finally { unsubscribe(); }
         }
       });
       const result = await coordinator.run({ resume, signal });
@@ -287,16 +291,21 @@ export class HarnessSession {
     if (this.#closing) return this.#closing;
     if (this.#closed) return Promise.resolve();
     this.#closing = Promise.resolve().then(async () => {
-      this.cancel('Harness session is closing');
       const errors = [];
       try {
+        try { this.cancel('Harness session is closing'); } catch (error) { errors.push(error); }
         await Promise.allSettled([this.#active, ...this.#edits]);
-        const settled = await Promise.allSettled([this.#runtime, this.#mcp, this.#skills, this.#summary].filter(Boolean).map(service => service.close()));
+        const settled = await Promise.allSettled([this.#runtime, this.#mcp, this.#skills, this.#summary].filter(Boolean).map(service => Promise.resolve().then(() => service.close())));
         for (const result of settled) if (result.status === 'rejected') errors.push(result.reason);
         await this.#queue;
       } finally {
-        this.#unsubscribe(); this.#unsubscribeMemory?.(); this.#closed = true;
-        this.#emit('session.state', { state: this.getState() }); this.#listeners.clear();
+        this.#closed = true;
+        const detached = await Promise.allSettled([
+          () => this.#unsubscribe(), () => this.#unsubscribeMemory?.()
+        ].map(dispose => Promise.resolve().then(dispose)));
+        for (const result of detached) if (result.status === 'rejected') errors.push(result.reason);
+        try { this.#emit('session.state', { state: this.getState() }); } catch (error) { errors.push(error); }
+        this.#listeners.clear();
         try { this.#lease?.release(); } catch (error) { errors.push(error); }
         if (this.#databaseSessionKey) databaseOwners.get(this.#database)?.delete(this.#databaseSessionKey);
         if (this.#databaseOwned) try { this.#database.close(); } catch (error) { errors.push(error); }
@@ -312,12 +321,27 @@ export class HarnessSession {
 export async function createHarness(options = {}) {
   object(options, 'Harness options');
   const { directory, onEvent, tools, intools = {}, maxConcurrency = 3, maxRounds = 20 } = options;
+  const openIntents = options.openIntents ?? options.reason?.openIntents ?? 5;
   if (onEvent !== undefined && typeof onEvent !== 'function') throw new TypeError('onEvent must be a function');
   if (tools !== undefined && !Array.isArray(tools) && typeof tools !== 'function') throw new TypeError('tools must be an array or factory');
-  for (const [key, value] of Object.entries({ maxConcurrency, maxRounds })) if (!Number.isSafeInteger(value) || value < 1) throw new TypeError(`${key} must be a positive integer`);
+  for (const [key, value] of Object.entries({ maxConcurrency, maxRounds, openIntents })) if (!Number.isSafeInteger(value) || value < 1) throw new TypeError(`${key} must be a positive integer`);
+  if (maxConcurrency > openIntents) throw new TypeError('maxConcurrency cannot exceed openIntents');
+  if (Number.isSafeInteger(options.reason?.maxIntents) && options.reason.maxIntents > openIntents) {
+    throw new TypeError('maxIntents cannot exceed openIntents');
+  }
   if (intools !== false) object(intools, 'intools');
   if (directory !== undefined && (intools?.store || intools?.memoryFile)) throw new Error('directory owns memory persistence; omit intools.store and intools.memoryFile');
-  const reason = roleConfiguration(options.reason, options.model, 'reason');
+  const reasonInput = typeof options.reason === 'function' ? options.reason : {
+    ...options.reason,
+    openIntents: options.reason?.openIntents ?? openIntents,
+    maxConcurrency: undefined,
+    maxRounds: undefined
+  };
+  if (reasonInput && typeof reasonInput === 'object') {
+    delete reasonInput.maxConcurrency;
+    delete reasonInput.maxRounds;
+  }
+  const reason = roleConfiguration(reasonInput, options.model, 'reason');
   const worker = roleConfiguration(options.worker, options.model, 'worker');
   // Validate adapters before creating directories or writing initial state.
   if (!reason.callback) createPiReason({ ...reason.client, ...reason.options });
@@ -374,7 +398,7 @@ export async function createHarness(options = {}) {
       const savedBoard = persisted?.blackboard ?? (migrated ? legacyBoard : undefined);
       if (savedBoard && (savedBoard.sessionId !== sessionId || savedBoard.goal !== goal)) throw failure('SESSION_IDENTITY_MISMATCH', 'Persisted blackboard identity does not match');
       const persist = snapshot => database.saveBlackboard(sessionId, snapshot);
-      board = savedBoard ? Blackboard.fromSnapshot({ snapshot: savedBoard, persist }) : new Blackboard({ sessionId, goal, persist });
+      board = savedBoard ? Blackboard.fromSnapshot({ snapshot: savedBoard, persist, openIntents }) : new Blackboard({ sessionId, goal, persist, openIntents });
       legacyMemory = migrated ? await readRecord(join(canonical, 'memory.json')) : undefined;
       const savedMemory = persisted?.memory ?? legacyMemory;
       if (savedMemory && savedMemory.sessionId !== sessionId) throw failure('SESSION_IDENTITY_MISMATCH', 'Persisted memory belongs to another session');
@@ -396,18 +420,21 @@ export async function createHarness(options = {}) {
     } else if (canonical) {
       const boardFile = join(canonical, 'blackboard.json');
       const existing = await exists(boardFile);
-      board = await Blackboard.open({ filePath: boardFile, sessionId: options.sessionId ?? (existing ? undefined : `session_${randomUUID()}`), goal: options.goal });
+      board = await Blackboard.open({ filePath: boardFile, sessionId: options.sessionId ?? (existing ? undefined : `session_${randomUUID()}`), goal: options.goal, openIntents });
       metadataFile = join(canonical, 'session.json');
       record = restoredRecord(await readRecord(metadataFile), board.snapshot());
       await writeSnapshot(metadataFile, record);
     } else {
-      board = new Blackboard({ sessionId: options.sessionId ?? `session_${randomUUID()}`, goal: options.goal });
+      board = new Blackboard({ sessionId: options.sessionId ?? `session_${randomUUID()}`, goal: options.goal, openIntents });
       record = restoredRecord(undefined, board.snapshot());
     }
     const id = board.snapshot().sessionId;
     if (intools !== false) runtime = await createInternalTools({ ...intools,
+      ...(intools?.knowledge?.reflection && !intools.knowledge.reflect && (worker.client ?? reason.client) ? {
+        knowledge: { ...intools.knowledge, reflect: createKnowledgeReflector(worker.client ?? reason.client) }
+      } : {}),
       ...(options.skills ? { skillResource: false, skillScript: false } : {}),
-      blackboard: board, sessionId: id,
+      blackboard: board, sessionId: id, learningSource: database?.filePath,
       ...(store ? { store } : canonical ? { memoryFile: join(canonical, 'memory.json') } : {})
     });
     // The same middleware persistence contract works with SQLite, legacy JSON
@@ -447,14 +474,17 @@ export async function createHarness(options = {}) {
     const session = new HarnessSession(constructionKey, { board, runtime, record, metadataFile, directoryKey,
       database, databaseOwned, databaseSessionKey, lease, recordRevision, sequence: persisted?.eventSequence ?? 0,
       setMiddlewareObserver: callback => { dispatchMiddleware = callback; },
-      summary, skills, mcp, reason, worker, tools, onEvent, limits: { maxConcurrency, maxRounds } });
+      summary, skills, mcp, reason, worker, tools, onEvent, limits: { maxConcurrency, maxRounds, openIntents } });
     return session;
   } catch (error) {
-    await Promise.allSettled([runtime, summary, skills, mcp].filter(Boolean).map(service => service.close()));
-    try { lease?.release(); } finally {
-      if (databaseSessionKey) databaseOwners.get(database)?.delete(databaseSessionKey);
-      if (databaseOwned) database.close(); if (directoryKey) directories.delete(directoryKey);
-    }
+    const settled = await Promise.allSettled([runtime, summary, skills, mcp].filter(Boolean)
+      .map(service => Promise.resolve().then(() => service.close())));
+    const errors = settled.filter(result => result.status === 'rejected').map(result => result.reason);
+    try { lease?.release(); } catch (cleanupError) { errors.push(cleanupError); }
+    if (databaseSessionKey) databaseOwners.get(database)?.delete(databaseSessionKey);
+    try { if (databaseOwned) database.close(); } catch (cleanupError) { errors.push(cleanupError); }
+    if (directoryKey) directories.delete(directoryKey);
+    if (errors.length) throw new AggregateError([error, ...errors], 'Harness initialization failed and resources could not close cleanly', { cause: error });
     throw error;
   }
 }

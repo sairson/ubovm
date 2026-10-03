@@ -1,0 +1,52 @@
+diff --git a/build/npm/installStateHash.ts b/build/npm/installStateHash.ts
+index 1dea15b..beefaf7 100644
+--- a/build/npm/installStateHash.ts
++++ b/build/npm/installStateHash.ts
+@@ -37,6 +37,8 @@ export function collectInputFiles(): string[] {
+ 
+ export interface PostinstallState {
+ 	readonly nodeVersion: string;
++	readonly platform: string;
++	readonly arch: string;
+ 	readonly fileHashes: Record<string, string>;
+ }
+ 
+@@ -101,7 +103,7 @@ export function computeState(options?: { ignoreNodeVersion?: boolean }): Postins
+ 			// file may not be readable
+ 		}
+ 	}
+-	return { nodeVersion: options?.ignoreNodeVersion ? '' : process.versions.node, fileHashes };
++	return { nodeVersion: options?.ignoreNodeVersion ? '' : process.versions.node, platform: process.platform, arch: process.arch, fileHashes };
+ }
+ 
+ export function computeContents(): Record<string, string> {
+@@ -118,8 +120,8 @@ export function computeContents(): Record<string, string> {
+ 
+ export function readSavedState(): PostinstallState | undefined {
+ 	try {
+-		const { nodeVersion, fileHashes } = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+-		return { nodeVersion, fileHashes };
++		const { nodeVersion, platform, arch, fileHashes } = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
++		return { nodeVersion, platform, arch, fileHashes };
+ 	} catch {
+ 		return undefined;
+ 	}
+@@ -130,6 +132,9 @@ export function isUpToDate(): boolean {
+ 	if (!saved) {
+ 		return false;
+ 	}
++	if (saved.nodeVersion !== process.versions.node || saved.platform !== process.platform || saved.arch !== process.arch) {
++		return false;
++	}
+ 	// A matching input hash does not prove that dependencies survived cleanup.
+ 	for (const dir of dirs) {
+ 		try {
+@@ -201,7 +206,7 @@ if (import.meta.filename === process.argv[1]) {
+ 			root,
+ 			stateContentsFile,
+ 			current,
+-			saved: saved && ignoreNodeVersion ? { nodeVersion: '', fileHashes: saved.fileHashes } : saved,
++			saved: saved && ignoreNodeVersion ? { ...saved, nodeVersion: '' } : saved,
+ 			files: [...collectInputFiles(), stateFile],
+ 		}));
+ 	}

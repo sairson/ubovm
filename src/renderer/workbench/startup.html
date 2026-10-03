@@ -5,7 +5,7 @@
     position: fixed; inset: 0; z-index: 9999; display: grid; place-items: center;
     overflow: hidden; background: #f7f7f5; color: #252626;
     font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
-    transition: opacity 260ms cubic-bezier(.22, 1, .36, 1), visibility 260ms;
+    transition: opacity 140ms cubic-bezier(.22, 1, .36, 1), visibility 140ms;
   }
   #ubovm-startup::before {
     content: ""; position: absolute; inset: 0 0 auto; height: 44px; -webkit-app-region: drag;
@@ -23,7 +23,7 @@
   #ubovm-startup .startup-track { margin-top: 29px; width: 110px; height: 2px; overflow: hidden; border-radius: 4px; background: #e6e7e2; }
   #ubovm-startup .startup-track::after {
     content: ""; display: block; width: 40px; height: 100%; border-radius: inherit; background: #656a60;
-    animation: ubovm-startup-progress 1500ms ease-in-out infinite;
+    animation: ubovm-startup-progress 900ms ease-in-out infinite;
   }
   #ubovm-startup.ubovm-startup-exit { opacity: 0; visibility: hidden; pointer-events: none; }
   @keyframes ubovm-startup-breathe { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-3px); } }

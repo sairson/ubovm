@@ -94,7 +94,8 @@ function createHarnessService(options) {
         const state = states.get(id) ?? idle();
         if (!state.busy && !owner.requests.has(id)) continue;
         const failure = { message: error.message, code: error.code === 'AGENT_HEARTBEAT_TIMEOUT' ? error.code : 'AGENT_THREAD_EXIT' };
-        states.set(id, readonly({ ...interruptExecution(state, failure), canResume: descriptors.get(id)?.mode === 'goal' }));
+        // Goal and assist both become explicitly resumable; never auto-replay work.
+        states.set(id, readonly({ ...interruptExecution(state, failure), canResume: true }));
         summaries.set(id, readonly({ ...summaries.get(id), status: 'failed', busy: false, phase: null, activeWorkers: 0, error: failure }));
         notify(id);
       }
@@ -122,26 +123,38 @@ function createHarnessService(options) {
     try { return await invokeSession(method, args); }
     finally { release?.(); }
   }
+  function sessionDescriptor(input) {
+    const mode = input?.mode;
+    const descriptor = { conversationId: input?.conversationId, mode, goal: input?.goal, executionBranch: input?.executionBranch };
+    if (mode === 'assist') {
+      descriptor.lastInput = {
+        text: input?.text, messages: input?.messages, context: input?.context, approvalMode: input?.approvalMode
+      };
+    }
+    return structuredClone(descriptor);
+  }
   async function invokeSession(method, args) {
     const id = typeof args[0] === 'string' ? args[0] : args[0]?.conversationId;
-    if (method === 'resume' && runtime?.failed && descriptors.get(id)?.mode !== 'goal') throw runtime.failed;
     const owner = await ensure(method);
     if (closing || stopped) throw closedError();
     owner.requests.set(id, (owner.requests.get(id) ?? 0) + 1);
     try {
-      if (method === 'resume' && !owner.restored.has(id) && descriptors.get(id)?.mode === 'goal') {
+      // After a dead worker, restore identity (and assist lastInput) before resume.
+      if (method === 'resume' && !owner.restored.has(id) && descriptors.get(id)) {
         const recovered = await owner.rpc.call('restore', [descriptors.get(id)]);
         accept(owner, recovered.snapshot); checkResponse(recovered); owner.restored.add(id);
         if (closing || stopped) throw closedError();
         if (launching.get(id)?.cancelled) throw Object.assign(new Error('恢复执行已取消。'), { code: 'ABORT_ERR' });
       }
-      const descriptor = method === 'start' || method === 'restore'
-        ? structuredClone({ conversationId: id, mode: args[0]?.mode, goal: args[0]?.goal, executionBranch: args[0]?.executionBranch }) : undefined;
+      const descriptor = method === 'start' || method === 'restore' ? sessionDescriptor(args[0]) : undefined;
       const response = await owner.rpc.call(method, args);
       accept(owner, response.snapshot);
       const result = checkResponse(response);
       if (method === 'start' || method === 'restore') {
-        descriptors.set(id, descriptor);
+        // Keep the richest recovery descriptor; restore must not erase assist lastInput.
+        const previous = descriptors.get(id);
+        descriptors.set(id, method === 'start' || !previous?.lastInput ? descriptor
+          : { ...descriptor, lastInput: previous.lastInput });
         owner.restored.add(id);
       }
       if (method === 'remove' || method === 'releaseWorkspace') { owner.tools.delete(id); owner.restored.delete(id); owner.revisions.delete(id); }
@@ -196,8 +209,31 @@ function createHarnessService(options) {
     const value = states.get(id) ?? idle();
     return launching.has(id) && !value.busy ? { ...value, busy: true, status: 'starting' } : value;
   };
+  let idleEnsure;
+  async function ensureIdle() {
+    if (idleEnsure) return idleEnsure;
+    idleEnsure = (async () => {
+      if (closing || stopped) return { status: 'closed', error: closedError().message };
+      if (!runtime) {
+        try { await spawn(); }
+        catch (error) { return { status: 'disconnected', error: error?.message || String(error) }; }
+        return { status: 'connected' };
+      }
+      if (!runtime.failed) return { status: 'connected' };
+      const busy = launching.size > 0 || runtime.requests.size > 0 || [...states.values()].some(value => value.busy === true);
+      if (busy) return { status: 'disconnected', error: runtime.failed?.message };
+      try {
+        await ensure('restore');
+        return { status: runtime?.failed ? 'disconnected' : 'connected', error: runtime?.failed?.message };
+      } catch (error) {
+        return { status: 'disconnected', error: error?.message || String(error) };
+      }
+    })().finally(() => { idleEnsure = undefined; });
+    return idleEnsure;
+  }
   return Object.freeze({
     connectionState: () => ({ status: stopped || closing ? 'closed' : runtime?.failed ? 'disconnected' : runtime ? 'connected' : 'idle', error: runtime?.failed?.message }),
+    ensureIdle,
     state,
     runtimeSummary: id => {
       const value = summaries.get(id) ?? { status: 'idle', busy: false, workerCount: 0, activeWorkers: 0 };

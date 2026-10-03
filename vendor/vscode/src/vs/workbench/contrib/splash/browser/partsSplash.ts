@@ -137,8 +137,9 @@ export class PartsSplash {
 	}
 
 	private _removePartsSplash(): void {
-		// A lightweight first-paint cover ends on the real workbench layout,
-		// without a minimum display time or simulated loading percentage.
+		// Hand off to the shared shell loading mask before the splash fades out,
+		// so there is no blank frame between first-paint cover and contentReady.
+		mainWindow.document.documentElement.classList.add('ubovm-shell-loading');
 		const startup = mainWindow.document.getElementById('ubovm-startup');
 		if (startup) {
 			const finish = () => {
@@ -151,7 +152,7 @@ export class PartsSplash {
 				finish();
 			} else {
 				startup.addEventListener('transitionend', finish, { once: true });
-				mainWindow.setTimeout(finish, 320); // cleanup if no transition event fires
+				mainWindow.setTimeout(finish, 180); // cleanup if no transition event fires
 			}
 		}
 		// eslint-disable-next-line no-restricted-syntax

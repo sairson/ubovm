@@ -1,0 +1,27 @@
+diff --git a/src/vs/workbench/browser/parts/panel/panelPart.ts b/src/vs/workbench/browser/parts/panel/panelPart.ts
+--- a/src/vs/workbench/browser/parts/panel/panelPart.ts
++++ b/src/vs/workbench/browser/parts/panel/panelPart.ts
+@@ -75,6 +75,11 @@ export class PanelPart extends AbstractPaneCompositePart {
+ 		if (id !== undefined && id !== 'terminal' && id !== 'workbench.view.extension.ubovm-workers') {
+ 			return undefined;
+ 		}
++		// Background reveals must respect a closed panel. Explicit terminal
++		// actions request focus; restoring an already visible panel remains valid.
++		if (focus !== true && !this.layoutService.isVisible(Parts.PANEL_PART)) {
++			return undefined;
++		}
+ 		return super.openPaneComposite(id ?? this.getLastActivePaneCompositeId(), focus);
+ 	}
+ 
+diff --git a/src/vs/workbench/services/views/browser/viewsService.ts b/src/vs/workbench/services/views/browser/viewsService.ts
+--- a/src/vs/workbench/services/views/browser/viewsService.ts
++++ b/src/vs/workbench/services/views/browser/viewsService.ts
+@@ -312,7 +312,7 @@ export class ViewsService extends Disposable implements IViewsService {
+ 		const location = this.viewDescriptorService.getViewContainerLocation(viewContainer);
+ 		const compositeDescriptor = this.getComposite(viewContainer.id, location!);
+ 		if (compositeDescriptor) {
+-			const paneComposite = await this.openComposite(compositeDescriptor.id, location!) as IPaneComposite | undefined;
++			const paneComposite = await this.openComposite(compositeDescriptor.id, location!, id === 'terminal' ? focus : undefined) as IPaneComposite | undefined;
+ 			if (paneComposite?.openView) {
+ 				return paneComposite.openView<T>(id, focus) || null;
+ 			} else if (focus) {
