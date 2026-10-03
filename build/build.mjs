@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 export function buildCommand({ platform = process.platform, args = process.argv.slice(2), env = process.env } = {}) {
   if (!['win32', 'darwin', 'linux'].includes(platform)) throw new Error(`Unsupported platform: ${platform}`);
-  if (args.length > 2) throw new Error('Usage: node build.mjs ACTION [folder or source action]');
+  if (args.length > 2) throw new Error('Usage: node build/build.mjs ACTION [folder or source action]');
   return {
     command: platform === 'win32' ? 'powershell.exe' : 'pwsh',
     args: ['-NoLogo', '-NoProfile', ...(platform === 'win32' ? ['-ExecutionPolicy', 'Bypass'] : []),

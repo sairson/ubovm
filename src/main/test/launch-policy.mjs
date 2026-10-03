@@ -29,7 +29,7 @@ test('literal file names after the separator do not become launch switches', () 
 test('bootstrap applies routing before Code OSS and launcher does not force ordinary new windows', () => {
   const bootstrap = readFileSync(new URL('../index.mjs', import.meta.url), 'utf8');
   assert(bootstrap.indexOf('...normalizeLaunchArguments(process.argv)') < bootstrap.indexOf("await import(pathToFileURL"));
-  const build = readFileSync(new URL('../../../build.ps1', import.meta.url), 'utf8');
+  const build = readFileSync(new URL('../../../build/build.ps1', import.meta.url), 'utf8');
   assert.match(build, /if \(\$Smoke\) \{ \$arguments \+= '--new-window' \}/);
   assert.match(build, /elseif \(-not \$Development\) \{ \$arguments \+= '--reuse-window' \}/);
 });

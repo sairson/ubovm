@@ -10,7 +10,7 @@ import { installBackgroundMode } from './background.mjs';
 import { normalizeLaunchArguments } from './launch-policy.mjs';
 import { installWindowRendering } from './window-rendering.mjs';
 
-// The executable can be opened without build.bat, so data isolation belongs in
+// The executable can be opened without build/build.bat, so data isolation belongs in
 // the actual Electron entry rather than only in the development launcher.
 // Avoid native occlusion and idle renderer sleeping, which leave a blank
 // compositor after the window sits unused. Keep Chromium's other features.

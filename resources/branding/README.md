@@ -4,4 +4,4 @@
 
 `app-icon.svg`、`app-icon.png`（256px）和 `app-icon.ico`（16–256px）是深绿色底的独立应用图标。安装依赖并安装 Microsoft Edge 后，运行 `node resources/branding/generate-icons.mjs` 可从源文件重新生成。
 
-`build.bat setup` 同步桌面运行时；重新启动后窗口采用新图标。预编译 VSCodium.exe 内嵌的文件图标不由窗口 API 修改；资源管理器中的 EXE 文件图标仍属于上游程序。
+`build/build.bat setup` 同步桌面运行时；重新启动后窗口采用新图标。预编译 VSCodium.exe 内嵌的文件图标不由窗口 API 修改；资源管理器中的 EXE 文件图标仍属于上游程序。

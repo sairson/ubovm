@@ -1,6 +1,6 @@
 $ErrorActionPreference = 'Stop'
 $ProjectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\..'))
-$script = [IO.File]::ReadAllText((Join-Path $ProjectRoot 'build.ps1'))
+$script = [IO.File]::ReadAllText((Join-Path $ProjectRoot 'build/build.ps1'))
 $tokens = $null; $parseErrors = $null
 $ast = [Management.Automation.Language.Parser]::ParseInput($script, [ref]$tokens, [ref]$parseErrors)
 if ($parseErrors.Count) { throw 'Invalid build PowerShell' }

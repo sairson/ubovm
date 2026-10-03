@@ -93,7 +93,8 @@ test('direct runtime launch discovers and migrates the legacy checkout profile',
   fs.mkdirSync(path.join(checkout, 'resources'), { recursive: true });
   const legacyData = path.join(checkout, '.data', 'desktop', 'user-data', 'User');
   fs.mkdirSync(legacyData, { recursive: true });
-  fs.writeFileSync(path.join(checkout, 'build.bat'), '');
+  fs.mkdirSync(path.join(checkout, 'build'), { recursive: true });
+  fs.writeFileSync(path.join(checkout, 'build', 'build.bat'), '');
   fs.writeFileSync(path.join(checkout, 'resources', 'app.json'), '{}');
   fs.writeFileSync(path.join(legacyData, 'settings.json'), '{"saved":true}');
   assert.equal(findLegacyRoot(appPath), checkout);

@@ -109,7 +109,7 @@ async function preparePythonLocked(destination) {
     let valid = false; try { valid = await digest(archive) === asset.sha256; } catch { /* download */ }
     if (!valid) {
       const partial = managed(archive + '.' + randomUUID() + '.partial');
-      // Match build.ps1 archive downloads: allow slow GitHub links (no hard 3-minute cut).
+      // Match build/build.ps1 archive downloads: allow slow GitHub links (no hard 3-minute cut).
       const downloadMs = 1_800_000;
       try {
         console.log(`[Python] Downloading CPython ${asset.version} (${asset.platform}-${asset.arch})`);

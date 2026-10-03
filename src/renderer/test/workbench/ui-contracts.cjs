@@ -12,7 +12,7 @@ const projectRoot = path.resolve(__dirname, '../../../..');
 const readJson = file => JSON.parse(readFileSync(file, 'utf8').replace(/^\uFEFF/, ''));
 const configuration = readJson(path.join(projectRoot, 'resources/app.json'));
 const appRoot = path.resolve(projectRoot, configuration.core.runtime.directory, 'resources/app');
-assert.ok(existsSync(appRoot), 'Installed runtime is missing; run build.bat setup first.');
+assert.ok(existsSync(appRoot), 'Installed runtime is missing; run node build/build.mjs setup first.');
 
 const htmlPath = 'vs/code/electron-browser/workbench/workbench.html';
 const html = readFileSync(path.join(appRoot, 'out', htmlPath), 'utf8');

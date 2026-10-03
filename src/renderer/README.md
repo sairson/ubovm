@@ -28,7 +28,7 @@ Edge 页面回归另使用浏览器虚拟时钟回拨一小时，验证实际页
 
 验证：`node --test src/renderer/test/integration/webview/ime-navigation.mjs src/renderer/test/integration/webview/assist-composer.mjs src/renderer/test/webview/goal/blackboard-graph.mjs src/renderer/test/integration/webview/native-worker-panel.mjs`。测试使用真实 Edge 页面，覆盖仅组合生命周期、仅 `isComposing`、仅 `229` 三种事件情况，以及组合结束后的正常操作；这是浏览器事件回归，不代替所有系统输入法的实机兼容检查。
 
-2026-09-30 桌面体验覆盖新建会话、任务建议填入、系统配置打开与返回、协助/探索模式切换、草稿恢复及长对话滚动。自动化截图曾出现整窗白屏，调整窗口大小后恢复，随后使用截图坐标交互正常；尚未确定是应用绘制还是捕获链路异常，不能据此标记为已修复。原生编码和编辑区切换测试在隔离 profile 中通过，工作区运行时经 `node build.mjs setup` 同步后 `node build.mjs check` 通过。此检查不更新 `C:\UBOVM` 的已安装副本，也不构成整体企业级验收。
+2026-09-30 桌面体验覆盖新建会话、任务建议填入、系统配置打开与返回、协助/探索模式切换、草稿恢复及长对话滚动。自动化截图曾出现整窗白屏，调整窗口大小后恢复，随后使用截图坐标交互正常；尚未确定是应用绘制还是捕获链路异常，不能据此标记为已修复。原生编码和编辑区切换测试在隔离 profile 中通过，工作区运行时经 `node build/build.mjs setup` 同步后 `node build/build.mjs check` 通过。此检查不更新 `C:\UBOVM` 的已安装副本，也不构成整体企业级验收。
 
 ## 桌面无响应诊断线索
 
@@ -58,7 +58,7 @@ Edge 页面回归另使用浏览器虚拟时钟回拨一小时，验证实际页
 
 键盘迁移检查已接入 `npm run test:platform`，不再依赖手动调用独立脚本。本机通过该入口运行七项回归，使用实际 Windows PowerShell 执行迁移、重复应用和歧义拒绝；其他平台的路径检查是命令规划测试，不代表 macOS / Linux 实机验收。
 
-`node build.mjs check` 现在另核对工作台键盘策略与当前补丁源码一致；旧策略会明确要求运行 `setup`，检查本身不更新运行时。回归覆盖当前策略接受、无搜索旧策略及旧搜索列表拒绝，实际工作区检查通过。该一致性检查仅覆盖键盘策略，不意味着所有源码和运行时文件均已比较。
+`node build/build.mjs check` 现在另核对工作台键盘策略与当前补丁源码一致；旧策略会明确要求运行 `setup`，检查本身不更新运行时。回归覆盖当前策略接受、无搜索旧策略及旧搜索列表拒绝，实际工作区检查通过。该一致性检查仅覆盖键盘策略，不意味着所有源码和运行时文件均已比较。
 
 2026-09-30 工作区运行时同步曾被旧键盘补丁阻塞：文件搜索策略更新后，旧补丁既不是原始锚点也不是新片段。构建允许升级受管理的搜索允许列表，但周围键盘逻辑必须与原始项目策略完全一致；未知行为继续拒绝。`keyboard-policy-upgrade.ps1` 已验证无搜索的旧策略、旧搜索列表、当前策略、重复应用、正文不变及未知行为拒绝，`setup` 与 `check` 已恢复。`prebuilt-patches.ps1` 另增加完整工作台迁移回归，但本机缺少原始运行时压缩包，该 pristine 回归尚未执行；不将局部迁移检查等同于完整回归通过。
 
@@ -198,7 +198,7 @@ renderer/
 │  ├─ messages/             # message-markdown.js/.css、message-view.js/.css
 │  ├─ preview/              # html-preview.js/.css
 │  └─ vendor/               # marked.umd.js、marked.LICENSE、marked.NOTICE.md
-├─ workbench/               # build.bat 处理的原生工作台资产
+├─ workbench/               # build/build.bat 处理的原生工作台资产
 │  ├─ startup.html          # 窗口首帧启动画面
 │  └─ workbench.css         # 原生工具栏、侧栏与终端样式
 ├─ media/                   # 图标与界面资源
@@ -208,7 +208,7 @@ renderer/
 
 `harness/` 是 IDE 侧适配层，使用 Node.js 和 VS Code API 处理文件、凭据、会话持久化与 Agent 调度；通用执行器与 SDK 位于项目的 `src/harness/`，由此处调用。`host/` 保留网页组装逻辑，`webview/` 只运行浏览器代码，通过消息调用宿主；新增界面模块放入对应功能目录。`host/ui/webview.cjs` 集中维护模板、样式与脚本的装配顺序：样式依次为基础布局、功能组件、`motion.css` 的减少动态效果覆盖；脚本先加载依赖和组件，再执行 `webview/app.js`。整页使用同一个随机 CSP nonce。修改或增加页面资产时同步更新此处，不在扩展入口重复拼装。
 
-`workbench/` 面向原生 Code OSS 工作台，独立于 Webview。启动动画注入、工作台样式同步及产品校验值更新由根目录 `build.bat` 处理。`media/`、`themes/` 和 `test/` 路径保持不变。
+`workbench/` 面向原生 Code OSS 工作台，独立于 Webview。启动动画注入、工作台样式同步及产品校验值更新由 `build/build.bat` 处理。`media/`、`themes/` 和 `test/` 路径保持不变。
 
 ## 界面与执行
 
@@ -266,9 +266,9 @@ renderer/
 
 `resources/patches/panel-ui.patch` 为侧栏和终端提供 140 ms 进入过渡。收起时直接提交原生布局，不再克隆整栏 DOM；快速切换仅取消本栏自己的动画，减少动态效果时跳过。文件与会话栏沿用原生加载进度，模式及管理入口显示实际命令执行状态。终端在进程与 xterm 尚未就绪超过 120 ms 时显示细进度条，隐藏、切换、完成或销毁时清理。文件欢迎页区分无工作区与单个空文件夹；扩展监听文件事件更新上下文，创建首个文件后恢复原生文件树，删除最后一个文件后恢复欢迎页。首次自动创建的空会话作为占位，不进入历史列表或搜索；发送消息、保存目标或手动新建后才显示，旧历史不会被隐藏。
 
-`workbench/startup.html` 包含首帧即可显示的浅色品牌画面、标志微动和不定进度动画，由 `build.bat` 注入原生 `workbench.html` 与 `workbench-dev.html`。`resources/patches/startup-ui.patch` 在 `PartsSplash` 收到首次真实工作台布局事件后触发 180 ms 淡出，并移除启动 DOM 与样式；不设置最低展示时间或模拟百分比。`prefers-reduced-motion: reduce` 下禁用动画，在布局就绪时立即清理。该补丁也将内置 npm 扩展的脚本视图声明设为不可见。
+`workbench/startup.html` 包含首帧即可显示的浅色品牌画面、标志微动和不定进度动画，由 `build/build.bat` 注入原生 `workbench.html` 与 `workbench-dev.html`。`resources/patches/startup-ui.patch` 在 `PartsSplash` 收到首次真实工作台布局事件后触发 180 ms 淡出，并移除启动 DOM 与样式；不设置最低展示时间或模拟百分比。`prefers-reduced-motion: reduce` 下禁用动画，在布局就绪时立即清理。该补丁也将内置 npm 扩展的脚本视图声明设为不可见。
 
-`build.bat` 在源码编译前应用以上补丁、样式和启动 HTML，并在准备固定版本的预构建运行时时应用对应改动。源码提交、补丁适用性、下载包 SHA-256 和运行包代码位置检查继续生效；脚本会为修改后的工作台 HTML、脚本和样式更新产品校验值，保持完整性检查正常。常驻布局由扩展与核心共同实现；仅将扩展加载到未经补丁修改的其他 VS Code 安装中，不具备核心级关闭与分屏保护。
+`build/build.bat` 在源码编译前应用以上补丁、样式和启动 HTML，并在准备固定版本的预构建运行时时应用对应改动。源码提交、补丁适用性、下载包 SHA-256 和运行包代码位置检查继续生效；脚本会为修改后的工作台 HTML、脚本和样式更新产品校验值，保持完整性检查正常。常驻布局由扩展与核心共同实现；仅将扩展加载到未经补丁修改的其他 VS Code 安装中，不具备核心级关闭与分屏保护。
 
 项目的 Electron 主进程入口为 `src/main/index.mjs`；它转发到真实的 Code OSS 主进程。`runtimeInfo().entryPoint` 显示主入口标记，使用上游源码开发模式时显示 `upstream source`。
 
@@ -286,9 +286,9 @@ renderer/
 
 此卡片仅覆盖 `edit_workspace_file` / `edit_workspace_files` 保存的 UTF-8 工作区修改，不覆盖 SSH、终端、Python 或其他外部工具的副作用，也不会撤销对话历史。升级前的旧记录仍可通过页头“代码更改”查看。对应测试为 `test/harness/coding/line-changes.cjs`、`test/harness/coding/coding-service.cjs`、`test/integration/webview/code-changes-ui.mjs`，运行线程与回复标识关联另由 `test/integration/threaded-harness.cjs` 验证。
 
-`node --test src/renderer/test/harness/coding/coding-service.cjs` 覆盖创建、替换、删除、冲突、取消、持久化、会话隔离与撤销。准备运行时后运行 `node --test src/renderer/test/desktop/coding-native.test.mjs`，使用 `.cache/coding-native-*` 内独立用户目录验证真实编辑器保存、原生 diff、撤销及 BOM / CRLF 保留，不复用正在运行的桌面实例。隔离目录保留测试结果供排查。常规 `build.bat test` 也包含原生编码检查。
+`node --test src/renderer/test/harness/coding/coding-service.cjs` 覆盖创建、替换、删除、冲突、取消、持久化、会话隔离与撤销。准备运行时后运行 `node --test src/renderer/test/desktop/coding-native.test.mjs`，使用 `.cache/coding-native-*` 内独立用户目录验证真实编辑器保存、原生 diff、撤销及 BOM / CRLF 保留，不复用正在运行的桌面实例。隔离目录保留测试结果供排查。常规 `build/build.bat test` 也包含原生编码检查。
 
-`node --test src/main/test/data-paths.mjs src/renderer/test/integration/data-migration.mjs` 检查目录规范化、链接逃逸、旧数据复制与校验、并发修改和失败回滚。`build.bat setup` 后运行 `node --test src/main/test/persistence-desktop.mjs`，会在 `~/.ubovm/smoke` 中正常启动并退出两次，验证实际 SQLite、会话选择及测试密钥跨重启恢复。它不使用 `--extensionTestsPath`，因为 Code OSS 会在扩展测试模式将工作台数据库替换为内存存储。
+`node --test src/main/test/data-paths.mjs src/renderer/test/integration/data-migration.mjs` 检查目录规范化、链接逃逸、旧数据复制与校验、并发修改和失败回滚。`build/build.bat setup` 后运行 `node --test src/main/test/persistence-desktop.mjs`，会在 `~/.ubovm/smoke` 中正常启动并退出两次，验证实际 SQLite、会话选择及测试密钥跨重启恢复。它不使用 `--extensionTestsPath`，因为 Code OSS 会在扩展测试模式将工作台数据库替换为内存存储。
 
 集成测试入口为 `test/desktop/smoke.cjs`，向真实桌面运行时传入 `--extensionTestsPath=<测试文件绝对路径>`，并设置：
 

@@ -5,7 +5,7 @@ if ! command -v pwsh >/dev/null 2>&1; then
     exit 1
 fi
 if [ "$#" -gt 2 ]; then
-    echo 'Usage: sh build.sh ACTION [folder or source action]' >&2
+    echo 'Usage: sh build/build.sh ACTION [folder or source action]' >&2
     exit 1
 fi
 UBOVM_ACTION=${1:-start}

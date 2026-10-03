@@ -1,7 +1,7 @@
 ﻿# Shared Windows PowerShell 5.1 / PowerShell 7 build logic.
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
-$ProjectRoot = $PSScriptRoot
+$ProjectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $OnWindows = [Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT
 $OnMac = -not $OnWindows -and $IsMacOS
 $NpmCommand = if ($OnWindows) { 'npm.cmd' } else { 'npm' }
@@ -346,7 +346,7 @@ function Update-ManagedKeyboardPolicy([string]$Text, [string]$Legacy, [string]$C
 
 function Assert-CurrentKeyboardPolicy([string]$Text, [string]$Legacy, [string]$Current) {
     if ((Update-ManagedKeyboardPolicy $Text $Legacy $Current) -cne $Text) {
-        throw 'The runtime keyboard policy is outdated. Run node build.mjs setup.'
+        throw 'The runtime keyboard policy is outdated. Run node build/build.mjs setup.'
     }
 }
 
@@ -1151,7 +1151,7 @@ function Build-WindowsInstaller($version) {
     $packagedExtension = Join-Path $payload 'resources/app/extensions/ubovm-core'
     Remove-Managed (Join-Path $packagedExtension 'test') $packagedExtension
     $chinese = Join-Path $ProjectRoot 'vendor/vscode/build/win32/i18n/Default.zh-cn.isl'
-    if (-not (Test-Path -LiteralPath $chinese)) { throw 'Missing installer Chinese translation; run node build.mjs source fetch.' }
+    if (-not (Test-Path -LiteralPath $chinese)) { throw 'Missing installer Chinese translation; run node build/build.mjs source fetch.' }
     Invoke-InstallerCompiler $compiler @('/Qp', "/DAppVersion=$version", "/DPayloadDir=$payload", "/DOutputDir=$output", "/DAppIcon=$icon", "/DChineseMessages=$chinese", (Join-Path $ProjectRoot 'resources/installer/ubovm.iss')) $staging
     $result = Join-Path $output "UBOVM-Setup-$version-x64.exe"
     if (-not (Test-Path -LiteralPath $result)) { throw 'Installer compiler did not produce the expected executable.' }
@@ -1250,8 +1250,8 @@ function Start-Desktop([switch]$Development, [switch]$Smoke) {
 }
 
 function Test-Runtime {
-    if (-not (Test-Path -LiteralPath (Join-Path $AppRoot 'ubovm/main/launch-policy.mjs'))) { throw 'Missing launch policy. Run node build.mjs setup.' }
-    if (-not (Test-Path -LiteralPath (Join-Path $AppRoot 'ubovm/main/background.mjs'))) { throw 'Missing background mode. Run node build.mjs setup.' }
+    if (-not (Test-Path -LiteralPath (Join-Path $AppRoot 'ubovm/main/launch-policy.mjs'))) { throw 'Missing launch policy. Run node build/build.mjs setup.' }
+    if (-not (Test-Path -LiteralPath (Join-Path $AppRoot 'ubovm/main/background.mjs'))) { throw 'Missing background mode. Run node build/build.mjs setup.' }
     $files = @('ubovm/main/index.mjs', 'ubovm/main/data-paths.mjs', 'ubovm/main/data-migration.mjs', 'ubovm/harness/index.mjs', 'ubovm/harness/blackboard/database/database.mjs', 'ubovm/node_modules/@earendil-works/pi-agent-core/package.json', 'ubovm/node_modules/@modelcontextprotocol/sdk/package.json', 'ubovm/node_modules/yaml/package.json', 'out/main.js', 'out/vs/workbench/workbench.desktop.main.js', 'out/vs/workbench/api/node/extensionHostProcess.js', 'extensions/ubovm-core/extension.cjs')
     $files += @('extensions/ubovm-core/harness/workspace/workspace-search.cjs', 'extensions/ubovm-core/harness/workspace/workspace-validation.cjs', 'extensions/ubovm-core/harness/workspace/validation-worker.cjs', 'extensions/node_modules/typescript/lib/typescript.js')
     $pythonAssets = (Get-Content -LiteralPath (Join-Path $ProjectRoot 'resources/python-runtime.json') -Raw | ConvertFrom-Json).assets
@@ -1261,16 +1261,16 @@ function Test-Runtime {
     $files += @('extensions/ubovm-core/host/agent/agent-service.cjs', 'extensions/ubovm-core/host/agent/agent-backend.cjs')
     $files += @('harness-service.cjs', 'harness-thread.cjs', 'thread-rpc.cjs', 'snapshot-queue.cjs', 'projection.cjs', 'errors.cjs') | ForEach-Object { 'ubovm/harness/ide/runtime/' + $_ }
     foreach ($file in $files) {
-        if (-not (Test-Path -LiteralPath (Join-Path $AppRoot $file))) { throw "Missing $file. Run node build.mjs setup." }
+        if (-not (Test-Path -LiteralPath (Join-Path $AppRoot $file))) { throw "Missing $file. Run node build/build.mjs setup." }
         Write-Host "[OK] $file"
     }
     $rgRoot = Join-Path $AppRoot 'node_modules.asar.unpacked/@vscode/ripgrep-universal/bin'
     $rg = @(Get-ChildItem -LiteralPath $rgRoot -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.BaseName -eq 'rg' })
-    if (-not $rg.Count) { throw 'Missing bundled ripgrep. Run node build.mjs setup.' }
+    if (-not $rg.Count) { throw 'Missing bundled ripgrep. Run node build/build.mjs setup.' }
     Write-Host "[OK] $($rg[0].FullName.Substring($AppRoot.Length + 1))"
     $manifest = Get-Content -LiteralPath (Join-Path $AppRoot 'package.json') -Raw | ConvertFrom-Json
     if ($manifest.main -ne './ubovm/main/index.mjs') { throw 'The custom Electron main entry is not connected.' }
-    if (-not ([IO.File]::ReadAllText((Join-Path $AppRoot 'out/main.js'))).Contains('s.emit("ubovm-before-close",r,this._quitRequested)')) { throw 'The background lifecycle hook is missing. Run node build.mjs setup.' }
+    if (-not ([IO.File]::ReadAllText((Join-Path $AppRoot 'out/main.js'))).Contains('s.emit("ubovm-before-close",r,this._quitRequested)')) { throw 'The background lifecycle hook is missing. Run node build/build.mjs setup.' }
     $legacyKeys = (Get-PatchAdditions (Join-Path $ProjectRoot 'resources/patches/keyboard-policy.patch') 'src/vs/platform/keybinding/common/abstractKeybindingService.ts').Replace('resolveResult.commandId', 'l.commandId')
     $searchKeys = Get-PatchAdditions (Join-Path $ProjectRoot 'resources/patches/file-search.patch') 'src/vs/platform/keybinding/common/abstractKeybindingService.ts'
     $currentKeys = [regex]::Replace($legacyKeys, '(?m)^.*if \(/\^\(\?:workbench.*\{\r?$', $searchKeys.TrimEnd())
@@ -1308,7 +1308,7 @@ function Invoke-CoreUnlocked {
         throw 'Configuration needs core.source.repository, ref, commit (40 hex digits), and node.'
     }
     $VerifySource = {
-        if (!(Test-Path -LiteralPath (Join-Path $SourceRoot '.git'))) { throw 'Source missing: run node build.mjs source fetch.' }
+        if (!(Test-Path -LiteralPath (Join-Path $SourceRoot '.git'))) { throw 'Source missing: run node build/build.mjs source fetch.' }
         $Top = & git -c "safe.directory=$SourceRoot" -C $SourceRoot rev-parse --show-toplevel
         if ($LASTEXITCODE -ne 0 -or [IO.Path]::GetFullPath($Top.Trim()) -ne $SourceRoot) { throw 'vendor/vscode must be its own Git checkout.' }
         $Head = & git -c "safe.directory=$SourceRoot" -C $SourceRoot rev-parse HEAD
@@ -1466,7 +1466,7 @@ function Invoke-CoreUnlocked {
         }
         'start' {
             & $VerifySource
-            if (!(Test-Path -LiteralPath (Join-Path $SourceRoot 'out/main.js')) -or !(Test-Path -LiteralPath (Join-Path $SourceRoot 'out/vs/workbench/workbench.desktop.main.js'))) { throw 'Run node build.mjs source build, or wait for source watch to finish its first compilation.' }
+            if (!(Test-Path -LiteralPath (Join-Path $SourceRoot 'out/main.js')) -or !(Test-Path -LiteralPath (Join-Path $SourceRoot 'out/vs/workbench/workbench.desktop.main.js'))) { throw 'Run node build/build.mjs source build, or wait for source watch to finish its first compilation.' }
             if ($OnWindows -and $ProjectRoot -match '[\x00-\x1f"&|<>^%!()]') { throw 'The upstream Windows batch launcher needs a project path without shell metacharacters.' }
             Invoke-Core apply
             Invoke-Core ensure-install
@@ -1551,7 +1551,7 @@ try {
             Invoke-Core fetch
             Invoke-Core build
             Write-Host "[UBOVM] Compiled core: $(Join-Path $source 'out')"
-            Write-Host '[UBOVM] Run it with: node build.mjs source start'
+            Write-Host '[UBOVM] Run it with: node build/build.mjs source start'
         }
         'start' { if ($UsePrebuilt) { Start-Desktop } else { Start-SourceDesktop } }
         'dev' { if ($UsePrebuilt) { Start-Desktop -Development } else { Start-SourceDesktop } }
@@ -1562,18 +1562,18 @@ try {
         'test' { if ($UsePrebuilt) { Start-Desktop -Smoke } else { Start-SourceDesktop -Smoke } }
         'source' { Invoke-Core $env:UBOVM_ARGUMENT }
         'help' {
-            Write-Host 'node build.mjs build            Check tools, install dependencies if needed, compile the VS Code source'
-            Write-Host 'node build.mjs start [folder]   Start the desktop IDE'
-            Write-Host 'node build.mjs dev [folder]     Load the UI extension from src/renderer'
-            Write-Host 'node build.mjs setup            Download and prepare the runtime'
-            Write-Host 'node build.mjs installer        Build a platform package in dist (Windows setup.exe, Linux tar.gz, macOS zip)'
-            Write-Host 'node build.mjs package          Alias for installer'
-            Write-Host 'node build.mjs migrate          Migrate desktop data to ~/.ubovm without launching'
-            Write-Host 'node build.mjs check            Check the installed runtime'
-            Write-Host 'node build.mjs test             Run a real desktop integration test'
-            Write-Host 'node build.mjs source ACTION    fetch | doctor | install | apply | build | watch | start'
+            Write-Host 'node build/build.mjs build            Check tools, install dependencies if needed, compile the VS Code source'
+            Write-Host 'node build/build.mjs start [folder]   Start the desktop IDE'
+            Write-Host 'node build/build.mjs dev [folder]     Load the UI extension from src/renderer'
+            Write-Host 'node build/build.mjs setup            Download and prepare the runtime'
+            Write-Host 'node build/build.mjs installer        Build a platform package in dist (Windows setup.exe, Linux tar.gz, macOS zip)'
+            Write-Host 'node build/build.mjs package          Alias for installer'
+            Write-Host 'node build/build.mjs migrate          Migrate desktop data to ~/.ubovm without launching'
+            Write-Host 'node build/build.mjs check            Check the installed runtime'
+            Write-Host 'node build/build.mjs test             Run a real desktop integration test'
+            Write-Host 'node build/build.mjs source ACTION    fetch | doctor | install | apply | build | watch | start'
         }
-        default { throw "Unknown action: $Action. Run node build.mjs help." }
+        default { throw "Unknown action: $Action. Run node build/build.mjs help." }
     }
     exit 0
 } catch {

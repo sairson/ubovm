@@ -1,4 +1,4 @@
-// Run after `node build.mjs setup`; exercise the patched desktop, not a mocked VS Code API.
+// Run after `node build/build.mjs setup`; exercise the patched desktop, not a mocked VS Code API.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';

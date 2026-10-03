@@ -1,7 +1,7 @@
 $ErrorActionPreference = 'Stop'
 $ProjectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../..'))
 $tokens = $null; $parseErrors = $null
-$ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $ProjectRoot 'build.ps1'), [ref]$tokens, [ref]$parseErrors)
+$ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $ProjectRoot 'build/build.ps1'), [ref]$tokens, [ref]$parseErrors)
 if ($parseErrors.Count) { throw ($parseErrors | Out-String) }
 foreach ($name in @('Assert-ChildPath', 'Remove-Managed', 'Invoke-InstallerCompiler')) {
     $definition = $ast.Find({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true)

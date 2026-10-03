@@ -5,7 +5,7 @@ import { migrateLegacyProfile } from './data-migration.mjs';
 
 const profiles = new Set(['desktop', 'source', 'smoke']);
 
-// Installed executables do not pass through build.bat's first-run setup.
+// Installed executables do not pass through build/build.bat's first-run setup.
 // Create defaults once, preserving existing settings (including JSONC) verbatim.
 export function initializeUserSettings(paths, defaults) {
   const settings = path.join(paths.userData, 'User', 'settings.json');
@@ -72,7 +72,7 @@ export function prepareDataPaths({ home, profile, legacyRoot } = {}) {
 export function findLegacyRoot(appPath) {
   let candidate = path.resolve(appPath);
   for (let depth = 0; depth < 6; depth += 1) {
-    if (fs.existsSync(path.join(candidate, 'build.bat')) &&
+    if (fs.existsSync(path.join(candidate, 'build', 'build.bat')) &&
         fs.existsSync(path.join(candidate, 'resources', 'app.json')) &&
         fs.existsSync(path.join(candidate, '.data'))) {
       return candidate;

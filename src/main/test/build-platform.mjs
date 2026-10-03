@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { buildCommand } from '../../../build.mjs';
+import { buildCommand } from '../../../build/build.mjs';
 
 for (const platform of ['win32', 'darwin', 'linux']) {
   test(`${platform}: forwards workspace paths without shell interpolation`, () => {

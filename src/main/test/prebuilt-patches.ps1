@@ -2,7 +2,7 @@ $ErrorActionPreference = 'Stop'
 $ProjectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../..'))
 $tokens = $null; $errors = $null
 # ParseFile uses the same encoding rules as Windows PowerShell -File.
-$ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $ProjectRoot 'build.ps1'), [ref]$tokens, [ref]$errors)
+$ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $ProjectRoot 'build/build.ps1'), [ref]$tokens, [ref]$errors)
 if ($errors.Count) { throw ($errors | Out-String) }
 foreach ($name in @('Assert-ChildPath', 'Remove-Managed', 'Replace-CoreSnippet', 'Update-ManagedKeyboardPolicy', 'Get-PatchAdditions', 'Set-CoreChecksum', 'Get-WorkbenchStyle', 'Set-StartupHtml', 'Set-FixedConversationCore', 'Set-BackgroundTrayCore')) {
     $definition = $ast.Find({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true)
@@ -12,7 +12,7 @@ $fixture = Join-Path $ProjectRoot ('.cache/prebuilt-patches-' + [Guid]::NewGuid(
 $AppRoot = $fixture
 $config = Get-Content (Join-Path $ProjectRoot 'resources/app.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 $archivePath = Join-Path $ProjectRoot ('.cache/' + ($config.core.runtime.url -split '/')[-1])
-if (-not (Test-Path -LiteralPath $archivePath)) { throw 'Run node build.mjs setup to cache the pinned runtime first.' }
+if (-not (Test-Path -LiteralPath $archivePath)) { throw 'Run node build/build.mjs setup to cache the pinned runtime first.' }
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $archive = [IO.Compression.ZipFile]::OpenRead($archivePath)
 $files = @('out/vs/workbench/workbench.desktop.main.js', 'out/vs/workbench/workbench.desktop.main.css', 'out/vs/code/electron-browser/workbench/workbench.html', 'out/main.js')

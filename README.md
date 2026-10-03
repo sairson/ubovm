@@ -157,8 +157,8 @@ Windows x64 安装后启动 `UBOVM.exe`。用户数据在 `~/.ubovm/desktop/`。
 
 ```sh
 npm install
-node build.mjs setup    # 下载并准备桌面运行时
-node build.mjs start    # 启动 IDE
+node build/build.mjs setup    # 下载并准备桌面运行时
+node build/build.mjs start    # 启动 IDE
 ```
 
 建议顺序：
@@ -167,7 +167,7 @@ node build.mjs start    # 启动 IDE
 2. 配置 **SSH**（CTF / 渗透的默认远程执行环境）
 3. 按需打开浏览器、搜索、DNSLog、MCP、Skills
 
-开发界面用 `node build.mjs dev`。其它动作见 `node build.mjs help`。
+开发界面用 `node build/build.mjs dev`。其它动作见 `node build/build.mjs help`。
 
 ### 常用快捷键
 

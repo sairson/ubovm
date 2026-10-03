@@ -1,4 +1,4 @@
-// Run explicitly after build.bat setup. Uses only the isolated ~/.ubovm/smoke profile.
+// Run explicitly after build/build.bat setup. Uses only the isolated ~/.ubovm/smoke profile.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';

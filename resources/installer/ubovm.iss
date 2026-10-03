@@ -1,4 +1,4 @@
-; Built by build.bat installer. All payload paths are provided by the build.
+; Built by build/build.bat installer. All payload paths are provided by the build.
 #ifndef AppVersion
   #error AppVersion is required
 #endif
