@@ -1,5 +1,9 @@
 /* Compact conversation switcher; execution details belong in the worker view. */
-.collaboration-workers { display: flex; align-items: center; flex: 0 0 auto; gap: 12px; min-width: 0; width: min(100%, var(--reading)); margin: 0 auto; padding: 4px var(--gutter) 0; }
+.collaboration-workers {
+  position: relative; z-index: 2; display: flex; align-items: center; flex: 0 0 auto; gap: 12px;
+  min-width: 0; width: min(100%, var(--reading)); margin: 0 auto; padding: 6px var(--gutter) 2px;
+  background: var(--canvas);
+}
 .worker-roster-heading { flex: 0 0 auto; }
 .worker-roster-heading h2 { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: var(--ink); white-space: nowrap; }
 .worker-roster-heading h2 span { display: inline-grid; place-items: center; min-width: 19px; height: 19px; padding-inline: 4px; border-radius: 5px; background: var(--hover); color: var(--muted); font-size: 10px; font-weight: 500; font-variant-numeric: tabular-nums; }
@@ -40,6 +44,8 @@
 .worker-status[data-status="running"]::before { box-shadow: 0 0 0 3px var(--accent-wash); }
 .worker-status[data-status="waiting"], .worker-status[data-status="queued"] { color: var(--vscode-editorWarning-foreground, #95763a); }
 .worker-status[data-status="failed"] { color: var(--vscode-errorForeground, #a8453f); }
+.worker-priority { flex-shrink: 0; font-size: 10px; font-weight: 600; color: var(--accent); font-variant-numeric: tabular-nums; }
+.worker-priority:empty { display: none; }
 .worker-panel { position: absolute; z-index: 30; top: var(--worker-panel-top, 52px); bottom: 0; right: 0; width: min(var(--worker-panel-width, 440px), 100%); display: flex; flex-direction: column; min-height: 0; background: var(--canvas); border-left: 1px solid var(--border); box-shadow: -8px 0 28px #0000000a; }
 .worker-resize-handle { position: absolute; z-index: 2; left: 0; top: 0; bottom: 0; width: 7px; cursor: col-resize; touch-action: none; }
 .worker-resize-handle::after { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 2px; background: transparent; }

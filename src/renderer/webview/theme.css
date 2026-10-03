@@ -37,8 +37,8 @@ body.vscode-dark {
 
 body.vscode-dark ::selection { background: color-mix(in srgb, var(--accent) 32%, var(--canvas)); color: var(--ink); }
 body.vscode-dark :is(input, textarea)::placeholder { color: var(--muted); opacity: .85; }
-body.vscode-dark .composer { background: var(--wash); border-color: var(--border); box-shadow: 0 3px 12px #00000018; }
-body.vscode-dark .composer:focus-within { border-color: var(--focus); box-shadow: 0 0 0 2px color-mix(in srgb, var(--focus) 15%, transparent); }
+body.vscode-dark .composer { background: var(--wash); border-color: var(--border); box-shadow: 0 3px 16px #00000022; }
+body.vscode-dark .composer:focus-within { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent), 0 8px 24px #00000030; }
 body.vscode-dark :is(.primary-button, .submit, .composer .submit) { background: var(--accent); color: #17251e; border-color: transparent; }
 body.vscode-dark :is(.primary-button, .submit, .composer .submit):hover:enabled { background: #b5d4c3; }
 body.vscode-dark .composer .submit:disabled { background: var(--hover); color: var(--muted); }
@@ -68,4 +68,5 @@ body.vscode-dark .md-content mark { background: color-mix(in srgb, var(--dark-wa
 
 /* Preserve host accessibility colors instead of applying the muted dark palette. */
 body.vscode-high-contrast { color-scheme: dark; --accent: var(--vscode-textLink-foreground, #b6dfc8); --border: var(--vscode-contrastBorder, #fff); --accent-wash: var(--canvas); }
+body.vscode-high-contrast .composer .submit { background: var(--vscode-button-background, var(--canvas)); color: var(--vscode-button-foreground, var(--ink)); }
 body.vscode-high-contrast .graph-node[data-kind="root"] { color: var(--canvas); }

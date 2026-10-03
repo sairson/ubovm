@@ -12,11 +12,14 @@ import { installWindowRendering } from './window-rendering.mjs';
 
 // The executable can be opened without build.bat, so data isolation belongs in
 // the actual Electron entry rather than only in the development launcher.
-// Avoid native occlusion as a defensive measure for Windows surface restoration.
-// Keep Chromium's feature list intact while disabling this optimization.
+// Avoid native occlusion and idle renderer sleeping, which leave a blank
+// compositor after the window sits unused. Keep Chromium's other features.
 if (process.platform === 'win32') {
   const features = app.commandLine.getSwitchValue('disable-features').split(',').filter(Boolean);
   app.commandLine.appendSwitch('disable-features', [...new Set([...features, 'CalculateNativeWinOcclusion'])].join(','));
+  app.commandLine.appendSwitch('disable-renderer-backgrounding');
+  app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
+  app.commandLine.appendSwitch('disable-background-timer-throttling');
 }
 const dataPaths = configureDataPaths({ app, legacyRoot: findLegacyRoot(app.getAppPath()) });
 process.argv.splice(0, process.argv.length, ...normalizeLaunchArguments(process.argv));

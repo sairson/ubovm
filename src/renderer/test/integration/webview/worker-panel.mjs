@@ -319,7 +319,7 @@ test('swarm strip stays above the composer, bounds a large roster and updates pa
   assert.equal(await f.page.locator('#worker-swarm-status').textContent(), '3 执行 · 2 排队 · 1 等待 · 5 完成 · 1 异常');
   assert.equal(await f.cards.nth(11).locator('.worker-card-preview').textContent(), '测试服务连接失败');
   const roster = f.page.locator('#collaboration-workers'), strip = f.page.locator('#collaboration-worker-list');
-  assert((await roster.boundingBox()).height < 50);
+  assert((await roster.boundingBox()).height < 58);
   assert.equal(await f.cards.first().locator('.worker-card-footer').isVisible(), false);
   await f.page.locator('#prompt-input').fill('让蜂群继续并行执行');
   await f.page.evaluate(() => { window.firstWorker = document.querySelector('.worker-card'); });
@@ -331,6 +331,18 @@ test('swarm strip stays above the composer, bounds a large roster and updates pa
   await f.emit(state(workers, { messages: [{ role: 'assistant', text: '长对话内容\n\n'.repeat(100) }] }));
   await f.page.locator('#conversation').evaluate(element => { element.scrollTop = 0; });
   assert(Math.abs((await roster.boundingBox()).y - top) < 1);
+  const stack = await f.page.evaluate(() => {
+    const workers = document.getElementById('collaboration-workers').getBoundingClientRect();
+    const composer = document.getElementById('prompt-form').getBoundingClientRect();
+    return {
+      fade: getComputedStyle(document.getElementById('compose-dock'), '::before').content,
+      workerBottom: workers.bottom,
+      composerTop: composer.y,
+      workerZ: getComputedStyle(document.getElementById('collaboration-workers')).zIndex,
+    };
+  });
+  assert.equal(stack.fade, 'none', 'composer fade must not cover the Worker strip');
+  assert(stack.workerBottom <= stack.composerTop + 1);
   assert((await roster.boundingBox()).y + (await roster.boundingBox()).height <= (await f.page.locator('#compose-dock').boundingBox()).y + 1);
   assert.equal(await f.page.locator('#worker-overview-toggle').count(), 0);
   assert(await strip.evaluate(element => element.scrollWidth > element.clientWidth && element.scrollHeight <= element.clientHeight + 1));
@@ -344,7 +356,7 @@ test('swarm strip stays above the composer, bounds a large roster and updates pa
   await f.page.screenshot({ path: directory + '/worker-swarm-strip.png' });
   await f.page.setViewportSize({ width: 320, height: 700 });
   assert(await f.page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
-  assert((await roster.boundingBox()).height < 50);
+  assert((await roster.boundingBox()).height < 58);
   assert(await f.page.locator('#prompt-input').isVisible());
   await f.page.screenshot({ path: directory + '/worker-swarm-narrow.png' });
 });
@@ -364,6 +376,21 @@ test('swarm scrolls horizontally with the mouse, preserves its position during u
   assert(await f.cards.first().evaluate(element => element === document.activeElement));
   await f.cards.last().click(); assert.match(await f.panel.textContent(), /测试服务连接失败/);
   await f.emit(state(initialWorkers(), { conversation: { id: 'new-swarm' } }));
-  assert.equal(await f.panel.isVisible(), false); assert.equal(await f.cards.count(), 3);
+  assert.equal(await f.panel.isVisible(), false);   assert.equal(await f.cards.count(), 3);
   assert.equal(await strip.evaluate(element => element.scrollLeft), 0);
+});
+
+test('worker cards surface priority for coordinator-managed tasks', async t => {
+  const f = await fixture(t);
+  const workers = [
+    { id: 'critical', name: '关键路径', description: '先做这项', status: 'queued', depth: 1, priority: 9, parts: [] },
+    { id: 'background', name: '背景任务', description: '稍后即可', status: 'running', depth: 1, priority: 0, startedAt: Date.now(), parts: [text('bg', '正在运行')] },
+  ];
+  await f.emit(state(workers));
+  await f.page.locator('#route-loading').waitFor({ state: 'hidden' });
+  assert.equal(await f.cards.nth(0).getAttribute('data-priority'), '9');
+  assert.equal(await f.cards.nth(0).locator('.worker-priority').textContent(), 'P9');
+  assert.equal(await f.cards.nth(1).locator('.worker-priority').textContent(), '');
+  await f.cards.first().click();
+  assert.match(await f.panel.locator('.worker-status').textContent(), /排队中 · P9/);
 });

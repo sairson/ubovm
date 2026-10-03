@@ -9,6 +9,9 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 test('conversation page forces full paint and ready resync after visibility restore', () => {
   const app = fs.readFileSync(path.join(root, 'webview/app.js'), 'utf8');
   assert.match(app, /if \(hostState\) \{ renderPending = true; fullRenderPending = true; contentReadyPending = true; \}/);
+  assert.match(app, /if \(firstContentPaint\) beginPageTransition\('正在加载会话…', 'session'\)/);
+  assert.match(app, /const pageHidden = \(\) => suspended \|\| document\.hidden;/);
+  assert.match(app, /if \(renderFrame \|\| pageHidden\(\)\) return;/);
   assert.match(app, /function resumeVisuals\(\) \{\s*if \(visualSuspended\(\)\) return;\s*scheduleRender\(true\);/s);
   assert.match(app, /function requestReadyResync\(\)/);
   assert.match(app, /window\.addEventListener\('pageshow', \(\) => \{\s*suspended = false;\s*resumeVisuals\(\);\s*requestReadyResync\(\);/s);
@@ -26,6 +29,10 @@ test('conversation page forces full paint and ready resync after visibility rest
   assert.match(extension, /replyConnectionProbe/);
   assert.match(extension, /schedulePublishState/);
   assert.match(extension, /conversationConsumesSnapshot/);
+  assert.match(extension, /conversationNeedsSnapshot/);
+  assert.match(extension, /chromeLockedSessionId/);
+  assert.match(extension, /chromeLockWatchdog/);
+  assert.match(extension, /if \(switched\) await lockConversationChrome\(\);/);
   assert.match(extension, /createSessions\(vscode, context, \(\) => schedulePublishState\(\)/);
   assert.match(extension, /ensureIdle/);
   const monitor = fs.readFileSync(path.join(root, 'webview/connection-monitor.js'), 'utf8');
@@ -40,5 +47,11 @@ test('conversation page forces full paint and ready resync after visibility rest
 
 test('native window recovery schedules staggered invalidates', () => {
   const rendering = fs.readFileSync(path.join(root, '../main/window-rendering.mjs'), 'utf8');
-  assert.match(rendering, /const delayMs = Object\.freeze\(\[0, 250, 1000\]\)/);
+  assert.match(rendering, /const delayMs = Object.freeze\(\[0, 250, 1000\]\)/);
+  assert.match(rendering, /keepAliveMs = 20000/);
+  assert.match(rendering, /before-input-event/);
+  const index = fs.readFileSync(path.join(root, '../main/index.mjs'), 'utf8');
+  assert.match(index, /disable-renderer-backgrounding/);
+  assert.match(index, /disable-backgrounding-occluded-windows/);
+  assert.match(index, /disable-background-timer-throttling/);
 });

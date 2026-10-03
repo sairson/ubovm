@@ -20,13 +20,13 @@
       for (const item of interrupted) { clearTimeout(item.timer); completeCallback(item.onError, failure, item.sessionId); }
       // Hard disconnect must disable submit controls via a full paint.
       scheduleRender();
-    } else if (status === 'backend-disconnected') {
+    } else if (status === 'backend-disconnected' || status === 'backend-stalled') {
       scheduleRender();
     } else {
       // Soft reconnect ticks only need the connection strip; avoid relayout storms.
       scheduleRender(true);
     }
-    if (status === 'connected' && ['disconnected', 'backend-disconnected', 'reconnecting'].includes(previous)) requestReadyResync();
+    if (status === 'connected' && ['disconnected', 'backend-disconnected', 'backend-stalled', 'reconnecting'].includes(previous)) requestReadyResync();
   } });
   createSettingsPanel(vscode);
   const elements = new Map();
@@ -42,17 +42,23 @@
   const deliveryView = window.createDeliveryView(byId('delivery-workspace'));
   byId('connection-check').addEventListener('click', () => connection.probe());
   function renderConnectionStatus() {
-    const offline = ['disconnected', 'backend-disconnected'].includes(connectionStatus);
+    const offline = ['disconnected', 'backend-disconnected', 'backend-stalled'].includes(connectionStatus);
     byId('connection-warning').hidden = !offline;
     const canResume = executionState().canResume === true;
     setText(byId('connection-warning-text'), connectionStatus === 'disconnected'
       ? '与 IDE 后端的连接已中断，任务状态未知。草稿已保留，请勿重复提交；连接恢复后将同步状态。'
+      : connectionStatus === 'backend-stalled'
+        ? 'Agent 后端响应变慢，连接仍保持中，任务未中断。请稍候；若长时间无进展再检查后继续。'
       : canResume
         ? 'Agent 后端已断开，运行中的任务可能已中断。连接恢复后请点击“继续执行”从检查点恢复，请勿重复提交。'
         : 'Agent 后端已断开，运行中的任务可能已中断。请检查执行错误，再手动重新发起或恢复任务。');
     if (!offline) return;
-    if (busy) for (const id of ['busy-status', 'header-execution-status', 'goal-run-status', 'execution-phase']) setText(byId(id), '连接中断 · 任务状态待确认');
-    // Hard IDE disconnect freezes actions; backend flaps still allow explicit resume.
+    if (busy && connectionStatus !== 'backend-stalled') {
+      for (const id of ['busy-status', 'header-execution-status', 'goal-run-status', 'execution-phase']) setText(byId(id), '连接中断 · 任务状态待确认');
+    } else if (busy && connectionStatus === 'backend-stalled') {
+      for (const id of ['busy-status', 'header-execution-status', 'goal-run-status', 'execution-phase']) setText(byId(id), '响应变慢 · 任务仍在进行');
+    }
+    // Hard IDE disconnect freezes actions; stalls and backend flaps still allow explicit resume.
     if (connectionStatus === 'disconnected') for (const id of ['submit-prompt', 'goal-run', 'goal-resume', 'assist-resume', 'goal-stop']) byId(id).disabled = true;
   }
   const form = byId('prompt-form');
@@ -76,18 +82,22 @@
   let routePending = false, routePaintReady = false;
   const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
   function cancelPageAnimation() { pageAnimation?.cancel(); pageAnimation = undefined; }
-  function beginPageTransition(label = '正在切换页面…') {
+  function beginPageTransition(label = '正在切换页面…', kind = 'route') {
     cancelPageAnimation();
     routePending = true; routePaintReady = false;
     if (renderFrame) { renderGeneration++; cancelAnimationFrame(renderFrame); renderFrame = 0; }
     setText(byId('route-loading-label'), label);
-    byId('route-loading').hidden = !firstContentPaint;
+    const loader = byId('route-loading');
+    loader.dataset.kind = kind;
+    loader.hidden = !firstContentPaint;
     document.body.dataset.switching = 'true';
     renderNavigationFeedback();
   }
   function finishPageTransition() {
     routePending = false; routePaintReady = false;
-    byId('route-loading').hidden = true;
+    const loader = byId('route-loading');
+    loader.hidden = true;
+    delete loader.dataset.kind;
     document.body.dataset.switching = 'false';
     renderNavigationFeedback();
   }
@@ -100,7 +110,8 @@
   reducedMotion.addEventListener('change', event => { if (event.matches) cancelPageAnimation(); });
   let firstContentPaint = false, firstPaintAcknowledged = false;
   let suspended = false, viewEpoch = 0, focusFrame = 0, contentReadyFrame = 0, contentReadyPending = false;
-  const visualSuspended = () => suspended || document.hidden || byId('settings-dialog').open;
+  const pageHidden = () => suspended || document.hidden;
+  const visualSuspended = () => pageHidden() || byId('settings-dialog').open;
   let busy = false;
   let showingConversation = false;
   let composingPrompt = false;
@@ -144,8 +155,8 @@
   let draftTimer = 0;
   let inputFrame = 0;
   let workerPanelWidth = 440;
-  const statusLabels = { idle: '尚未执行', starting: '正在准备', running: '执行中', completed: '已完成', interrupted: '已停止', failed: '执行失败', pending: '待执行', queued: '排队中', waiting: '等待协作结果' };
-  const phaseLabels = { chat: '正在回复', reason: 'Reason 正在规划', plan: '制定计划', execute: '执行工具', replan: '检查进展', conclude: '整理结论', done: '已完成' };
+  const statusLabels = { idle: '尚未执行', starting: '正在准备', running: '执行中', completed: '已完成', interrupted: '已停止', failed: '执行失败', pending: '待执行', queued: '排队中', waiting: '等待并行任务' };
+  const phaseLabels = { chat: '正在回复', reason: '正在规划', plan: '制定计划', execute: '执行工具', replan: '检查进展', conclude: '整理结论', done: '已完成' };
   const executionState = () => hostState?.execution || {};
   const statusText = value => statusLabels[value] || value || '尚未执行';
   const phaseText = value => phaseLabels[value] || value || '';
@@ -355,6 +366,7 @@
     }
   };
   const backgroundTasks = window.createBackgroundTasks(messageActions);
+  document.querySelector('.shell')?.append(backgroundTasks.element);
   const workerPanel = window.createWorkerPanel(messageActions, { openNative: id => { if (!hostState?.nativeWorkerPanel) return false; if (!hasPending('openWorker')) void renderRequest('openWorker', { workerId: id }).catch(() => {}); return true; }, initialWidth: workerPanelWidth, onWidthChange: width => { workerPanelWidth = width; persistDrafts(); } });
   byId('goal-log-bottom').addEventListener('click', () => {
     goalExecutionLog?.showLatest();
@@ -374,13 +386,18 @@
   }
   function updateComposer() {
     const sending = hasPending('prompt');
+    const queued = hostState?.inputQueue?.length > 0;
+    const liveSteer = busy && executionState().canSteer === true && !queued && !hostState?.queuePaused;
     const selectedMode = draftFor().approvalMode ?? (hostState?.requireToolApproval === false ? 'auto' : 'manual');
     for (const option of approvalMode.elements) setProperty(option, 'checked', option.value === selectedMode);
     setProperty(approvalMode, 'disabled', busy || sending || navigationPending());
     setProperty(form.dataset, 'state', busy ? 'running' : sending ? 'sending' : 'idle');
-    setProperty(input, 'placeholder', busy ? '输入后续任务，发送后加入队列…' : '描述任务，或提出一个问题…');
+    setProperty(form.dataset, 'steer', String(liveSteer));
+    setProperty(input, 'placeholder', busy
+      ? (liveSteer ? '补充说明将立刻调整当前任务…' : '补充说明或下一条消息，发送后排队…')
+      : '提问、规划，或描述你想完成的改动…');
     const status = byId('composer-status');
-    if (status) setText(status, hostState?.recovering ? '正在恢复执行记录 · 可以先写草稿' : hasPending('cancelRun') ? '正在停止…' : busy ? '执行中 · Enter 加入队列' : sending ? '正在发送…' : '');
+    if (status) setText(status, hostState?.recovering ? '正在恢复执行记录 · 可以先写草稿' : hasPending('cancelRun') ? '正在停止…' : busy ? (liveSteer ? '执行中 · Enter 立刻引导' : '执行中 · Enter 排队') : sending ? '正在发送…' : '');
     const shortcut = byId('prompt-shortcut');
     if (shortcut) setProperty(shortcut, 'hidden', busy || sending);
     const count = byId('prompt-count');
@@ -455,9 +472,10 @@
   function updateSubmit(button, field) {
     setProperty(button.dataset, 'running', String(busy));
     const stop = busy && !field.value.trim();
-    setProperty(button.dataset, 'actionMode', stop ? 'stop' : busy ? 'queue' : 'send');
-    setAttribute(button, 'aria-label', stop ? '停止执行' : busy ? '加入队列' : '发送任务');
-    setProperty(button, 'title', stop ? '停止当前执行' : busy ? '加入队列（Enter）' : '发送（Enter）');
+    const liveSteer = busy && executionState().canSteer === true && !(hostState?.inputQueue?.length) && !hostState?.queuePaused;
+    setProperty(button.dataset, 'actionMode', stop ? 'stop' : busy ? (liveSteer ? 'steer' : 'queue') : 'send');
+    setAttribute(button, 'aria-label', stop ? '停止执行' : busy ? (liveSteer ? '引导当前任务' : '加入队列') : '发送任务');
+    setProperty(button, 'title', stop ? '停止当前执行' : busy ? (liveSteer ? '立刻引导当前任务（Enter）' : '加入队列（Enter）') : '发送（Enter）');
     setAttribute(button.querySelector('path'), 'd', stop ? 'M6 6h12v12H6Z' : 'M12 19V5m-6 6 6-6 6 6');
     setProperty(button, 'disabled', connectionStatus === 'disconnected' || !currentSessionId || hostState?.recovering || navigationPending() || hasPending('rewindInput') || hasPending('cancelRun') || (stop ? hasPending('prompt') : configurationMissing() || hasPending('prompt') || hasPending('runGoal') || hasPending('resumeRun') || contextPending() || !field.value.trim() || field.value.length > field.maxLength));
   }
@@ -504,9 +522,11 @@
     setProperty(byId('goal-stop'), 'textContent', hasPending('cancelRun') ? '正在停止…' : '停止执行');
     setProperty(byId('goal-resume'), 'hidden', busy || !canResume);
     setProperty(byId('goal-resume'), 'disabled', unavailable || configurationMissing() || runPending);
-    setText(byId('goal-resume'), hasPending('resumeRun') ? '正在恢复…' : executionState().status === 'completed' ? '恢复结果' : '继续执行');
-    setProperty(byId('assist-resume'), 'hidden', busy || !canResume);
+    const resumeLabel = hasPending('resumeRun') ? '正在恢复…' : executionState().status === 'completed' ? '恢复结果' : '继续执行';
+    setText(byId('goal-resume'), resumeLabel);
     setProperty(byId('assist-resume'), 'disabled', unavailable || configurationMissing() || runPending);
+    setText(byId('assist-resume'), resumeLabel);
+    syncAssistResume();
     const savingNote = hasPending('addGoalNote');
     setProperty(noteInput, 'disabled', unavailable || savingNote);
     setProperty(byId('goal-add-note'), 'disabled', unavailable || !hostState?.goal || savingNote || !noteInput.value.trim());
@@ -540,6 +560,12 @@
     if (!Array.isArray(left) || !Array.isArray(right)) return !left?.length && !right?.length;
     return left.length === right.length && left.every((part, index) => ['id', 'type', 'text', 'name', 'status', 'args', 'output', 'startedAt', 'endedAt', 'truncated', 'source', 'workerId', 'fallback', 'beforeTokens', 'afterTokens'].every(key => part[key] === right[index]?.[key]));
   }
+  function visibleTimelineParts(parts) {
+    return window.UBOVMTimeline.visibleTimelineParts(parts);
+  }
+  function hasVisibleTimeline(text, parts) {
+    return Boolean(typeof text === 'string' && text.trim()) || visibleTimelineParts(parts).length > 0;
+  }
   function renderApprovals(view) {
     view.approvals ??= new Map();
     const approvals = hostState?.toolApprovals || [];
@@ -556,20 +582,21 @@
         let parameters;
         try { parameters = JSON.parse(record.args); } catch {}
         const command = typeof parameters?.command === 'string' ? parameters.command : '';
-        const title = document.createElement('strong'); title.textContent = command ? '运行命令' : '调用工具';
+        const toolTitle = window.UBOVMTimeline?.displayActivityLabel?.(record.toolName) || record.toolName || '调用工具';
+        const title = document.createElement('strong'); title.textContent = command ? '运行命令' : toolTitle;
         const icon = document.createElement('span'); icon.className = 'approval-icon'; icon.textContent = command ? '>_' : '◇'; icon.setAttribute('aria-hidden', 'true');
         const status = document.createElement('span'); status.className = 'approval-status'; status.setAttribute('role', 'status');
         const header = document.createElement('summary'); header.className = 'approval-header'; header.append(icon, title, status);
-        const target = document.createElement('span'); target.className = 'approval-target'; target.textContent = command ? command.split(/\r?\n/, 1)[0] : record.toolName; target.title = command || record.toolName;
+        const target = document.createElement('span'); target.className = 'approval-target'; target.textContent = command ? command.split(/\r?\n/, 1)[0] : toolTitle; target.title = command || toolTitle;
         header.insertBefore(target, status);
         const chevron = document.createElement('span'); chevron.className = 'approval-chevron'; chevron.textContent = '›'; chevron.setAttribute('aria-hidden', 'true'); header.append(chevron);
         const disclosure = document.createElement('details'); disclosure.className = 'approval-request'; disclosure.open = true;
         const content = document.createElement('div'); content.className = 'approval-content';
         const description = document.createElement('p'); description.className = 'approval-description'; description.textContent = command ? '此命令需要你的确认后才能执行。' : '此工具调用需要你的确认后才能执行。';
         const preview = document.createElement('pre'); preview.className = 'approval-preview'; preview.tabIndex = 0;
-        preview.textContent = command || record.args || record.toolName; preview.setAttribute('aria-label', command ? '待执行命令' : '调用参数预览');
+        preview.textContent = command || record.args || toolTitle; preview.setAttribute('aria-label', command ? '待执行命令' : '调用参数预览');
         const worker = document.createElement('p'); worker.className = 'approval-worker';
-        worker.textContent = [record.toolName, record.workerId ? '执行者 · ' + record.workerId : ''].filter(Boolean).join('  /  ');
+        worker.textContent = record.workerId ? '来自并行任务' : ''; worker.hidden = !record.workerId;
         const details = document.createElement('details'); details.className = 'approval-parameters';
         const summary = document.createElement('summary'); summary.textContent = '查看完整参数';
         const args = document.createElement('pre'); args.textContent = record.args; args.tabIndex = 0;
@@ -616,7 +643,63 @@
     }
     return changed;
   }
+  function parkResumeNote() {
+    const note = byId('assist-resume-note');
+    const home = byId('assist-resume-note-home');
+    if (note && home && note.parentElement !== home) home.appendChild(note);
+    messages.querySelectorAll('.has-resume').forEach(element => element.classList.remove('has-resume'));
+  }
+  function attachResumeNote(note, article) {
+    const body = article.querySelector(':scope > .message-text');
+    const next = body?.nextElementSibling;
+    if (body && next !== note) article.insertBefore(note, next);
+    else if (note.parentElement !== article) article.appendChild(note);
+    article.classList.add('has-resume');
+  }
+  function syncAssistResume() {
+    const banner = byId('assist-resume-banner');
+    const note = byId('assist-resume-note');
+    const execution = executionState();
+    const pending = hasPending('resumeRun');
+    const show = !busy && execution.canResume === true && hostState?.mode !== 'goal';
+    const status = ['completed', 'interrupted', 'failed'].includes(execution.status) ? execution.status : 'interrupted';
+    const titles = { completed: '结果待写入对话', interrupted: '任务已中断', failed: '任务未完成' };
+    const hints = {
+      completed: '本轮已经结束，回复还没有写进对话。用旁边的按钮补齐结果，不必重新发送。',
+      interrupted: '检查点已保存。从中断处继续即可，不必再发一遍相同指令。',
+      failed: '可从已有检查点继续。先确认错误是否需要调整，再恢复执行。'
+    };
+    const notes = {
+      completed: '回复还没有写进这条对话。从下方输入区补齐结果。',
+      interrupted: '执行在这里停下。检查点已保存，从下方输入区继续。',
+      failed: '本轮未能完成。可从下方输入区按检查点恢复。'
+    };
+    const title = titles[status] || '可继续执行';
+    const hint = pending ? '正在从检查点恢复…'
+      : configurationMissing() ? '先完成模型连接，再从检查点继续。'
+      : (hints[status] || '可从检查点继续当前任务。');
+    setProperty(banner, 'hidden', !show);
+    setProperty(banner.dataset, 'status', show ? status : '');
+    setProperty(banner.dataset, 'pending', pending ? 'true' : '');
+    setAttribute(banner, 'aria-busy', String(pending));
+    setText(byId('assist-resume-title'), title);
+    setText(byId('assist-resume-hint'), hint);
+    parkResumeNote();
+    if (!show) {
+      setProperty(note, 'hidden', true);
+      setText(note, '');
+      return;
+    }
+    setText(note, pending ? '正在从检查点恢复…' : (notes[status] || title));
+    setProperty(note, 'hidden', false);
+    const view = messageViews.get(messages);
+    const last = [view?.stream, ...[...(view?.entries || [])].reverse()]
+      .find(entry => entry?.role === 'assistant' && entry.article && !entry.article.hidden)?.article;
+    if (last) attachResumeNote(note, last);
+    else if (showingConversation) messages.appendChild(note);
+  }
   function renderMessages(items) {
+    parkResumeNote();
     let view = messageViews.get(messages);
     // Execution-only publications retain the immutable history array; full
     // state publications replace it and reconcile edits and deletions.
@@ -627,7 +710,7 @@
     const firstPartId = executionParts[0]?.id;
     const represented = !historyChanged && view.firstPartId === firstPartId ? view.represented
       : executionParts.length && safeMessages.some(item => item.role === 'assistant' && item.parts?.some(part => part.id === firstPartId));
-    const liveParts = !represented && (busy || ['failed', 'interrupted'].includes(execution.status) || execution.canResume) ? executionParts : [];
+    const liveParts = visibleTimelineParts(!represented && (busy || ['failed', 'interrupted'].includes(execution.status) || execution.canResume) ? executionParts : []);
     const streamText = !represented && busy && typeof execution.streamText === 'string' ? execution.streamText : '';
     const hasLive = liveParts.length > 0 || Boolean(streamText);
     const container = messages;
@@ -670,23 +753,26 @@
         if (used.has(entry)) entry = undefined;
         const publishedIds = new Set((item.parts || []).map(part => part.id));
         const promoted = !entry && item.role === 'assistant' && view.stream && (publishedIds.size && view.stream.parts?.some(part => publishedIds.has(part.id)) || !publishedIds.size && view.stream.text === item.text);
+        const parts = item.role === 'assistant' ? visibleTimelineParts(item.parts) : item.parts;
         if (promoted) {
           entry = view.stream; view.stream = null;
           entry.article.classList.remove('streaming-message'); entry.article.removeAttribute('data-streaming');
-          window.UBOVMMessage.update(entry.body, item.text, { ...messageActions, role: item.role, parts: item.parts, streaming: false, preserveBody: true });
-          entry.text = item.text; entry.parts = item.parts;
+          window.UBOVMMessage.update(entry.body, item.text, { ...messageActions, role: item.role, parts, streaming: false, preserveBody: true });
+          entry.text = item.text; entry.parts = parts;
           changed = true;
         } else if (!entry) {
-          entry = createMessage(item.role, item.text, item.parts);
+          entry = createMessage(item.role, item.text, parts);
           changed = true;
-        } else if (entry.role !== item.role || entry.text !== item.text || !sameParts(entry.parts, item.parts)) {
+        } else if (entry.role !== item.role || entry.text !== item.text || !sameParts(entry.parts, parts)) {
           entry.article.className = 'message ' + item.role;
           setText(entry.heading, item.role === 'user' ? '你' : 'UBOVM');
           entry.steeringStatus = undefined;
-          window.UBOVMMessage.update(entry.body, item.text, { ...messageActions, role: item.role, parts: item.parts, streaming: false, preserveBody: true });
-          entry.role = item.role; entry.text = item.text; entry.parts = item.parts;
+          window.UBOVMMessage.update(entry.body, item.text, { ...messageActions, role: item.role, parts, streaming: false, preserveBody: true });
+          entry.role = item.role; entry.text = item.text; entry.parts = parts;
           changed = true;
         }
+        const hideEmpty = item.role === 'assistant' && !hasVisibleTimeline(item.text, item.parts);
+        if (entry.article.hidden !== hideEmpty) { entry.article.hidden = hideEmpty; changed = true; }
         const steeringStatus = item.role === 'user' ? item.steeringStatus : undefined;
         entry.article.classList.toggle('steering-message', Boolean(steeringStatus));
         if (steeringStatus) {
@@ -826,7 +912,7 @@
   function renderGoalView() {
     renderModuleActions();
     const selected = draftFor().view;
-    const label = { overview: '概览', board: '黑板', workers: 'Worker', notes: '笔记' }[selected];
+    const label = { overview: '概览', board: '黑板', workers: '任务', notes: '笔记' }[selected];
     setText(byId('goal-current-view'), label);
     const currentIcon = byId('goal-current-icon');
     if (currentIcon.dataset.view !== selected) {
@@ -856,7 +942,7 @@
     // A route change must synchronize the outer mode and workspace as well as
     // the tab. Partial execution renders can otherwise retain a hidden ancestor.
     pendingViewRestore = { sessionId: currentSessionId, view };
-    beginPageTransition('正在打开' + ({ overview: '思考日志', board: '黑板', workers: 'Worker', notes: '笔记' }[view]) + '…');
+    beginPageTransition('正在打开' + ({ overview: '思考日志', board: '黑板', workers: '任务', notes: '笔记' }[view]) + '…');
     scheduleRender();
   }
   function restoreFields() {
@@ -1039,7 +1125,7 @@
             const text = document.createElement('p'), time = document.createElement('time');
             element.append(text, time); row = { element, text, time }; rows.set(key, row);
           }
-          setText(row.text, item.label + (item.status ? ' · ' + statusText(item.status) : ''));
+          setText(row.text, window.UBOVMTimeline.displayActivityLabel(item.label) + (item.status ? ' · ' + statusText(item.status) : ''));
           if (row.timestamp !== item.timestamp) {
             const timestamp = item.timestamp === null ? new Date(NaN) : new Date(item.timestamp);
             const valid = !Number.isNaN(timestamp.getTime());
@@ -1101,11 +1187,8 @@
   }
   function renderExecution() {
     const execution = executionState();
-    const taskSlot = byId(hostState.mode === 'goal' ? 'main-content' : 'composer-stack');
-    if (backgroundTasks.element.parentElement !== taskSlot) {
-      if (hostState.mode === 'goal') taskSlot.append(backgroundTasks.element);
-      else taskSlot.prepend(backgroundTasks.element);
-    }
+    const shell = document.querySelector('.shell');
+    if (shell && backgroundTasks.element.parentElement !== shell) shell.append(backgroundTasks.element);
     backgroundTasks.update(hostState, ['disconnected', 'backend-disconnected'].includes(connectionStatus));
     const explorationRuns = Array.isArray(execution.explorationRuns) ? execution.explorationRuns.filter(run => run.busy === true) : [];
     setProperty(byId('exploration-runs'), 'hidden', explorationRuns.length === 0);
@@ -1123,7 +1206,7 @@
         });
         const status = document.createElement('p'); status.setAttribute('role', 'status');
         const phase = run.busy ? phaseText(run.phase) : '';
-        status.textContent = statusText(run.status) + (phase ? ' · ' + phase : '') + ` · Worker ${run.activeWorkers || 0} 运行中 / ${run.workerCount || 0} 个`;
+        status.textContent = statusText(run.status) + (phase ? ' · ' + phase : '') + ` · ${run.activeWorkers || 0} 个任务运行中 / 共 ${run.workerCount || 0} 个`;
         row.append(open, status);
         if (run.error) { const error = document.createElement('p'); error.className = 'execution-error'; error.textContent = run.error; row.append(error); }
         fragment.append(row);
@@ -1139,22 +1222,23 @@
     setText(byId('busy-status'), label);
     // The active inline step already explains the wait; do not add a second
     // spinner and generic execution label below the same conversation.
-    const inlineBusy = (execution.parts || []).some(part => ['tool', 'thinking', 'summary'].includes(part.type) && part.status === 'running');
+    const inlineBusy = [...(execution.parts || []), ...(execution.workers || []).flatMap(worker => worker.parts || [])]
+      .some(part => ['tool', 'thinking', 'summary'].includes(part.type) && part.status === 'running' && part.background !== true);
     setProperty(byId('busy-status'), 'hidden', !busy || inlineBusy);
     const goalMode = hostState?.mode === 'goal';
     const selected = draftFor().view;
     const headerStatus = byId('header-execution-status');
     setProperty(headerStatus, 'hidden', !goalMode || !busy || byId('goal-workspace').hidden);
-    const headerLabel = selected === 'board' ? '正在推进目标，黑板将在有新结果时更新…' : selected === 'notes' ? '执行中，新的工作笔记会自动出现…' : label;
+    const headerLabel = selected === 'board' ? '正在推进目标，探索记录将在有新结果时更新…' : selected === 'notes' ? '执行中，新的工作笔记会自动出现…' : label;
     setText(headerStatus, headerLabel);
     setProperty(headerStatus, 'title', headerLabel);
     setProperty(byId('goal-run-status'), 'hidden', busy);
     setText(byId('execution-phase'), label);
     const captions = {
-      idle: '点击“开始执行”，由 Reason 规划并派发 Worker。',
+      idle: '点击“开始执行”，系统会规划步骤并分派并行任务。',
       starting: '正在加载会话、模型与工具。',
-      running: 'Reason 与 Worker 正在推进目标。你可以切换会话，执行会继续。',
-      completed: execution.canResume ? '执行已完成，结果尚未显示。点击“恢复结果”补齐回复。' : '本轮执行已完成。结论与证据保存在共享黑板中，可追加指令继续。',
+      running: '正在推进目标。你可以切换会话，执行会继续。',
+      completed: execution.canResume ? '执行已完成，结果尚未显示。点击“恢复结果”补齐回复。' : '本轮执行已完成。结论与证据已保存在探索记录中，可追加指令继续。',
       interrupted: execution.canResume ? '执行已停止，检查点已保存。点击“继续执行”恢复。' : '执行已停止。',
       failed: execution.canResume ? '执行失败。修复错误后，可从已有检查点继续。' : '执行失败，请检查错误后重试。'
     };
@@ -1181,34 +1265,15 @@
       setProperty(byId('goal-output-content'), 'hidden', !count);
       setProperty(byId('goal-log-bottom'), 'disabled', !count);
       setProperty(byId('goal-output-empty'), 'hidden', count > 0);
-      setText(byId('goal-output-empty'), busy ? '正在启动，执行日志将在事件产生后显示。' : '执行后，Reason Agent 思考、Worker 派发和工具调用会按顺序显示在这里。');
+      setText(byId('goal-output-empty'), busy ? '正在启动，执行日志将在事件产生后显示。' : '执行后，规划、任务派发和工具调用会按顺序显示在这里。');
       setText(byId('goal-output-title'), '思考与调度日志');
       setText(byId('goal-output-status'), label + ' · ' + count + ' 条记录');
     }
     let remainingActivities = [];
     if (!goalMode) {
-      const activities = Array.isArray(execution.activities) ? execution.activities : [];
-      const token = (label, status) => JSON.stringify([label, typeof status === 'string' ? status : '']);
-      const candidates = [], remaining = new Set();
-      for (const item of activities) {
-        if (!item || typeof item.label !== 'string' || !item.label.trim() || item.label === 'skill.loaded' && item.status === 'completed') continue;
-        candidates.push(item); remaining.add(token(item.label, item.status));
-      }
-      // An older completed card does not represent a new running or failed
-      // activity with the same name. Unknown activity states match by name.
-      if (remaining.size) for (const part of execution.parts || []) {
-        if (part && ['tool', 'summary'].includes(part.type)) {
-          remaining.delete(token(part.name, part.status)); remaining.delete(token(part.name, ''));
-        }
-        if (!remaining.size) break;
-      }
-      for (let index = candidates.length - 1; index >= 0 && remainingActivities.length < 8; index--) {
-        const item = candidates[index];
-        if (remaining.has(token(item.label, item.status))) remainingActivities.push(item);
-      }
-      remainingActivities.reverse();
+      remainingActivities = window.UBOVMTimeline.visibleActivities(execution.activities, hostState);
       renderActivities(byId('assist-activities'), remainingActivities);
-      setProperty(byId('assist-execution'), 'hidden', !remainingActivities.length && !error && !execution.canResume);
+      setProperty(byId('assist-execution'), 'hidden', !remainingActivities.length && !error);
     } else setProperty(byId('assist-execution'), 'hidden', true);
     if (goalMode && selected === 'board') renderBlackboard(execution.blackboard);
     if (selected === 'notes') renderAgentNotes(execution.memory);
@@ -1275,7 +1340,7 @@
           title.textContent = item.statement;
           const meta = document.createElement('small');
           const observations = Array.isArray(item.observations) ? item.observations.filter(Boolean) : [];
-          meta.textContent = (observations.length ? observations.map(value => '• ' + value).join('\n') + '\n' : '') + 'id ' + item.id.slice(0, 8) + ' · 种子证据，不可单独完成目标';
+          meta.textContent = (observations.length ? observations.map(value => '• ' + value).join('\n') + '\n' : '') + '从对话带入的参考，不能单独证明目标完成';
           row.append(title, meta);
           return row;
         }));
@@ -1372,7 +1437,7 @@
         }
         const meta = document.createElement('small');
         const observations = Array.isArray(item.observations) ? item.observations.length : 0;
-        meta.textContent = (observations ? observations + ' 条观察 · ' : '') + 'id ' + item.id.slice(0, 8);
+        meta.textContent = observations ? observations + ' 条观察' : '可带到探索的参考';
         body.append(title, meta);
         row.append(checkbox, body);
         return row;
@@ -1413,7 +1478,7 @@
   let inputQueueKey = '';
   let inputQueueSession = '';
   function queueControlsBlocked() {
-    // Brief probe resync (`reconnecting`) must not freeze queue/input controls.
+    // Brief probe resync / soft stalls must not freeze queue/input controls.
     return !currentSessionId || hostState?.recovering || ['disconnected', 'backend-disconnected'].includes(connectionStatus)
       || navigationPending() || ['cancelRun', 'rewindInput', 'removeInput', 'steerInput', 'resumeInputs'].some(action => hasPending(action));
   }
@@ -1485,7 +1550,7 @@
     const heading = document.createElement('div'); heading.className = 'input-queue-heading';
     const label = document.createElement('strong'); label.textContent = '待发送';
     const count = document.createElement('span'); count.className = 'input-queue-count'; count.textContent = String(items.length); count.setAttribute('aria-label', `${items.length} 条待发送输入`); label.appendChild(count);
-    const status = document.createElement('span'); status.className = 'input-queue-status'; status.textContent = stopping ? '正在停止，请稍候' : unresolved ? '请核实引导送达状态' : paused ? '已暂停' : canSteer ? '可引导当前任务' : busy ? '按顺序执行' : '等待继续';
+    const status = document.createElement('span'); status.className = 'input-queue-status'; status.textContent = stopping ? '正在停止，请稍候' : unresolved ? '请核实引导送达状态' : paused ? '已暂停' : canSteer ? '可立刻调整当前任务' : busy ? '当前结束后按顺序执行' : '等待继续';
     heading.append(label, status);
     container.dataset.paused = String(Boolean(paused));
     container.dataset.unresolved = String(Boolean(unresolved));
@@ -1515,7 +1580,7 @@
       remove.disabled = controlsBlocked; remove.onclick = () => { if (queueActionAllowed(remove, actionSession)) request('removeInput', { inputId: item.id }); };
       const steer = document.createElement('button'); steer.type = 'button'; steer.className = 'input-queue-steer'; steer.textContent = item.delivery ? hasPending('steerInput') && item.delivery === 'sending' ? '发送中…' : '送达待确认' : '引导';
       steer.dataset.queueAction = 'steer';
-      steer.title = item.delivery ? '输入及附件已保留，请核实执行结果；取回编辑或删除后可继续队列' : canSteer ? '用于调整当前任务；当前模型回复和工具批次结束后生效，沿用当前审批设置' : '等待当前 Agent 就绪后可引导'; steer.setAttribute('aria-label', '引导当前任务');
+      steer.title = item.delivery ? '输入及附件已保留，请核实执行结果；取回编辑或删除后可继续队列' : canSteer ? '立刻调整当前任务；当前模型回复和工具批次结束后生效，沿用当前审批设置' : '等待当前任务就绪后可立刻调整'; steer.setAttribute('aria-label', '引导当前任务');
       steer.disabled = !canSteer || Boolean(item.delivery) || controlsBlocked;
       const runId = execution.runId;
       steer.onclick = () => { if (queueActionAllowed(steer, actionSession) && executionState().runId === runId && executionState().canSteer) request('steerInput', { inputId: item.id, runId }); };
@@ -1821,13 +1886,17 @@
       if (acknowledgement.cancelled) acknowledgement.cancel();
     });
   }
-  function renderLiveComponents() {
+  function renderLiveComponents(executionOnly = false) {
     const failures = [];
-    for (const render of [
+    const tasks = [
       () => { if (hostState.mode !== 'goal') renderMessages(Array.isArray(hostState.messages) ? hostState.messages : []); },
       () => deliveryView.update(hostState.execution?.memory?.delivery, currentSessionId, hostState.execution?.memory?.domainInventory),
-      renderConversationOutline, renderGoal, renderAssistEvidence, renderExecution, updateControls
-    ]) {
+      ...(executionOnly ? [] : [renderConversationOutline, renderAssistEvidence]),
+      ...(executionOnly && hostState.mode !== 'goal' ? [] : [renderGoal]),
+      renderExecution,
+      updateControls
+    ];
+    for (const render of tasks) {
       try { render(); } catch (error) { failures.push(error); }
     }
     if (failures.length) throw failures[0];
@@ -1843,14 +1912,14 @@
   }
   function queueContentReady() {
     const commit = committedRender;
-    if (!contentReadyPending || contentReadyFrame || paintAcknowledgement || visualSuspended() || !isCurrentPaint(commit)) return;
+    if (!contentReadyPending || contentReadyFrame || paintAcknowledgement || pageHidden() || !isCurrentPaint(commit)) return;
     contentReadyFrame = requestAnimationFrame(() => {
       contentReadyFrame = 0;
-      if (visualSuspended()) return;
+      if (pageHidden()) return;
       if (!isCurrentPaint(commit)) { queueContentReady(); return; }
       contentReadyFrame = requestAnimationFrame(async () => {
         contentReadyFrame = 0;
-        if (visualSuspended() || !contentReadyPending) return;
+        if (pageHidden() || !contentReadyPending) return;
         if (!isCurrentPaint(commit)) { queueContentReady(); return; }
         const acknowledgement = {};
         paintAcknowledgement = acknowledgement;
@@ -1860,14 +1929,14 @@
             if (paintAcknowledgement !== acknowledgement) return;
             firstPaintAcknowledged = true;
           }
-          if (visualSuspended() || !isCurrentPaint(commit)) return;
+          if (pageHidden() || !isCurrentPaint(commit)) return;
           // The sidebar needs the committed conversation, not execution history
           // or skill provisioning. Those can be slow while the chat is usable.
           if (await deliverPaintSignal({ action: 'contentReady', sessionId: currentSessionId }, acknowledgement) === false) throw new Error('Content acknowledgement failed');
           if (paintAcknowledgement === acknowledgement && isCurrentPaint(commit)) contentReadyPending = false;
         }
         catch (error) {
-          if (!acknowledgement.cancelled && paintAcknowledgement === acknowledgement && !visualSuspended() && error?.code === 'PAINT_DELIVERY_TIMEOUT') {
+          if (!acknowledgement.cancelled && paintAcknowledgement === acknowledgement && !pageHidden() && error?.code === 'PAINT_DELIVERY_TIMEOUT') {
             window.UBOVMRuntime?.fail('页面加载状态同步超时。请同步最新状态或重新加载页面。');
           }
           // Retry after user action, fresh rendering or visibility recovery.
@@ -1920,7 +1989,7 @@
     const streaming = executionOnly === true && !fullRenderPending && busy &&
       !['completed', 'failed', 'interrupted'].includes(hostState.execution?.status);
     if (!streaming) cancelRenderTimer();
-    if (renderFrame || visualSuspended()) return;
+    if (renderFrame || pageHidden()) return;
     window.UBOVMRuntime?.pending();
     const delay = streaming ? renderRestUntil - performance.now() : 0;
     if (delay > 0) {
@@ -1932,7 +2001,7 @@
     renderFrame = requestAnimationFrame(() => {
       if (generation !== renderGeneration) return;
       renderFrame = 0;
-      if (visualSuspended()) return;
+      if (pageHidden()) return;
       // Commit the lightweight loader for one frame before building heavy DOM.
       // The next frame reads the latest route/state, never a captured stale page.
       if (routePending && !routePaintReady) {
@@ -1955,7 +2024,7 @@
       if (full) renderState();
       else {
         setAttribute(messages, 'aria-busy', String(busy));
-        renderLiveComponents();
+        renderLiveComponents(true);
       }
       if (pendingViewRestore) {
         const target = pendingViewRestore; pendingViewRestore = undefined;
@@ -2060,7 +2129,11 @@
     const source = selection ? '已添加选中代码' : state.context?.fileSource === 'active' ? '当前文件' : '已添加文件';
     const contextLabel = file ? file.split(/[\\/]/).pop() + (selection ? ' · ' + selection : '') : '';
     setText(byId('context-label'), contextLabel);
-    setText(byId('context-caption'), '项目上下文');
+    const workspaceCaption = state.context?.workspaceConfigured === true
+      ? (String(state.context.workspace || '').split(/[\\/]/).filter(Boolean).pop() || '当前工作区')
+      : (state.context?.projectId ? '选择项目目录' : '选择工作空间');
+    setText(byId('context-caption'), workspaceCaption);
+    byId('context-caption').title = state.context?.workspaceConfigured === true && state.context.workspace ? state.context.workspace : workspaceCaption;
     if (byId('composer-file')) {
       byId('composer-file').hidden = !file;
       byId('composer-file').title = file ? source + '：' + file + (selection ? ' · ' + selection + '（添加时的快照）' : '') : '';
@@ -2074,7 +2147,7 @@
     if (state.provider) {
       setText(byId('provider-label'), state.provider.configured && state.ssh?.configured === false ? '配置 SSH（必需）' : state.provider.label || '未连接模型');
       byId('provider-label').title = state.provider.error || state.ssh?.error || '配置模型与工具';
-      setText(byId('connection-note'), configurationMissing() ? '请先完成模型和 SSH 连接配置，再运行 IDE 任务' : '准备好，开始你的下一步');
+      setText(byId('connection-note'), configurationMissing() ? '先完成模型和远程连接配置，就可以开始' : '模型已就绪，直接输入即可');
     }
   }
   function animateCurrentPage() {
@@ -2261,7 +2334,11 @@
     if (changedSession && draftTimer) persistDrafts();
     if (changedSession) {
       viewEpoch++; invalidateDropRead();
-      if (firstContentPaint) beginPageTransition('正在加载会话…');
+      // Host locks native chrome on conversation/project switches. Rearm so the
+      // next committed paint can unlock it; the first acknowledgement must not
+      // be the last one this page ever sends.
+      contentReadyPending = true;
+      if (firstContentPaint) beginPageTransition('正在加载会话…', 'session');
       const cleanup = operation => { try { operation(); } catch { window.UBOVMRuntime?.fail(); } };
       cleanup(() => window.UBOVMHtmlPreview.close({ restoreFocus: false }));
       cleanup(() => goalExecutionLog?.reset());
@@ -2321,9 +2398,13 @@
     clearTimeout(initialLoadTimer);
     initialLoadTimer = setTimeout(() => {
       if (hostState) return;
-      setText(byId('page-loading-label'), '会话仍在加载，请稍候或重新载入。');
-      byId('page-retry').hidden = false;
-    }, 10000);
+      setText(byId('page-loading-label'), '正在同步会话与工作区…');
+      initialLoadTimer = setTimeout(() => {
+        if (hostState) return;
+        setText(byId('page-loading-label'), '会话仍在加载，请稍候或重新载入。');
+        byId('page-retry').hidden = false;
+      }, 7500);
+    }, 2500);
   }
   byId('page-retry').addEventListener('click', () => {
     if (hostState) return;

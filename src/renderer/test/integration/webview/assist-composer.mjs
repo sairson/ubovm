@@ -17,7 +17,8 @@ test('queue sits above the composer without resizing or reflowing Worker cards',
       const measure = () => f.page.evaluate(() => {
         const rect = selector => { const r = document.querySelector(selector).getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height, bottom: r.bottom }; };
         return { workers: rect('#collaboration-workers'), cards: [...document.querySelectorAll('#collaboration-worker-list .worker-card')].map(node => ({ width: node.getBoundingClientRect().width, height: node.getBoundingClientRect().height })),
-          queue: rect('#input-queue'), composer: rect('#prompt-form') };
+          queue: rect('#input-queue'), composer: rect('#prompt-form'),
+          dockFade: getComputedStyle(document.getElementById('compose-dock'), '::before').content };
       });
       const before = await measure();
       assert.equal(before.cards.length, 6);
@@ -26,6 +27,7 @@ test('queue sits above the composer without resizing or reflowing Worker cards',
       assert.deepEqual(after.cards, before.cards);
       assert.equal(after.workers.width, before.workers.width);
       assert.equal(after.workers.height, before.workers.height);
+      assert.equal(after.dockFade, 'none', 'composer fade must not overlay the Worker strip');
       assert(after.workers.bottom <= after.queue.y, 'queue cannot overlap the Worker list');
       assert(after.queue.bottom <= after.composer.y, 'queue must be above and outside the input box');
       assert(after.queue.height <= Math.min(140, viewport.height * .18) + 1);
@@ -215,6 +217,24 @@ async function fixture(viewport = { width: 900, height: 800 }) {
   return { page, input, emit, frames, sent, ack, fill, close };
 }
 
+test('composer chrome keeps a fade into the dock and a product send control', async () => {
+  const f = await fixture();
+  try {
+    await f.emit(state('fade-chrome', { messages: [{ id: 'hello', role: 'user', text: '你好' }] }));
+    const chrome = await f.page.evaluate(() => {
+      const fade = getComputedStyle(document.querySelector('.conversation-region'), '::after');
+      const dockFade = getComputedStyle(document.getElementById('compose-dock'), '::before');
+      const form = getComputedStyle(document.getElementById('prompt-form'));
+      const send = getComputedStyle(document.getElementById('submit-prompt'));
+      return { fade: fade.height, dockFade: dockFade.content, radius: form.borderRadius, sendFill: send.backgroundColor };
+    });
+    assert.equal(chrome.fade, '28px');
+    assert.equal(chrome.dockFade, 'none');
+    assert.equal(chrome.radius, '14px');
+    assert.notEqual(chrome.sendFill, 'rgba(0, 0, 0, 0)');
+  } finally { await f.close(); }
+});
+
 test('queued input steering targets the current session and leaves the composer draft intact', async () => {
   const f = await fixture();
   try {
@@ -232,8 +252,11 @@ test('queued input steering targets the current session and leaves the composer 
     assert.equal(await button.isDisabled(), true);
     assert.equal(await f.input.inputValue(), '保留的草稿');
     await f.ack(request);
-    await f.emit(state('steering-chat', { busy: true, execution: { status: 'running', busy: true } }));
+    await f.emit(state('steering-chat', { busy: true, execution: { status: 'running', busy: true, canSteer: true, runId: 'run-one' } }));
     assert.equal(await f.page.locator('#input-queue').isVisible(), false);
+    assert.equal(await f.input.getAttribute('placeholder'), '补充说明将立刻调整当前任务…');
+    assert.equal((await f.page.locator('#composer-status').textContent()).trim(), '执行中 · Enter 立刻引导');
+    assert.equal(await f.page.locator('#submit-prompt').getAttribute('data-action-mode'), 'steer');
     await f.emit(state('steering-chat', { inputQueue: [{ id: 'unknown', text: '待核实方向', delivery: 'uncertain' }], queuePaused: true }));
     assert.equal(await button.textContent(), '送达待确认');
     assert.equal(await button.isDisabled(), true);
@@ -595,10 +618,13 @@ test('busy assist runs queue inputs while acknowledgments and session changes pr
     });
     await f.emit(a);
     await f.fill('已提交的请求');
+    assert.equal(await f.input.getAttribute('placeholder'), '提问、规划，或描述你想完成的改动…');
     await f.input.press('Enter');
     const firstRequest = (await f.sent('prompt')).at(-1);
     await f.emit(running);
     assert.equal(await f.input.isEnabled(), true, 'the next assist draft stays editable during execution');
+    assert.equal(await f.input.getAttribute('placeholder'), '补充说明或下一条消息，发送后排队…');
+    assert.equal((await f.page.locator('#composer-status').textContent()).trim(), '执行中 · Enter 排队');
     await f.fill('下一条草稿，不应被旧请求清空');
     await f.ack(firstRequest);
     assert.equal(await f.input.inputValue(), '下一条草稿，不应被旧请求清空');

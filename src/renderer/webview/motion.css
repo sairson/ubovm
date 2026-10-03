@@ -20,17 +20,36 @@
 .route-loading { position: absolute; inset: 0; z-index: 8; display: flex; flex-direction: column; justify-content: center; padding: clamp(20px, 6vw, 72px); background: var(--canvas); }
 .route-loading .panel-loading { margin: 0 0 20px; }
 .route-loading-lines { display: grid; gap: 12px; width: min(100%, 560px); }
+.route-loading-session { display: none; }
+.route-loading[data-kind="session"] { justify-content: flex-start; padding: 28px var(--gutter) 16px; }
+.route-loading[data-kind="session"] .panel-loading { margin: 0 0 14px; }
+.route-loading[data-kind="session"] .route-loading-lines { display: none; }
+.route-loading[data-kind="session"] .route-loading-session {
+  position: relative; display: flex; flex-direction: column; flex: 1; min-height: 0; gap: 12px;
+  width: min(100%, var(--reading)); margin-inline: auto; overflow: hidden; contain: paint;
+}
+.route-loading[data-kind="session"] .route-loading-session::after {
+  content: ''; position: absolute; inset: 0; z-index: 1; pointer-events: none;
+  background: linear-gradient(105deg, transparent 12%, var(--skeleton-shine) 46%, var(--skeleton-shine) 54%, transparent 88%);
+  transform: translateX(-130%);
+  animation: loading-sweep var(--skeleton-sweep-duration) var(--skeleton-sweep-ease) infinite;
+}
+.route-loading[data-kind="session"] .route-loading-session .skeleton-composer { margin-top: auto; }
 .route-loading-lines i { display: block; height: 10px; border-radius: 5px; background: var(--wash); overflow: hidden; contain: paint; position: relative; }
 .route-loading-lines i:nth-child(2) { width: 85%; }
 .route-loading-lines i:nth-child(3) { width: 65%; }
 .route-loading-lines i::after {
   content: ''; position: absolute; inset: 0; pointer-events: none;
-  background: linear-gradient(100deg, transparent 18%, var(--skeleton-shine) 50%, transparent 82%);
-  transform: translateX(-120%);
+  background: linear-gradient(105deg, transparent 12%, var(--skeleton-shine) 46%, var(--skeleton-shine) 54%, transparent 88%);
+  transform: translateX(-130%);
   animation: loading-sweep var(--skeleton-sweep-duration) var(--skeleton-sweep-ease) infinite;
+  will-change: transform;
 }
-.route-loading-lines i:nth-child(2)::after { animation-delay: 70ms; }
-.route-loading-lines i:nth-child(3)::after { animation-delay: 140ms; }
+.route-loading-lines i:nth-child(1) { animation: skeleton-bone 2.4s ease-in-out infinite; }
+.route-loading-lines i:nth-child(2) { animation: skeleton-bone 2.4s ease-in-out .12s infinite; }
+.route-loading-lines i:nth-child(2)::after { animation-delay: 90ms; }
+.route-loading-lines i:nth-child(3) { animation: skeleton-bone 2.4s ease-in-out .24s infinite; }
+.route-loading-lines i:nth-child(3)::after { animation-delay: 180ms; }
 body[data-switching="true"] :is(#assist-mode, #goal-mode) { pointer-events: none; }
 body[data-switching="true"] .page-progress { display: block; animation-delay: 0s; }
 .page-progress { animation: loading-reveal 160ms ease-out 180ms both; }

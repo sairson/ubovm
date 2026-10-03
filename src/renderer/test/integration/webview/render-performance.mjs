@@ -1125,6 +1125,77 @@ async function send(page, message) {
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
 }
 
+test('switching conversations after the first paint sends another contentReady acknowledgement', async t => {
+  const page = await pageFor(t);
+  await send(page, state('project-session-a'));
+  await page.waitForFunction(() => sent.filter(message => message.action === 'contentReady').length === 1);
+  await send(page, state('project-session-b'));
+  await page.waitForFunction(() => sent.filter(message => message.action === 'contentReady').length === 2);
+  assert.deepEqual(
+    await page.evaluate(() => sent.filter(message => message.action === 'contentReady').map(message => message.sessionId)),
+    ['project-session-a', 'project-session-b']
+  );
+});
+
+test('session loading fills the conversation column and switch overlay uses a thread skeleton', async t => {
+  const page = await pageFor(t);
+  const startup = await page.evaluate(() => {
+    const loading = document.getElementById('page-loading');
+    const main = document.getElementById('main-content').getBoundingClientRect();
+    const box = loading.getBoundingClientRect();
+    let opacity = 1;
+    for (let node = loading; node; node = node.parentElement) opacity *= Number(getComputedStyle(node).opacity);
+    const label = loading.querySelector('#page-loading-label').getBoundingClientRect();
+    const thread = loading.querySelector('.skeleton-thread').getBoundingClientRect();
+    return {
+      opacity, fills: box.height > main.height * 0.55,
+      thread: Boolean(loading.querySelector('.skeleton-thread')),
+      composer: Boolean(loading.querySelector('.skeleton-composer')),
+      statusAboveThread: label.bottom <= thread.top + 1,
+    };
+  });
+  assert.equal(startup.opacity, 1);
+  assert.equal(startup.thread, true);
+  assert.equal(startup.composer, true);
+  assert.equal(startup.statusAboveThread, true, 'startup status must stay readable above the thread skeleton');
+  assert.equal(startup.fills, true, 'startup skeleton should occupy the conversation column');
+  await send(page, state('load-session-a'));
+  await page.waitForFunction(() => sent.some(message => message.action === 'contentReady'));
+  const switching = await page.evaluate(next => {
+    window.dispatchEvent(new MessageEvent('message', { data: next }));
+    return new Promise(resolve => requestAnimationFrame(() => {
+      const loader = document.getElementById('route-loading');
+      resolve({
+        hidden: loader.hidden,
+        kind: loader.dataset.kind,
+        sessionDisplay: getComputedStyle(loader.querySelector('.route-loading-session')).display,
+        barsDisplay: getComputedStyle(loader.querySelector('.route-loading-lines')).display,
+        opacity: getComputedStyle(loader).opacity,
+        label: document.getElementById('route-loading-label').textContent,
+      });
+    }));
+  }, state('load-session-b'));
+  assert.equal(switching.hidden, false);
+  assert.equal(switching.kind, 'session');
+  assert.notEqual(switching.sessionDisplay, 'none');
+  assert.equal(switching.barsDisplay, 'none');
+  assert.equal(switching.opacity, '1');
+  assert.match(switching.label, /正在加载会话/);
+});
+
+test('an open settings dialog does not block conversation contentReady after a session switch', async t => {
+  const page = await pageFor(t);
+  await send(page, state('settings-lock-a'));
+  await page.waitForFunction(() => sent.filter(message => message.action === 'contentReady').length === 1);
+  await page.evaluate(() => document.getElementById('settings-dialog').showModal());
+  await send(page, state('settings-lock-b'));
+  await page.waitForFunction(() => sent.filter(message => message.action === 'contentReady').length === 2);
+  assert.deepEqual(
+    await page.evaluate(() => sent.filter(message => message.action === 'contentReady').map(message => message.sessionId)),
+    ['settings-lock-a', 'settings-lock-b']
+  );
+});
+
 test('readiness follows the newest rendered session when first-paint delivery changes state', async t => {
   const page = await pageFor(t);
   const replacement = state('newest-paint');
@@ -1284,19 +1355,24 @@ test('initial state bridge failure exposes retry and ignores rejection after sta
   const page = await pageFor(t);
   await page.evaluate(() => {
     const api = UBOVMRuntime.api, original = api.postMessage.bind(api);
-    window.readyReads = 0;
+    window.readyMode = '';
+    window.consumeRetryReady = false;
+    document.getElementById('page-retry').addEventListener('click', () => { window.consumeRetryReady = true; }, true);
     api.postMessage = message => {
-      if (message.action === 'ready') {
-        if (++readyReads === 1) return Promise.reject(Error('read unavailable'));
-        return new Promise((_, reject) => { window.rejectOldRead = reject; });
+      if (message.action === 'ready' && window.consumeRetryReady) {
+        window.consumeRetryReady = false;
+        if (window.readyMode === 'reject') return Promise.reject(Error('read unavailable'));
+        if (window.readyMode === 'hang') return new Promise((_, reject) => { window.rejectOldRead = reject; });
       }
       return original(message);
     };
     document.getElementById('page-retry').hidden = false;
   });
+  await page.evaluate(() => { window.readyMode = 'reject'; });
   await page.locator('#page-retry').click();
   await page.waitForFunction(() => !document.getElementById('page-retry').hidden);
   assert.match(await page.locator('#page-loading-label').textContent(), /连接暂时不可用/);
+  await page.evaluate(() => { window.readyMode = 'hang'; });
   await page.locator('#page-retry').click();
   await send(page, state('read-recovered'));
   await page.waitForFunction(() => sent.some(message => message.action === 'contentReady'));

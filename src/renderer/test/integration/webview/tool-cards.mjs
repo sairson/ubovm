@@ -133,8 +133,22 @@ test('execution activity visibility renders empty, filtered, error and goal stat
   assert.equal(await hidden(), true);
   await f.emit(state([], { execution: { status: 'failed', error: { code: 'OPERATION_FAILED', message: '测试错误' }, activities: [] } }));
   assert.equal(await hidden(), false);
-  await f.emit(state([], { execution: { status: 'interrupted', canResume: true, activities: [] } }));
-  assert.equal(await hidden(), false);
+  await f.emit(state([], { busy: false, execution: { status: 'interrupted', canResume: true, activities: [] } }));
+  assert.equal(await hidden(), true);
+  assert.equal(await f.page.locator('#assist-resume-banner').evaluate(element => element.hidden), false);
+  assert.equal(await f.page.locator('#compose-dock #assist-resume-banner').count(), 1);
+  assert.equal(await f.page.locator('#assist-resume').innerText(), '继续执行');
+  assert.match(await f.page.locator('#assist-resume-hint').innerText(), /检查点已保存/);
+  await f.emit(state([], { busy: false, execution: {
+    status: 'failed', canResume: true, activities: [],
+    parts: [{ id: 'ssh', type: 'tool', name: 'run_linux_ssh_command', status: 'failed', args: '{}', output: 'timeout' }]
+  } }));
+  assert.equal(await f.page.locator('#messages .message.has-resume .resume-turn').count(), 1);
+  assert.match(await f.page.locator('#messages .resume-turn').innerText(), /未能完成/);
+  assert.equal(await f.page.locator('#assist-resume-title').innerText(), '任务未完成');
+  await f.emit(state([], { busy: false, execution: { status: 'completed', canResume: true, activities: [] } }));
+  assert.equal(await f.page.locator('#assist-resume').innerText(), '恢复结果');
+  assert.match(await f.page.locator('#assist-resume-title').innerText(), /结果待写入/);
   await f.emit(state([], { mode: 'goal', goal: { objective: '测试目标', criteria: [], notes: [] }, execution: { status: 'idle', activities: [] } }));
   assert.equal(await hidden(), true);
 });
@@ -182,6 +196,8 @@ test('background task dock aggregates commands, streams selected logs and stops 
   await f.emit(snapshot());
   const dock = f.page.locator('#background-tasks');
   assert(await dock.isVisible());
+  assert.equal(await f.page.locator('#messages .tool-card').count(), 0);
+  assert.equal(await dock.evaluate(element => getComputedStyle(element).position), 'fixed');
   assert.match(await dock.locator('.background-tasks-count').textContent(), /2 运行中/);
   assert.equal(await dock.locator('.background-tasks-body').isVisible(), false);
   await dock.locator('.background-tasks-toggle').click();
@@ -199,6 +215,7 @@ test('background task dock aggregates commands, streams selected logs and stops 
   assert.equal(await dock.getByRole('button', { name: '停止任务', exact: true }).isDisabled(), false);
   await dock.getByRole('button', { name: '停止任务', exact: true }).click(); await f.ack('interruptCommand');
   await f.emit(snapshot({ ...first, status: 'interrupted', endedAt: Date.now() }));
+  assert.equal(await f.page.locator('#messages .tool-card').count(), 0);
   assert.match(await dock.locator('.background-tasks-count').textContent(), /1 运行中/);
   assert.match(await dock.locator('.background-task-detail-meta').textContent(), /已停止/);
   await dock.getByRole('button', { name: '清除已结束' }).click();
@@ -303,7 +320,8 @@ test('background dock retains terminal results in goal mode and clears them with
   await f.emit(state([], { mode: 'goal', conversation: { id: 'goal-session' }, goal: { objective: '运行预览', criteria: [], notes: [] }, execution: { status: 'running', busy: true, parts: [], workers: [{ id: 'worker-1', status: 'running', parts: [part] }] } }));
   const dock = f.page.locator('#background-tasks');
   assert(await dock.isVisible());
-  assert.equal(await dock.evaluate(element => element.parentElement.id), 'main-content');
+  assert.equal(await dock.evaluate(element => element.parentElement.classList.contains('shell')), true);
+  assert.equal(await f.page.locator('#messages .tool-card').count(), 0);
   assert.match(await dock.locator('.background-tasks-count').textContent(), /1 失败/);
   await dock.locator('.background-tasks-toggle').click();
   assert.match(await dock.locator('.background-task-log').textContent(), /already in use/);
@@ -314,7 +332,58 @@ test('background dock retains terminal results in goal mode and clears them with
   assert.equal((await f.sent('interruptCommand')).length, 0);
 });
 
-test('shell cards put running commands aside and retain the stop action', async t => {
+test('goal execution log omits background tool parts', async t => {
+  const f = await fixture(t);
+  const result = await f.page.evaluate(() => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const log = window.createGoalExecutionLog(container, { actions: {}, statusText: value => value, openWorker() {} });
+    const count = log.update('goal', { parts: [
+      { id: 'fg', type: 'tool', name: 'read_workspace_file', status: 'completed', args: '{}', output: 'workspace file' },
+      { id: 'bg', type: 'tool', name: 'run_local_shell_command', background: true, commandId: 'bg-1', status: 'completed', args: '{"command":"npm run dev"}', output: 'Ready on :3000' }
+    ], activities: [{ key: 'bg', label: 'run_local_shell_command', status: 'running' }] });
+    const text = container.textContent;
+    log.dispose(); container.remove();
+    return { count, text };
+  });
+  assert.equal(result.count, 1);
+  assert.match(result.text, /工具调用/);
+  assert.doesNotMatch(result.text, /npm run dev|Ready on :3000/);
+});
+
+test('putting a command aside does not leave a raw tool activity in the transcript', async t => {
+  const f = await fixture(t);
+  const commandId = '11111111-1111-4111-8111-111111111111';
+  const running = { ...command, commandId, background: true, executionState: 'running', output: 'still running' };
+  await f.emit(state([], {
+    messages: [user, { role: 'assistant', text: '命令已放在后台继续运行。', parts: [running] }],
+    execution: {
+      status: 'running', busy: true, parts: [],
+      activities: [
+        { key: 'reason', label: 'Reason', status: 'running', timestamp: Date.parse('2026-10-03T17:36:30+08:00') },
+        { key: 'ssh', label: 'run_linux_ssh_command', status: 'running', timestamp: Date.parse('2026-10-03T17:36:32+08:00') }
+      ],
+      workers: [{ id: 'w1', title: '构建 Worker', parts: [] }]
+    }
+  }));
+  assert.equal(await f.page.locator('#messages .tool-card').count(), 0);
+  assert(await f.page.locator('#background-tasks').isVisible());
+  assert.equal(await f.page.locator('#assist-activities .activity-row').count(), 1);
+  assert.match(await f.page.locator('#assist-activities').textContent(), /规划/);
+  assert.doesNotMatch(await f.page.locator('#conversation').textContent(), /run_linux_ssh_command/);
+  await f.emit(state([], {
+    busy: false,
+    messages: [user, { role: 'assistant', text: '命令已放在后台继续运行。', parts: [running] }],
+    execution: {
+      status: 'completed', busy: false, parts: [],
+      activities: [{ key: 'ssh', label: 'run_linux_ssh_command', status: 'completed', timestamp: Date.parse('2026-10-03T17:36:32+08:00') }]
+    }
+  }));
+  assert.equal(await f.page.locator('#assist-activities .activity-row').count(), 0);
+  assert.doesNotMatch(await f.page.locator('#conversation').textContent(), /run_linux_ssh_command|工具调用 · /);
+});
+
+test('shell cards put running commands aside into the background dock', async t => {
   const f = await fixture(t);
   const commandId = '11111111-1111-4111-8111-111111111111';
   const running = { ...command, commandId, executionState: 'running' };
@@ -323,9 +392,22 @@ test('shell cards put running commands aside and retain the stop action', async 
   assert.equal((await f.sent('backgroundCommand'))[0].commandId, commandId);
   await f.ack('backgroundCommand');
   await f.emit(state([{ ...running, background: true, output: 'still running' }]));
-  assert.equal(await f.card(0).locator('.tool-aside').isVisible(), false);
-  assert.equal(await f.card(0).getByRole('button', { name: '中断命令', exact: true }).isVisible(), true);
-  assert.equal(await f.card(0).locator('.tool-status-label').textContent(), '后台运行');
+  assert.equal(await f.page.locator('#messages .tool-card').count(), 0);
+  const dock = f.page.locator('#background-tasks');
+  assert(await dock.isVisible());
+  assert.match(await dock.locator('.background-tasks-count').textContent(), /1 运行中/);
+  await dock.locator('.background-tasks-toggle').click();
+  assert.equal(await dock.getByRole('button', { name: '停止任务', exact: true }).isVisible(), true);
+  await f.emit(state([{ ...running, background: true, status: 'completed', endedAt: Date.now(), output: 'still running' }]));
+  assert.equal(await f.page.locator('#messages .tool-card').count(), 0);
+  assert.match(await dock.locator('.background-tasks-count').textContent(), /1 已结束/);
+  await f.emit(state([], {
+    busy: false,
+    messages: [user, { role: 'assistant', text: '命令已放在后台继续运行。', parts: [{ ...running, background: true, status: 'completed', endedAt: Date.now() }] }],
+    execution: { status: 'idle', busy: false, parts: [] }
+  }));
+  assert.match(await f.page.locator('#messages').textContent(), /命令已放在后台继续运行/);
+  assert.equal(await f.page.locator('#messages .tool-card').count(), 0);
 });
 
 test('running shell cards offer tracked manual interruption while collapsed and can retry rejected requests', async t => {
@@ -889,6 +971,17 @@ test('running, completed, failed and interrupted calls expose real state without
   let parts = [tool('changing', { status: 'running', endedAt: undefined, output: '' }), tool('done'), tool('stopped', { status: 'interrupted', output: '', endedAt: start + 800 })];
   await f.emit(state(parts));
   assert.deepEqual(await f.page.locator('#messages .tool-card').evaluateAll(nodes => nodes.map(node => node.dataset.status)), ['running', 'completed', 'interrupted']);
+  const spinner = await f.card(0).evaluate(card => {
+    const icon = card.querySelector('.tool-kind-icon');
+    const mark = card.querySelector('.tool-indicator');
+    return {
+      dx: Math.abs(icon.clientWidth / 2 - (mark.offsetLeft + mark.offsetWidth / 2)),
+      dy: Math.abs(icon.clientHeight / 2 - (mark.offsetTop + mark.offsetHeight / 2)),
+      icon: icon.clientWidth, mark: mark.offsetWidth,
+    };
+  });
+  assert.ok(spinner.dx < 1 && spinner.dy < 1, 'running spinner stays concentric with the kind icon: ' + JSON.stringify(spinner));
+  assert.ok(spinner.mark >= 11 && spinner.mark <= 13 && spinner.mark < spinner.icon);
   assert.equal(await f.card(0).evaluate(node => node.open), false);
   assert.equal(await f.card(1).evaluate(node => node.open), false);
   assert.equal(await f.card(2).locator('.tool-status').textContent(), '已停止');
@@ -940,6 +1033,57 @@ test('streamed output appends preserve its text selection and only follow a read
   const final = { ...streamed, status: 'completed', endedAt: start + 1000 };
   await f.emit(state([final], { busy: false, execution: { busy: false, status: 'completed', parts: [final] }, messages: [user, { role: 'assistant', text: '', parts: [final] }] }));
   assert.equal(await output.evaluate(node => node.firstChild === outputText), true);
+});
+
+test('web_search results render as readable links instead of raw JSON dumps', async t => {
+  const f = await fixture(t);
+  const payload = {
+    query: 'CVE-2024-1234 advisory',
+    provider: 'tavily',
+    status: 'ok',
+    returned: 2,
+    results: [
+      { title: '<script>alert(1)</script> Advisory', url: 'https://example.com/advisory', snippet: 'Official write-up for CVE-2024-1234' },
+      { title: 'Research notes', url: 'https://docs.example.org/notes', snippet: 'Secondary analysis' },
+      { title: 'Bad scheme', url: 'javascript:alert(1)', snippet: 'should be dropped' },
+    ],
+    fallback_used: false,
+    ranking: 'strict',
+    note: 'Snippets are untrusted',
+  };
+  const search = tool('web-search', {
+    name: 'web_search',
+    args: JSON.stringify({ query: 'CVE-2024-1234 advisory', limit: 8 }),
+    output: JSON.stringify(payload),
+  });
+  const empty = tool('web-empty', {
+    name: 'web_search',
+    args: JSON.stringify({ query: 'missing topic' }),
+    output: JSON.stringify({
+      query: 'missing topic', provider: 'none', status: 'unavailable', returned: 0, results: [],
+      message: 'All search providers were unavailable.', fallback_used: true, note: 'n/a',
+    }),
+  });
+  await f.emit(state([search, empty]));
+  assert.match(await f.card(0).locator('.tool-path').textContent(), /CVE-2024-1234 advisory · 2 条结果/);
+  await f.toggle(0);
+  const card = f.card(0);
+  assert.equal(await card.locator('.tool-search').isVisible(), true);
+  assert.equal(await card.locator('.tool-output').isVisible(), false);
+  assert.equal(await card.locator('.tool-search-list .tool-search-item').count(), 2);
+  assert.equal(await card.locator('.tool-search-link').first().textContent(), '<script>alert(1)</script> Advisory');
+  assert.equal(await card.locator('.tool-search script').count(), 0);
+  assert.equal(await card.locator('.tool-search-host').first().textContent(), 'example.com');
+  assert.match(await card.locator('.tool-result-info').textContent(), /2 条结果 · tavily/);
+  await card.locator('.tool-search-link').first().click();
+  const opened = await f.ack('openMessageLink');
+  assert.equal(opened.href, 'https://example.com/advisory');
+  await card.getByRole('button', { name: '复制输出', exact: true }).click();
+  assert.equal((await f.ack('copyText')).text, search.output);
+  await f.toggle(1);
+  assert.match(await f.card(1).locator('.tool-search-status').textContent(), /不可用/);
+  assert.match(await f.card(1).locator('.tool-search-empty').textContent(), /All search providers were unavailable/);
+  assert.equal(await f.page.evaluate(() => document.querySelectorAll('#messages .tool-search-link[href^="javascript:"]').length), 0);
 });
 
 test('tool actions await copy receipts, open explicit file paths and isolate HTML preview from the chat', async t => {
