@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>UBOVM gallery</title>
+  <style>
+    :root { --ink:#292a2d; --muted:#747578; --canvas:#fff; --wash:#f6f6f4; --border:#e7e7e4; --accent:#52715f; --title:#f6f6f4; --font:"Segoe UI","Microsoft YaHei",sans-serif; }
+    * { box-sizing:border-box; }
+    html, body { margin:0; background:#d8dbd4; font-family:var(--font); color:var(--ink); }
+    svg { stroke:none; }
+    .shot { width:1440px; height:900px; background:var(--wash); overflow:hidden; position:relative; }
+    .window { display:flex; flex-direction:column; height:100%; background:var(--wash); }
+    .titlebar { height:38px; display:flex; align-items:center; gap:10px; padding:0 14px; border-bottom:1px solid var(--border); background:var(--title); font-size:12px; color:#494a4c; }
+    .dots { display:flex; gap:6px; } .dots i { width:10px; height:10px; border-radius:50%; display:block; }
+    .dots i:nth-child(1){background:#e3b4ae;} .dots i:nth-child(2){background:#e4d3a4;} .dots i:nth-child(3){background:#b7cbb8;}
+    .brand { display:flex; align-items:center; gap:8px; font-weight:600; letter-spacing:.8px; }
+    .brand svg { width:16px; height:16px; fill:#314c40; }
+    .body { display:grid; grid-template-columns:232px 1fr 240px; flex:1; min-height:0; }
+    .sidebar { background:var(--title); border-right:1px solid var(--border); padding:12px 10px; }
+    .modes { display:flex; gap:4px; margin-bottom:12px; }
+    .modes button { flex:1; border:1px solid var(--border); background:#fff; border-radius:8px; padding:7px 0; font:11px var(--font); color:var(--muted); }
+    .modes button.on { background:#e8eee9; color:var(--ink); border-color:#c9d6cc; font-weight:600; }
+    .tree-h { font-size:10px; color:var(--muted); letter-spacing:.4px; margin:8px 6px 6px; }
+    .row { display:flex; align-items:center; gap:8px; padding:8px 10px; border-radius:10px; font-size:13px; color:#525456; }
+    .row.sel { background:#e8eee9; color:var(--ink); font-weight:600; }
+    .dot { width:7px; height:7px; border-radius:50%; background:var(--accent); }
+    .main { display:flex; flex-direction:column; background:#fff; min-width:0; }
+    .topbar { height:52px; display:flex; align-items:center; gap:10px; padding:0 18px; border-bottom:1px solid var(--border); font-size:13px; }
+    .hero { flex:1; display:flex; flex-direction:column; justify-content:center; padding:40px 56px 28px; }
+    .mark { width:42px; height:42px; border:1px solid var(--border); border-radius:13px; background:var(--wash); display:grid; place-items:center; margin-bottom:18px; }
+    .mark svg { width:22px; height:22px; fill:var(--ink); }
+    h1 { margin:0; font-size:32px; letter-spacing:-.6px; font-weight:600; }
+    .lead { margin:12px 0 24px; color:var(--muted); font-size:14px; line-height:1.8; max-width:640px; }
+    .composer { border:1px solid #d5d6d2; border-radius:14px; padding:10px 12px 9px; background:#fafaf8; box-shadow:0 8px 24px #00000008; max-width:760px; }
+    .ctx { display:flex; gap:8px; color:var(--muted); font-size:11px; margin-bottom:6px; }
+    textarea { width:100%; border:0; resize:none; background:transparent; font:13px/1.7 var(--font); min-height:52px; outline:none; color:var(--ink); }
+    .bar { display:flex; justify-content:space-between; align-items:center; }
+    .pill { display:inline-flex; gap:6px; align-items:center; font-size:11px; color:var(--muted); }
+    .pill b { background:#e8eee9; color:var(--accent); padding:2px 7px; border-radius:6px; font-weight:600; }
+    .send { width:28px; height:28px; border:0; border-radius:8px; background:var(--accent); color:#f6faf7; }
+    .cards { display:flex; gap:10px; margin-top:22px; max-width:760px; }
+    .card { flex:1; border:1px solid var(--border); border-radius:12px; padding:12px 14px; background:#fff; }
+    .card strong { display:block; font-size:13px; margin-bottom:4px; }
+    .card small { color:var(--muted); font-size:11px; line-height:1.5; }
+    .files { background:var(--title); border-left:1px solid var(--border); padding:14px 12px; font-size:12px; color:#525456; }
+    .files h3 { margin:0 0 10px; font-size:11px; color:var(--muted); font-weight:500; }
+    .file { padding:6px 8px; border-radius:6px; }
+    .file.on { background:#e8eee9; }
+    .splash { display:grid; place-items:center; height:100%; background:#f7f7f5; }
+    .splash-card { display:flex; flex-direction:column; align-items:center; transform:translateY(-16px); }
+    .splash-mark { width:72px; height:72px; border:1px solid #e5e5e1; border-radius:22px; background:#fff; display:grid; place-items:center; box-shadow:0 6px 22px #2526260d; }
+    .splash-mark svg { width:36px; height:36px; fill:#252626; }
+    .splash-name { margin:23px 0 0; font-size:14px; font-weight:600; letter-spacing:3px; }
+    .splash-cap { margin:11px 0 0; font-size:12px; color:#8c8e89; }
+    .track { margin-top:29px; width:110px; height:2px; border-radius:999px; background:#e6e7e2; overflow:hidden; }
+    .track span { display:block; width:42%; height:100%; background:#656a60; }
+    .thread { flex:1; overflow:hidden; padding:28px 48px 16px; }
+    .user { max-width:88%; margin:0 0 22px; padding:12px 16px; border:1px solid #ececea; border-radius:14px; background:#f4f4f2; font-size:13px; line-height:1.8; }
+    .asst { font-size:15px; line-height:1.85; max-width:860px; }
+    .asst h4 { display:flex; align-items:center; gap:8px; font-size:12px; margin:0 0 10px; }
+    .badge { width:23px; height:23px; border:1px solid var(--border); border-radius:7px; display:grid; place-items:center; background:var(--wash); font-size:11px; font-weight:600; }
+    .tool { margin:14px 0; border:1px solid var(--border); border-radius:10px; padding:10px 12px; font-size:12px; }
+    .tool .k { color:var(--muted); font-size:11px; margin-bottom:4px; }
+    .tool code { font-family:ui-monospace,Consolas,monospace; font-size:12px; }
+    .ok { color:var(--accent); font-weight:600; }
+    .approve { display:flex; gap:8px; margin-top:8px; }
+    .approve button { border:1px solid var(--border); background:#fff; border-radius:8px; padding:6px 12px; font:12px var(--font); }
+    .approve .yes { background:var(--accent); color:#fff; border:0; }
+    .dock { padding:10px 48px 18px; }
+    .board { flex:1; display:grid; grid-template-columns:1fr 280px; min-height:0; }
+    .canvas { margin:20px; border:1px dashed #d3d6cf; border-radius:16px; background:#fcfcfa; position:relative; }
+    .node { position:absolute; width:170px; padding:10px 12px; border:1px solid var(--border); border-radius:12px; background:#fff; font-size:12px; box-shadow:0 4px 14px #00000008; }
+    .node b { display:block; font-size:11px; color:var(--accent); margin-bottom:4px; }
+    .notes { border-left:1px solid var(--border); background:#fff; padding:16px; font-size:12px; }
+    .note { padding:10px; border:1px solid var(--border); border-radius:10px; margin-bottom:8px; }
+    .sev { color:#b44a46; font-weight:600; font-size:10px; }
+    .settings { padding:36px 56px; background:#fff; flex:1; }
+    .eyebrow { font-size:11px; color:var(--muted); letter-spacing:.4px; }
+    .settings h1 { font-size:26px; margin:8px 0 10px; }
+    .steps { display:flex; gap:8px; margin:18px 0 24px; }
+    .steps span { padding:8px 14px; border-radius:8px; border:1px solid var(--border); font-size:12px; }
+    .steps .on { background:#e8eee9; border-color:#c9d6cc; }
+    label { display:block; font-size:12px; margin:14px 0 6px; }
+    input, select { display:block; width:420px; max-width:100%; padding:9px 12px; border:1px solid var(--border); border-radius:8px; font:13px var(--font); }
+    .save { display:block; margin-top:22px; background:#292a2d; color:#fff; border:0; border-radius:8px; padding:9px 16px; }
+  </style>
+</head>
+<body>
+
+<section class="shot" id="splash">
+  <div class="splash">
+    <div class="splash-card">
+      <div class="splash-mark"><svg viewBox="0 0 64 64"><path d="M10 12h10v27a12 12 0 0 0 24 0V12h10v27a22 22 0 0 1-44 0V12Z"/><path d="m32 5 10 10-10 10-10-10 10-10Z"/></svg></div>
+      <div class="splash-name">UBOVM</div>
+      <div class="splash-cap">正在打开工作空间</div>
+      <div class="track"><span></span></div>
+    </div>
+  </div>
+</section>
+
+<section class="shot" id="home">
+  <div class="window">
+    <div class="titlebar"><span class="dots"><i></i><i></i><i></i></span><span class="brand"><svg viewBox="0 0 64 64"><path d="M10 12h10v27a12 12 0 0 0 24 0V12h10v27a22 22 0 0 1-44 0V12Z"/><path d="m32 5 10 10-10 10-10-10 10-10Z"/></svg>UBOVM</span></div>
+    <div class="body">
+      <aside class="sidebar">
+        <div class="modes"><button class="on">协助</button><button>探索</button></div>
+        <div class="tree-h">项目与会话</div>
+        <div class="row sel"><span class="dot"></span>授权站点评估</div>
+        <div class="row">web-challenge</div>
+        <div class="row">内部 API 审计</div>
+      </aside>
+      <main class="main">
+        <div class="topbar"><strong>新对话</strong><span style="margin-left:auto;color:#747578;font-size:12px;">~/ pentest-lab</span></div>
+        <div class="hero">
+          <div class="mark"><svg viewBox="0 0 64 64"><path d="M10 12h10v27a12 12 0 0 0 24 0V12h10v27a22 22 0 0 1-44 0V12Z"/><path d="m32 5 10 10-10 10-10-10 10-10Z"/></svg></div>
+          <h1>今天，想完成什么？</h1>
+          <p class="lead">开发、代码审计、安全测试、部署与运维，按需独立使用。创建新开发项目时，贯通完整交付流程。</p>
+          <div class="composer">
+            <div class="ctx"><span>@ 添加上下文</span><span>当前工作区</span></div>
+            <textarea readonly>提问、规划，或描述你想完成的改动…</textarea>
+            <div class="bar"><span class="pill"><b>人工</b> 协助 · 已连接模型</span><button class="send" aria-label="发送"></button></div>
+          </div>
+          <div class="cards">
+            <div class="card"><strong>做一次渗透测试</strong><small>明确范围，验证风险，输出报告</small></div>
+            <div class="card"><strong>做一次代码审计</strong><small>追踪关键代码，定位安全问题</small></div>
+            <div class="card"><strong>部署项目</strong><small>发布版本，验证访问与回滚</small></div>
+          </div>
+        </div>
+      </main>
+      <aside class="files"><h3>文件</h3><div class="file">README.md</div><div class="file on">app.py</div><div class="file">routes/</div><div class="file">tests/</div></aside>
+    </div>
+  </div>
+</section>
+
+<section class="shot" id="assist">
+  <div class="window">
+    <div class="titlebar"><span class="dots"><i></i><i></i><i></i></span><span class="brand"><svg viewBox="0 0 64 64"><path d="M10 12h10v27a12 12 0 0 0 24 0V12h10v27a22 22 0 0 1-44 0V12Z"/><path d="m32 5 10 10-10 10-10-10 10-10Z"/></svg>UBOVM</span></div>
+    <div class="body">
+      <aside class="sidebar">
+        <div class="modes"><button class="on">协助</button><button>探索</button></div>
+        <div class="tree-h">项目与会话</div>
+        <div class="row sel"><span class="dot"></span>授权站点评估</div>
+        <div class="row">web-challenge</div>
+      </aside>
+      <main class="main">
+        <div class="topbar"><strong>授权范围内的 Web 评估</strong></div>
+        <div class="thread">
+          <div class="user">对 lab.example 做一次授权渗透测试。范围仅限该主机 80/443，先确认攻击面再验证高风险点。</div>
+          <div class="asst">
+            <h4><span class="badge">U</span>UBOVM</h4>
+            已把种子域写入攻击面台账。接下来在已配置的远程 Linux 上做被动与主动探测，结果会记成资产与漏洞候选。
+            <div class="tool"><div class="k">SSH · run_linux_ssh_command · <span class="ok">完成</span></div><code>nmap -sV -p 80,443 lab.example</code></div>
+            <div class="tool"><div class="k">工具审批 · domain_inventory</div>将 api.lab.example 记为证书 SAN 关联主机<div class="approve"><button class="yes">允许一次</button><button>拒绝</button></div></div>
+          </div>
+        </div>
+        <div class="dock">
+          <div class="composer"><div class="ctx">当前工作区 · 人工审批</div><textarea readonly>继续验证登录接口的越权…</textarea></div>
+        </div>
+      </main>
+      <aside class="files"><h3>文件</h3><div class="file on">notes.md</div><div class="file">poc.py</div></aside>
+    </div>
+  </div>
+</section>
+
+<section class="shot" id="explore">
+  <div class="window">
+    <div class="titlebar"><span class="dots"><i></i><i></i><i></i></span><span class="brand"><svg viewBox="0 0 64 64"><path d="M10 12h10v27a12 12 0 0 0 24 0V12h10v27a22 22 0 0 1-44 0V12Z"/><path d="m32 5 10 10-10 10-10-10 10-10Z"/></svg>UBOVM · 探索</span></div>
+    <div class="body" style="grid-template-columns:232px 1fr">
+      <aside class="sidebar">
+        <div class="modes"><button>协助</button><button class="on">探索</button></div>
+        <div class="tree-h">目标</div>
+        <div class="row sel"><span class="dot"></span>覆盖授权域并核验高危</div>
+      </aside>
+      <main class="main">
+        <div class="topbar"><strong>探索工作台</strong><span style="color:#747578">概览 · 黑板 · 任务 · 笔记</span></div>
+        <div class="board">
+          <div class="canvas">
+            <div class="node" style="left:40px;top:48px;"><b>事实</b>lab.example 开放 443，TLS 证书 SAN 含 api 与 www</div>
+            <div class="node" style="left:280px;top:150px;"><b>意图</b>枚举登录与重置密码接口</div>
+            <div class="node" style="left:520px;top:70px;"><b>待补证</b>重置接口是否可枚举用户</div>
+          </div>
+          <aside class="notes">
+            <h3 style="margin:0 0 10px;font-size:12px;">笔记</h3>
+            <div class="note"><span class="sev">HIGH · 漏洞候选</span><p style="margin:6px 0 0;">密码重置可枚举邮箱，证据见 SSH #12</p></div>
+            <div class="note"><b>资产</b><p style="margin:6px 0 0;">api.lab.example · HTTPS · 已测</p></div>
+          </aside>
+        </div>
+      </main>
+    </div>
+  </div>
+</section>
+
+<section class="shot" id="setup">
+  <div class="window">
+    <div class="titlebar"><span class="dots"><i></i><i></i><i></i></span><span class="brand"><svg viewBox="0 0 64 64"><path d="M10 12h10v27a12 12 0 0 0 24 0V12h10v27a22 22 0 0 1-44 0V12Z"/><path d="m32 5 10 10-10 10-10-10 10-10Z"/></svg>UBOVM</span></div>
+    <div class="settings">
+      <div class="eyebrow">欢迎使用</div>
+      <h1>准备 UBOVM 工作环境</h1>
+      <p class="lead">先连接对话模型，再配置远程 Linux。密钥写入系统凭据库，不会出现在对话页面。</p>
+      <div class="steps"><span class="on">1 · 模型</span><span>2 · 远程环境</span><span>3 · 可选能力</span></div>
+      <label>服务商</label><select><option>OpenAI 兼容</option></select>
+      <label>模型 ID</label><input value="gpt-5">
+      <label>API 地址</label><input value="https://api.example/v1">
+      <label>API Key</label><input type="password" value="••••••••">
+      <button class="save">保存更改</button>
+    </div>
+  </div>
+</section>
+</body>
+</html>
