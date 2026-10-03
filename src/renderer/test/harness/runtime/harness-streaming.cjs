@@ -197,6 +197,7 @@ for (const mode of ['assist', 'goal']) for (const toolName of ['run_local_shell_
     await f.completion;
     const part = () => mode === 'goal' ? f.service.state('current').workers[0].parts.find(part => part.commandId === id) : f.service.state('current').parts.find(part => part.commandId === id);
     assert.equal(part().status, 'running');
+    assert.equal((f.service.state('current').activities || []).some(item => item.label === toolName), false);
     publish({ status: 'running', output: 'still serving' });
     assert.equal(part().output, 'still serving');
     assert.equal(f.service.interruptCommand('current', id), true);
@@ -223,6 +224,7 @@ for (const mode of ['assist', 'goal']) test(`${mode} puts commands aside without
   event({ ...base, type: 'tool_execution_end', result: { content: [{ type: 'text', text: 'put aside' }], details: { background: true } } });
   assert.equal(part().background, true);
   assert.equal(part().status, 'running');
+  assert.equal((f.service.state('current').activities || []).some(item => item.label === 'run_linux_ssh_command' && ['queued', 'running', 'waiting'].includes(item.status)), false);
   assert.equal(part().output, 'before');
   publish({ status: 'running', output: 'before\nafter' });
   assert.equal(part().output, 'before\nafter');

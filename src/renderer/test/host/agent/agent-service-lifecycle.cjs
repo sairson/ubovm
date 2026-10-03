@@ -19,12 +19,20 @@ function fixture({ terminationFailure = false } = {}) {
         return { createRPC(_worker, handle, options = {}) {
           receiver = handle;
           onClose = options.onClose;
-          return { call: async (method, args = []) => {
-            if (typeof methods[method] === 'function') return methods[method](args, ++revision);
-            if (method === 'close') return { result: true };
-            const id = typeof args[0] === 'string' ? args[0] : args[0].conversationId;
-            return { result: true, snapshot: { id, revision: ++revision, state: { status: 'idle', busy: false, parts: [{ text: id }] }, summary: { status: 'idle', busy: false } } };
-          }, close() {}, isIdle: () => true, drain: async () => {} };
+          const api = {
+            call: async (method, args = []) => {
+              if (typeof methods[method] === 'function') return methods[method](args, ++revision);
+              if (method === 'close') return { result: true };
+              const id = typeof args[0] === 'string' ? args[0] : args[0].conversationId;
+              return { result: true, snapshot: { id, revision: ++revision, state: { status: 'idle', busy: false, parts: [{ text: id }] }, summary: { status: 'idle', busy: false } } };
+            },
+            close() {}, isIdle: () => true, drain: async () => {}, isStalled: () => false,
+            stall(stalled = true) {
+              options.onStallChange?.(stalled, stalled ? Object.assign(new Error('slow'), { code: 'AGENT_HEARTBEAT_STALLED' }) : undefined);
+            }
+          };
+          methods.__rpc = api;
+          return api;
         } };
       } };
       return require(name);
@@ -99,13 +107,19 @@ for (const terminationFailure of [false, true]) test(`shutdown releases cached t
   await assert.rejects(service.restore({ conversationId: 'after-close', mode: 'assist' }), /closed/);
 });
 
-test('heartbeat failure marks busy assist and goal sessions resumable', async () => {
-  const { service, busySnapshot, failRuntime } = fixture();
+test('heartbeat stall keeps sessions running while hard timeout still resumes', async () => {
+  const { service, busySnapshot, failRuntime, methods } = fixture();
   try {
     await service.start({ conversationId: 'assist', mode: 'assist', text: 'continue me' });
     await busySnapshot('assist');
     await service.restore({ conversationId: 'goal', mode: 'goal', goal: { objective: 'recover' } });
     await busySnapshot('goal');
+    methods.__rpc.stall(true);
+    assert.equal(service.connectionState().status, 'stalled');
+    assert.equal(service.state('assist').busy, true, 'soft stall must not interrupt work');
+    assert.equal(service.state('goal').busy, true);
+    methods.__rpc.stall(false);
+    assert.equal(service.connectionState().status, 'connected');
     failRuntime();
     assert.equal(service.connectionState().status, 'disconnected');
     assert.equal(service.state('assist').canResume, true);

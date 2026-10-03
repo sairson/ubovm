@@ -8,7 +8,7 @@ import { getEventListeners } from 'node:events';
 import { pathToFileURL } from 'node:url';
 import { createPythonQueue } from '../queue.mjs';
 import { createPythonOutput } from '../output.mjs';
-import { normalizePythonDomains, privatePythonPaths, pythonPolicy } from '../policy.mjs';
+import { normalizePythonDomains, privatePythonPaths, pythonPolicy, pythonAllowsHost } from '../policy.mjs';
 import { preparePythonOutput, validatePythonPaths, removeEmptyPythonOutput } from '../files.mjs';
 import { executePythonRequest } from '../runner-core.mjs';
 import { runPythonSandbox } from '../execution.mjs';
@@ -63,10 +63,31 @@ test('output batches bursts, decodes split Unicode, isolates observers, and caps
 
 test('domain allowlist validates labels and ports, normalizes and deduplicates', () => {
   assert.deepEqual(normalizePythonDomains([' EXAMPLE.com ', 'example.com', '*.example.com:443']), ['example.com', '*.example.com:443']);
-  for (const value of ['a..b', '-example.com', 'a-.com', 'example.com:0', 'example.com:65536', 'http://example.com', '*', 'a'.repeat(64) + '.com'])
+  assert.deepEqual(normalizePythonDomains(['*', 'pypi.org']), ['*']);
+  for (const value of ['a..b', '-example.com', 'a-.com', 'example.com:0', 'example.com:65536', 'http://example.com', 'a'.repeat(64) + '.com'])
     assert.throws(() => normalizePythonDomains([value]), /Invalid/);
   const policy = pythonPolicy({ workspace: '/work', readRoots: ['/work'], controlDirectory: '/control', outputDirectory: '/output', protectedRuntimePaths: ['/runtime'], allowWorkspaceWrite: true }, 'linux');
   assert(policy.filesystem.denyWrite.includes('/runtime')); assert(policy.filesystem.denyWrite.includes('/work'));
+  const open = pythonPolicy({ workspace: '/work', readRoots: ['/work'], controlDirectory: '/control', outputDirectory: '/output', allowedDomains: ['*'] }, 'linux');
+  assert.deepEqual(open.network.allowedDomains, []);
+  assert.equal(pythonAllowsHost(['*'], 'pypi.org'), true);
+  assert.equal(pythonAllowsHost(['*.example.com:443'], 'api.example.com', 443), true);
+  assert.equal(pythonAllowsHost(['*.example.com:443'], 'api.example.com', 80), false);
+  assert.equal(pythonAllowsHost([], 'pypi.org'), false);
+});
+
+test('open host setting keeps an empty sandbox allowlist and always-allow ask callback', async t => {
+  const { request } = await fixture(t), { dependencies } = backendFixture();
+  request.allowedDomains = ['*'];
+  let ask;
+  dependencies.backend.SandboxManager.initialize = async (policy, callback) => {
+    assert.deepEqual(policy.network.allowedDomains, []);
+    ask = callback;
+  };
+  const result = await executePythonRequest(request, new AbortController().signal, undefined, dependencies);
+  assert.equal(result.error, undefined);
+  assert.equal(typeof ask, 'function');
+  assert.equal(await ask({ host: 'files.pythonhosted.org', port: 443 }), true);
 });
 
 test('private directory traversal respects cancellation and entry budget', async t => {

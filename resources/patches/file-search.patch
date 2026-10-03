@@ -2,9 +2,9 @@ diff --git a/src/vs/platform/actions/common/actions.ts b/src/vs/platform/actions
 --- a/src/vs/platform/actions/common/actions.ts
 +++ b/src/vs/platform/actions/common/actions.ts
 @@ -562,2 +562,3 @@
--			return result.filter(item => 'command' in item && allowed.has(item.command.id));
+-			return result.filter(item => 'command' in item && (allowed.has(item.command.id) || /^workbench\.action\.browser\./.test(item.command.id)));
 +			const fileSearch = /^(?:(?:closeReplaceInFilesWidget|toggleSearch(?:CaseSensitive|WholeWord|Regex|PreserveCase)|addCursorsAtSearchResults)$|filesExplorer\.(?:findInFolder|findInWorkspace)$|search\.|workbench\.action\.(?:findInFiles|replaceInFiles|quickOpen|quickTextSearch|toggleSearchOnType|search\.)|workbench\.view\.search$|actions\.find(?:WithSelection)?$|editor\.actions\.findWithArgs$|(?:closeFindWidget|toggleFindCaseSensitive|toggleFindWholeWord|toggleFindRegex|toggleFindInSelection|togglePreserveCase)$|editor\.action\.(?:startFindReplaceAction|nextMatchFindAction|previousMatchFindAction|goToMatchFindAction|nextSelectionMatchFindAction|previousSelectionMatchFindAction|replaceOne|replaceAll|selectAllMatches|selectHighlights)$)/;
-+			return result.filter(item => 'command' in item && (allowed.has(item.command.id) || fileSearch.test(item.command.id)));
++			return result.filter(item => 'command' in item && (allowed.has(item.command.id) || fileSearch.test(item.command.id) || /^workbench\.action\.browser\./.test(item.command.id)));
  		}
 diff --git a/src/vs/workbench/services/commands/common/commandService.ts b/src/vs/workbench/services/commands/common/commandService.ts
 --- a/src/vs/workbench/services/commands/common/commandService.ts

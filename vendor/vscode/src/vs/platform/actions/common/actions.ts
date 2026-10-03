@@ -539,8 +539,13 @@ export const MenuRegistry: IMenuRegistry = new class implements IMenuRegistry {
 			// all commands by default
 			this._appendImplicitItems(result);
 		}
-		if (id.id === 'TitleBar' && !result.some(item => 'command' in item && item.command.id === 'ubovm.toggleTheme')) {
-			result.push({ command: { id: 'ubovm.toggleTheme', title: '切换浅色 / 暗色主题', icon: { id: 'color-mode' } }, group: 'navigation', order: 100 });
+		if (id.id === 'TitleBar') {
+			if (!result.some(item => 'command' in item && item.command.id === 'workbench.action.browser.openOrList')) {
+				result.push({ command: { id: 'workbench.action.browser.openOrList', title: '打开内置浏览器', icon: { id: 'globe' } }, group: 'navigation', order: 10 });
+			}
+			if (!result.some(item => 'command' in item && item.command.id === 'ubovm.toggleTheme')) {
+				result.push({ command: { id: 'ubovm.toggleTheme', title: '切换浅色 / 暗色主题', icon: { id: 'color-mode' } }, group: 'navigation', order: 100 });
+			}
 		}
 		// UBOVM exposes only its conversations, file operations and pane toggles.
 		const compactMenus = /^(CommandPalette|EditorContext.*|SimpleEditorContext|EditorLineNumberContext|EditorTitle.*|EditorTabsBar.*|EditorSplitMoveSubmenu|EmptyEditorGroup.*|ExplorerContext.*|OpenEditorsContext.*|GlobalActivity|CommandCenter.*|LayoutControl.*|Menubar.*|TitleBar.*|ViewTitle.*|ViewContainerTitle.*)$/;
@@ -559,9 +564,9 @@ export const MenuRegistry: IMenuRegistry = new class implements IMenuRegistry {
 				'workbench.files.action.refreshFilesExplorer', 'workbench.files.action.collapseExplorerFolders',
 				'workbench.action.terminal.new', 'workbench.action.terminal.kill', 'workbench.action.terminal.focus'
 			]);
-			for (const command of ['markdown.showPreview', 'markdown.showPreviewToSide', 'markdown.reopenAsPreview', 'markdown.showSource', 'markdown.reopenAsSource', 'markdown.preview.refresh', 'markdown.preview.toggleLock', 'markdown.showPreviewSecuritySelector']) { allowed.add(command); }
+			for (const command of ['markdown.showPreview', 'markdown.showPreviewToSide', 'markdown.reopenAsPreview', 'markdown.showSource', 'markdown.reopenAsSource', 'markdown.preview.refresh', 'markdown.preview.toggleLock', 'markdown.showPreviewSecuritySelector', 'workbench.action.browser.open', 'workbench.action.browser.openOrList', 'workbench.action.browser.openFile', 'workbench.action.browser.newTab', 'workbench.action.browser.setAgentControlLock', 'ubovm.openBrowser', 'ubovm.openBrowserSidebar', 'ubovm.installBrowser']) { allowed.add(command); }
 			const fileSearch = /^(?:(?:closeReplaceInFilesWidget|toggleSearch(?:CaseSensitive|WholeWord|Regex|PreserveCase)|addCursorsAtSearchResults)$|filesExplorer\.(?:findInFolder|findInWorkspace)$|search\.|workbench\.action\.(?:findInFiles|replaceInFiles|quickOpen|quickTextSearch|toggleSearchOnType|search\.)|workbench\.view\.search$|actions\.find(?:WithSelection)?$|editor\.actions\.findWithArgs$|(?:closeFindWidget|toggleFindCaseSensitive|toggleFindWholeWord|toggleFindRegex|toggleFindInSelection|togglePreserveCase)$|editor\.action\.(?:startFindReplaceAction|nextMatchFindAction|previousMatchFindAction|goToMatchFindAction|nextSelectionMatchFindAction|previousSelectionMatchFindAction|replaceOne|replaceAll|selectAllMatches|selectHighlights)$)/;
-			return result.filter(item => 'command' in item && (allowed.has(item.command.id) || fileSearch.test(item.command.id)));
+			return result.filter(item => 'command' in item && (allowed.has(item.command.id) || fileSearch.test(item.command.id) || /^workbench\.action\.browser\./.test(item.command.id)));
 		}
 		return result;
 	}

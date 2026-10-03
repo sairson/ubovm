@@ -1,6 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { Type } from 'typebox';
 import { assertSession, checkAbort, required, toolResult } from '../shared/store/memory-store.mjs';
+import { withActionHelp, withProgressiveDisclosure } from '../shared/disclosure.mjs';
+import { NOTE_CATALOG } from '../shared/tool-catalogs.mjs';
 
 const MAX_CONTENT = 16 * 1024;
 const string = Type.String();
@@ -16,14 +18,13 @@ const vulnerabilityLists = ['preconditions', 'effects', 'constraints', 'evidence
 const vulnerabilityKeys = ['type', 'title', 'target', 'vector', 'status', 'severity', 'details', ...vulnerabilityLists];
 const assetSchema = Type.Object({ type: subtypeSchema, locator: string, content: optionalString, method: optionalString, operation: optionalString, protocol: optionalString, details: Type.Optional(objectSchema), evidence: optionalStrings, tool_call_ids: optionalStrings }, { additionalProperties: false });
 const vulnerabilitySchema = Type.Object({ type: subtypeSchema, title: string, target: string, vector: optionalString, status: Type.Optional(enumSchema(['candidate', 'verified', 'exploitable'])), severity: Type.Optional(enumSchema(['unknown', 'info', 'low', 'medium', 'high', 'critical'])), details: Type.Optional(objectSchema), ...Object.fromEntries(vulnerabilityLists.map(key => [key, ['effects', 'evidence'].includes(key) ? stringsSchema : optionalStrings])) }, { additionalProperties: false });
-const parameters = Type.Object({
-  action: enumSchema(['write', 'list', 'get', 'promote', 'delete']),
+const parameters = Type.Object(withActionHelp({
   note_type: Type.Optional({ ...enumSchema(noteTypes), description: 'Record category. On write, omit to infer from asset/vulnerability, otherwise defaults to note. On list, omit for all categories. fact and intent belong in promotion_kind, not note_type.' }), asset_type: Type.Optional(subtypeSchema), vulnerability_type: Type.Optional(subtypeSchema),
   asset: Type.Optional(Type.Union([assetSchema, Type.String({ description: 'Compatibility: JSON-encoded asset object' })])), vulnerability: Type.Optional(vulnerabilitySchema),
   type: Type.Optional(subtypeSchema), locator: optionalString, method: optionalString, operation: optionalString, protocol: optionalString, details: Type.Optional(objectSchema),
   content: optionalString, query: optionalString, limit: Type.Optional(Type.Integer()), offset: Type.Optional(Type.Integer()), note_id: optionalString, delete_reason: optionalString,
   promotion_kind: optionalString, outcome: optionalString, statement: optionalString, evidence: optionalStrings, failed_checks: optionalStrings, limitations: optionalStrings, description: optionalString, hint: optionalString, tool_call_ids: optionalStrings
-}, { additionalProperties: false });
+}), { additionalProperties: false });
 
 function fields(value, allowed, label) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new TypeError(`${label} must be an object`);
@@ -270,7 +271,7 @@ export function createNoteTool({ store, sessionId, workerId = 'worker', blackboa
 
   const tool = {
     name: 'note', label: 'Session notebook', parameters,
-    description: 'Persist shared session discoveries. write stores verbatim notes, deduplicated assets, or investigation-stage vulnerability candidates. list/get share other workers\' observations. Rewriting an asset/vulnerability identity merges contributions. delete requires an exact unpromoted note_id and an audit reason. Only an owning Worker may promote a closed fact or executable intent to the Blackboard; vulnerability candidates are not validated Findings. Promotion never writes user hints.',
+    description: NOTE_CATALOG.description,
     async execute(_toolCallId, input, signal) {
       checkAbort(signal);
       const request = parseInput(input), warnings = [];
@@ -348,7 +349,10 @@ export function createNoteTool({ store, sessionId, workerId = 'worker', blackboa
       });
     }
   };
-  return tool;
+  const disclosed = withProgressiveDisclosure(tool, NOTE_CATALOG);
+  // Preserve host helpers used outside model tool calls.
+  disclosed.recoverPromotions = (...args) => tool.recoverPromotions(...args);
+  return disclosed;
 }
 
 export async function recoverPromotions(options) { return createNoteTool(options).recoverPromotions(); }

@@ -24,6 +24,7 @@ import {
 	IContainerLayoutOverride,
 } from '../browserEditor.js';
 import { BrowserOverlayManager, BrowserOverlayType } from '../overlayManager.js';
+import { getBrowserAgentControlReason, isBrowserAgentControlLocked, onDidChangeBrowserAgentControlLock } from './browserAgentControl.js';
 
 /**
  * Default browser renderer: drives a Chromium WebContentsView.
@@ -31,6 +32,7 @@ import { BrowserOverlayManager, BrowserOverlayType } from '../overlayManager.js'
  * Owns everything that exists only because of how the WCV behaves:
  * - placeholder screenshot to mask the page during show/hide swaps,
  * - overlay-pause UI for when a workbench modal sits on top of the WCV,
+ * - agent-control lock overlay that keeps the page read-only while an agent operates,
  * - the focus dance that bounces focus between the workbench DOM and the WCV,
  * - native key event forwarding through the keybinding service,
  * - the pixel-snap layout contribution that keeps the container on physical
@@ -49,6 +51,8 @@ class WebContentsViewRendererFeature extends BrowserEditorContribution {
 
 	private readonly _placeholderScreenshot = $('.browser-placeholder-screenshot');
 	private readonly _overlayPauseEl = $('.browser-overlay-paused');
+	private readonly _overlayPauseHeading: HTMLElement;
+	private readonly _overlayPauseDetail: HTMLElement;
 	private readonly _overlayManager: BrowserOverlayManager;
 
 	private readonly _placeholderContent: IBrowserEditorWidget;
@@ -75,11 +79,14 @@ class WebContentsViewRendererFeature extends BrowserEditorContribution {
 		message.appendChild(heading);
 		message.appendChild(detail);
 		this._overlayPauseEl.appendChild(message);
+		this._overlayPauseHeading = heading;
+		this._overlayPauseDetail = detail;
 
 		this._placeholderContent = { location: BrowserWidgetLocation.ContentArea, element: this._placeholderScreenshot, order: 100 };
 		this._overlayPauseContent = { location: BrowserWidgetLocation.ContentArea, element: this._overlayPauseEl, order: 200 };
 
 		this._register(this._overlayManager.onDidChangeOverlayState(() => this._refreshOverlayObscured()));
+		this._register(onDidChangeBrowserAgentControlLock()(() => this._refresh()));
 		this._refresh();
 	}
 
@@ -209,6 +216,7 @@ class WebContentsViewRendererFeature extends BrowserEditorContribution {
 	private _shouldShowPage(): boolean {
 		return this._editorVisible
 			&& !this._overlayObscured
+			&& !isBrowserAgentControlLocked()
 			&& !!this._model?.url
 			&& !this._model?.error;
 	}
@@ -223,9 +231,22 @@ class WebContentsViewRendererFeature extends BrowserEditorContribution {
 		const placeholderActive = !!this._model?.url && !this._model?.error;
 		this._placeholderScreenshot.style.display = placeholderActive ? '' : 'none';
 
-		// Overlay-pause overlay: fades in when an overlay obscures the page.
-		const pauseActive = !!this._model?.url && this._editorVisible && this._overlayObscured;
+		const agentLocked = isBrowserAgentControlLocked();
+		if (agentLocked) {
+			this._overlayPauseHeading.textContent = getBrowserAgentControlReason();
+			this._overlayPauseDetail.textContent = localize('browser.agentControl.detail', "Agent 操作完成前页面只读，请勿点击。");
+		} else {
+			this._overlayPauseHeading.textContent = localize('browser.overlayPauseHeading.notification', "Paused due to Notification");
+			this._overlayPauseDetail.textContent = localize('browser.overlayPauseDetail.notification', "Dismiss the notification to continue using the browser.");
+		}
+
+		// Overlay-pause: workbench modal obstruction or agent-control lock.
+		const pauseActive = !!this._model?.url && this._editorVisible && (this._overlayObscured || agentLocked);
 		this._overlayPauseEl.classList.toggle('visible', pauseActive);
+		this._overlayPauseEl.classList.toggle('agent-control', agentLocked);
+		if (agentLocked) {
+			this._overlayPauseEl.classList.add('show-message');
+		}
 
 		if (!this._model) {
 			return;
@@ -260,7 +281,7 @@ class WebContentsViewRendererFeature extends BrowserEditorContribution {
 		const overlays = this._overlayManager.getOverlappingOverlays(this._container);
 		const obscured = overlays.length > 0;
 		const hasNotification = overlays.some(o => o.type === BrowserOverlayType.Notification);
-		this._overlayPauseEl.classList.toggle('show-message', hasNotification);
+		this._overlayPauseEl.classList.toggle('show-message', hasNotification || isBrowserAgentControlLocked());
 		if (obscured !== this._overlayObscured) {
 			this._overlayObscured = obscured;
 			this._refresh();

@@ -23,6 +23,9 @@ export enum BrowserViewCommandId {
 	CloseAll = `${commandPrefix}.closeAll`,
 	CloseAllInGroup = `${commandPrefix}.closeAllInGroup`,
 
+	/** UBOVM: lock page interaction while the agent drives the Integrated Browser. */
+	SetAgentControlLock = `${commandPrefix}.setAgentControlLock`,
+
 	// Navigation
 	GoBack = `${commandPrefix}.goBack`,
 	GoForward = `${commandPrefix}.goForward`,

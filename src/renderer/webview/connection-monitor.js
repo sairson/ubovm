@@ -74,20 +74,36 @@
       }
       probe();
     }
-    function receive(event) {
-      const message = event.data;
-      if (disposed || message?.type !== 'connectionStatus' || !pending || message.probeId !== pending.id) return;
-      if (!['idle', 'connected', 'disconnected', 'closed'].includes(message.backend?.status)) return;
-      pending = undefined;
+    function applyBackend(backend) {
+      if (!['idle', 'connected', 'disconnected', 'closed', 'stalled'].includes(backend?.status)) return false;
       missCount = 0;
-      if (['disconnected', 'closed'].includes(message.backend.status)) {
+      if (backend.status === 'stalled') {
+        // Transport is slow but the worker is still alive — soft banner only.
+        backendMissCount = 0;
+        change('backend-stalled');
+        return true;
+      }
+      if (['disconnected', 'closed'].includes(backend.status)) {
         backendMissCount += 1;
         if (backendMissCount >= 2) change('backend-disconnected');
         else change('reconnecting');
-        return;
+        return true;
       }
       backendMissCount = 0;
       change('connected');
+      return true;
+    }
+    function receive(event) {
+      const message = event.data;
+      if (disposed || message?.type !== 'connectionStatus') return;
+      // Host-pushed stall/recover updates are not tied to a probe id.
+      if (message.unsolicited === true) {
+        applyBackend(message.backend);
+        return;
+      }
+      if (!pending || message.probeId !== pending.id) return;
+      pending = undefined;
+      applyBackend(message.backend);
     }
     function visible() {
       // Duplicate lifecycle notifications must not discard the current probe

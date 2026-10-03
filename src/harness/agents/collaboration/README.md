@@ -17,8 +17,10 @@ subscription, lease and database release and reports collected failures together
   runtime inspection. One manager covers the coordinator and all descendants.
 - `harness-project.mjs`: immutable task profile versions, declarative JSON
   import/export, durable project state and capability/budget narrowing.
-- `swarm.mjs`: concurrency slots, worker ownership, dependencies, cancellation,
-  durable dispatch and result summaries. Waiting dependencies consume no slot.
+- `swarm.mjs`: concurrency slots, worker ownership, dependencies, priority
+  admission, cancellation/preemption, durable dispatch and result summaries.
+  Waiting dependencies consume no slot. Coordinators set `spawn_worker.priority`
+  (0–9) and call `manage_workers` to reorder or interrupt descendants.
 - `conversation.mjs`: model/tool loop, per-worker limits, call-ID deduplication,
   approval, task-context protection and execution evidence.
 - `history.mjs`: persisted conversation history limits. Message sizes are measured
@@ -102,8 +104,15 @@ The tool supports `validate`, `define`, `list`, `import` and `export`. Define a 
 ```
 
 Use the returned ID, for example `runtime-reviewer@1`, with
-`spawn_worker({ task, profile: "runtime-reviewer@1", depends_on: [...] })`.
-Never guess a profile ID. A profile revision cannot be edited in place; defining
+`spawn_worker({ task, profile: "runtime-reviewer@1", depends_on: [...], priority: 7, preempt: true })`.
+Never guess a profile ID. Coordinators also call `manage_workers` to raise
+priority, preempt lower-priority running descendants, or interrupt obsolete
+work. `list_workers.admission` reports who runs next, which runners can be
+preempted, and which cancelled runners still occupy slots (`releasing`).
+Queued records include `blocked.reason` (`dependencies` or `concurrency`).
+`manage_workers` `preempt=true` only interrupts for the listed *ready queued*
+targets; prioritizing a running worker alone does not cancel peers.
+A profile revision cannot be edited in place; defining
 changed content under the same name produces a new ID. Repeating identical
 content reuses the latest ID without a write or capacity cost. Tool lists are
 normalized, so order and duplicate names do not create needless revisions.

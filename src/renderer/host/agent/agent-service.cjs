@@ -21,6 +21,7 @@ function readonly(value) {
 
 /** The host owns UI state; each runtime generation owns its transport and tools. */
 function createHarnessService(options) {
+  // options.ideBrowserHost.handle(op, payload, signal) drives the Integrated Browser.
   const states = new Map(), summaries = new Map(), launching = new Map(), stopping = new Map();
   const descriptors = new Map();
   const checkResponse = response => {
@@ -29,6 +30,16 @@ function createHarnessService(options) {
   };
   let runtime, restarting, closing, stopped = false;
   const notify = id => { if (stopped || closing) return; try { Promise.resolve(options.onChange?.(id)).catch(() => {}); } catch {} };
+  // Connection observers (webview probes) watch transport health separately from
+  // per-session timeline updates.
+  const notifyConnection = () => { if (stopped || closing) return; try { Promise.resolve(options.onConnectionChange?.()).catch(() => {}); } catch {} };
+  function connectionStatus() {
+    if (stopped || closing) return { status: 'closed', error: closedError().message };
+    if (!runtime) return { status: 'idle' };
+    if (runtime.failed) return { status: 'disconnected', error: runtime.failed.message };
+    if (runtime.stalled) return { status: 'stalled', error: runtime.stallError?.message };
+    return { status: 'connected' };
+  }
   function accept(owner, snapshot) {
     if (runtime !== owner || owner.failed || stopped || !snapshot?.id) return;
     const { id, revision, state, summary } = snapshot;
@@ -42,11 +53,12 @@ function createHarnessService(options) {
     states.set(id, nextState); summaries.set(id, nextSummary); notify(id);
   }
   function spawn() {
-    const owner = { tools: new Map(), revisions: new Map(), requests: new Map(), restored: new Set() };
+    const owner = { tools: new Map(), revisions: new Map(), requests: new Map(), restored: new Set(), stalled: false, stallError: undefined };
     const worker = owner.worker = new Worker(path.join(path.dirname(options.sdkPath), 'ide/runtime/harness-thread.cjs'), {
       workerData: { sdkPath: options.sdkPath, storageDirectory: options.storageDirectory }
     });
     runtime = owner;
+    notifyConnection();
     const rpc = owner.rpc = createRPC(worker, async (method, args, signal) => {
       const [id] = args;
       signal.throwIfAborted();
@@ -78,17 +90,36 @@ function createHarnessService(options) {
           if (!tool) throw new Error('Host tool is no longer available');
           return tool.execute(args[2], args[3], signal);
         }
+        case 'ideBrowser': {
+          if (!options.ideBrowserHost?.handle) throw new Error('IDE browser host is unavailable');
+          return options.ideBrowserHost.handle(id, args[1], signal);
+        }
         default: throw new Error('Unknown host method');
       }
-    }, { onClose: error => fail(error), heartbeatInterval: options.heartbeatInterval ?? 5000, heartbeatTimeout: options.heartbeatTimeout ?? 20000 });
+    }, {
+      onClose: error => fail(error),
+      onStallChange: (stalled, error) => {
+        if (runtime !== owner || stopped || owner.failed) return;
+        owner.stalled = stalled === true;
+        owner.stallError = stalled ? error : undefined;
+        // Stall is transport-only: do not interrupt sessions or respawn the worker.
+        try { Promise.resolve(options.onStall?.({ stalled: owner.stalled, error: owner.stallError && serializeError(owner.stallError), threadId: worker.threadId })).catch(() => {}); } catch {}
+        notifyConnection();
+      },
+      heartbeatInterval: options.heartbeatInterval ?? 5000,
+      heartbeatTimeout: options.heartbeatTimeout ?? 20000,
+      heartbeatKillTimeout: options.heartbeatKillTimeout ?? 120000
+    });
     function fail(error) {
       if (runtime !== owner || stopped || owner.failed) return;
-      owner.failed = error; rpc.close(error); owner.tools.clear();
+      owner.failed = error; owner.stalled = false; owner.stallError = undefined;
+      rpc.close(error); owner.tools.clear();
       owner.terminated = worker.terminate();
       // Keep diagnostics even when no conversation is active; observer failures
       // must not become a second unhandled rejection in the IDE host.
       try { Promise.resolve(options.onError?.({ ...serializeError(error), threadId: worker.threadId })).catch(() => {}); } catch {}
       void owner.terminated.catch(() => {});
+      notifyConnection();
       // Completed/idle conversations survive an unrelated runtime failure.
       for (const id of new Set([...states.keys(), ...owner.requests.keys()])) {
         const state = states.get(id) ?? idle();
@@ -213,18 +244,19 @@ function createHarnessService(options) {
   async function ensureIdle() {
     if (idleEnsure) return idleEnsure;
     idleEnsure = (async () => {
-      if (closing || stopped) return { status: 'closed', error: closedError().message };
+      if (closing || stopped) return connectionStatus();
       if (!runtime) {
         try { await spawn(); }
         catch (error) { return { status: 'disconnected', error: error?.message || String(error) }; }
-        return { status: 'connected' };
+        return connectionStatus();
       }
-      if (!runtime.failed) return { status: 'connected' };
+      // Soft stalls keep the live worker; only failed runtimes need respawn.
+      if (!runtime.failed) return connectionStatus();
       const busy = launching.size > 0 || runtime.requests.size > 0 || [...states.values()].some(value => value.busy === true);
       if (busy) return { status: 'disconnected', error: runtime.failed?.message };
       try {
         await ensure('restore');
-        return { status: runtime?.failed ? 'disconnected' : 'connected', error: runtime?.failed?.message };
+        return connectionStatus();
       } catch (error) {
         return { status: 'disconnected', error: error?.message || String(error) };
       }
@@ -232,7 +264,7 @@ function createHarnessService(options) {
     return idleEnsure;
   }
   return Object.freeze({
-    connectionState: () => ({ status: stopped || closing ? 'closed' : runtime?.failed ? 'disconnected' : runtime ? 'connected' : 'idle', error: runtime?.failed?.message }),
+    connectionState: connectionStatus,
     ensureIdle,
     state,
     runtimeSummary: id => {

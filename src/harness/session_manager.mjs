@@ -52,12 +52,25 @@ function combineText(...hooks) {
     return sections.join('\n\n');
   };
 }
+function summaryAborted(error, signal) {
+  return Boolean(signal?.aborted || error?.code === 'ABORT_ERR' || error?.name === 'AbortError' || error?.code === 'MIDDLEWARE_CLOSED');
+}
 function combineTransforms(host, summary) {
   if (!host && !summary) return undefined;
   return async event => {
     // Host transforms run after compaction; they can supply application-specific
     // context without invalidating the evidence indexes supplied by adapters.
-    const context = summary ? await summary.transform(event) : event.context;
+    let context = event.context;
+    if (summary) {
+      try { context = await summary.transform(event); }
+      catch (error) {
+        // Middleware already soft-degrades most failures. Abort/close and true
+        // context-budget exhaustion still propagate; never turn those into a
+        // silent original-context continue that hides cancellation.
+        if (summaryAborted(error, event.signal) || error?.code === 'CONTEXT_BUDGET_EXCEEDED') throw error;
+        context = event.context;
+      }
+    }
     event.signal?.throwIfAborted();
     return host ? host({ ...event, context }) : context;
   };

@@ -81,6 +81,21 @@ test('backend disconnect requires two consecutive acknowledgements', () => {
   } finally { f.monitor.dispose(); }
 });
 
+test('unsolicited stalled backend updates soft-banner without counting as disconnect', () => {
+  const f = fixture();
+  try {
+    f.reply();
+    assert.equal(f.changes.at(-1), 'connected');
+    f.window.emit('message', { data: { type: 'connectionStatus', unsolicited: true, backend: { status: 'stalled' } } });
+    assert.equal(f.changes.at(-1), 'backend-stalled');
+    f.window.emit('message', { data: { type: 'connectionStatus', unsolicited: true, backend: { status: 'connected' } } });
+    assert.equal(f.changes.at(-1), 'connected');
+    f.monitor.probe();
+    f.window.emit('message', { data: { type: 'connectionStatus', probeId: f.messages.at(-1).probeId, backend: { status: 'stalled' } } });
+    assert.equal(f.changes.at(-1), 'backend-stalled');
+  } finally { f.monitor.dispose(); }
+});
+
 test('a single false delivery soft-reconnects; two consecutive failures disconnect', async () => {
   let rejectOld, sends = 0;
   const f = fixture(() => {

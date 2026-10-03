@@ -509,17 +509,19 @@ function createSessions(vscode, context, onDidChange, { isBusy = () => false, cr
         const assist = members.filter(entry => entry.mode === 'assist' && !entry.placeholder).length;
         const goal = members.filter(entry => entry.mode === 'goal' && !entry.placeholder).length;
         const folder = path.basename(session.workspace) || session.workspace;
+        const shortFolder = folder.length > 14 ? `${folder.slice(0, 13)}…` : folder;
         const item = new vscode.TreeItem(session.name, active ? vscode.TreeItemCollapsibleState.Expanded : vscode.TreeItemCollapsibleState.Collapsed);
         item.id = 'project-' + session.id; item.contextValue = 'ubovm.project';
         item.iconPath = new vscode.ThemeIcon(active ? 'folder-opened' : 'folder');
         item.tooltip = `${session.name}\n${session.workspace}\n${assist} 个协助会话 · ${goal} 个探索会话${busy ? `\n${busy} 个会话运行中` : ''}\n点击切换到此项目`;
-        item.description = `${folder} · ${visible.length} 个会话${active ? ' · 当前' : ''}${busy ? ` · ${busy} 运行中` : ''}`;
+        item.description = busy ? `${visible.length} · ${busy} 运行` : `${shortFolder} · ${visible.length}`;
         item.accessibilityInformation = { label: `${session.name}${active ? '，当前项目' : ''}，${visible.length} 个会话${busy ? `，${busy} 个运行中` : ''}，${session.workspace}` };
         item.command = { command: 'ubovm.openProject', title: '打开项目', arguments: [session.id] };
         return item;
       }
       const selected = session.mode === state.activeMode && session.id === state.currentIds[state.activeMode];
       const running = isBusy(session.id);
+      const otherMode = session.mode !== state.activeMode;
       // Remember what the tree actually displayed, including an initial read
       // that preceded the first execution notification.
       if (running) runningSessions.add(session.id); else runningSessions.delete(session.id);
@@ -530,7 +532,8 @@ function createSessions(vscode, context, onDidChange, { isBusy = () => false, cr
       const modeLabel = session.mode === 'goal' ? '探索' : '协助';
       const modeTitle = modeLabel + '模式';
       const messageCount = session.messageCount ?? session.messages.length;
-      item.description = `${modeLabel} · ${messageCount}`;
+      // Active-mode rows show counts; other-mode siblings under a project show the mode tag.
+      item.description = running ? '运行中' : otherMode ? modeLabel : String(messageCount);
       item.tooltip = `${session.title}\n${selected ? '当前会话 · ' : ''}${running ? '运行中 · ' : ''}${modeTitle} · ${messageCount} 条消息`;
       item.accessibilityInformation = { label: `${session.title}${selected ? '，当前会话' : ''}${running ? '，运行中' : ''}，${modeTitle}，${messageCount} 条消息` };
       item.command = { command: 'ubovm.selectConversation', title: '打开会话', arguments: [session.id] };

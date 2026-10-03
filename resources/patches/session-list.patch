@@ -27,7 +27,7 @@ index bf917583..fa8d7aed 100644
 +
  	getHeight(element: ITreeItem): number {
 -		return TreeRenderer.ITEM_HEIGHT;
-+		return this.viewId === 'ubovm.sessions' ? 44 : TreeRenderer.ITEM_HEIGHT;
++		return this.viewId === 'ubovm.sessions' ? 32 : TreeRenderer.ITEM_HEIGHT;
  	}
  
  	getTemplateId(element: ITreeItem): string {

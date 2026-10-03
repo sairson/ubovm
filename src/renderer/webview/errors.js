@@ -48,6 +48,12 @@
     else if (status === 401 || /unauthorized|invalid.api.key|authentication failed|all configured authentication methods failed/i.test(match)) { category = 'AUTHENTICATION_FAILED'; message = '身份验证失败。'; hint = '请检查对应服务的密钥或登录凭据。'; }
     else if (status === 403 || /forbidden|EACCES|EPERM|permission denied/i.test(match)) { category = 'PERMISSION_DENIED'; message = '没有执行此操作的权限。'; hint = '请检查文件权限或服务账号的访问权限。'; }
     else if (status === 429 || /rate.limit|quota.exceeded|insufficient.quota/i.test(match)) { category = 'RATE_LIMITED'; message = '服务请求受限或额度不足。'; hint = '请稍后重试，并检查服务额度。'; }
+    else if (/SSH command timed out|Shell command timed out|Shell queue wait timed out/i.test(match)) {
+      category = 'TIMEOUT';
+      const seconds = Number(/timed out after (\d+) seconds/i.exec(raw)?.[1]);
+      message = Number.isFinite(seconds) ? `远程命令已超时（${seconds} 秒）。` : '远程命令已超时。';
+      hint = '请提高 timeout_seconds，或对长期运行的服务使用 retain=true。远程进程已按超时结束，请勿当作界面等待超时重试。';
+    }
     else if (/ETIMEDOUT|ESOCKETTIMEDOUT|TimeoutError|timed?\s*out/i.test(match)) { category = 'TIMEOUT'; message = '等待操作结果超时。'; hint = '操作可能仍在执行，请先确认当前状态，再决定是否重试。'; }
     else if (/ECONNREFUSED|ECONNRESET|ENOTFOUND|EAI_AGAIN|fetch failed|network error|Failed to fetch/i.test(match)) { category = 'NETWORK_ERROR'; message = '无法连接到服务。'; hint = '请检查网络、服务地址和代理设置。'; }
     else if (/ENOENT|FileNotFound/i.test(match)) { category = 'NOT_FOUND'; message = '所需文件或程序不存在。'; hint = '请检查路径，以及所需组件是否已安装。'; }

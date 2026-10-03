@@ -15,10 +15,17 @@
     "serverDataFolderName": ".ubovm-server",
     "enableTelemetry": false,
     "showTelemetryOptOut": false,
-    "updateUrl": ""
+    "updateUrl": "",
+    "linkProtectionTrustedDomains": ["*"],
+    "extensionEnabledApiProposals": {
+      "ubovm.ubovm-core": ["browser"]
+    }
   },
   "settings": {
     "security.workspace.trust.enabled": false,
+    "json.schemaDownload.trustedDomains": {
+      "*": true
+    },
     "window.title": "${dirty}${activeEditorShort}${separator}${rootName}${separator}UBOVM IDE",
     "workbench.colorTheme": "UBOVM Light",
     "window.autoDetectColorScheme": false,
@@ -50,6 +57,7 @@
     "window.enableMenuBarMnemonics": false,
     "window.customMenuBarAltFocus": false,
     "window.commandCenter": false,
+    "workbench.browser.showInTitleBar": true,
     "workbench.navigationControl.enabled": false,
     "window.density.editorTabHeight": "compact",
     "workbench.experimental.modernUI": true,

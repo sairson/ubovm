@@ -8,7 +8,15 @@ try {
   const css = await readFile(new URL('../../workbench/workbench.css', import.meta.url), 'utf8');
   const patch = await readFile(new URL('../../../../resources/patches/sidebar-mode.patch', import.meta.url), 'utf8');
   const script = patch.split('\n').filter(line => line.startsWith('+') && !line.startsWith('+++'))
-    .map(line => line.slice(1)).filter(line => !line.includes('height = Math.max')).join('\n').replace(': KeyboardEvent', '').replace('<HTMLElement, boolean>', '').replace(': Event', '').replace(' as Node', '').replace(': number | undefined', '');
+    .map(line => line.slice(1)).filter(line => !line.includes('height = Math.max')).join('\n')
+    .replace(/: KeyboardEvent/g, '')
+    .replace(/: HTMLButtonElement\[\]/g, '')
+    .replace(/: boolean/g, '')
+    .replace(/<HTMLElement, boolean>/g, '')
+    .replace(/: globalThis\.Event/g, '')
+    .replace(/: Event/g, '')
+    .replace(/ as Node/g, '')
+    .replace(/: number \| undefined/g, '');
   await page.setContent(`<style>${css}#sessions{width:300px;height:640px}.monaco-workbench{position:relative;width:900px;height:640px}.pane{width:300px;height:100%}.part.editor{position:absolute;left:300px;right:0;top:0;bottom:0}</style><div class="monaco-workbench"><div class="pane"><div id="sessions" class="pane-body"><div class="tree-explorer-viewlet-tree-view"><div class="message">There is no data provider registered that can provide view data.</div><button id="existing-session">已读取的会话</button></div></div></div><div class="part editor"></div></div>`);
   await page.evaluate(script => {
     const callbacks = [], disposables = [];
@@ -39,16 +47,16 @@ try {
   assert.equal(await page.locator('.title-actions').isVisible(), false, 'pane title actions stay hidden until ready');
   assert.equal(await page.locator('[data-mode="goal"]').isDisabled(), true, 'mode chrome may exist but must stay locked');
   assert.equal(await page.locator('.monaco-workbench').evaluate(el => getComputedStyle(el, '::before').opacity), '1');
-  assert.match(await page.locator('.monaco-workbench').evaluate(el => getComputedStyle(el, '::before').content), /准备 UBOVM 工作环境/);
-  assert.equal(await page.locator('.monaco-workbench').evaluate(el => getComputedStyle(el, '::after').animationName), 'ubovm-component-wait');
-  assert.equal(await page.locator('.monaco-workbench').evaluate(el => getComputedStyle(el, '::after').animationDuration), '0.6s');
+  assert.match(await page.locator('.monaco-workbench').evaluate(el => getComputedStyle(el, '::before').content), /准备工作环境/);
+  assert.equal(await page.locator('.monaco-workbench').evaluate(el => getComputedStyle(el, '::after').animationName), 'ubovm-shell-progress');
+  assert.equal(await page.locator('.monaco-workbench').evaluate(el => getComputedStyle(el, '::after').animationDuration), '0.9s');
   assert.equal(await page.locator('.part.editor').evaluate(el => getComputedStyle(el, '::after').animationName), 'none', 'editor no longer hosts a separate spinner');
   await page.evaluate(() => {
     document.getElementById('sessions').classList.remove('ubovm-sessions-body');
     document.documentElement.classList.add('ubovm-shell-loading');
   });
   assert.equal(await page.locator('.monaco-workbench').evaluate(el => getComputedStyle(el, '::before').opacity), '1', 'shell loading must show immediately after splash, before sessions-body');
-  assert.equal(await page.locator('.monaco-workbench').evaluate(el => getComputedStyle(el, '::after').animationName), 'ubovm-component-wait');
+  assert.equal(await page.locator('.monaco-workbench').evaluate(el => getComputedStyle(el, '::after').animationName), 'ubovm-shell-progress');
   await page.evaluate(() => document.getElementById('sessions').classList.add('ubovm-sessions-body'));
   await page.emulateMedia({ reducedMotion: 'reduce' });
   assert.equal(await page.locator('.monaco-workbench').evaluate(el => getComputedStyle(el, '::after').animationName), 'none');
@@ -88,7 +96,7 @@ try {
   });
   assert.deepEqual(await page.evaluate(() => ({ commands: window.commands.length, actions: window.treeActions, focused: document.activeElement.id === 'late-session' })), { commands: 0, actions: 0, focused: false });
   await page.evaluate(() => window.updateContext({ 'ubovm.mode': 'assist', 'ubovm.contentReady': true }));
-  await page.waitForTimeout(140);
+  await page.waitForTimeout(200);
   assert.equal(await page.locator('.ubovm-session-loading').isVisible(), false);
   assert.equal(await page.locator('.monaco-workbench').evaluate(el => getComputedStyle(el, '::before').opacity), '0');
   assert.equal(await page.evaluate(() => document.documentElement.classList.contains('ubovm-shell-loading')), false, 'ready must clear the splash handoff class');

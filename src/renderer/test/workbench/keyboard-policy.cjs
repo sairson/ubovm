@@ -13,7 +13,7 @@ test('upstream workbench and IDE shortcuts are consumed before executing command
   }
 });
 test('UBOVM shortcuts and basic editing remain available', () => {
-  for (const commandId of ['ubovm.openAssistant', 'ubovm.attachSelection', 'ubovm.newChat', 'type', 'undo', 'redo', 'cursorLeft', 'deleteLeft', 'tab', 'editor.action.clipboardCopyAction', 'editor.action.clipboardCutAction', 'editor.action.clipboardPasteAction', 'editor.action.selectAll', 'workbench.action.files.save', 'workbench.action.files.saveAll', 'workbench.action.files.saveAs']) {
+  for (const commandId of ['ubovm.openAssistant', 'ubovm.attachSelection', 'ubovm.newChat', 'ubovm.openBrowser', 'ubovm.openBrowserSidebar', 'workbench.action.browser.focusUrlInput', 'workbench.action.browser.goBack', 'type', 'undo', 'redo', 'cursorLeft', 'deleteLeft', 'tab', 'editor.action.clipboardCopyAction', 'editor.action.clipboardCutAction', 'editor.action.clipboardPasteAction', 'editor.action.selectAll', 'workbench.action.files.save', 'workbench.action.files.saveAll', 'workbench.action.files.saveAs']) {
     assert.equal(dispatch.call({}, { commandId }), false, commandId);
   }
 });

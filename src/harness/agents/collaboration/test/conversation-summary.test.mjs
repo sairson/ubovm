@@ -17,7 +17,7 @@ function respond(model, content) {
   return stream;
 }
 
-async function conversation({ summary, history = [], prompt = 'Current user request', hostEvidence = true }) {
+async function conversation({ summary, history = [], prompt = 'Current user request', hostEvidence = true, signal }) {
   const state = new Map(), requests = [];
   const client = createModelClient({ provider: 'conversation-summary-test', modelId: 'fake-chat', api: 'openai-completions',
     baseUrl: 'https://offline.invalid/v1', apiKey: 'unused-test-key', streamFn: (model, request) => {
@@ -26,8 +26,14 @@ async function conversation({ summary, history = [], prompt = 'Current user requ
         ? [{ type: 'toolCall', id: 'inspect-1', name: 'inspect', arguments: {} }]
         : [{ type: 'text', text: 'Done.' }]);
     } });
+  const admission = () => ({ occupied_slots: 0, max_concurrency: 3, next: null, ready_queue: [], preemptable: [], releasing: [] });
+  const workers = hostEvidence
+    ? [{ id: 'chat/worker-1', parentId: 'chat', status: 'completed', result: 'WORKER_EVIDENCE ' + 'w'.repeat(1200) },
+      { id: 'chat/worker-2', parentId: 'chat', status: 'queued', task: 'queued', priority: 9,
+        blocked: { reason: 'concurrency', occupying: 3, preemptable: [] } }]
+    : [];
   const result = await runConversation({ client, options: {}, workerId: 'chat', prompt, systemPrompt: 'Follow the user request.',
-    history, tools: [{ name: 'inspect', label: 'Inspect', description: 'Inspect deterministic test evidence.',
+    history, signal, tools: [{ name: 'inspect', label: 'Inspect', description: 'Inspect deterministic test evidence.',
       parameters: Type.Object({}), execute: async () => ({ content: [{ type: 'text', text: 'Inspected.' }] }) }],
     ...(hostEvidence ? {
       skills: { instructionProvider: async () => 'Fixed skill instructions.' },
@@ -35,9 +41,11 @@ async function conversation({ summary, history = [], prompt = 'Current user requ
         onToolResult: async () => {}, store: new MemoryStore({ sessionId: 'chat' }) },
     } : {}), summary,
     load: key => state.get(key), save: (key, value) => state.set(key, structuredClone(value)), audit: () => {},
-    swarm: { snapshot: () => ({ sessionId: 'chat', workers: hostEvidence
-      ? [{ id: 'chat/worker-1', parentId: 'chat', status: 'completed', result: 'WORKER_EVIDENCE ' + 'w'.repeat(1200) }] : [] }),
-      settle: async () => {} },
+    swarm: { snapshot: () => ({ sessionId: 'chat', workers }),
+      settle: async () => {},
+      admission,
+      inspect: () => ({ workers, admission: admission() }),
+    },
   });
   return { result, requests };
 }
@@ -71,9 +79,13 @@ test('repeated worker context is bounded and points to full result retrieval', a
     return event.context;
   } } });
   assert.equal(result.answer, 'Done.');
-  assert.equal(observed.workers[0].result.length, 1024);
-  assert.equal(observed.workers[0].resultTruncated, true);
+  const completed = observed.workers.find(worker => worker.id === 'chat/worker-1');
+  assert.equal(completed.result.length, 1024);
+  assert.equal(completed.resultTruncated, true);
   assert.match(observed.guidance, /read_worker_result/);
+  assert.match(observed.guidance, /blocked.reason/);
+  assert.equal(observed.admission.next, null);
+  assert.equal(observed.workers.find(worker => worker.id === 'chat/worker-2').blocked.reason, 'concurrency');
 });
 
 test('conversation protects the real user request without optional host evidence', async () => {
@@ -101,4 +113,25 @@ test('actual compaction preserves the current request and host evidence while a 
     assert.ok(request.messages.some(message => plain(message).includes('MEMORY_EVIDENCE')));
     assert.ok(request.messages.some(message => plain(message).includes('WORKER_EVIDENCE')));
   }
+});
+
+test('summary transform failures do not stop the conversational tool loop', async () => {
+  let attempts = 0;
+  const { result, requests } = await conversation({ summary: { transform: async event => {
+    attempts++;
+    throw Object.assign(new Error('Summary storage unavailable'), { code: 'CONTEXT_STORAGE_FAILED' });
+  } } });
+  assert.equal(result.answer, 'Done.');
+  assert.equal(requests.length, 2);
+  assert.equal(attempts, 2, 'each model call still attempts compaction');
+  assert.ok(requests.every(request => request.messages.some(message => plain(message) === 'Current user request')));
+});
+
+test('summary abort still interrupts the conversation model call', async () => {
+  const controller = new AbortController();
+  const cancel = Object.assign(new Error('cancelled'), { name: 'AbortError', code: 'ABORT_ERR' });
+  await assert.rejects(conversation({ summary: { transform: async () => {
+    controller.abort(cancel);
+    throw cancel;
+  } }, signal: controller.signal }), error => error === cancel || error?.code === 'ABORT_ERR' || error?.name === 'AbortError');
 });

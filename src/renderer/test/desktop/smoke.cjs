@@ -14,7 +14,8 @@ const COMMANDS = [
   'ubovm.openAssistant', 'ubovm.newChat', 'ubovm.selectConversation', 'ubovm.submitPrompt', 'ubovm.resetLayout',
   'ubovm.searchConversations', 'ubovm.deleteConversation', 'ubovm.hideSessions', 'ubovm.hideFiles',
   'ubovm.newProject', 'ubovm.openProject', 'ubovm.manageProjects', 'ubovm.newProjectConversation', 'ubovm.changeProjectWorkspace', 'ubovm.renameProject', 'ubovm.deleteProject',
-  'ubovm.configureModel', 'ubovm.runGoal', 'ubovm.cancelRun', 'ubovm.resumeRun', 'ubovm.reviewCodeChanges'
+  'ubovm.configureModel', 'ubovm.runGoal', 'ubovm.cancelRun', 'ubovm.resumeRun', 'ubovm.reviewCodeChanges',
+  'ubovm.openBrowser', 'ubovm.openBrowserSidebar'
 ];
 
 // Keep the focused desktop suite on the same assertions and cleanup paths as
@@ -283,6 +284,7 @@ async function run() {
         'workbench.activityBar.location': 'top',
         'window.menuBarVisibility': 'hidden',
         'window.commandCenter': false,
+        'workbench.browser.showInTitleBar': true,
         'workbench.navigationControl.enabled': false,
         'workbench.editor.editorActionsLocation': 'hidden',
         'workbench.editor.enablePreview': false,
@@ -325,14 +327,19 @@ async function run() {
       assert(container, 'Sessions must contribute a native secondary side bar container.');
       const view = contributions.views?.[container.id]?.find(item => item.id === 'ubovm.sessions');
       assert(view && (!view.type || view.type === 'tree'), 'Sessions must contribute a native TreeView.');
+      const browserContainer = contributions.viewsContainers?.activitybar?.find(item => item.id === 'ubovm-browser');
+      assert(browserContainer, 'Browser must share the primary sidebar as a peer tab container.');
+      const browserView = contributions.views?.['ubovm-browser']?.find(item => item.id === 'ubovm.browserSidebar');
+      assert(browserView?.type === 'webview', 'Browser sidebar must contribute a webview view.');
       assert.equal(typeof extension.exports.conversationList, 'function');
       const commands = new Set(await vscode.commands.getCommands(true));
       assert(commands.has('ubovm.sessions.focus'), 'The native sessions view must be registered.');
+      assert(commands.has('workbench.view.extension.ubovm-browser'), 'Browser sidebar container command must be registered.');
       await vscode.commands.executeCommand('ubovm.sessions.focus', { preserveFocus: true });
       await focusConversation();
       await assertConversationPreserved('Opening the sessions tree');
       // These are native registration/configuration checks, not pixel-position assertions.
-      return { primarySideBar: 'right', sessionsContainer: 'secondarySidebar', nativeTreeView: true, builtInChatDisabled: true };
+      return { primarySideBar: 'right', sessionsContainer: 'secondarySidebar', nativeTreeView: true, browserSidebar: true, builtInChatDisabled: true };
     });
 
     await check('main-conversation-cannot-manually-split', async () => {

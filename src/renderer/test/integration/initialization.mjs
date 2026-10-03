@@ -42,7 +42,8 @@ test('startup opens initialization only for missing configuration and preserves 
     let opens = 0;
     const context = vm.createContext({ message: { action: 'ready' }, welcomeReady: false, settingsOpenRevision: revision, settingsOpening: pending,
       publishState() {}, modelConfiguration: { status: () => ({ configured: model }) }, readSSHStatus: () => ({ configured: ssh }),
-      vscode: {}, openSettings: async () => { opens++; } });
+      vscode: {}, openSettings: async () => { opens++; }, clearTimeout() {}, setTimeout() { return 0; },
+      readyPublishTimer: undefined, chromeLockedSessionId: undefined, shuttingDown: false, pendingProjectSwitcher: null, welcome: null });
     await vm.runInContext(`(async () => { ${block} })()`, context);
     await vm.runInContext(`(async () => { ${block} })()`, context);
     assert.equal(opens, expected);
@@ -157,7 +158,7 @@ test('completion rechecks external edits, retains its page on failure and protec
     await post({ type: 'settingsResult', requestId: current.requestId, ok: true, data: await service.snapshot({ includeSkills: false }) });
     await page.locator('#settings-add-ssh').waitFor();
     assert.equal(await page.locator('#settings-finish').isDisabled(), true);
-    assert.equal(await page.evaluate(() => document.activeElement.id), 'settings-section-title');
+    assert.equal(await page.evaluate(() => document.activeElement.id), 'settings-init-title');
     assert.match(await page.locator('#settings-status').textContent(), /基础配置已发生变化/);
     assert.equal(await page.evaluate(() => document.querySelector('#settings-dialog').scrollWidth <= innerWidth), true);
     assert.deepEqual(errors, []);

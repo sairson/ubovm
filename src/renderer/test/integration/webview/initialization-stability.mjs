@@ -31,7 +31,13 @@ test('initialization rendering and request recovery remain isolated and repeatab
     };
     const last = action => page.evaluate(action => window.sent.findLast(message => message.action === action), action);
     const result = async (request, data = snapshot, extra = {}) => send({ type: 'settingsResult', requestId: request.requestId, ok: true, data, ...extra });
-    return { page, errors, send, open, last, result };
+    const openOptionalSearch = async () => {
+      const details = page.locator('.settings-search-optional');
+      if (await details.count() && !(await details.evaluate(el => el.open))) {
+        await details.locator(':scope > summary').click();
+      }
+    };
+    return { page, errors, send, open, last, result, openOptionalSearch };
   }
   try {
     await t.test('initial setup acknowledges painted content only after successful visible rendering', async t => {
@@ -341,9 +347,10 @@ test('initialization rendering and request recovery remain isolated and repeatab
     });
 
     await t.test('search credential typing avoids redundant mutations while transitions still update', async t => {
-      const { page, errors, open } = await setup(t);
+      const { page, errors, open, openOptionalSearch } = await setup(t);
       await open();
       await page.locator('[data-setup-step="web"]').click();
+      await openOptionalSearch();
       await page.locator('[data-setting="apiKey"]').fill('draft');
       const mutations = await page.evaluate(() => {
         const input = document.querySelector('[data-setting="apiKey"]'); input.focus();
@@ -400,9 +407,10 @@ test('initialization rendering and request recovery remain isolated and repeatab
     });
 
     await t.test('installer utility bridge failures remain recoverable without losing drafts', async t => {
-      const { page, errors, open, last } = await setup(t);
+      const { page, errors, open, last, openOptionalSearch } = await setup(t);
       await open();
       await page.locator('[data-setup-step="web"]').click();
+      await openOptionalSearch();
       await page.locator('[data-setting="apiKey"]').fill('retained-search-draft');
       for (const [action, label] of [['settingsBrowserStatus', '检查状态'], ['settingsBrowserLogs', '查看安装日志']]) {
         await page.evaluate(action => { window.failAction = action; }, action);
@@ -638,9 +646,10 @@ test('initialization rendering and request recovery remain isolated and repeatab
       assert.deepEqual(errors, []);
     });
     await t.test('repeated installer status preserves input and path selections without DOM churn', async t => {
-      const { page, errors, open, send } = await setup(t);
+      const { page, errors, open, send, openOptionalSearch } = await setup(t);
       await open();
       await page.locator('[data-setup-step="web"]').click();
+      await openOptionalSearch();
       await page.locator('[data-setting="apiKey"]').fill('retained-search-key');
       const installation = { state: 'ready', executablePath: 'C:/cache/chromium/chrome.exe' };
       await send({ type: 'settingsBrowserStatus', installation });

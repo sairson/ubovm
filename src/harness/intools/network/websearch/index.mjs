@@ -1,6 +1,8 @@
 import { Type } from 'typebox';
 import { load } from 'cheerio';
 import { boolean, boundedString, compact, httpURL, integer, jsonResult, knownKeys, linkURL, requestBytes, retry, validateHTTPOptions } from '../../shared/http/index.mjs';
+import { flagHelpProperties, withProgressiveDisclosure } from '../../shared/disclosure.mjs';
+import { WEB_SEARCH_CATALOG } from '../../shared/tool-catalogs.mjs';
 
 const stopWords = new Set('a an and are for from how in is of on or the to with 漏洞 搜索 查询'.split(' '));
 const segmenter = new Intl.Segmenter('zh', { granularity: 'word' });
@@ -178,18 +180,19 @@ export function createWebSearchTool(options = {}) {
   const bingBase = httpURL(options.bingBaseURL ?? 'https://www.bing.com').href;
   const duckBase = httpURL(options.duckDuckGoBaseURL ?? 'https://html.duckduckgo.com').href;
   const duckLiteBase = httpURL(options.duckDuckGoLiteBaseURL ?? 'https://lite.duckduckgo.com').href;
-  return {
+  return withProgressiveDisclosure({
     name: 'web_search', label: 'Search the public web',
-    description: 'Discover public technical docs, advisories, CVE/GHSA pages and research via untrusted search snippets. Default limit=8 (1-20). Optional per-call controls override settings defaults: search_depth (basic|advanced|fast|ultra-fast), topic (general|news|finance), time_range (day|week|month|year; Tavily), include_domains/exclude_domains (≤10 hosts each), include_answer (short Tavily summary when available). site:domain / -site:domain merge with domain arrays. Uses configured Tavily first; otherwise merges Bing (RSS then HTML), DuckDuckGo HTML and DuckDuckGo Lite. When ranking would discard provider hits, soft/passthrough ranking still returns usable URLs (see ranking field). status no_results ≠ absence; unavailable means providers failed—configure Tavily or simplify the query; do not open a browser just to search. After search, fetch_web_content on chosen URLs; browser_action only if rendering_required or authenticated SPA evidence is required.',
+    description: WEB_SEARCH_CATALOG.description,
     parameters: Type.Object({
-      query: Type.String({ minLength: 1 }),
+      query: Type.Optional(Type.String({ minLength: 1 })),
       limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 20 })),
       search_depth: Type.Optional(Type.Union(SEARCH_DEPTHS.map(value => Type.Literal(value)))),
       topic: Type.Optional(Type.Union(TOPICS.map(value => Type.Literal(value)))),
       time_range: Type.Optional(Type.Union(TIME_RANGES.map(value => Type.Literal(value)))),
       include_domains: Type.Optional(Type.Array(Type.String(), { maxItems: 10 })),
       exclude_domains: Type.Optional(Type.Array(Type.String(), { maxItems: 10 })),
-      include_answer: Type.Optional(Type.Boolean())
+      include_answer: Type.Optional(Type.Boolean()),
+      ...flagHelpProperties()
     }, { additionalProperties: false }),
     async execute(_id, args, signal) {
       knownKeys(args, ['query', 'limit', 'search_depth', 'topic', 'time_range', 'include_domains', 'exclude_domains', 'include_answer']);
@@ -325,5 +328,5 @@ export function createWebSearchTool(options = {}) {
       const provider = usable.map(source => source.provider).join('+') || searches.find(source => source.status === 'no_results')?.provider || 'none';
       return jsonResult({ ...output(query, provider, merged.results, tavily.enabled || searches.some(source => source.status !== 'ok'), reasons.join('; '), '', filters, merged.ranking), providers });
     },
-  };
+  }, { ...WEB_SEARCH_CATALOG, mode: 'flag' });
 }

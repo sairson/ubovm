@@ -4,6 +4,20 @@
 `browser_action` and `browser_connection_status`. `target` is the initial URL when a Worker does not yet
 have a page. The tool schema preserves the reference implementation's snake_case fields.
 
+### Progressive disclosure
+
+`browser_action` keeps a short core description. Agents expand the surface on demand:
+
+| Call | Returns |
+|------|---------|
+| `action=help` | Core actions (with params) + tier index + `next` hint |
+| `action=help`, `topic=interaction` (or `tabs` / `inspect` / `protocol` / `security`) | That tier in detail |
+| `action=help`, `topic=navigate` (any action name) | Single-action params/notes |
+| `action=help`, `topic=all` | Compact summaries of every action available on this backend |
+
+IDE mode omits Obscura-only tiers (`protocol`/`security` extras, `popup_policy`, identity/replay, …).
+`browser_connection_status` also returns a `help` pointer and `available_tiers`.
+
 ```js
 import { BrowserManager, createBrowserTools } from './index.mjs';
 
@@ -25,8 +39,23 @@ caller-owned; `close()` closes only pages/contexts created for tools and a brows
 by this manager. A supplied context binds to one session/Worker; pass a browser for multiple Workers.
 
 The manager's `status({sessionId, workerId})` and `call({sessionId, workerId, target}, input, signal)`
-form a replaceable backend interface. A Chrome extension bridge can implement this interface; this
-port supplies the Chromium backend and does not install the original extension's UI or bridge server.
+form a replaceable backend interface. Desktop IDE mode injects `createIdeBrowserBridge` (see
+`ide-bridge.mjs`) so Agent tools drive VS Code's Integrated Browser via the extension host RPC;
+set `intools.browser.ideBrowser: false` to keep this Playwright Chromium backend. A Chrome extension
+bridge can also implement the same interface.
+
+### IDE Integrated Browser backend
+
+When `createBrowserTools` receives an IDE bridge (`manager.source === 'ide-browser'`):
+
+- Tool descriptions switch to the shared-tab IDE contract (no isolated Worker contexts).
+- Unsupported Obscura-only actions (`network_*`, `identity_*`, `sitemap_*`, `popup_policy`, …) soft-fail
+  immediately with guidance to disable「使用 IDE 内嵌浏览器」.
+- Snapshot/accessibility still mint opaque `data-intools-ref` refs and traverse open shadow roots, matching
+  the Obscura interaction model so `click` / `fill` / `check` / `wait` stay ref-based.
+- `console` installs a page-side ring buffer; `tab_activate` reuses an existing IDE tab via
+  `workbench.action.browser.open` + `reuseUrlFilter` when available.
+- `browser_connection_status` / action results report `source: "ide-browser"`.
 
 Supported actions (42):
 

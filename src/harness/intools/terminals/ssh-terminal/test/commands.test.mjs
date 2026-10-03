@@ -358,3 +358,35 @@ test('host-managed one-shot SSH residents clear the foreground timeout and keep 
   channel.emit('close', 0);
   assert.match((await pending).content[0].text, /still-serving/);
 });
+
+test('host-managed lifecycle still wraps ordinary one-shot SSH commands with remote timeout', async t => {
+  let submitted;
+  const { commands } = await setup(t, (command, callback) => {
+    submitted = command;
+    const channel = new EventEmitter(); channel.stderr = new EventEmitter();
+    channel.signal = () => {}; channel.close = () => channel.emit('close', 0);
+    callback(null, channel);
+    queueMicrotask(() => channel.emit('close', 0));
+  });
+  const lifecycle = { get resident() { return false; }, subscribe() { return () => {}; }, stopping() {} };
+  await commands.execute({ command: 'uname -a', timeout_seconds: 30 }, undefined, undefined, undefined, lifecycle);
+  assert.match(submitted, /timeout --signal=KILL 30s bash -lc /);
+});
+
+test('GNU timeout exit 124 is a confirmed SSH command timeout', async t => {
+  let submit;
+  const { commands } = await setup(t, (_command, callback) => { submit = callback; });
+  const pending = commands.execute({ command: 'sleep 30', timeout_seconds: 12 });
+  const observed = assert.rejects(pending, error => {
+    assert.match(error.message, /SSH command timed out after 12 seconds/);
+    assert.equal(error.details.exit_code, 124);
+    assert.equal(error.details.remote_termination_confirmed, true);
+    return true;
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  const channel = new EventEmitter(); channel.stderr = new EventEmitter();
+  submit(null, channel);
+  channel.emit('exit', 124);
+  channel.emit('close', 124);
+  await observed;
+});

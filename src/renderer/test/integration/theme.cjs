@@ -29,18 +29,20 @@ test('source startup honors the saved theme even when the splash uses the opposi
   }
 });
 
-test('native title bar exposes one theme action and the webview has no duplicate', () => {
+test('native title bar exposes browser and theme actions and the webview has no duplicate', () => {
   const fs = require('node:fs'), path = require('node:path');
   const root = path.resolve(__dirname, '../../../..');
   const patch = fs.readFileSync(path.join(root, 'resources/patches/minimal-ui.patch'), 'utf8').split('diff --git')[1];
   const code = patch.split('\n').filter(line => line.startsWith('+') && !line.startsWith('+++')).map(line => line.slice(1)).join('\n');
   const menu = new Function('id', 'result', code + '\nreturn result;');
   const items = menu({ id: 'TitleBar' }, []);
-  assert.equal(items.length, 1);
-  assert.equal(items[0].command.id, 'ubovm.toggleTheme');
-  assert.equal(items[0].command.icon.id, 'color-mode');
-  assert.equal(items[0].group, 'navigation');
-  assert.equal(menu({ id: 'TitleBar' }, items).length, 1);
+  assert.equal(items.length, 2);
+  assert.equal(items[0].command.id, 'workbench.action.browser.openOrList');
+  assert.equal(items[0].command.icon.id, 'globe');
+  assert.equal(items[1].command.id, 'ubovm.toggleTheme');
+  assert.equal(items[1].command.icon.id, 'color-mode');
+  assert.equal(items[1].group, 'navigation');
+  assert.equal(menu({ id: 'TitleBar' }, items).length, 2);
   assert.equal(menu({ id: 'EditorTitle' }, []).length, 0);
   const { renderWebview } = require('../../host/ui/webview.cjs');
   assert(!renderWebview().includes('id="theme-toggle"'));

@@ -77,6 +77,8 @@ test('registers session UI before persistence and restores execution only after 
     './harness/session/message-actions.cjs': { createMessageActions: () => ({}) },
     './host/agent/state-publisher.cjs': { createExecutionPublisher: () => ({ clear() {} }) },
     './host/system/terminal-service.cjs': { createTerminalService: () => ({ register: () => [] }) },
+    './host/system/browser-install.cjs': { createBrowserInstaller: () => ({ status: () => ({}), dispose() {} }), BROWSER_PATH_KEY: 'browser.path' },
+    './host/system/ide-browser-host.cjs': { createIdeBrowserHost: () => ({ dispose() {} }) },
   };
   // Stop after UI registration; use the real activation prelude and state
   // functions, without emulating unrelated editor/terminal VS Code APIs.
@@ -84,7 +86,12 @@ test('registers session UI before persistence and restores execution only after 
     '  publishState();\n  return { assistantState, paint: releaseFirstPaint, done: messageQueue };\n\n  function sessionFolders');
   const sandbox = { require: name => replacements[name] ?? nativeRequire(name), module: { exports: {} }, __dirname: path.dirname(entry), process, console, setTimeout, clearTimeout };
   vm.runInNewContext(source, sandbox, { filename: entry });
-  const api = await sandbox.module.exports.activate({ subscriptions: [], globalStorageUri: { fsPath: '/storage' } });
+  const api = await sandbox.module.exports.activate({
+    subscriptions: [],
+    globalStorageUri: { fsPath: '/storage' },
+    globalState: { get() {}, update: async () => {} },
+    storageUri: { fsPath: '/storage' }
+  });
   assert.equal(registered, true);
   snapshotReads = 0;
   const published = api.assistantState();
@@ -133,6 +140,48 @@ test('sidebar startup does not wait for settings or Explorer and survives Explor
   await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(calls, ['workbench.view.extension.ubovm-sessions', 'workbench.action.closeSidebar']);
   assert.match(errors[0], /Explorer unavailable/);
+});
+
+test('settings contentReady without sessionId still unlocks chrome', async () => {
+  const source = readFileSync(path.resolve(__dirname, '../../extension.cjs'), 'utf8');
+  const start = source.indexOf("else if (message.action === 'contentReady')");
+  const block = source.slice(start, source.indexOf("else if (message.action === 'prompt')", start))
+    .replace(/^else\s+/, '');
+  assert.match(block, /if \(chromeLockedSessionId\) \{\s*if \(message\.sessionId !== chromeLockedSessionId\) return;/s);
+  assert.equal(block.includes('if (!message.sessionId) return'), false, 'initialize/settings paint has no sessionId');
+
+  const contexts = [];
+  const sandbox = {
+    message: { action: 'contentReady' },
+    chromeLockedSessionId: undefined,
+    sessions: { current: () => ({ id: 'current' }) },
+    vscode: { commands: { executeCommand: async (...args) => { contexts.push(args); } } },
+    recoveryTimer: undefined,
+    chromeLockWatchdog: undefined,
+    clearTimeout() {},
+    releaseFirstPaint() { contexts.push(['firstPaint']); }
+  };
+  await vm.runInNewContext(`(async () => { ${block} })()`, sandbox);
+  assert.deepEqual(contexts, [['setContext', 'ubovm.contentReady', true], ['firstPaint']]);
+  assert.equal(sandbox.chromeLockedSessionId, undefined);
+
+  contexts.length = 0;
+  sandbox.message = { action: 'contentReady', sessionId: 'stale' };
+  await vm.runInNewContext(`(async () => { ${block} })()`, sandbox);
+  assert.deepEqual(contexts, [], 'stale conversation paints must not unlock chrome');
+
+  contexts.length = 0;
+  sandbox.chromeLockedSessionId = 'locked';
+  sandbox.message = { action: 'contentReady' };
+  await vm.runInNewContext(`(async () => { ${block} })()`, sandbox);
+  assert.deepEqual(contexts, [], 'settings paint must not unlock a conversation lock');
+  assert.equal(sandbox.chromeLockedSessionId, 'locked');
+
+  contexts.length = 0;
+  sandbox.message = { action: 'contentReady', sessionId: 'locked' };
+  await vm.runInNewContext(`(async () => { ${block} })()`, sandbox);
+  assert.deepEqual(contexts, [['setContext', 'ubovm.contentReady', true], ['firstPaint']]);
+  assert.equal(sandbox.chromeLockedSessionId, undefined, 'matching conversation paint clears the lock');
 });
 
 // Exercise the actual recovery command without starting an extension host.

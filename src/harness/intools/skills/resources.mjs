@@ -2,6 +2,8 @@ import { open, realpath, stat } from 'node:fs/promises';
 import { resolve, isAbsolute } from 'node:path';
 import { Type } from 'typebox';
 import { contained, expandHome, requireText, integer, textResult, jsonResult } from '../shared/common.mjs';
+import { flagHelpProperties, withProgressiveDisclosure } from '../shared/disclosure.mjs';
+import { SKILL_RESOURCE_CATALOG } from '../shared/tool-catalogs.mjs';
 
 /** The host supplies only skills loaded for this worker, never model-selected roots. */
 export class SkillRegistry {
@@ -30,10 +32,14 @@ export class SkillRegistry {
 
 export function createSkillResourceTool({ skills = [], registry = new SkillRegistry(skills), cwd = process.cwd(), maxBytes = 1 << 20 } = {}) {
   maxBytes = integer(maxBytes, 1 << 20, 1, 100 << 20, 'maxBytes');
-  return {
+  return withProgressiveDisclosure({
     name: 'read_skills_resource', label: 'Read skill resource',
-    description: 'Read a skill resource or accessible local file. With skill, path is relative to that loaded skill. Text is returned as UTF-8; binary is base64. Missing files have a not_found status.',
-    parameters: Type.Object({ skill: Type.Optional(Type.String()), path: Type.String() }, { additionalProperties: false }),
+    description: SKILL_RESOURCE_CATALOG.description,
+    parameters: Type.Object({
+      skill: Type.Optional(Type.String()),
+      path: Type.Optional(Type.String()),
+      ...flagHelpProperties()
+    }, { additionalProperties: false }),
     async execute(_id, input, signal) {
       signal?.throwIfAborted();
       const requested = requireText(input.path, 'path');
@@ -74,5 +80,5 @@ export function createSkillResourceTool({ skills = [], registry = new SkillRegis
         throw error;
       }
     }
-  };
+  }, { ...SKILL_RESOURCE_CATALOG, mode: 'flag' });
 }

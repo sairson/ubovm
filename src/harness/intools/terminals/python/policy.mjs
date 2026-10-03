@@ -81,6 +81,23 @@ export async function workspacePrivatePythonPaths(workspace, { signal, maxEntrie
   return paths;
 }
 
+export function pythonAllowsAnyHost(domains = []) {
+  return Array.isArray(domains) && domains.includes('*');
+}
+
+export function pythonAllowsHost(domains, host, port = 443) {
+  if (pythonAllowsAnyHost(domains)) return true;
+  const destination = String(port);
+  return (domains ?? []).some(rule => {
+    const colon = rule.lastIndexOf(':');
+    const hasPort = colon > 0 && /^\d+$/.test(rule.slice(colon + 1));
+    const domain = hasPort ? rule.slice(0, colon) : rule;
+    const rulePort = hasPort ? rule.slice(colon + 1) : undefined;
+    return (!rulePort || rulePort === destination)
+      && (domain === host || domain.startsWith('*.') && host.endsWith(domain.slice(1)));
+  });
+}
+
 export function pythonPolicy({ workspace, outputDirectory, controlDirectory, readRoots, protectedRuntimePaths = [], privatePaths = [join(homedir(), '.ubovm')], workspacePrivatePaths = [], allowedDomains = [], allowWorkspaceWrite = false }, platform = process.platform, home = homedir()) {
   const protectedPaths = [join(home, '.ssh'), join(home, '.aws'), join(home, '.azure'), join(home, '.config', 'gcloud'),
     ...privatePaths, ...workspacePrivatePaths, join(home, '.codex'), ...['.git', '.env', '.agents', '.codex', '.ubovm-python'].map(name => join(workspace, name))];
@@ -89,7 +106,10 @@ export function pythonPolicy({ workspace, outputDirectory, controlDirectory, rea
   const denyWrite = [...new Set([...protectedPaths, controlDirectory, ...protectedRuntimePaths, ...readRoots])];
   const overlaps = (path, roots) => roots.some(root => contained(root, path) || contained(path, root));
   return {
-    network: { allowedDomains, deniedDomains: [], allowLocalBinding: false },
+    // Sandbox-runtime rejects a bare "*" in allowedDomains. An open host
+    // setting is encoded as an empty allowlist plus an always-allow ask
+    // callback so the proxy (and Windows WFP) still handle egress.
+    network: { allowedDomains: pythonAllowsAnyHost(allowedDomains) ? [] : allowedDomains, deniedDomains: [], allowLocalBinding: false },
     filesystem: {
       // Windows uses a separate account, with explicit grants only for these
       // roots. Stamp exceptions within those grants, not huge unrelated host
@@ -147,14 +167,16 @@ export async function omitMissingPythonDenyPaths(policy, platform = process.plat
 
 export function normalizePythonDomains(value = []) {
   if (!Array.isArray(value) || value.length > 100) throw new Error('Invalid Python allowedDomains');
-  return [...new Set(value.map(domain => {
+  const domains = [...new Set(value.map(domain => {
     if (typeof domain !== 'string') throw new Error('Invalid Python allowedDomains');
     domain = domain.trim().toLowerCase();
+    if (domain === '*') return '*';
     const match = /^(?:\*\.)?([a-z0-9](?:[a-z0-9.-]*[a-z0-9])?)(?::([0-9]{1,5}))?$/.exec(domain);
     if (!match || domain.length > 253 || match[1].split('.').some(label => !label || label.length > 63 || label.startsWith('-') || label.endsWith('-'))
-      || match[2] && (+match[2] < 1 || +match[2] > 65535)) throw new Error('Invalid Python allowedDomains; use hostnames with optional wildcard prefix and port 1–65535');
+      || match[2] && (+match[2] < 1 || +match[2] > 65535)) throw new Error('Invalid Python allowedDomains; use *, hostnames with optional wildcard prefix, and port 1–65535');
     return domain;
   }))];
+  return domains.includes('*') ? ['*'] : domains;
 }
 
 export function pythonCommand(executable, payloadPath, platform = process.platform) {

@@ -1,27 +1,27 @@
 <dialog id="settings-dialog" aria-labelledby="settings-title">
   <div class="settings-shell">
-    <header class="settings-header"><button type="button" id="settings-close" aria-label="返回对话">← <span>返回对话</span></button><h2 id="settings-title">系统配置</h2><span class="settings-header-note">UBOVM</span></header>
+    <header class="settings-header"><button type="button" id="settings-close" aria-label="返回对话">← <span>返回对话</span></button><h2 id="settings-title">系统配置</h2><span class="settings-header-note">凭据加密保存在本机</span></header>
     <div id="settings-progress" hidden aria-hidden="true"><span></span></div>
     <div class="settings-layout"><form id="settings-form">
       <section id="settings-initialization" hidden aria-label="首次初始化配置">
-        <span class="settings-eyebrow">WELCOME TO UBOVM</span>
-        <h3>准备 UBOVM 工作环境</h3>
-        <p>连接模型与 Linux SSH 环境。每步单独保存，下次打开可继续配置。</p>
+        <span class="settings-eyebrow">欢迎使用</span>
+        <h3 id="settings-init-title" tabindex="-1">准备 UBOVM 工作环境</h3>
+        <p>先连接对话模型，再配置远程命令环境。每步单独保存，下次打开可从中断处继续。</p>
         <nav aria-label="初始化步骤">
           <button type="button" data-setup-step="model">1 · 模型</button>
-          <button type="button" data-setup-step="ssh">2 · SSH 环境</button>
-          <button type="button" data-setup-step="web">3 · 可选工具</button>
+          <button type="button" data-setup-step="ssh">2 · 远程环境</button>
+          <button type="button" data-setup-step="web">3 · 可选能力</button>
         </nav>
         <p id="settings-initialization-status" role="status" aria-live="polite"></p>
       </section>
-      <div class="settings-heading"><span id="settings-section-kicker" class="settings-eyebrow">PREFERENCES</span><h3 id="settings-section-title" tabindex="-1"></h3><p id="settings-description"></p></div>
+      <div class="settings-heading" id="settings-heading"><span id="settings-section-kicker" class="settings-eyebrow">系统设置</span><h3 id="settings-section-title" tabindex="-1"></h3><p id="settings-description"></p></div>
       <div id="settings-model-roles" hidden role="tablist" aria-label="模型角色"></div>
       <div id="settings-skeleton" hidden aria-hidden="true"><div></div><div></div><div></div><div></div></div>
       <p id="settings-load-error" class="settings-empty" hidden></p>
       <button type="button" id="settings-render-retry" hidden>重新显示当前步骤</button>
       <div id="settings-fields"></div>
     </form></div>
-    <footer class="settings-footer"><div><p id="settings-status" role="status" aria-live="polite">更改将在下一次运行时生效。</p><small>密钥留空保留已有值；凭据加密保存在本机。</small></div><button type="button" id="settings-reload">重新载入</button><button type="submit" form="settings-form" id="settings-save">保存更改</button><button type="button" id="settings-finish" hidden disabled>完成初始化</button></footer>
+    <footer class="settings-footer"><div><p id="settings-status" role="status" aria-live="polite">保存后，下一轮对话生效。</p><small>密钥留空会保留已有值。</small></div><button type="button" id="settings-reload">重新载入</button><button type="submit" form="settings-form" id="settings-save">保存更改</button><button type="button" id="settings-finish" hidden disabled>完成初始化</button></footer>
     <div id="settings-discard" hidden role="alert"><span>有未保存的更改。</span><button type="button" id="settings-keep">继续编辑</button><button type="button" id="settings-discard-confirm">放弃更改</button></div>
   </div>
 </dialog>

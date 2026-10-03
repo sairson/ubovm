@@ -27,7 +27,7 @@ test('environment tool is registered and disabled together with Python execution
   try { assert.deepEqual(await disabled.forWorker('w'), []); } finally { await disabled.close(); }
 });
 test('invalid management inputs fail before creating state or invoking Python', async t => {
-  const cwd = await fixture(t), tool = createPythonEnvironmentTool({ cwd });
+  const cwd = await fixture(t), tool = createPythonEnvironmentTool({ cwd, allowedDomains: [] });
   for (const args of [{ action: 'sync' }, { action: 'reset', packages: [] }, { action: 'sync', packages: ['-rfoo'] },
     { action: 'status', manager: 'pip' }, { action: 'sync', packages: [], manager: 'bad' }, { action: 'sync', packages: [], executable: 'x' }])
     await assert.rejects(tool.execute('bad', { ...args, reason: 'test' }));

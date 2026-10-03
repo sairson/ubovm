@@ -24,6 +24,7 @@ import { logBrowserOpen } from '../../../../platform/browserView/common/browserV
 
 // Register actions and browser features
 import './features/webContentsViewRendererFeature.js';
+import './features/browserAgentControl.js';
 import './features/browserNavigationFeatures.js';
 import './features/browserWelcomeFeature.js';
 import './features/browserFavoritesFeature.js';

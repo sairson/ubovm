@@ -2,9 +2,11 @@ import { realpath } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { Type } from 'typebox';
 import { createPythonTool } from './index.mjs';
-import { resolvePython, normalizePythonDomains } from './policy.mjs';
+import { resolvePython, normalizePythonDomains, pythonAllowsHost } from './policy.mjs';
 import { acquireEnvironmentLease, environmentPython, environmentMatchesBase, publishPythonEnvironment, readPythonEnvironment, validatePythonEnvironmentFiles } from './environment-state.mjs';
 import { integer, requireText, textResult } from '../../shared/common.mjs';
+import { withActionHelp, withProgressiveDisclosure } from '../../shared/disclosure.mjs';
+import { PYTHON_ENV_CATALOG } from '../../shared/tool-catalogs.mjs';
 
 export function validatePythonPackages(packages) {
   if (!Array.isArray(packages) || packages.length > 100) throw new Error('packages must contain at most 100 package requirements');
@@ -51,16 +53,15 @@ export function createPythonEnvironmentTool(options = {}) {
   const maxTimeout = integer(options.maxTimeoutSeconds, 600, 1, 3600, 'maxTimeoutSeconds');
   const baseTool = createPythonTool({ ...options, allowWorkspaceWrite: false, useManagedEnvironment: false });
   const activeTool = createPythonTool({ ...options, allowWorkspaceWrite: false });
-  return {
+  return withProgressiveDisclosure({
     name: 'manage_python_environment', label: 'Manage sandbox Python dependencies',
-    description: `Manage this workspace's Python dependencies in the OS sandbox. status reports the selected environment; list lists installed packages; check detects dependency conflicts; sync replaces the full desired package set in a NEW venv using pip (default) or uv; reset switches back to the host-configured/bundled interpreter. Successful sync makes run_python use the environment automatically. Existing generations are retained so running scripts are not modified. Failed/cancelled sync never activates its partial environment. uv is bootstrapped via pip into the new venv. Only binary wheels from PyPI are accepted. Network still uses host allowedDomains (PyPI needs pypi.org and files.pythonhosted.org); never bypass restrictions. Do not use sync to add one package without retaining the desired existing packages.`,
-    parameters: Type.Object({
-      action: Type.Union(['status', 'list', 'check', 'sync', 'reset'].map(value => Type.Literal(value))),
+    description: PYTHON_ENV_CATALOG.description,
+    parameters: Type.Object(withActionHelp({
       packages: Type.Optional(Type.Array(Type.String({ maxLength: 256 }), { maxItems: 100 })),
       manager: Type.Optional(Type.Union([Type.Literal('pip'), Type.Literal('uv')])),
-      reason: Type.String({ minLength: 1, maxLength: 2048 }),
+      reason: Type.Optional(Type.String({ minLength: 1, maxLength: 2048 })),
       timeout_seconds: Type.Optional(Type.Integer({ minimum: 1, maximum: maxTimeout }))
-    }, { additionalProperties: false }),
+    }), { additionalProperties: false }),
     async execute(id, input, signal, onUpdate) {
       signal?.throwIfAborted();
       if (!input || typeof input !== 'object' || Object.keys(input).some(key => !['action', 'packages', 'manager', 'reason', 'timeout_seconds'].includes(key))
@@ -72,12 +73,8 @@ export function createPythonEnvironmentTool(options = {}) {
       if (action === 'sync' && input.packages === undefined) throw new Error('sync requires the full packages array (empty creates a clean environment)');
       const packages = action === 'sync' ? validatePythonPackages(input.packages) : [];
       if (action === 'sync' && (packages.length || manager === 'uv')) {
-        const permits = host => domains.some(rule => {
-          const [domain, port] = rule.split(':');
-          return (!port || port === '443') && (domain === host || domain.startsWith('*.') && host.endsWith(domain.slice(1)));
-        });
-        if (!['pypi.org', 'files.pythonhosted.org'].every(permits)) throw Object.assign(new Error(
-          'Package downloads require pypi.org and files.pythonhosted.org in the host Python allowedDomains setting. No environment was changed.'),
+        if (!['pypi.org', 'files.pythonhosted.org'].every(host => pythonAllowsHost(domains, host, 443))) throw Object.assign(new Error(
+          'Package downloads require pypi.org and files.pythonhosted.org in the host Python allowedDomains setting (or *). No environment was changed.'),
         { code: 'PYTHON_PACKAGE_NETWORK_REQUIRED' });
       }
       const timeout = integer(input.timeout_seconds, Math.min(600, maxTimeout), 1, maxTimeout, 'timeout_seconds');
@@ -117,5 +114,5 @@ export function createPythonEnvironmentTool(options = {}) {
         return textResult(result.content[0].text + '\nEnvironment activated for run_python.', { ...result.details, environment: directory, manager, packages });
       } finally { await release(); }
     }
-  };
+  }, PYTHON_ENV_CATALOG);
 }

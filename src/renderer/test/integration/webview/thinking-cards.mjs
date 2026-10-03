@@ -98,7 +98,7 @@ test('repeated collaboration waits stay in one expandable status without a false
   const group = f.page.locator('#messages .maintenance-group');
   assert.equal(await group.count(), 1);
   assert.equal(await group.evaluate(el => el.open), false);
-  assert.match(await group.locator(':scope > summary').textContent(), /正在等待协作结果.*2 次上下文整理/);
+  assert.match(await group.locator(':scope > summary').textContent(), /正在等待并行任务.*2 次上下文整理/);
   assert.equal(await f.page.locator('#messages .response-streaming').count(), 0);
   assert.equal(await f.page.locator('#busy-status').isVisible(), false);
   await group.locator(':scope > summary').click();
@@ -169,7 +169,7 @@ test('thinking-only streams render in an independently collapsible live article 
   assert.equal(await f.page.locator('#messages .tool-group > .tool-card').count(), 2);
   assert.deepEqual(await f.page.locator('#messages .response-text').allTextContents().then(values => values.map(value => value.trim())), ['我会先检查工具注册。', '工具已经注册，正在检查输出。']);
   assert.equal(await f.card(1).getAttribute('data-status'), 'running');
-  assert.match(await f.card(1).locator('.thinking-source').textContent(), /worker/i);
+  assert.match(await f.card(1).locator('.thinking-source').textContent(), /子任务/);
   assert.equal(await f.page.locator('#messages .response-text').last().locator('p').textContent(), '工具已经注册，正在检查输出。');
   assert.equal(await f.page.locator('#messages .response-streaming').count(), 1, 'normal answer text retains its streaming cursor');
 });
@@ -208,11 +208,18 @@ test('streaming and history promotion preserve the thinking card, manual expansi
     card: savedThinking === document.querySelector('#messages .thinking-card'),
     open: savedThinking.open, selected: getSelection().toString()
   })), { article: true, card: true, open: true, selected: '先核对' });
+  assert.equal(await f.page.locator('#messages article.assistant').count(), 1);
+  assert.equal(await f.page.locator('#messages article[data-streaming]').count(), 0);
+  assert.deepEqual(await f.page.evaluate(() => ({
+    article: savedThinkingArticle === document.querySelector('#messages article.assistant'),
+    card: savedThinking === document.querySelector('#messages .thinking-card'),
+    open: savedThinking.open, selected: getSelection().toString()
+  })), { article: true, card: true, open: true, selected: '先核对' });
   assert.equal(await f.card(0).locator('.thinking-time').textContent(), '3.5s');
   await f.toggle(0);
   await f.emit(state(finalParts, { busy: false, messages: [user, { role: 'assistant', text: '配置正确，流式输出正常。', parts: [{ ...finalParts[0], source: 'reason' }, finalParts[1]] }], execution: { status: 'completed', busy: false, parts: finalParts } }));
   assert.equal(await f.card(0).evaluate(node => node.open), false, 'metadata updates respect manually collapsed thinking');
-  assert.match(await f.card(0).locator('.thinking-source').textContent(), /reason/i, 'source-only changes must propagate through the app equality check');
+  assert.match(await f.card(0).locator('.thinking-source').textContent(), /规划/, 'source-only changes must propagate through the app equality check');
 });
 
 test('thinking time advances only while running, freezes at completion and does not invent missing timing', async t => {
@@ -226,6 +233,7 @@ test('thinking time advances only while running, freezes at completion and does 
   thought = { ...thought, status: 'completed', endedAt: start + 7500 };
   await f.emit(state([thought]));
   assert.equal(await f.card(0).locator('.thinking-time').textContent(), '7.5s');
+  assert.equal(await f.card(0).evaluate(node => node.open), false, 'finished thinking folds unless the user pinned it');
   await f.page.evaluate(({ start }) => { window.fixtureNow = start + 20000; }, { start });
   await f.page.waitForTimeout(1100);
   assert.equal(await f.card(0).locator('.thinking-time').textContent(), '7.5s');
@@ -273,6 +281,7 @@ test('thinking markdown uses the safe renderer and never creates active HTML or 
   const f = await fixture(t);
   const hostile = '检查 **工具参数** 与 `worker.run()`。\n\n<script>window.thinkingExecuted=true</script>\n<img src="https://blocked-thinking.invalid/image.png" onerror="window.thinkingExecuted=true">\n\n[危险链接](javascript:window.thinkingExecuted=true)\n\n<iframe src="https://blocked-thinking.invalid/frame"></iframe>\n\n```html\n<div onclick="alert(1)">示例代码</div>\n```';
   await f.emit(state([thinking('safe', { text: hostile })]));
+  await f.toggle(0);
   assert.equal(await f.card(0).locator('.thinking-content strong').textContent(), '工具参数');
   assert(await f.card(0).locator('.thinking-content code').allTextContents().then(values => values.some(value => value.includes('worker.run()'))));
   assert.equal(await f.card(0).locator('.thinking-content script, .thinking-content iframe, .thinking-content img[src], .thinking-content [onclick], .thinking-content [onerror]').count(), 0);

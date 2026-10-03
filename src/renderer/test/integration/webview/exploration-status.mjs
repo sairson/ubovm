@@ -25,7 +25,7 @@ test('global header shows live exploration status across assist, notes and goal 
     assert.equal(await page.locator('#exploration-run-count').textContent(), '1 运行中');
     assert.equal(await page.locator('#exploration-run-list .exploration-run').count(), 1);
     await page.locator('#exploration-runs > summary').click();
-    assert.match(await page.locator('#exploration-run-list').textContent(), /2 运行中 \/ 3 个/);
+    assert.match(await page.locator('#exploration-run-list').textContent(), /2 个任务运行中 \/ 共 3 个/);
     await page.locator('#prompt-input').click();
     await page.locator('#prompt-input').fill('继续协助工作');
     await page.waitForFunction(() => !document.getElementById('submit-prompt').disabled);

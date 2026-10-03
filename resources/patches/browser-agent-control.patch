@@ -1,0 +1,192 @@
+diff --git a/src/vs/platform/browserView/common/browserView.ts b/src/vs/platform/browserView/common/browserView.ts
+index 12dba9d4..2707154b 100644
+--- a/src/vs/platform/browserView/common/browserView.ts
++++ b/src/vs/platform/browserView/common/browserView.ts
+@@ -23,6 +23,9 @@ export enum BrowserViewCommandId {
+ 	CloseAll = `${commandPrefix}.closeAll`,
+ 	CloseAllInGroup = `${commandPrefix}.closeAllInGroup`,
+ 
++	/** UBOVM: lock page interaction while the agent drives the Integrated Browser. */
++	SetAgentControlLock = `${commandPrefix}.setAgentControlLock`,
++
+ 	// Navigation
+ 	GoBack = `${commandPrefix}.goBack`,
+ 	GoForward = `${commandPrefix}.goForward`,
+diff --git a/src/vs/workbench/contrib/browserView/electron-browser/browserView.contribution.ts b/src/vs/workbench/contrib/browserView/electron-browser/browserView.contribution.ts
+index e48ef83b..6aa33697 100644
+--- a/src/vs/workbench/contrib/browserView/electron-browser/browserView.contribution.ts
++++ b/src/vs/workbench/contrib/browserView/electron-browser/browserView.contribution.ts
+@@ -24,6 +24,7 @@ import { logBrowserOpen } from '../../../../platform/browserView/common/browserV
+ 
+ // Register actions and browser features
+ import './features/webContentsViewRendererFeature.js';
++import './features/browserAgentControl.js';
+ import './features/browserNavigationFeatures.js';
+ import './features/browserWelcomeFeature.js';
+ import './features/browserFavoritesFeature.js';
+diff --git a/src/vs/workbench/contrib/browserView/electron-browser/features/browserAgentControl.ts b/src/vs/workbench/contrib/browserView/electron-browser/features/browserAgentControl.ts
+new file mode 100644
+index 00000000..19285154
+--- /dev/null
++++ b/src/vs/workbench/contrib/browserView/electron-browser/features/browserAgentControl.ts
+@@ -0,0 +1,56 @@
++/*---------------------------------------------------------------------------------------------
++ *  Copyright (c) Microsoft Corporation. All rights reserved.
++ *  Licensed under the MIT License. See License.txt in the project root for license information.
++ *--------------------------------------------------------------------------------------------*/
++
++import { Emitter, Event } from '../../../../../base/common/event.js';
++import { localize, localize2 } from '../../../../../nls.js';
++import { Action2, registerAction2 } from '../../../../../platform/actions/common/actions.js';
++import { BrowserViewCommandId } from '../../../../../platform/browserView/common/browserView.js';
++import { ServicesAccessor } from '../../../../../platform/instantiation/common/instantiation.js';
++import { BrowserActionCategory } from '../browserEditor.js';
++
++let locked = false;
++let reason = localize('browser.agentControl.defaultReason', "Agent 正在操作浏览器（只读）");
++const onDidChange = new Emitter<void>();
++
++export function isBrowserAgentControlLocked(): boolean {
++	return locked;
++}
++
++export function getBrowserAgentControlReason(): string {
++	return reason;
++}
++
++export function onDidChangeBrowserAgentControlLock(): Event<void> {
++	return onDidChange.event;
++}
++
++export function setBrowserAgentControlLock(next: boolean, nextReason?: string): void {
++	const message = typeof nextReason === 'string' && nextReason.trim()
++		? nextReason.trim()
++		: localize('browser.agentControl.defaultReason', "Agent 正在操作浏览器（只读）");
++	if (locked === next && reason === message) {
++		return;
++	}
++	locked = next;
++	reason = message;
++	onDidChange.fire();
++}
++
++class SetBrowserAgentControlLockAction extends Action2 {
++	constructor() {
++		super({
++			id: BrowserViewCommandId.SetAgentControlLock,
++			title: localize2('browser.setAgentControlLock', "Set Browser Agent Control Lock"),
++			category: BrowserActionCategory,
++			f1: false,
++		});
++	}
++
++	run(_accessor: ServicesAccessor, lockedArg?: unknown, reasonArg?: unknown): void {
++		setBrowserAgentControlLock(lockedArg === true, typeof reasonArg === 'string' ? reasonArg : undefined);
++	}
++}
++
++registerAction2(SetBrowserAgentControlLockAction);
+diff --git a/src/vs/workbench/contrib/browserView/electron-browser/features/webContentsViewRendererFeature.ts b/src/vs/workbench/contrib/browserView/electron-browser/features/webContentsViewRendererFeature.ts
+index be59092f..7f2f83f6 100644
+--- a/src/vs/workbench/contrib/browserView/electron-browser/features/webContentsViewRendererFeature.ts
++++ b/src/vs/workbench/contrib/browserView/electron-browser/features/webContentsViewRendererFeature.ts
+@@ -24,6 +24,7 @@ import {
+ 	IContainerLayoutOverride,
+ } from '../browserEditor.js';
+ import { BrowserOverlayManager, BrowserOverlayType } from '../overlayManager.js';
++import { getBrowserAgentControlReason, isBrowserAgentControlLocked, onDidChangeBrowserAgentControlLock } from './browserAgentControl.js';
+ 
+ /**
+  * Default browser renderer: drives a Chromium WebContentsView.
+@@ -31,6 +32,7 @@ import { BrowserOverlayManager, BrowserOverlayType } from '../overlayManager.js'
+  * Owns everything that exists only because of how the WCV behaves:
+  * - placeholder screenshot to mask the page during show/hide swaps,
+  * - overlay-pause UI for when a workbench modal sits on top of the WCV,
++ * - agent-control lock overlay that keeps the page read-only while an agent operates,
+  * - the focus dance that bounces focus between the workbench DOM and the WCV,
+  * - native key event forwarding through the keybinding service,
+  * - the pixel-snap layout contribution that keeps the container on physical
+@@ -49,6 +51,8 @@ class WebContentsViewRendererFeature extends BrowserEditorContribution {
+ 
+ 	private readonly _placeholderScreenshot = $('.browser-placeholder-screenshot');
+ 	private readonly _overlayPauseEl = $('.browser-overlay-paused');
++	private readonly _overlayPauseHeading: HTMLElement;
++	private readonly _overlayPauseDetail: HTMLElement;
+ 	private readonly _overlayManager: BrowserOverlayManager;
+ 
+ 	private readonly _placeholderContent: IBrowserEditorWidget;
+@@ -75,11 +79,14 @@ class WebContentsViewRendererFeature extends BrowserEditorContribution {
+ 		message.appendChild(heading);
+ 		message.appendChild(detail);
+ 		this._overlayPauseEl.appendChild(message);
++		this._overlayPauseHeading = heading;
++		this._overlayPauseDetail = detail;
+ 
+ 		this._placeholderContent = { location: BrowserWidgetLocation.ContentArea, element: this._placeholderScreenshot, order: 100 };
+ 		this._overlayPauseContent = { location: BrowserWidgetLocation.ContentArea, element: this._overlayPauseEl, order: 200 };
+ 
+ 		this._register(this._overlayManager.onDidChangeOverlayState(() => this._refreshOverlayObscured()));
++		this._register(onDidChangeBrowserAgentControlLock()(() => this._refresh()));
+ 		this._refresh();
+ 	}
+ 
+@@ -209,6 +216,7 @@ class WebContentsViewRendererFeature extends BrowserEditorContribution {
+ 	private _shouldShowPage(): boolean {
+ 		return this._editorVisible
+ 			&& !this._overlayObscured
++			&& !isBrowserAgentControlLocked()
+ 			&& !!this._model?.url
+ 			&& !this._model?.error;
+ 	}
+@@ -223,9 +231,22 @@ class WebContentsViewRendererFeature extends BrowserEditorContribution {
+ 		const placeholderActive = !!this._model?.url && !this._model?.error;
+ 		this._placeholderScreenshot.style.display = placeholderActive ? '' : 'none';
+ 
+-		// Overlay-pause overlay: fades in when an overlay obscures the page.
+-		const pauseActive = !!this._model?.url && this._editorVisible && this._overlayObscured;
++		const agentLocked = isBrowserAgentControlLocked();
++		if (agentLocked) {
++			this._overlayPauseHeading.textContent = getBrowserAgentControlReason();
++			this._overlayPauseDetail.textContent = localize('browser.agentControl.detail', "Agent 操作完成前页面只读，请勿点击。");
++		} else {
++			this._overlayPauseHeading.textContent = localize('browser.overlayPauseHeading.notification', "Paused due to Notification");
++			this._overlayPauseDetail.textContent = localize('browser.overlayPauseDetail.notification', "Dismiss the notification to continue using the browser.");
++		}
++
++		// Overlay-pause: workbench modal obstruction or agent-control lock.
++		const pauseActive = !!this._model?.url && this._editorVisible && (this._overlayObscured || agentLocked);
+ 		this._overlayPauseEl.classList.toggle('visible', pauseActive);
++		this._overlayPauseEl.classList.toggle('agent-control', agentLocked);
++		if (agentLocked) {
++			this._overlayPauseEl.classList.add('show-message');
++		}
+ 
+ 		if (!this._model) {
+ 			return;
+@@ -260,7 +281,7 @@ class WebContentsViewRendererFeature extends BrowserEditorContribution {
+ 		const overlays = this._overlayManager.getOverlappingOverlays(this._container);
+ 		const obscured = overlays.length > 0;
+ 		const hasNotification = overlays.some(o => o.type === BrowserOverlayType.Notification);
+-		this._overlayPauseEl.classList.toggle('show-message', hasNotification);
++		this._overlayPauseEl.classList.toggle('show-message', hasNotification || isBrowserAgentControlLocked());
+ 		if (obscured !== this._overlayObscured) {
+ 			this._overlayObscured = obscured;
+ 			this._refresh();
+diff --git a/src/vs/workbench/contrib/browserView/electron-browser/media/browser.css b/src/vs/workbench/contrib/browserView/electron-browser/media/browser.css
+index e60eacb1..cbb599f7 100644
+--- a/src/vs/workbench/contrib/browserView/electron-browser/media/browser.css
++++ b/src/vs/workbench/contrib/browserView/electron-browser/media/browser.css
+@@ -532,6 +532,13 @@
+ 		&.show-message {
+ 			background-color: color-mix(in srgb, var(--vscode-editor-background) 60%, transparent);
+ 		}
++
++		/* Agent lock must intercept pointer events; the WCV is also hidden. */
++		&.agent-control.visible {
++			pointer-events: all;
++			cursor: not-allowed;
++			background-color: color-mix(in srgb, var(--vscode-editor-background) 55%, transparent);
++		}
+ 	}
+ 
+ 	.browser-overlay-paused-message {

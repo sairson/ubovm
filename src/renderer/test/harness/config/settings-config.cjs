@@ -99,6 +99,7 @@ test('Pi profiles hydrate across roles and autonomous collaboration without leak
 test('Python settings enable the AI tool, persist host permissions and validate before saving', async () => {
   const f = fixture();
   assert.equal((await f.service.snapshot()).values.python.allowWorkspaceWrite, false);
+  assert.deepEqual((await f.service.snapshot()).values.python.allowedDomains, ['*']);
   assert((await f.model.read()).intools.allowedTools.includes('run_python'));
   assert((await f.model.read()).intools.allowedTools.includes('manage_python_environment'));
   const config = { executable: process.execPath, allowedDomains: ['pypi.org', '*.example.com:443'],
@@ -114,6 +115,8 @@ test('Python settings enable the AI tool, persist host permissions and validate 
   }
   await f.save('python', { ...config, allowedDomains: [' EXAMPLE.com ', 'example.com'] });
   assert.deepEqual((await f.model.read()).intools.python.allowedDomains, ['example.com']);
+  await f.save('python', { ...config, allowedDomains: [' * ', 'pypi.org'] });
+  assert.deepEqual((await f.model.read()).intools.python.allowedDomains, ['*']);
 });
 
 test('named model configurations round trip, apply to roles, retain keys and delete independently', async () => {
@@ -160,6 +163,7 @@ test('multiple SSH hosts retain separate credentials when default changes and on
 test('browser window mode round trips into launch options without losing browser configuration', async () => {
   const fresh = fixture();
   assert.equal((await fresh.service.snapshot()).values.web.headless, true);
+  assert.equal((await fresh.service.snapshot()).values.web.ideBrowser, true);
   await fresh.save('web', { headless: false });
   assert.equal((await fresh.model.read()).intools.browser.launchOptions.headless, false);
   const browser = { channel: 'msedge', launchOptions: { headless: false, slowMo: 50, args: ['--lang=zh-CN'] } };
@@ -175,6 +179,18 @@ test('browser window mode round trips into launch options without losing browser
   const disabled = fixture({ intools: { browser: false } });
   await disabled.save('web', { headless: false });
   assert.equal(disabled.values.intools.browser, false);
+});
+
+test('ide browser setting round trips and defaults to enabled', async () => {
+  const fresh = fixture();
+  assert.equal((await fresh.service.snapshot()).values.web.ideBrowser, true);
+  await fresh.save('web', { ideBrowser: false });
+  assert.equal((await fresh.model.read()).intools.browser.ideBrowser, false);
+  assert.equal((await fresh.service.snapshot()).values.web.ideBrowser, false);
+  await fresh.save('web', { ideBrowser: true, headless: false });
+  const browser = (await fresh.model.read()).intools.browser;
+  assert.equal(browser.ideBrowser, true);
+  assert.equal(browser.launchOptions.headless, false);
 });
 
 test('optional known_hosts supports draft tests and saved connections, and restores verification when supplied', async () => {
@@ -288,8 +304,8 @@ test('exploration depth settings promote to harness options and reject invalid r
   assert.equal(runtime.reason.maxIntents, 6);
   assert.equal(runtime.reason.maxConcurrency, undefined);
   assert.equal(runtime.reason.maxRounds, undefined);
-  await assert.rejects(f.save('reason', { ...snapshot.values.reason, openIntents: 3, maxConcurrency: 5 }), /并行 Worker/);
-  await assert.rejects(f.save('reason', { ...snapshot.values.reason, openIntents: 3, maxIntents: 5 }), /每轮新增意图/);
+  await assert.rejects(f.save('reason', { ...snapshot.values.reason, openIntents: 3, maxConcurrency: 5 }), /并行任务数/);
+  await assert.rejects(f.save('reason', { ...snapshot.values.reason, openIntents: 3, maxIntents: 5 }), /每轮新增任务/);
 });
 
 test('custom providers remain editable and preset model defaults save as valid configuration', async () => {

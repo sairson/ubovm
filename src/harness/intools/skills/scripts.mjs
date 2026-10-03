@@ -4,6 +4,8 @@ import { resolve, extname } from 'node:path';
 import { Type } from 'typebox';
 import { SkillRegistry } from './resources.mjs';
 import { contained, requireText, integer } from '../shared/common.mjs';
+import { flagHelpProperties, withProgressiveDisclosure } from '../shared/disclosure.mjs';
+import { SKILL_SCRIPT_CATALOG } from '../shared/tool-catalogs.mjs';
 import { resolvePython } from '../terminals/python/policy.mjs';
 
 export function localSkillInterpreter(path) {
@@ -31,10 +33,16 @@ export function createSkillScriptTool({ skills = [], registry = new SkillRegistr
   maxTimeoutSeconds = integer(maxTimeoutSeconds, 600, 1, 600, 'maxTimeoutSeconds');
   defaultTimeoutSeconds = integer(defaultTimeoutSeconds, Math.min(120, maxTimeoutSeconds), 1, maxTimeoutSeconds, 'defaultTimeoutSeconds');
   maxOutputBytes = integer(maxOutputBytes, 10 << 20, 1, 100 << 20, 'maxOutputBytes');
-  return {
+  return withProgressiveDisclosure({
     name: 'run_local_skill_script', label: 'Run loaded skill script',
-    description: `Execute an interpreter-backed file under a loaded skill's scripts/ directory. Arguments are passed directly without shell parsing. Loaded skills: ${registry.names().join(', ') || '(none)'}.`,
-    parameters: Type.Object({ skill: Type.String(), script: Type.String(), arguments: Type.Optional(Type.Array(Type.String({ maxLength: 4096 }), { maxItems: 64 })), timeout_seconds: Type.Optional(Type.Integer({ minimum: 1, maximum: maxTimeoutSeconds })) }, { additionalProperties: false }),
+    description: `${SKILL_SCRIPT_CATALOG.description} Loaded skills: ${registry.names().join(', ') || '(none)'}.`,
+    parameters: Type.Object({
+      skill: Type.Optional(Type.String()),
+      script: Type.Optional(Type.String()),
+      arguments: Type.Optional(Type.Array(Type.String({ maxLength: 4096 }), { maxItems: 64 })),
+      timeout_seconds: Type.Optional(Type.Integer({ minimum: 1, maximum: maxTimeoutSeconds })),
+      ...flagHelpProperties()
+    }, { additionalProperties: false }),
     async execute(_id, input, signal, onUpdate) {
       signal?.throwIfAborted();
       const script = requireText(input.script, 'script');
@@ -50,5 +58,5 @@ export function createSkillScriptTool({ skills = [], registry = new SkillRegistr
       signal?.throwIfAborted();
       return runLocalProcess({ executable, args: [...prefix, located.path, ...args], cwd: located.directory, env: environment(located.directory), timeout, maxOutputBytes, label: 'Skill script', details: { script: located.path } }, signal, onUpdate);
     }
-  };
+  }, { ...SKILL_SCRIPT_CATALOG, mode: 'flag' });
 }

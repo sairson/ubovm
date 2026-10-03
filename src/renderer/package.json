@@ -9,6 +9,9 @@
   "engines": {
     "vscode": "^1.135.0"
   },
+  "enabledApiProposals": [
+    "browser"
+  ],
   "categories": [
     "Other"
   ],
@@ -67,6 +70,18 @@
         "title": "下载并安装内置浏览器",
         "category": "UBOVM",
         "icon": "$(cloud-download)"
+      },
+      {
+        "command": "ubovm.openBrowser",
+        "title": "打开内置浏览器（编辑区）",
+        "category": "UBOVM",
+        "icon": "$(globe)"
+      },
+      {
+        "command": "ubovm.openBrowserSidebar",
+        "title": "打开浏览器侧栏（与文件树/任务记录同栏）",
+        "category": "UBOVM",
+        "icon": "$(globe)"
       },
       {
         "command": "ubovm.reviewCodeChanges",
@@ -282,6 +297,9 @@
     },
     "configurationDefaults": {
       "security.workspace.trust.enabled": false,
+      "json.schemaDownload.trustedDomains": {
+        "*": true
+      },
       "terminal.integrated.defaultProfile.windows": "当前系统终端",
       "terminal.integrated.defaultProfile.linux": "当前系统终端",
       "terminal.integrated.defaultProfile.osx": "当前系统终端"
@@ -319,7 +337,7 @@
           "type": "object",
           "scope": "machine",
           "default": {},
-          "markdownDescription": "Reason、Worker 与对话默认使用的模型。使用 `UBOVM: 配置模型与 API 密钥` 将密钥保存到加密凭据存储。",
+          "markdownDescription": "对话、规划与任务执行默认使用的模型。使用 `UBOVM: 配置模型与 API 密钥` 将密钥保存到加密凭据存储。",
           "additionalProperties": false,
           "properties": {
             "provider": {
@@ -373,7 +391,7 @@
           "type": "object",
           "scope": "machine",
           "default": {},
-          "description": "Reason 规划器参数。model 可覆盖默认模型；模型密钥通过配置模型命令保存。",
+          "description": "规划参数。model 可覆盖默认模型；模型密钥通过配置模型命令保存。",
           "additionalProperties": false,
           "properties": {
             "model": {
@@ -429,7 +447,7 @@
           "type": "object",
           "scope": "machine",
           "default": {},
-          "description": "Worker 执行参数。model 可覆盖默认模型；模型密钥通过配置模型命令保存。",
+          "description": "任务执行参数。model 可覆盖默认模型；模型密钥通过配置模型命令保存。",
           "additionalProperties": false,
           "properties": {
             "swarmBackendSelection": {
@@ -439,7 +457,7 @@
                 "autonomous"
               ],
               "default": "fixed",
-              "description": "Swarm 模型选择模式；所有模型统一通过 Pi Agent 调用。"
+              "description": "并行任务模型选择模式；所有模型统一通过 Pi Agent 调用。"
             },
             "model": {
               "type": "object"
@@ -499,7 +517,7 @@
           ],
           "scope": "machine",
           "default": true,
-          "description": "上下文摘要默认开启，使用 Reason 模型；false 关闭。可设置 model、triggerTokens、targetTokens、keepRecentMessages、maxSummaryTokens、maxSummaryCalls、timeoutMs。",
+          "description": "上下文摘要默认开启，使用规划模型；false 关闭。可设置 model、triggerTokens、targetTokens、keepRecentMessages、maxSummaryTokens、maxSummaryCalls、timeoutMs。",
           "properties": {
             "model": {
               "type": "object"
@@ -705,7 +723,7 @@
                   "items": {
                     "type": "string"
                   },
-                  "default": []
+                  "default": ["*"]
                 },
                 "allowWorkspaceWrite": {
                   "type": "boolean",
@@ -780,6 +798,11 @@
       ],
       "activitybar": [
         {
+          "id": "ubovm-browser",
+          "title": "浏览器",
+          "icon": "media/icon.svg"
+        },
+        {
           "id": "ubovm-workers",
           "title": "Worker 日志",
           "icon": "media/icon.svg"
@@ -792,6 +815,14 @@
       ]
     },
     "views": {
+      "ubovm-browser": [
+        {
+          "type": "webview",
+          "id": "ubovm.browserSidebar",
+          "name": "浏览器",
+          "contextualTitle": "浏览器"
+        }
+      ],
       "ubovm-workers": [
         {
           "type": "webview",
@@ -885,6 +916,11 @@
         }
       ],
       "view/title": [
+        {
+          "command": "ubovm.openBrowser",
+          "when": "view == workbench.explorer.fileView || view == workbench.explorer.emptyView",
+          "group": "navigation@0"
+        },
         {
           "command": "ubovm.manageProjects",
           "when": "view == ubovm.sessions && !ubovm.settingsPage",
@@ -997,16 +1033,21 @@
         "when": "editorTextFocus && editorHasSelection"
       },
       {
+        "command": "ubovm.openBrowser",
+        "key": "ctrl+alt+b",
+        "mac": "cmd+alt+b"
+      },
+      {
         "command": "ubovm.openAssistant",
         "key": "ctrl+l",
         "mac": "cmd+l",
-        "when": "!terminalFocus"
+        "when": "!terminalFocus && activeEditor != 'workbench.editor.browser'"
       },
       {
         "command": "ubovm.newChat",
         "key": "ctrl+shift+l",
         "mac": "cmd+shift+l",
-        "when": "!terminalFocus"
+        "when": "!terminalFocus && activeEditor != 'workbench.editor.browser'"
       }
     ],
     "themes": [
@@ -1027,12 +1068,12 @@
       {
         "view": "ubovm.sessions",
         "when": "ubovm.mode != goal",
-        "contents": "$(comment-discussion)\n还没有会话\n从一个问题开始，你的对话会保存在这里。\n[开始对话](command:ubovm.openAssistant)"
+        "contents": "$(comment-discussion)\n还没有会话\n从一个问题开始。\n[开始对话](command:ubovm.openAssistant)"
       },
       {
         "view": "ubovm.sessions",
         "when": "ubovm.mode == goal",
-        "contents": "$(target)\n还没有探索记录\n从已知事实出发，定义你的探索目标。\n[开始探索](command:ubovm.openAssistant)"
+        "contents": "$(target)\n还没有探索\n从已知事实定义目标。\n[开始探索](command:ubovm.openAssistant)"
       }
     ],
     "submenus": [

@@ -18,6 +18,8 @@ test('assembled page includes all components and a syntactically valid browser e
   assert(scripts[0][2].includes('UBOVMRuntime'), 'recovery must execute before application dependencies');
   for (const script of scripts) assert.doesNotThrow(() => new Script(script[2]));
   assert(html.includes('id="settings-dialog"'), 'Settings HTML fragment must be assembled');
+  assert(html.includes('id="open-browser"') && html.includes('data-action="browser"'), 'Conversation must expose a browser entry');
+  assert(html.includes('打开浏览器'), 'Home shortcuts must include the browser entry');
 });
 
 test('workspace labels remain text and cannot expand template tokens or break script tags', () => {

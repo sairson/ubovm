@@ -1,5 +1,7 @@
 import { Type } from 'typebox';
 import { assertSession, checkAbort, required, toolResult } from '../shared/store/memory-store.mjs';
+import { withActionHelp, withProgressiveDisclosure } from '../shared/disclosure.mjs';
+import { DOMAIN_CATALOG } from '../shared/tool-catalogs.mjs';
 import {
   DISCOVERY_SOURCES, DOMAIN_KINDS, RELATION_TYPES, TEST_STATUSES,
   assertCoverageComplete, coverageSummary, emptyInventory, inferKind, isSubdomainOf,
@@ -87,12 +89,11 @@ export function createDomainInventoryTool({ store, sessionId, workerId = 'worker
   assertSession(store, sessionId);
   workerId = required(workerId, 'workerId');
 
-  return {
+  const tool = {
     name: 'domain_inventory',
     label: '域名攻击面台账',
-    description: 'Session domain inventory for security coverage. Bootstrap seed root domains once, upsert related hosts (subdomains, cert SAN, DNS aliases, redirects) without re-asking authorization for related assets, mark tested/skipped, and read coverage. Security delivery acceptance requires complete coverage (no pending/in_progress). Inventory is the coverage authority; do not track domain coverage only in free-text notes.',
-    parameters: Type.Object({
-      action: Type.Union(['bootstrap', 'upsert', 'relate', 'mark_tested', 'skip', 'list', 'coverage'].map(Type.Literal)),
+    description: DOMAIN_CATALOG.description,
+    parameters: Type.Object(withActionHelp({
       seeds: optionalStrings,
       hostname: optionalString,
       hostnames: optionalStrings,
@@ -109,7 +110,7 @@ export function createDomainInventoryTool({ store, sessionId, workerId = 'worker
       query: optionalString,
       limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 200 })),
       offset: Type.Optional(Type.Integer({ minimum: 0 }))
-    }, { additionalProperties: false }),
+    }), { additionalProperties: false }),
     async execute(_id, input, signal) {
       checkAbort(signal);
       if (!input || typeof input !== 'object' || Array.isArray(input)) throw new TypeError('domain_inventory arguments must be an object');
@@ -292,4 +293,10 @@ export function createDomainInventoryTool({ store, sessionId, workerId = 'worker
       return assertCoverageComplete(inventory);
     }
   };
+  const disclosed = withProgressiveDisclosure(tool, DOMAIN_CATALOG);
+  disclosed.summary = (...args) => tool.summary(...args);
+  disclosed.coverage = (...args) => tool.coverage(...args);
+  disclosed.assertComplete = (...args) => tool.assertComplete(...args);
+  disclosed.promptSummary = (...args) => tool.summary(...args);
+  return disclosed;
 }

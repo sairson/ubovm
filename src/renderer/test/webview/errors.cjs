@@ -46,6 +46,22 @@ test('agent runtime disconnect codes explain resume instead of generic failure',
   assert.equal(normalize(Object.assign(new Error('closed'), { code: 'SERVICE_CLOSED' })).code, 'SERVICE_CLOSED');
   assert.equal(normalize(Object.assign(new Error('busy'), { code: 'RPC_BUSY' })).code, 'RPC_BUSY');
 });
+
+test('SSH and shell command timeouts are distinct from UI wait timeouts', () => {
+  const ssh = normalize(new Error('SSH command timed out after 120 seconds'));
+  assert.equal(ssh.code, 'TIMEOUT');
+  assert.match(ssh.message, /远程命令已超时（120 秒）/);
+  assert.match(ssh.hint, /timeout_seconds/);
+  assert.doesNotMatch(ssh.hint, /可能仍在执行/);
+  const shell = normalize(new Error('Shell command timed out after 30 seconds'));
+  assert.match(shell.message, /远程命令已超时（30 秒）/);
+  const queue = normalize(Object.assign(new Error('Shell queue wait timed out after 8 seconds; command was not executed'), { code: 'SHELL_QUEUE_TIMEOUT' }));
+  assert.match(queue.message, /远程命令已超时（8 秒）/);
+  const wait = normalize(Object.assign(new Error('connect ETIMEDOUT'), { code: 'ETIMEDOUT' }));
+  assert.equal(wait.code, 'ETIMEDOUT');
+  assert.match(wait.message, /等待操作结果超时/);
+  assert.match(wait.hint, /可能仍在执行/);
+});
 test('display errors redact credentials, bound details and exclude stacks from summaries', () => {
   const failure = normalize('fetch failed: https://alice:password@example.com/?api_key=hidden token=private Authorization: Bearer credential sk-1234567890');
   assert.doesNotMatch(JSON.stringify(failure), /alice|password@|=hidden|=private|Bearer credential|sk-1234567890/);

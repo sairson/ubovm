@@ -113,11 +113,14 @@ test('cooperation guidance connects model roles and Swarm mode without losing un
     await page.evaluate(data => window.postMessage({ type: 'openSettings', data }, '*'), await service.snapshot({ includeSkills: false }));
     const guide = page.locator('[data-cooperation-guide]');
     await guide.waitFor();
-    assert.match(await guide.textContent(), /统一使用 Pi Agent/);
-    await page.getByRole('button', { name: '设置 Swarm 协作模式 →', exact: true }).click();
+    assert.equal(await page.locator('#settings-section-kicker').textContent(), '系统设置');
+    assert.equal(await page.locator('.settings-capability-overview h4').textContent(), '当前能力');
+    assert.match(await page.locator('.settings-capability-list').textContent(), /对话/);
+    assert.match(await guide.textContent(), /配置库保存可重复使用的模型连接/);
+    await page.getByRole('button', { name: '设置并行任务模式 →', exact: true }).click();
     await page.locator('[data-setting="swarmBackendSelection"]').selectOption('autonomous');
     assert.match(await guide.textContent(), /自主选择：主对话模型保持不变/);
-    await page.getByRole('button', { name: '选择执行 Agent 模型 →', exact: true }).click();
+    await page.getByRole('button', { name: '选择任务模型 →', exact: true }).click();
     assert.equal(await page.locator('#settings-discard').isVisible(), true);
     await page.locator('#settings-keep').click();
     assert.equal(await page.locator('[data-setting="swarmBackendSelection"]').inputValue(), 'autonomous');
@@ -126,7 +129,7 @@ test('cooperation guidance connects model roles and Swarm mode without losing un
     assert.equal(request.section, 'worker');
     assert.equal(request.value.swarmBackendSelection, 'autonomous');
     await page.evaluate(({ request, data }) => window.postMessage({ type: 'settingsResult', requestId: request.requestId, ok: true, saved: true, data }, '*'), { request, data: await service.snapshot({ includeSkills: false }) });
-    await page.getByRole('button', { name: '选择执行 Agent 模型 →', exact: true }).click();
+    await page.getByRole('button', { name: '选择任务模型 →', exact: true }).click();
     await page.locator('[data-setting="inherit"]').uncheck();
     await page.locator('[data-setting="inherit"]').check();
     assert.equal(await guide.isVisible(), true);
@@ -446,7 +449,7 @@ test('model roles retain focus, guard edits, save independently, and show provid
       assert.equal(await tab('model').evaluate(e => e === document.activeElement), true);
       for (const key of ['model', 'reasonModel', 'workerModel', 'summaryModel']) await tab(key).click({ trial: true });
       assert(await page.evaluate(() => document.querySelector('#settings-form').scrollWidth <= document.querySelector('#settings-form').clientWidth + 1));
-      if (width === 600) await page.screenshot({ path: fileURLToPath(new URL('../../../../../.cache', import.meta.url)) });
+      if (width === 600) await page.screenshot({ path: fileURLToPath(new URL('../../../../../.cache/settings-model-roles.png', import.meta.url)) });
       assert.deepEqual(errors, []);
       // Reset the role so each viewport exercises inheritance from fresh state.
       delete values.worker;
@@ -486,7 +489,7 @@ test('management page changes wait for discarded edits and preserve the conversa
     });
     await page.route('**/*', route => route.fulfill({ contentType: 'text/html', body: html }));
     await page.goto('http://settings.test/');
-    await page.waitForFunction(() => document.querySelector('#connection-note').textContent === '准备好，开始你的下一步');
+    await page.waitForFunction(() => document.querySelector('#connection-note').textContent === '模型已就绪，直接输入即可');
     assert.equal(await page.locator('#conversation-title').textContent(), state.conversation.title);
     assert.equal(await page.locator('#provider-label').textContent(), state.provider.label);
     assert.equal(await page.locator('#model-settings, #management-menu').count(), 0);

@@ -11,20 +11,27 @@ test('conversation and project navigation restore before one final publish while
     let release, active = 'previous';
     const calls = [], recovery = new Promise(resolve => { release = resolve; });
     const sandbox = { messageQueue: Promise.resolve(), sessionsView: undefined, shuttingDown: false,
+      settingsPage: '', settingsOpenRevision: 0, settingsOpening: 0, settingsSection: 'model',
+      sidebarChanged: { fire() {} }, welcome: undefined, chromeLockedSessionId: undefined, chromeLockWatchdog: undefined,
       sessions: { summary: () => ({ id: active }), current: () => ({ id: active }),
       select: async id => { active = id; calls.push('select'); }, selectProject: async id => { active = id; calls.push('select'); } },
       restoreExecution: async () => { calls.push('restore'); await recovery; },
       openWelcome: async () => { calls.push('view'); }, openAssistant: async () => { calls.push('view'); },
-      publishState: () => { calls.push('publish'); } };
-    const start = source.indexOf('  function openProject(id) {');
+      publishState: () => { calls.push('publish'); },
+      setTimeout: () => 1,
+      clearTimeout() {},
+      vscode: { commands: { executeCommand: async (command, key, value) => {
+        if (command === 'setContext' && key === 'ubovm.contentReady' && value === false) calls.push('lock');
+      } } } };
+    const start = source.indexOf('  async function lockConversationChrome() {');
     vm.runInNewContext(source.slice(start, source.indexOf('  async function deleteConversation', start)), sandbox);
     const pending = kind === 'project' ? sandbox.openProject('next') : sandbox.selectConversation('next');
     await new Promise(resolve => setImmediate(resolve));
-    assert.deepEqual(calls, ['select', 'view', 'restore']);
+    assert.deepEqual(calls, ['select', 'lock', 'view', 'publish', 'restore']);
     let later = false; const queued = sandbox.messageQueue.then(() => { later = true; });
     assert.equal(later, false); release(); await pending; await queued;
     assert.equal(later, true);
-    assert.deepEqual(calls, ['select', 'view', 'restore', 'publish']);
+    assert.deepEqual(calls, ['select', 'lock', 'view', 'publish', 'restore', 'publish']);
   }
 });
 

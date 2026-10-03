@@ -41,7 +41,7 @@ function projectBoard(snapshot) {
 }
 
 /** Backend execution service. Host capabilities are injected; no IDE or browser dependencies. */
-function createHarnessService({ sdkPath, storageDirectory, workspaceRoots = [], additionalTools = () => [], requestToolApproval, readConfiguration, onChange, onMessage } = {}) {
+function createHarnessService({ sdkPath, storageDirectory, workspaceRoots = [], additionalTools = () => [], requestToolApproval, readConfiguration, onChange, onMessage, ideBrowserCall } = {}) {
   if (typeof sdkPath !== 'string' || typeof storageDirectory !== 'string' || typeof readConfiguration !== 'function') throw new TypeError('sdkPath, storageDirectory and readConfiguration are required');
   const liveCommands = new Set();
   const sessions = new Map(), workspaceScopes = new Map(), restores = new Map(), transitions = new Map(), root = resolve(storageDirectory);
@@ -53,6 +53,18 @@ function createHarnessService({ sdkPath, storageDirectory, workspaceRoots = [], 
   ]).then(([sdk, collaboration, workspace]) => ({ ...sdk, ...collaboration, ...workspace })).catch(error => { modules = undefined; throw error; });
   const roots = id => typeof workspaceRoots === 'function' ? workspaceRoots(id) : workspaceRoots;
   const assertOpen = () => { if (closed) throw failure('SERVICE_CLOSED', 'IDE agent service is closed'); };
+  async function ideBrowserTools(config, sessionId) {
+    if (typeof ideBrowserCall !== 'function') return {};
+    if (config.intools === false || config.intools?.browser === false) return {};
+    if (config.intools?.browser?.ideBrowser === false) return {};
+    const { createIdeBrowserBridge } = await import(pathToFileURL(join(dirname(resolve(sdkPath)), 'intools', 'network', 'browser', 'ide-bridge.mjs')).href);
+    return {
+      browserManager: createIdeBrowserBridge({
+        sessionId,
+        invoke: (op, payload, signal) => ideBrowserCall(op, payload, signal)
+      })
+    };
+  }
   function registerCommand(entry) {
     const register = command => {
       if (closed || !entry.busy || entry.controller?.signal.aborted) throw failure('ABORT_ERR', '执行已停止。');
@@ -84,6 +96,14 @@ function createHarnessService({ sdkPath, storageDirectory, workspaceRoots = [], 
           // Retain recent terminal logs, but never evict a running task.
           const ended = [...entry.residentParts].filter(([, part]) => part.status !== 'running');
           for (const [id] of ended.slice(0, Math.max(0, ended.length - 32))) entry.residentParts.delete(id);
+        }
+        if (firstUpdate) {
+          dropBackgroundActivity(entry, command.name);
+          for (const view of entry.workerViews?.values() ?? []) dropBackgroundActivity(view, command.name);
+        }
+        if (update.status !== 'running') {
+          forgetBackgroundActivity(entry, command.name);
+          for (const view of entry.workerViews?.values() ?? []) forgetBackgroundActivity(view, command.name);
         }
         if (firstUpdate || update.status !== 'running') void saveResidents(entry).catch(error => { entry.workerViewError = errorData(error); });
         else entry.residentSaveTimer ??= setTimeout(() => {
@@ -280,10 +300,30 @@ function createHarnessService({ sdkPath, storageDirectory, workspaceRoots = [], 
     entry.workers = snapshot.nodes.filter(node => node.kind === 'intent').map(node => ({ id: node.id, description: node.intent.description, status: node.intent.status, phase: old.get(node.id)?.phase ?? null, attemptId: node.attempts.at(-1)?.id ?? null }));
   }
   function activity(entry, label, status, key) {
+    if (key && entry.backgroundKeys?.has(key)) return;
+    if (entry.backgroundNames?.has(label) && ['queued', 'running', 'waiting', 'starting'].includes(status)) return;
     const existing = key && entry.activities.find(item => item.key === key);
     if (existing) Object.assign(existing, { label, status, timestamp: Date.now() });
     else entry.activities.push({ label, status, timestamp: Date.now(), ...(key ? { key } : {}) });
     entry.activities = entry.activities.slice(-30);
+  }
+  function dropBackgroundActivity(entry, label, key) {
+    if (!Array.isArray(entry.activities)) return;
+    if (key) (entry.backgroundKeys ??= new Set()).add(key);
+    if (label) (entry.backgroundNames ??= new Set()).add(label);
+    if (!entry.activities.length) return;
+    const otherLive = (entry.parts || []).some(part => part.type === 'tool' && part.name === label && part.background !== true && ['running', 'queued', 'starting'].includes(part.status));
+    entry.activities = entry.activities.filter(item => {
+      if (key && item.key === key) return false;
+      if (otherLive) return true;
+      return !(item.label === label && ['queued', 'running', 'waiting', 'starting'].includes(item.status));
+    });
+  }
+  function forgetBackgroundActivity(entry, label, key) {
+    if (key) entry.backgroundKeys?.delete(key);
+    if (label && ![...(entry.residentParts?.values() ?? [])].some(part => part.name === label && part.background === true && part.status === 'running')) {
+      entry.backgroundNames?.delete(label);
+    }
   }
   function workerEntry(entry, id, metadata = {}) {
     const views = entry.workerViews ??= new Map();
@@ -498,7 +538,8 @@ function createHarnessService({ sdkPath, storageDirectory, workspaceRoots = [], 
         if (!event.result?.details?.background) part.output = output.text; if (output.truncated) part.truncated = true;
         if (!delta) delete part.outputTail;
         if (streaming && output.truncated) part.outputTail = true;
-        if (event.type === 'tool_execution_end' && !event.result?.details?.background) { part.status = part.interruptRequested ? 'interrupted' : event.isError ? 'failed' : 'completed'; part.endedAt = Math.max(part.startedAt, timestamp); activity(entry, event.toolName, part.status, `${identity}:${event.toolCallId}`); }
+        if (event.type === 'tool_execution_end' && event.result?.details?.background) dropBackgroundActivity(entry, event.toolName, `${identity}:${event.toolCallId}`);
+        else if (event.type === 'tool_execution_end') { part.status = part.interruptRequested ? 'interrupted' : event.isError ? 'failed' : 'completed'; part.endedAt = Math.max(part.startedAt, timestamp); activity(entry, event.toolName, part.status, `${identity}:${event.toolCallId}`); }
       }
       // Prior fragments are already sanitized. Do not rescan every historical
       // output for each incoming process packet; clean only the changed part.
@@ -576,7 +617,7 @@ function createHarnessService({ sdkPath, storageDirectory, workspaceRoots = [], 
       entry.omittedWorkers = 0;
       entry.workers = event.workers.map(worker => {
         const metadata = { id: worker.id, parentId: worker.parentId, name: worker.name, description: worker.task,
-          status: worker.status, phase: worker.status === 'running' ? 'execute' : null, depth: worker.depth,
+          status: worker.status, phase: worker.status === 'running' ? 'execute' : null, depth: worker.depth, priority: worker.priority,
           result: worker.result, error: worker.error, createdAt: worker.createdAt, startedAt: worker.startedAt, finishedAt: worker.finishedAt };
         const view = workerEntry(entry, worker.id, metadata);
         if (['completed', 'failed', 'interrupted'].includes(worker.status)) finishParts(view, worker.result, `result:${hash(worker.id)}`);
@@ -874,6 +915,7 @@ function createHarnessService({ sdkPath, storageDirectory, workspaceRoots = [], 
       ...(config.mcp ? { mcp: { ...config.mcp, signal: entry.controller.signal } } : {}),
       intools: config.intools === false ? false : { allowedTools: ['note', 'todo'], ...config.intools,
         onCommand: registerCommand(entry),
+        ...await ideBrowserTools(config, entry.sessionId),
         python: config.intools?.python === false ? false : { ...config.intools?.python, cwd: workspaceRoots[0] },
         localShell: config.intools?.localShell === false ? false : { ...config.intools?.localShell, cwd: workspaceRoots[0] } },
       tools, onEvent: runEvents(entry, goalEvent) });
@@ -929,6 +971,7 @@ function createHarnessService({ sdkPath, storageDirectory, workspaceRoots = [], 
         const configuration = { ...config,
           intools: config.intools === false ? false : { ...config.intools,
             onCommand: registerCommand(entry),
+            ...await ideBrowserTools(config, entry.sessionId),
             python: config.intools?.python === false ? false : { ...config.intools?.python, cwd: workspaceRoots[0] },
             localShell: config.intools?.localShell === false ? false : { ...config.intools?.localShell, cwd: workspaceRoots[0] } },
           tools: async binding => [...(typeof config.tools === 'function' ? await config.tools(binding) : config.tools ?? []), ...codingTools] };
@@ -984,6 +1027,10 @@ function createHarnessService({ sdkPath, storageDirectory, workspaceRoots = [], 
         const item = entry.activities.find(item => item.key === `swarm:${worker.id}`);
         if (item) item.status = worker.status;
       }
+      const backgrounded = item => entry.backgroundKeys?.has(item.key) || entry.backgroundNames?.has(item.label)
+        || (entry.parts || []).some(part => part.type === 'tool' && part.name === item.label && part.background === true)
+        || [...(entry.residentParts?.values() ?? [])].some(part => part.name === item.label && part.background === true);
+      entry.activities = entry.activities.filter(item => !backgrounded(item));
       for (const item of entry.activities) if (['queued', 'running', 'waiting'].includes(item.status)) item.status = entry.status === 'completed' ? 'completed' : entry.status;
       for (const view of entry.workerViews?.values() ?? []) {
         if (['queued', 'running', 'waiting'].includes(view.metadata.status)) view.metadata.status = entry.status === 'failed' ? 'failed' : 'interrupted';

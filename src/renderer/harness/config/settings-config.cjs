@@ -160,7 +160,9 @@ function createSettingsConfiguration(vscode, context) {
       const saved = await readVault(vaultContext, sshKey(profile));
       values.ssh.profiles.push({ ...scrub(profile), secretState: Object.fromEntries(privateSSH.map(key => [key, Boolean(saved[key] || profile[key])])) });
     }
-    values.web = { ...scrub(web.tavily ?? {}), ...scrub(web), baseURL: web.baseURL ?? web.tavily?.baseURL, headless: intools.browser?.launchOptions?.headless ?? true };
+    values.web = { ...scrub(web.tavily ?? {}), ...scrub(web), baseURL: web.baseURL ?? web.tavily?.baseURL,
+      ideBrowser: intools.browser === false ? false : intools.browser?.ideBrowser !== false,
+      headless: intools.browser?.launchOptions?.headless ?? true };
     delete values.web.enabled;
     delete values.web.tavily;
     secretState.web = { apiKey: Boolean(secrets.get(webKey(web)) || web.apiKey || web.tavily?.apiKey) };
@@ -267,20 +269,25 @@ function createSettingsConfiguration(vscode, context) {
       if ((value.defaultTimeoutSeconds ?? 120) > (value.maxTimeoutSeconds ?? 600)) throw new Error('Python 默认超时不能超过上限。');
       if (value.allowedDomains) {
         value.allowedDomains = [...new Set(value.allowedDomains.map(domain => domain.trim().toLowerCase()))];
+        if (value.allowedDomains.includes('*')) value.allowedDomains = ['*'];
         if (value.allowedDomains.length > 100 || value.allowedDomains.some(domain => {
+          if (domain === '*') return false;
           const match = /^(?:\*\.)?([a-z0-9](?:[a-z0-9.-]*[a-z0-9])?)(?::([0-9]{1,5}))?$/.exec(domain);
           return !match || domain.length > 253 || match[1].split('.').some(label => !label || label.length > 63 || label.startsWith('-') || label.endsWith('-'))
             || match[2] && (+match[2] < 1 || +match[2] > 65535);
-        })) throw new Error('请填写有效域名，可使用 *.example.com 或 example.com:443，端口范围为 1–65535。');
+        })) throw new Error('请填写 *（任意主机），或有效域名如 *.example.com、example.com:443，端口范围为 1–65535。');
       }
       intools.python = value; intools.allowedTools = [...tools]; changes.set('intools', intools);
     } else if (section === 'web') {
       if (!plain(input)) throw new Error('配置内容必须是对象。');
       const { enabled: legacyEnabled, ...currentInput } = input;
-      const { apiKey, headless, ...value } = validateFields(currentInput, sections.web.fields);
-      if (headless !== undefined && intools.browser !== false) {
+      const { apiKey, headless, ideBrowser, ...value } = validateFields(currentInput, sections.web.fields);
+      if ((headless !== undefined || ideBrowser !== undefined) && intools.browser !== false) {
         const browser = object(intools.browser);
-        intools.browser = { ...browser, launchOptions: { ...object(browser.launchOptions), headless } };
+        const next = { ...browser };
+        if (ideBrowser !== undefined) next.ideBrowser = ideBrowser;
+        if (headless !== undefined) next.launchOptions = { ...object(browser.launchOptions), headless };
+        intools.browser = next;
       }
       const prior = object(old.intools?.webSearch);
       const endpoint = value.baseURL || 'https://api.tavily.com'; url(endpoint, '搜索地址');
@@ -325,8 +332,8 @@ function createSettingsConfiguration(vscode, context) {
       const next = patchFields(old[section], sections[section].fields, value);
       if (section === 'reason') {
         const openIntents = next.openIntents ?? 5;
-        if ((next.maxConcurrency ?? 3) > openIntents) throw new Error('并行 Worker 数不能超过开放意图上限。');
-        if ((next.maxIntents ?? 5) > openIntents) throw new Error('每轮新增意图上限不能超过开放意图上限。');
+        if ((next.maxConcurrency ?? 3) > openIntents) throw new Error('并行任务数不能超过同时进行上限。');
+        if ((next.maxIntents ?? 5) > openIntents) throw new Error('每轮新增任务上限不能超过同时进行上限。');
       }
       if (section === 'skills') { delete next.directories; delete next.skills; }
       changes.set(section, next);

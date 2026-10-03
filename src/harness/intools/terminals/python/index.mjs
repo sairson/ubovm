@@ -3,11 +3,13 @@ import { randomUUID } from 'node:crypto';
 import { join, resolve } from 'node:path';
 import { Type } from 'typebox';
 import { contained, integer, requireText } from '../../shared/common.mjs';
+import { flagHelpProperties, withProgressiveDisclosure } from '../../shared/disclosure.mjs';
+import { RUN_PYTHON_CATALOG } from '../../shared/tool-catalogs.mjs';
 import { resolvePython, normalizePythonDomains } from './policy.mjs';
 import { runPythonSandbox } from './execution.mjs';
 import { readPythonEnvironment, environmentPython, environmentMatchesBase, validatePythonEnvironmentFiles } from './environment-state.mjs';
 
-export function createPythonTool({ cwd = process.cwd(), executable, allowedDomains = [], allowWorkspaceWrite = false,
+export function createPythonTool({ cwd = process.cwd(), executable, allowedDomains = ['*'], allowWorkspaceWrite = false,
   defaultTimeoutSeconds, maxTimeoutSeconds = 600, maxOutputBytes = 1 << 20, useManagedEnvironment = true } = {}) {
   const workspace = resolve(requireText(cwd, 'cwd'));
   maxTimeoutSeconds = integer(maxTimeoutSeconds, 600, 1, 3600, 'maxTimeoutSeconds');
@@ -15,16 +17,17 @@ export function createPythonTool({ cwd = process.cwd(), executable, allowedDomai
   maxOutputBytes = integer(maxOutputBytes, 1 << 20, 1024, 10 << 20, 'maxOutputBytes');
   allowedDomains = Object.freeze(normalizePythonDomains(allowedDomains));
   if (typeof allowWorkspaceWrite !== 'boolean') throw new Error('allowWorkspaceWrite must be boolean');
-  return {
+  return withProgressiveDisclosure({
     name: 'run_python', label: 'Run Python in local sandbox',
-    description: `Run AI-generated Python code OR an existing .py script using local CPython in an OS sandbox, without Docker. Supply exactly one of code/script. Default cwd: ${workspace}. Network access and interpreter are host-configured; you cannot change them. Workspace writes ${allowWorkspaceWrite ? 'are enabled (not recorded in IDE change snapshots)' : 'are disabled'}; write generated files to os.environ['UBOVM_PYTHON_OUTPUT'], returned as output_directory. Arguments become sys.argv[1:]. Code runs as a temporary read-only .py entrypoint; guard multiprocessing creation with if __name__ == '__main__'. Output streams; nonzero exits, cancellation and timeouts are errors. The bundled Python is preferred unless the host configured an interpreter override. On Windows with workspace writes disabled, inputs run from a temporary read-only workspace copy (up to 10,000 files / 64 MiB); symlinks, secrets, dependency trees and build caches are omitted. Use relative input paths; explicitly supplied file arguments can select data inside an otherwise omitted directory. The original workspace is not the execution cwd. Use manage_python_environment to inspect or sync dependencies; successful sync is selected automatically for this workspace. If the sandbox is unavailable, report it; never bypass it through local shell or skill tools.`,
+    description: RUN_PYTHON_CATALOG.description,
     parameters: Type.Object({
       code: Type.Optional(Type.String({ minLength: 1, maxLength: 262144 })),
       script: Type.Optional(Type.String({ minLength: 1, maxLength: 4096, description: 'Existing .py file inside this workspace; relative to cwd or absolute.' })),
       arguments: Type.Optional(Type.Array(Type.String({ maxLength: 4096 }), { maxItems: 64 })),
       cwd: Type.Optional(Type.String({ maxLength: 4096, description: 'Directory inside this workspace.' })),
-      reason: Type.String({ minLength: 1, maxLength: 2048 }),
-      timeout_seconds: Type.Optional(Type.Integer({ minimum: 1, maximum: maxTimeoutSeconds }))
+      reason: Type.Optional(Type.String({ minLength: 1, maxLength: 2048 })),
+      timeout_seconds: Type.Optional(Type.Integer({ minimum: 1, maximum: maxTimeoutSeconds })),
+      ...flagHelpProperties()
     }, { additionalProperties: false }),
     async execute(_id, input, signal, onUpdate) {
       signal?.throwIfAborted();
@@ -60,5 +63,5 @@ export function createPythonTool({ cwd = process.cwd(), executable, allowedDomai
       return runPythonSandbox({ workspace: root, cwd: directory, script, code, arguments: argumentsSnapshot, reason,
         outputDirectory, ...python, environmentIdentity, allowedDomains: [...allowedDomains], allowWorkspaceWrite, timeout, maxOutputBytes }, signal, onUpdate);
     }
-  };
+  }, { ...RUN_PYTHON_CATALOG, mode: 'flag' });
 }

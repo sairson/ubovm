@@ -2,18 +2,27 @@
 const { serializeError } = require('./errors.cjs');
 
 // Bidirectional requests. Cancellation belongs to the request, not the transport.
-function createRPC(port, handle, { maxPending = 256, maxActive = 256, maxControl = 8, onClose = () => {}, heartbeatInterval = 0, heartbeatTimeout = 20000 } = {}) {
+// Heartbeat soft-stalls before killing: a busy peer that still exchanges RPC
+// traffic must not tear down the worker, matching durable Host reconnect semantics.
+function createRPC(port, handle, {
+  maxPending = 256, maxActive = 256, maxControl = 8,
+  onClose = () => {}, onStallChange = () => {},
+  heartbeatInterval = 0, heartbeatTimeout = 20000, heartbeatKillTimeout = 120000
+} = {}) {
   // Invalid timer values are clamped by Node to 1 ms; reject them before
   // installing listeners instead of creating a hot loop or disabling bounds.
   for (const [name, value] of Object.entries({ maxPending, maxActive, maxControl })) {
     if (!Number.isSafeInteger(value) || value < 1) throw new TypeError(`${name} must be a positive safe integer`);
   }
-  for (const [name, value] of Object.entries({ heartbeatInterval, heartbeatTimeout })) {
-    if (!Number.isSafeInteger(value) || value < (name === 'heartbeatInterval' ? 0 : 1) || value > 2147483647) throw new TypeError(`Invalid ${name}`);
+  for (const [name, value] of Object.entries({ heartbeatInterval, heartbeatTimeout, heartbeatKillTimeout })) {
+    if (!Number.isSafeInteger(value) || value < (name === 'heartbeatInterval' ? 0 : 1) || value > 2147483647) {
+      throw new TypeError(`Invalid ${name}`);
+    }
   }
   if (heartbeatInterval && heartbeatTimeout <= heartbeatInterval) throw new TypeError('heartbeatTimeout must exceed heartbeatInterval');
+  if (heartbeatInterval && heartbeatKillTimeout < heartbeatTimeout) throw new TypeError('heartbeatKillTimeout must be >= heartbeatTimeout');
   let sequence = 0, lastRequest = 0, closed;
-  let heartbeat, probe, lastTick = Date.now();
+  let heartbeat, probe, lastTick = Date.now(), lastActivity = Date.now(), stalled = false;
   const pending = new Map(), active = new Map();
   const handlers = new Set();
   const controlPending = new Set(), controlActive = new Set();
@@ -24,6 +33,18 @@ function createRPC(port, handle, { maxPending = 256, maxActive = 256, maxControl
   const errorFrom = data => { const safe = errorData(data); return Object.assign(new Error(safe.message), safe); };
   const protocolError = () => Object.assign(new Error('Invalid agent RPC message'), { code: 'RPC_PROTOCOL_ERROR' });
   const busy = () => Object.assign(new Error('Agent message queue is full; retry after pending requests finish'), { code: 'RPC_BUSY' });
+  const stallError = () => Object.assign(new Error('Agent 后端响应变慢，仍在保持连接。任务未中断，请稍候。'), { code: 'AGENT_HEARTBEAT_STALLED' });
+  const killError = () => Object.assign(new Error('Agent 后端未响应，连接已中断。请检查后重新发起或恢复任务。'), { code: 'AGENT_HEARTBEAT_TIMEOUT' });
+  function setStalled(next) {
+    if (stalled === next) return;
+    stalled = next;
+    try { Promise.resolve(onStallChange(next, next ? stallError() : undefined)).catch(() => {}); }
+    catch { /* Stall observers never control the transport. */ }
+  }
+  function noteActivity() {
+    lastActivity = Date.now();
+    setStalled(false);
+  }
   function send(message) {
     try { port.postMessage(message); return true; }
     catch (error) { close(error); return false; }
@@ -69,8 +90,15 @@ function createRPC(port, handle, { maxPending = 256, maxActive = 256, maxControl
     if (closed || !message || typeof message !== 'object' || !Number.isSafeInteger(message.id) || message.id < 1) return;
     const { type, id } = message;
     // Transport probes never compete with model/tool request capacity.
-    if (type === 'ping') { send({ type: 'pong', id }); return; }
-    if (type === 'pong') { if (probe?.id === id) probe = undefined; return; }
+    if (type === 'ping') { noteActivity(); send({ type: 'pong', id }); return; }
+    if (type === 'pong') {
+      noteActivity();
+      if (probe?.id === id) probe = undefined;
+      return;
+    }
+    // Any non-probe traffic proves the peer's event loop is alive even when a
+    // ping is delayed behind a large structured clone or tool burst.
+    noteActivity();
     if (type === 'abort') { active.get(id)?.abort(errorFrom(message.error)); return; }
     if (type === 'response') {
       const item = pending.get(id);
@@ -138,9 +166,24 @@ function createRPC(port, handle, { maxPending = 256, maxActive = 256, maxControl
       // deadline while its pong is waiting in this process's event queue.
       if (now - lastTick > Math.min(heartbeatTimeout, heartbeatInterval * 2) || now < lastTick) probe = undefined;
       lastTick = now;
-      if (probe && now - probe.sent >= heartbeatTimeout) {
-        close(Object.assign(new Error('Agent 后端未响应，连接已中断。请检查后重新发起或恢复任务。'), { code: 'AGENT_HEARTBEAT_TIMEOUT' }));
-        return;
+      if (probe) {
+        const probeAge = now - probe.sent;
+        const silentFor = now - lastActivity;
+        // Peer traffic after the probe was sent proves the worker is alive even
+        // when that traffic was not the matching pong (snapshots, tool RPC).
+        if (lastActivity >= probe.sent) {
+          probe = undefined;
+          setStalled(false);
+        } else if (probeAge >= heartbeatTimeout) {
+          // Kill uses silence since lastActivity so renewing the probe during a
+          // soft stall cannot reset the hard deadline.
+          if (silentFor >= heartbeatKillTimeout) {
+            close(killError());
+            return;
+          }
+          setStalled(true);
+          probe = undefined;
+        }
       }
       if (!probe) { probe = { id: ++sequence, sent: now }; send({ type: 'ping', id: probe.id }); }
     }, heartbeatInterval);
@@ -151,6 +194,7 @@ function createRPC(port, handle, { maxPending = 256, maxActive = 256, maxControl
     error = errorFrom(error);
     closed = error; port.off('message', listener);
     clearInterval(heartbeat); probe = undefined;
+    setStalled(false);
     port.off('close', disconnected); port.off('messageerror', invalidMessage);
     port.off('error', invalidMessage);
     for (const item of pending.values()) { item.cleanup(); item.reject(error); }
@@ -161,6 +205,11 @@ function createRPC(port, handle, { maxPending = 256, maxActive = 256, maxControl
   }
   // Closing aborts handlers but cannot force them to stop writing files. Keep
   // their completion barrier separate from the closed transport's bookkeeping.
-  return { call, close, isIdle: () => handlers.size === 0, drain: () => Promise.allSettled([...handlers]) };
+  return {
+    call, close,
+    isIdle: () => handlers.size === 0,
+    drain: () => Promise.allSettled([...handlers]),
+    isStalled: () => stalled
+  };
 }
 module.exports = { createRPC };

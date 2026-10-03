@@ -94,13 +94,13 @@ test('project tree highlights only the active project and exposes counts across 
   busy.add(first.id);
   const projects = f.store.provider.getChildren().filter(item => item.kind === 'project');
   const active = f.store.provider.getTreeItem(projects.find(item => item.id === second.projectId));
-  assert.match(active.description, /second · 1 个会话 · 当前/);
+  assert.match(active.description, /second · 1/);
   assert.equal(active.command.command, 'ubovm.openProject');
   assert.deepEqual(active.command.arguments, [second.projectId]);
   assert.equal(active.iconPath.id, 'folder-opened');
   const other = f.store.provider.getTreeItem(projects.find(item => item.id === first.projectId));
   assert.equal(other.collapsibleState, 1);
-  assert.match(other.description, /1 运行中/);
+  assert.equal(other.description, '1 · 1 运行');
   assert.match(other.tooltip, /1 个协助会话 · 0 个探索会话/);
   const members = f.store.projectSessions(first.projectId);
   assert.equal(members.length, 1);
@@ -112,7 +112,7 @@ test('project tree highlights only the active project and exposes counts across 
   assert.equal(f.store.get(first.id).title, first.title);
 });
 
-test('project children list both modes with mode descriptions and prefer the active mode', async () => {
+test('project children list both modes with compact counts and prefer the active mode', async () => {
   const f = harness(); await f.store.ready;
   const assist = await f.store.createProject('双模式', 'C:\\dual');
   await f.store.setMode('goal');
@@ -121,8 +121,10 @@ test('project children list both modes with mode descriptions and prefer the act
   const project = f.store.provider.getChildren().find(item => item.id === assist.projectId);
   const children = f.store.provider.getChildren(project);
   assert.deepEqual(children.map(item => item.mode), ['assist', 'goal']);
-  assert.equal(f.store.provider.getTreeItem(children[0]).description, '协助 · 0');
-  assert.equal(f.store.provider.getTreeItem(children[1]).description, '探索 · 0');
+  assert.equal(f.store.provider.getTreeItem(children[0]).description, '0');
+  assert.equal(f.store.provider.getTreeItem(children[1]).description, '探索');
+  assert.match(f.store.provider.getTreeItem(children[0]).tooltip, /协助模式/);
+  assert.match(f.store.provider.getTreeItem(children[1]).tooltip, /探索模式/);
   assert.equal(children[0].id, assist.id);
   assert.equal(children[1].id, goal.id);
   assert.equal(f.store.provider.getParent(children[1]).id, assist.projectId);
@@ -235,10 +237,15 @@ test('project creation and deletion actions are exposed through native menus and
   assert.equal(manifest.contributes.submenus.some(item => item.id === 'ubovm.create'), true);
   for (const group of ['inline@2', '9_delete']) assert(menus['view/item/context'].some(item => item.command === 'ubovm.deleteProject' && item.group === group && item.when.includes('ubovm.project')));
   const patch = fsSync.readFileSync(path.join(__dirname, '../../../../../resources/patches/minimal-ui.patch'), 'utf8');
-  for (const command of ['ubovm.newProject', 'ubovm.openProject', 'ubovm.manageProjects', 'ubovm.newProjectConversation', 'ubovm.changeProjectWorkspace', 'ubovm.renameProject', 'ubovm.deleteProject']) {
-    assert(manifest.contributes.commands.some(item => item.command === command));
+  for (const command of ['ubovm.newProject', 'ubovm.openProject', 'ubovm.manageProjects', 'ubovm.newProjectConversation', 'ubovm.changeProjectWorkspace', 'ubovm.renameProject', 'ubovm.deleteProject', 'ubovm.openBrowser', 'ubovm.openBrowserSidebar', 'workbench.action.browser.openOrList']) {
+    if (command.startsWith('ubovm.')) assert(manifest.contributes.commands.some(item => item.command === command));
     assert(patch.includes("'" + command + "'"));
   }
+  assert(menus['view/title'].some(item => item.command === 'ubovm.openBrowser' && item.when.includes('workbench.explorer.fileView')));
+  assert(manifest.contributes.keybindings.some(item => item.command === 'ubovm.openBrowser'));
+  const home = fsSync.readFileSync(path.join(__dirname, '../../../webview/index.html'), 'utf8');
+  assert(home.includes('id="open-browser"') && home.includes('data-action="browser"'));
+  assert(home.includes('打开浏览器'));
   assert(patch.includes("'workbench.action.alignQuickInputCenter'"));
   assert(menus['view/item/context'].some(item => item.command === 'ubovm.changeProjectWorkspace' && item.when.includes('ubovm.project')));
 });

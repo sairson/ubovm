@@ -186,6 +186,11 @@ export function readStaticTrustedDomains(accessor: ServicesAccessor): IStaticTru
 		...productService.linkProtectionTrustedDomains ?? [],
 		...environmentService.options?.additionalTrustedDomains ?? []
 	];
+	// UBOVM opens links without a domain prompt unless the product overlay
+	// already listed a wildcard. Empty product lists still trust every host.
+	if (!defaultTrustedDomains.includes('*')) {
+		defaultTrustedDomains.unshift('*');
+	}
 
 	let trustedDomains: string[] = [];
 	try {

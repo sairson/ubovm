@@ -26,6 +26,7 @@
     "background-tray.patch",
     "sidebar-auto-close.patch",
     "markdown-preview.patch",
+    "browser-agent-control.patch",
     "terminal-reveal.patch",
     "sidebar-event-type.patch",
     "file-search.patch",

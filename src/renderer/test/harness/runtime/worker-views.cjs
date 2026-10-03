@@ -354,7 +354,7 @@ test('failed shared recovery rejects every reader and can retry after the cache 
 
 test('worker streams are isolated, credential-redacted, durable and restored without restarting execution', async t => {
   const f = await fixture(t), service = f.create(), run = await f.start(service);
-  run.onEvent({ type: 'swarm.status', workers: [{ id: 'first', name: 'Inspect', task: 'Read the file', status: 'running', depth: 1 }] });
+  run.onEvent({ type: 'swarm.status', workers: [{ id: 'first', name: 'Inspect', task: 'Read the file', status: 'running', depth: 1, priority: 9 }] });
   run.onEvent({ type: 'message_start', message: message('') });
   run.onEvent({ type: 'message_update', message: message('Root response') });
   event(run, 'first', { type: 'message_start', message: message('') });
@@ -363,6 +363,7 @@ test('worker streams are isolated, credential-redacted, durable and restored wit
   for (let i = 0; i < 500; i++) event(run, 'first', { type: 'message_update', message: streamed });
   const snapshot = service.state('chat');
   assert(reads < 10, 'worker token bursts should coalesce');
+  assert.equal(snapshot.workers[0].priority, 9);
   assert.equal(snapshot.streamText, 'Root response');
   assert.equal(snapshot.parts.length, 1);
   assert.match(snapshot.workers[0].parts[0].text, /Worker progress/);

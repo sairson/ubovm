@@ -24,21 +24,23 @@
       if (start === null && firstId && container.scrollHeight - container.scrollTop - container.clientHeight > 80) start = Math.max(0, total - pageSize);
       latestExecution = execution;
       const entries = [], parts = execution.parts || [];
-      const toolNames = new Set(parts.filter(part => part.type === 'tool').map(part => part.name));
-      for (const part of parts) if (part.source !== 'worker' && ['text', 'thinking', 'tool', 'summary'].includes(part.type)) entries.push({
+      const inline = window.UBOVMTimeline.visibleTimelineParts(parts);
+      const toolNames = new Set();
+      window.UBOVMTimeline.eachToolPart({ execution }, part => { if (part.type === 'tool' && part.name) toolNames.add(part.name); });
+      for (const part of inline) if (part.source !== 'worker' && ['text', 'thinking', 'tool', 'summary'].includes(part.type)) entries.push({
         id: 'part:' + part.id, time: timestamp(part.startedAt), kind: part.type, part,
-        label: part.type === 'thinking' ? 'Reason Agent · 思考' : part.type === 'tool' ? 'Reason Agent · 工具调用' : part.type === 'summary' ? '上下文摘要' : 'Reason Agent · 输出', status: part.status
+        label: part.type === 'thinking' ? '规划 · 思考' : part.type === 'tool' ? '规划 · 工具调用' : part.type === 'summary' ? '上下文摘要' : '规划 · 输出', status: part.status
       });
       for (const worker of execution.workers || []) {
-        entries.push({ id: 'worker:' + worker.id, time: timestamp(worker.createdAt ?? worker.startedAt), kind: 'worker', label: '创建 Worker', worker, status: 'created' });
-        if (worker.finishedAt) entries.push({ id: 'worker-end:' + worker.id, time: timestamp(worker.finishedAt), kind: 'worker', label: 'Worker 执行结束', worker, status: worker.status });
+        entries.push({ id: 'worker:' + worker.id, time: timestamp(worker.createdAt ?? worker.startedAt), kind: 'worker', label: '分派任务', worker, status: 'created' });
+        if (worker.finishedAt) entries.push({ id: 'worker-end:' + worker.id, time: timestamp(worker.finishedAt), kind: 'worker', label: '任务结束', worker, status: worker.status });
       }
       for (const [index, activity] of (execution.activities || []).entries()) {
         if (activity.label === 'skill.loaded' && activity.status === 'completed') continue;
         if (toolNames.has(activity.label)) continue;
-        entries.push({ id: 'activity:' + (activity.key || index), time: timestamp(activity.timestamp), kind: 'activity', label: activity.label === 'Reason' ? 'Reason Agent · 调度' : activity.label, status: activity.status });
+        entries.push({ id: 'activity:' + (activity.key || index), time: timestamp(activity.timestamp), kind: 'activity', label: activity.label === 'Reason' ? '规划 · 调度' : window.UBOVMTimeline.displayActivityLabel(activity.label), status: activity.status });
       }
-      if (!parts.some(part => part.type === 'text') && execution.streamText) entries.push({ id: 'stream', kind: 'text', label: 'Reason Agent · 输出', text: execution.streamText });
+      if (!parts.some(part => part.type === 'text') && execution.streamText) entries.push({ id: 'stream', kind: 'text', label: '规划 · 输出', text: execution.streamText });
       if (execution.status === 'completed' && execution.result?.summary) entries.push({ id: 'result', kind: 'result', label: '执行总结', text: execution.result.summary, status: 'completed' });
       entries.sort((a, b) => (Number.isFinite(a.time) ? a.time : Infinity) - (Number.isFinite(b.time) ? b.time : Infinity));
       total = entries.length;
@@ -76,12 +78,15 @@
           if (entry.worker) {
             const worker = entry.worker, button = element('button', 'goal-log-worker', worker.name || worker.id); button.type = 'button';
             button.addEventListener('click', () => openWorker(worker.id, button));
-            row.body.replaceChildren(button, element('p', '', worker.description || ''), element('small', '', worker.parentId ? '父 Worker：' + worker.parentId : 'Worker ID：' + worker.id));
+            row.body.replaceChildren(button, element('p', '', worker.description || ''), element('small', '', worker.parentId ? '来自上级任务' : ''));
             const error = typeof worker.error === 'string' ? worker.error : worker.error?.message;
             if (error && entry.id.startsWith('worker-end:')) row.body.append(element('p', 'execution-error', error));
           } else if (entry.part || entry.text) {
             window.UBOVMMessage.update(row.body, entry.text || '', { ...actions, role: 'assistant', parts: entry.part ? [entry.part] : [], streaming: execution.busy && entry.kind === 'text' });
-            if (entry.kind === 'thinking' && row.key === undefined) { const thinking = row.body.querySelector('details'); if (thinking) thinking.open = true; }
+            if (entry.kind === 'thinking' && row.key === undefined && ['running', 'streaming'].includes(entry.part?.status)) {
+              const thinking = row.body.querySelector('details');
+              if (thinking && !thinking.open) thinking.open = true;
+            }
           }
           row.key = key;
         }

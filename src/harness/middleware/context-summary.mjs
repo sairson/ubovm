@@ -147,11 +147,13 @@ export function createContextSummaryMiddleware({
     const cached = await read(key, signal);
     if (cached !== undefined) {
       const { sha256, ...value } = cached ?? {};
-      if (typeof value.text !== 'string' || typeof value.fallback !== 'boolean' || typeof value.partial !== 'boolean' ||
-          !Array.isArray(value.coverage) || sha256 !== hash(json(value))) {
-        throw fail('INVALID_CONTEXT_STATE', 'Stored context summary failed integrity validation');
+      if (typeof value.text === 'string' && typeof value.fallback === 'boolean' && typeof value.partial === 'boolean' &&
+          Array.isArray(value.coverage) && sha256 === hash(json(value))) {
+        return { ...value, artifactId: id };
       }
-      return { ...value, artifactId: id };
+      // Corrupt durable summaries must never steer the agent. Drop the entry and
+      // recompute so a bad cache cannot abort the host turn.
+      report({ type: 'context.summary_cache_invalid', scope, kind, artifactId: id });
     }
     // One visible lifecycle per fresh transform, even when several artifacts
     // need summaries. Reusing cached projections produces no new reminder.
@@ -473,13 +475,34 @@ export function createContextSummaryMiddleware({
         const operation = previous.catch(() => {}).then(async () => {
           check(signal);
           const budget = { calls: 0, operationId: randomUUID(), text: '', fallback: false, truncated: false };
-          const finish = (status, afterTokens) => {
+          const finish = (status, afterTokens, error) => {
+            if (!budget.startedAt && status === 'failed') {
+              budget.startedAt = Date.now();
+              report({ type: 'context.summary_start', scope: event.scope, operationId: budget.operationId, startedAt: budget.startedAt });
+            }
             if (budget.startedAt) report({ type: 'context.summary_end', scope: event.scope, operationId: budget.operationId,
               startedAt: budget.startedAt, endedAt: Date.now(), status, text: budget.text, fallback: budget.fallback,
-              truncated: budget.truncated, beforeTokens: budget.beforeTokens, ...(afterTokens === undefined ? {} : { afterTokens }) });
+              truncated: budget.truncated, beforeTokens: budget.beforeTokens, ...(afterTokens === undefined ? {} : { afterTokens }),
+              ...(error ? { error: { code: error.code, message: error.message, name: error.name } } : {}) });
           };
-          try { const output = await transformInternal(event, signal, budget); if (budget.startedAt) finish('completed', estimateContextTokens(output)); return output; }
-          catch (error) { finish(signal.aborted ? 'interrupted' : 'failed'); throw error; }
+          const fatal = error => signal.aborted || error?.code === 'ABORT_ERR' || error?.name === 'AbortError'
+            || error?.code === 'MIDDLEWARE_CLOSED' || error?.code === 'CONTEXT_BUDGET_EXCEEDED' || error instanceof TypeError;
+          try {
+            const output = await transformInternal(event, signal, budget);
+            if (budget.startedAt) finish('completed', estimateContextTokens(output));
+            return output;
+          } catch (error) {
+            if (fatal(error)) {
+              finish(signal.aborted || error?.code === 'ABORT_ERR' || error?.name === 'AbortError' ? 'interrupted' : 'failed', undefined, error);
+              throw error;
+            }
+            // Compaction is best-effort. Storage or auxiliary-provider failures must
+            // not abort the model turn; continue with the original projection.
+            finish('failed', estimateContextTokens(event.context), error);
+            report({ type: 'context.summary_degraded', scope: event.scope, operationId: budget.operationId,
+              reason: error?.code ?? error?.name ?? 'summary_unavailable', message: error?.message });
+            return copy(event.context);
+          }
         });
         queues.set(event.scope, operation);
         operation.finally(() => { if (queues.get(event.scope) === operation) queues.delete(event.scope); }).catch(() => {});

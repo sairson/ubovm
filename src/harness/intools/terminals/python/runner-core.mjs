@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import * as runtime from '@anthropic-ai/sandbox-runtime';
 import { runLocalProcess } from '../../shared/process/local-process.mjs';
 import { contained } from '../../shared/common.mjs';
-import { pythonPolicy, pythonCommand, privatePythonPaths, workspacePrivatePythonPaths, omitMissingPythonDenyPaths } from './policy.mjs';
+import { pythonPolicy, pythonCommand, privatePythonPaths, workspacePrivatePythonPaths, omitMissingPythonDenyPaths, pythonAllowsAnyHost } from './policy.mjs';
 import { validatePythonPaths, preparePythonOutput, removeEmptyPythonOutput } from './files.mjs';
 import { acquirePythonLease } from './lease.mjs';
 import { grantPythonHelper, assertPythonAclCleanup } from './readiness.mjs';
@@ -71,7 +71,7 @@ export async function executePythonRequest(request, signal, observer = () => {},
     if (platform === 'win32') policy.windows = { srtWin: { path: backend.VENDORED_SRT_WIN_EXE } };
     initialized = true;
     if (platform === 'win32') grantPythonHelper(backend, sandboxUserSid, srtWin);
-    await manager.initialize(policy); signal.throwIfAborted();
+    await manager.initialize(policy, pythonAllowsAnyHost(executionRequest.allowedDomains) ? async () => true : undefined); signal.throwIfAborted();
     const shell = platform === 'win32' ? 'powershell' : '/bin/sh';
     const descriptor = await manager.wrapWithSandboxArgv(pythonCommand(request.executable, payload, platform), shell, undefined, signal, executionRequest.cwd);
     signal.throwIfAborted(); await validatePythonPaths(request, { requireOutput: true });

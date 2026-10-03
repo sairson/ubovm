@@ -2,18 +2,19 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
-const { createBrowserInstaller } = require('../../../host/system/browser-install.cjs');
+const { createBrowserInstaller, parseInstallProgress } = require('../../../host/system/browser-install.cjs');
 
-function fixture() {
+function fixture(options = {}) {
   let installed = false;
   const children = [], calls = [];
   const requireSDK = () => ({ chromium: { executablePath: () => '/cache/chrome.exe' } });
   requireSDK.resolve = () => '/sdk/node_modules/playwright-core/package.json';
-  const installer = createBrowserInstaller({ load: () => requireSDK, exists: () => installed, run: (...args) => {
+  const installer = createBrowserInstaller({ load: () => requireSDK, exists: path => installed || (options.exists?.(path) ?? false), run: (...args) => {
     calls.push(args);
     const child = new EventEmitter(); child.stdout = new EventEmitter(); child.stderr = new EventEmitter();
+    child.kill = () => { child.killed = true; };
     children.push(child); return child;
-  } });
+  }, ...options });
   return { installer, children, calls, installed: () => { installed = true; } };
 }
 
@@ -72,6 +73,52 @@ test('installed browser is the fallback while explicit connections remain unchan
   for (const browser of [false, { channel: 'msedge' }, { executablePath: '/custom' }, { cdpEndpoint: 'http://localhost:9222' }, { launchOptions: { channel: 'chrome' } }]) {
     const custom = { intools: { browser } }; assert.equal(f.installer.configure(custom), custom);
   }
+});
+
+test('progress parser extracts percent and phase from Playwright CLI output', () => {
+  assert.deepEqual(parseInstallProgress('Downloading Chromium 12.3%'), { percent: 12, phase: 'download', message: '正在下载… 12%' });
+  assert.equal(parseInstallProgress('extracting package 80%', { percent: 40 }).percent, 80);
+  assert.equal(parseInstallProgress('extracting package 80%', { percent: 40 }).phase, 'install');
+  assert.equal(parseInstallProgress('still working', { percent: 55 }).percent, 55);
+});
+
+test('install options report progress and cancel kills the child process', async () => {
+  const f = fixture(), progress = [];
+  const attempt = f.installer.install({
+    onLog: () => {},
+    onProgress: update => progress.push(update.percent)
+  });
+  f.children[0].stdout.emit('data', Buffer.from('Downloading Chromium 41%'));
+  assert.equal(f.installer.status().percent, 41);
+  assert.ok(f.installer.cancel());
+  f.children[0].emit('close', 1);
+  await assert.rejects(attempt, error => error.cancelled && /取消/.test(error.message));
+  assert.deepEqual(progress, [41]);
+  assert.equal(f.children[0].killed, true);
+});
+
+test('cached executable path keeps status ready when runtime load fails', () => {
+  const installer = createBrowserInstaller({
+    load: () => { throw new Error('runtime missing'); },
+    exists: path => path === '/cached/chrome',
+    cachedPath: '/cached/chrome'
+  });
+  assert.deepEqual(installer.status(), { state: 'ready', executablePath: '/cached/chrome' });
+});
+
+test('status probes are cached until install or ready-path changes', () => {
+  let existsCalls = 0;
+  const requireSDK = () => ({ chromium: { executablePath: () => '/cache/chrome.exe' } });
+  requireSDK.resolve = () => '/sdk/package.json';
+  const installer = createBrowserInstaller({
+    load: () => requireSDK,
+    exists: path => { existsCalls++; return path === '/cache/chrome.exe'; }
+  });
+  assert.equal(installer.status().state, 'ready');
+  const afterFirst = existsCalls;
+  assert.ok(afterFirst > 0);
+  assert.equal(installer.status().state, 'ready');
+  assert.equal(existsCalls, afterFirst, 'stable status must reuse the prior probe');
 });
 
 test('timeout retains the installation lock until the old process actually closes', async () => {

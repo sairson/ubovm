@@ -111,38 +111,89 @@ test('invalid cancellation signals never send work or consume reserved control c
   assert.deepEqual(methods, ['cancel', 'close']);
 });
 
-test('local scheduler stalls renew the probe while a genuinely silent peer still times out', () => {
+test('local scheduler stalls renew the probe; soft stall precedes a hard kill', () => {
   const { EventEmitter } = require('node:events');
   const { runInNewContext } = require('node:vm');
   const { readFileSync } = require('node:fs');
-  let now = 0, tick, failure;
+  let now = 0, tick, failure, stalls = [];
   const module = { exports: {} }, sent = [], port = new EventEmitter();
   port.postMessage = message => sent.push(message);
   runInNewContext(readFileSync(require.resolve('../../../../harness/ide/runtime/thread-rpc.cjs'), 'utf8'), {
-    module, require: () => require('../../../../harness/ide/runtime/errors.cjs'), AbortController, AbortSignal,
+    module, require: () => require('../../../../harness/ide/runtime/errors.cjs'), AbortController, AbortSignal, Promise,
     Date: { now: () => now }, setInterval: fn => { tick = fn; return { unref() {} }; }, clearInterval() {}
   });
-  const rpc = module.exports.createRPC(port, () => {}, { heartbeatInterval: 10, heartbeatTimeout: 60, onClose: error => { failure = error; } });
+  const rpc = module.exports.createRPC(port, () => {}, {
+    heartbeatInterval: 10, heartbeatTimeout: 60, heartbeatKillTimeout: 120,
+    onClose: error => { failure = error; },
+    onStallChange: stalled => stalls.push(stalled)
+  });
   try {
     now = 10; tick(); const old = sent.at(-1).id;
     for (now = 20; now <= 50; now += 10) tick();
     now = 80; tick();
     assert.equal(failure, undefined, '30ms local stall must not time out the old 70ms probe');
     assert.notEqual(sent.at(-1).id, old);
-    port.emit('message', { type: 'pong', id: old });
-    for (now = 90; now <= 140; now += 10) tick();
-    assert.equal(failure.code, 'AGENT_HEARTBEAT_TIMEOUT', 'regular ticks still detect a silent peer');
+    // Answer the current probe so lastActivity advances without relying on a retired id.
+    port.emit('message', { type: 'pong', id: sent.at(-1).id });
+    assert.equal(rpc.isStalled(), false);
+    const aliveAt = now;
+    // Silence past heartbeatTimeout soft-stalls without killing.
+    while (now < aliveAt + 90) { now += 10; tick(); }
+    assert.equal(failure, undefined, 'soft stall must keep the transport open');
+    assert.equal(rpc.isStalled(), true);
+    assert.equal(stalls.includes(true), true);
+    // Silence past heartbeatKillTimeout finally closes.
+    while (!failure && now < aliveAt + 400) { now += 10; tick(); }
+    assert.equal(failure?.code, 'AGENT_HEARTBEAT_TIMEOUT', 'prolonged silence still kills the peer');
   } finally { rpc.close(); }
 });
 
-test('heartbeat closes a silent live port and rejects pending work', async () => {
+test('heartbeat soft-stalls before closing a silent live port', async () => {
   const { EventEmitter } = require('node:events');
   const port = new EventEmitter(); port.postMessage = () => {};
-  let failure;
-  const rpc = createRPC(port, () => {}, { heartbeatInterval: 10, heartbeatTimeout: 60, onClose: error => { failure = error; } });
-  const keepAlive = setTimeout(() => {}, 1000);
-  try { await assert.rejects(rpc.call('stuck'), { code: 'AGENT_HEARTBEAT_TIMEOUT' }); assert.equal(failure.code, 'AGENT_HEARTBEAT_TIMEOUT'); }
-  finally { clearTimeout(keepAlive); rpc.close(); }
+  let failure, stalled;
+  const rpc = createRPC(port, () => {}, {
+    heartbeatInterval: 10, heartbeatTimeout: 40, heartbeatKillTimeout: 120,
+    onClose: error => { failure = error; },
+    onStallChange: value => { stalled = value; }
+  });
+  const keepAlive = setTimeout(() => {}, 2000);
+  try {
+    const pending = rpc.call('stuck');
+    await new Promise(resolve => setTimeout(resolve, 70));
+    assert.equal(stalled, true, 'first silence window soft-stalls');
+    assert.equal(failure, undefined, 'soft stall must not close the transport');
+    assert.equal(rpc.isStalled(), true);
+    await assert.rejects(pending, { code: 'AGENT_HEARTBEAT_TIMEOUT' });
+    assert.equal(failure.code, 'AGENT_HEARTBEAT_TIMEOUT');
+  } finally { clearTimeout(keepAlive); rpc.close(); }
+});
+
+test('peer RPC traffic clears stall without requiring the matching pong', () => {
+  const { EventEmitter } = require('node:events');
+  const { runInNewContext } = require('node:vm');
+  const { readFileSync } = require('node:fs');
+  let now = 0, tick, failure, stalls = [];
+  const module = { exports: {} }, port = new EventEmitter();
+  port.postMessage = () => {};
+  runInNewContext(readFileSync(require.resolve('../../../../harness/ide/runtime/thread-rpc.cjs'), 'utf8'), {
+    module, require: () => require('../../../../harness/ide/runtime/errors.cjs'), AbortController, AbortSignal, Promise,
+    Date: { now: () => now }, setInterval: fn => { tick = fn; return { unref() {} }; }, clearInterval() {}
+  });
+  const rpc = module.exports.createRPC(port, () => 'ok', {
+    heartbeatInterval: 10, heartbeatTimeout: 40, heartbeatKillTimeout: 200,
+    onClose: error => { failure = error; },
+    onStallChange: stalled => stalls.push(stalled)
+  });
+  try {
+    now = 10; tick();
+    for (now = 20; now <= 60; now += 10) tick();
+    assert.equal(rpc.isStalled(), true);
+    port.emit('message', { type: 'request', id: 1, method: 'snapshot', args: [] });
+    assert.equal(rpc.isStalled(), false, 'non-pong traffic proves the peer is alive');
+    assert.equal(failure, undefined);
+    assert.equal(stalls.at(-1), false);
+  } finally { rpc.close(); }
 });
 
 test('heartbeat remains responsive even while the request budget is exhausted', async t => {
@@ -293,7 +344,8 @@ test('invalid capacity and heartbeat settings fail before attaching transport li
     { maxPending: NaN }, { maxActive: Infinity }, { maxControl: 0 },
     { maxPending: 1.5 }, { heartbeatInterval: -1 }, { heartbeatInterval: 2147483648 },
     { heartbeatTimeout: NaN }, { heartbeatTimeout: 0 },
-    { heartbeatInterval: 10, heartbeatTimeout: 10 }
+    { heartbeatInterval: 10, heartbeatTimeout: 10 },
+    { heartbeatInterval: 10, heartbeatTimeout: 20, heartbeatKillTimeout: 10 }
   ]) {
     const port = new EventEmitter(); port.postMessage = () => {};
     assert.throws(() => createRPC(port, () => {}, settings), TypeError);

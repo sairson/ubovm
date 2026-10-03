@@ -4,6 +4,8 @@ import { Type } from 'typebox';
 import { createModelClient } from '../../model.mjs';
 import { HarnessDatabase } from '../../blackboard/database/database.mjs';
 import { createInternalTools, MemoryStore } from '../../intools/index.mjs';
+import { flagHelpProperties, withProgressiveDisclosure } from '../../intools/shared/disclosure.mjs';
+import { READ_WORKER_RESULT_CATALOG, READ_WORKER_EVIDENCE_CATALOG } from '../../intools/shared/tool-catalogs.mjs';
 import { createContextSummaryMiddleware } from '../../middleware/context-summary.mjs';
 import { createMcpMiddleware } from '../../middleware/mcp.mjs';
 import { createSkillsMiddleware } from '../../middleware/skills.mjs';
@@ -28,7 +30,7 @@ function initialHistory(messages, client, text) {
   return history;
 }
 
-/** One conversational turn: Chat -> optional spawned Swarm Worker tool loops -> Chat. */
+/** One conversational turn: Chat coordinates Swarm Workers by default, then replies. */
 export async function runCollaboration({ configuration = {}, sessionId, directory, workspaceRoots = [], messages = [], text, context, signal, onEvent, requestToolApproval, registerSteering } = {}) {
   if (signal !== undefined && !(signal instanceof AbortSignal)) throw new TypeError('signal must be an AbortSignal');
   signal?.throwIfAborted();
@@ -129,10 +131,15 @@ export async function runCollaboration({ configuration = {}, sessionId, director
     if (configuration.mcp) mcp = await createMcpMiddleware({ ...configuration.mcp, signal: turnSignal });
     const workspaceTools = await createWorkspaceTools(workspaceRoots);
     const getWorkerEvidence = workerId => load(`collaboration:worker:${workerId}:pending-turn`);
-    const resultTool = ownerId => ({
+    const resultTool = ownerId => withProgressiveDisclosure({
       name: 'read_worker_result', label: 'Read worker result',
-      description: 'Read a completed worker result in character pages without rerunning work. You may read descendants and your explicit dependencies. Follow nextOffset until null. sourceTruncated means only a legacy summary remains; verify missing details in shared notes or files.',
-      parameters: Type.Object({ worker_id: Type.String(), offset: Type.Optional(Type.Integer({ minimum: 0 })), limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 8192 })) }, { additionalProperties: false }),
+      description: READ_WORKER_RESULT_CATALOG.description,
+      parameters: Type.Object({
+        worker_id: Type.Optional(Type.String()),
+        offset: Type.Optional(Type.Integer({ minimum: 0 })),
+        limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 8192 })),
+        ...flagHelpProperties()
+      }, { additionalProperties: false }),
       async execute(_id, input, resultSignal) {
         resultSignal?.throwIfAborted();
         const offset = input.offset ?? 0, limit = input.limit ?? 4096;
@@ -155,11 +162,16 @@ export async function runCollaboration({ configuration = {}, sessionId, director
           nextOffset: next < text.length ? next : null, sourceTruncated: !complete && target?.resultTruncated === true };
         return { content: [{ type: 'text', text: JSON.stringify(value) }], details: value };
       }
-    });
-    const evidenceTool = ownerId => ({
+    }, { ...READ_WORKER_RESULT_CATALOG, mode: 'flag' });
+    const evidenceTool = ownerId => withProgressiveDisclosure({
       name: 'read_worker_evidence', label: 'Read worker execution evidence',
-      description: 'Read durable tool-call evidence from a failed or interrupted descendant without restarting it. Running calls may have unknown effects. Paginate with nextOffset to inspect all retained records.',
-      parameters: Type.Object({ worker_id: Type.String(), offset: Type.Optional(Type.Integer({ minimum: 0 })), limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 32 })) }, { additionalProperties: false }),
+      description: READ_WORKER_EVIDENCE_CATALOG.description,
+      parameters: Type.Object({
+        worker_id: Type.Optional(Type.String()),
+        offset: Type.Optional(Type.Integer({ minimum: 0 })),
+        limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 32 })),
+        ...flagHelpProperties()
+      }, { additionalProperties: false }),
       async execute(_id, input, evidenceSignal) {
         evidenceSignal?.throwIfAborted();
         const offset = input.offset ?? 0, limit = input.limit ?? 8;
@@ -178,7 +190,7 @@ export async function runCollaboration({ configuration = {}, sessionId, director
           tools: tools.slice(offset, next), total: tools.length, nextOffset: next < tools.length ? next : null };
         return { content: [{ type: 'text', text: JSON.stringify(value) }], details: value };
       }
-    });
+    }, { ...READ_WORKER_EVIDENCE_CATALOG, mode: 'flag' });
     const toolsFor = async (workerId, workerSignal) => {
       const binding = { node: { id: workerId }, workerId, signal: workerSignal };
       workerSignal.throwIfAborted();
@@ -191,6 +203,7 @@ export async function runCollaboration({ configuration = {}, sessionId, director
           ...(autonomous ? { modelProfile: Type.Optional(Type.String({ minLength: 1, maxLength: 86 })) } : {}),
         }, { additionalProperties: false }),
         execute: async (id, input, signal) => {
+          if (input?.help === true) return tool.execute(id, input, signal);
           const profile = project.get(input.profile);
           const modelProfile = selectSpawn(input, profile);
           selectModel(profile);
@@ -205,6 +218,7 @@ export async function runCollaboration({ configuration = {}, sessionId, director
         ...skills ? await skills.tools(binding) : [], ...summary ? await summary.tools(binding) : [], ...extra, runtime.tool, project.tool, evidenceTool(workerId), resultTool(workerId), ...swarmTools];
       return tools.map(tool => tool.name === 'inspect_harness' ? { ...tool,
         execute: async (id, input, signal) => {
+          if (input?.help === true) return tool.execute(id, input, signal);
           const response = await tool.execute(id, input, signal);
           const value = { ...response.details, contextCache: summary?.cacheStats() ?? null, backendSelection, availableModels };
           return { content: [{ type: 'text', text: JSON.stringify(value) }], details: value };
@@ -212,6 +226,7 @@ export async function runCollaboration({ configuration = {}, sessionId, director
       } : tool.name !== 'manage_harness_project' ? tool : { ...tool,
         description: `${tool.description} ${autonomous ? `Optional modelProfile selects a configured model. Available models: ${JSON.stringify(availableModels)}.` : 'Backend selection is fixed; modelProfile overrides are disabled.'}`,
         execute: async (id, input, signal) => {
+          if (input?.action === 'help') return tool.execute(id, input, signal);
           if (input.action !== 'validate') return tool.execute(id, input, signal);
           const checked = await project.manage(input, signal);
           const profiles = checked.profiles.map(profile => {

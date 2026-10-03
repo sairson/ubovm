@@ -7,7 +7,7 @@ test('running session glyph animates without rotating its row and retains select
   const browser = await chromium.launch({ channel: 'msedge', headless: true });
   t.after(() => browser.close());
   const page = await browser.newPage({ viewport: { width: 320, height: 360 } });
-  await page.setContent('<div class="monaco-workbench" style="--vscode-list-activeSelectionBackground:rgb(20, 40, 60);--vscode-sideBar-background:#242826"><div class="ubovm-sessions-body"><div class="ubovm-session-tree"><div class="monaco-list"><div class="monaco-list-row" aria-label="测试，当前会话，运行中，协助模式"><div class="monaco-tl-row"><span class="custom-view-tree-node-item-icon codicon codicon-loading codicon-modifier-spin"></span><span>正在运行的会话</span></div></div></div></div></div></div>');
+  await page.setContent('<html class="ubovm-content-ready"><body><div class="monaco-workbench" style="--vscode-list-activeSelectionBackground:rgb(20, 40, 60);--vscode-list-activeSelectionForeground:#f0f6f2;--vscode-list-inactiveSelectionBackground:#314339;--vscode-list-hoverBackground:#2c352f;--vscode-sideBar-background:#1a1e1c;--vscode-foreground:#e4e8e3;--vscode-focusBorder:#a3c0ae"><div class="ubovm-sessions-body" data-active-mode="assist"><div class="ubovm-session-tree"><div class="monaco-list"><div class="monaco-list-row" aria-label="测试，当前会话，运行中，协助模式"><div class="monaco-tl-row"><span class="custom-view-tree-node-item-icon codicon codicon-loading codicon-modifier-spin"></span><span>正在运行的会话</span></div></div></div></div></div></div></body></html>');
   await page.addStyleTag({ path: 'vendor/vscode/src/vs/base/browser/ui/codicons/codicon/codicon-modifiers.css' });
   await page.addStyleTag({ content: '.codicon-loading::before { content: "◌"; }' });
   await page.addStyleTag({ path: 'src/renderer/workbench/workbench.css' });
@@ -15,8 +15,30 @@ test('running session glyph animates without rotating its row and retains select
   assert.equal(await icon.evaluate(el => getComputedStyle(el).animationName), 'none');
   assert.equal(await icon.evaluate(el => getComputedStyle(el, '::before').animationName), 'ubovm-loading-turn');
   for (const dark of [false, true]) {
-    await page.locator('.monaco-workbench').evaluate((el, dark) => el.classList.toggle('vs-dark', dark), dark);
-    assert.notEqual(await page.locator('.monaco-tl-row').evaluate(el => getComputedStyle(el).backgroundColor), 'rgba(0, 0, 0, 0)');
+    await page.locator('.monaco-workbench').evaluate((el, dark) => {
+      el.classList.toggle('vs-dark', dark);
+      el.classList.toggle('vs', !dark);
+    }, dark);
+    const row = await page.locator('.monaco-tl-row').evaluate(el => {
+      const style = getComputedStyle(el);
+      return { shadow: style.boxShadow, color: style.color, weight: style.fontWeight };
+    });
+    assert.match(row.shadow, /inset/);
+    assert.equal(row.color, 'rgb(240, 246, 242)');
+    assert.ok(Number.parseInt(row.weight, 10) >= 500);
+    if (!dark) continue;
+    const tokens = await page.locator('.ubovm-sessions-body').evaluate(el => {
+      const style = getComputedStyle(el);
+      return {
+        selected: style.getPropertyValue('--ubovm-nav-selected').trim(),
+        hover: style.getPropertyValue('--ubovm-nav-hover').trim(),
+        accent: style.getPropertyValue('--ubovm-nav-accent').trim(),
+      };
+    });
+    // Dark mode should use solid theme list surfaces, not washed-out mixes.
+    assert.equal(tokens.selected, '#314339');
+    assert.equal(tokens.hover, '#2c352f');
+    assert.equal(tokens.accent, '#a3c0ae');
   }
   await page.emulateMedia({ reducedMotion: 'reduce' });
   assert.equal(await icon.evaluate(el => getComputedStyle(el, '::before').animationName), 'none');

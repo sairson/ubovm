@@ -13,7 +13,7 @@ const assets = Object.freeze({
   ]),
   scripts: Object.freeze([
     'runtime-guard.js', 'errors.js', 'connection-monitor.js', 'state-order.js', 'settings/settings-ui.js', 'delivery/delivery-view.js', 'vendor/marked.umd.js', 'messages/message-markdown.js',
-    'messages/message-view.js', 'messages/background-tasks.js', 'messages/code-changes.js', 'messages/conversation-outline.js', 'workers/worker-panel.js', 'goal/execution-log.js', 'goal/exploration-model.js', 'goal/blackboard-graph.js', 'preview/html-preview.js', 'ui/modal-dialog.js', 'project/project-switcher.js', 'app.js'
+    'messages/timeline-parts.js', 'messages/message-view.js', 'messages/background-tasks.js', 'messages/code-changes.js', 'messages/conversation-outline.js', 'workers/worker-panel.js', 'goal/execution-log.js', 'goal/exploration-model.js', 'goal/blackboard-graph.js', 'preview/html-preview.js', 'ui/modal-dialog.js', 'project/project-switcher.js', 'app.js'
   ])
 });
 const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]);

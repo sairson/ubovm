@@ -158,6 +158,30 @@ test('busy inputs are persisted FIFO with captured context, and drain one at a t
   assert.equal(f.starts[2].text, 'third');
 });
 
+test('a lone follow-up during a steerable run is delivered immediately without starting another turn', async () => {
+  const f = await fixture();
+  await f.send('first');
+  const received = [];
+  f.sandbox.harness.steer = async (id, input) => { received.push({ sessionId: id, ...input }); return true; };
+  await f.send('adjust now');
+  assert.equal(received.length, 1);
+  assert.equal(received[0].text, 'adjust now');
+  assert.equal(received[0].context.content, 'captured attachment');
+  assert.equal(f.starts.length, 1);
+  assert.equal(f.sessions.current().inputQueue.length, 0);
+  const steered = f.sessions.current().messages.find(message => message.text === 'adjust now');
+  assert.equal(steered.steeringStatus, 'accepted');
+});
+
+test('follow-ups join the queue when earlier inputs are already waiting', async () => {
+  const f = await fixture();
+  await f.send('first'); await f.send('queued');
+  f.sandbox.harness.steer = async () => assert.fail('must not jump the waiting queue');
+  await f.send('also later');
+  assert.deepEqual(f.sessions.current().inputQueue.map(item => item.text), ['queued', 'also later']);
+  assert.equal(f.starts.length, 1);
+});
+
 test('completion bursts share one pending input dispatch per session', async () => {
   const f = await fixture(); await f.send('first'); await f.send('queued'); f.finish();
   f.sandbox.scheduleInputs(f.id);

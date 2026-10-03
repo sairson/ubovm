@@ -532,6 +532,13 @@
 		&.show-message {
 			background-color: color-mix(in srgb, var(--vscode-editor-background) 60%, transparent);
 		}
+
+		/* Agent lock must intercept pointer events; the WCV is also hidden. */
+		&.agent-control.visible {
+			pointer-events: all;
+			cursor: not-allowed;
+			background-color: color-mix(in srgb, var(--vscode-editor-background) 55%, transparent);
+		}
 	}
 
 	.browser-overlay-paused-message {

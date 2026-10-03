@@ -1,6 +1,8 @@
 import { open, readdir, realpath, stat } from 'node:fs/promises';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { Type } from 'typebox';
+import { flagHelpProperties, withProgressiveDisclosure } from '../intools/shared/disclosure.mjs';
+import { WORKSPACE_LIST_CATALOG, WORKSPACE_READ_CATALOG } from '../intools/shared/tool-catalogs.mjs';
 
 const failure = (code, message) => Object.assign(new Error(message), { code });
 const inside = (root, path) => { const value = relative(root, path); return value === '' || value !== '..' && !value.startsWith(`..${sep}`) && !isAbsolute(value); };
@@ -24,10 +26,15 @@ export async function createWorkspaceTools(workspaceRoots = []) {
   }
   const base = { root: Type.Optional(Type.Integer({ minimum: 0 })), path: Type.Optional(Type.String()) };
   return [
-    {
+    withProgressiveDisclosure({
       name: 'list_workspace_files', recovery: 'retry-read-only', label: 'List workspace files',
-      description: `List one directory inside an open workspace, up to 500 entries per page. Continue with nextOffset until it is null. Read only; no shell access. Roots: ${JSON.stringify(roots.map((path, root) => ({ root, path })))}`,
-      parameters: Type.Object({ ...base, offset: Type.Optional(Type.Integer({ minimum: 0 })), limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 500 })) }, { additionalProperties: false }),
+      description: `${WORKSPACE_LIST_CATALOG.description} Roots: ${JSON.stringify(roots.map((path, root) => ({ root, path })))}`,
+      parameters: Type.Object({
+        ...base,
+        offset: Type.Optional(Type.Integer({ minimum: 0 })),
+        limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 500 })),
+        ...flagHelpProperties()
+      }, { additionalProperties: false }),
       async execute(_id, input, signal) {
         const offset = input.offset ?? 0, limit = input.limit ?? 500;
         if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 500) throw new TypeError('Invalid directory page');
@@ -37,12 +44,19 @@ export async function createWorkspaceTools(workspaceRoots = []) {
         const page = entries.slice(offset, offset + limit), nextOffset = offset + page.length < entries.length ? offset + page.length : null;
         return result({ root: target.root, path: relative(roots[target.root], target.path) || '.', entries: page.map(item => ({ name: item.name, type: item.isSymbolicLink() ? 'symlink' : item.isDirectory() ? 'directory' : item.isFile() ? 'file' : 'other' })), offset, totalEntries: entries.length, nextOffset, truncated: nextOffset !== null });
       }
-    },
-    {
+    }, { ...WORKSPACE_LIST_CATALOG, mode: 'flag' }),
+    withProgressiveDisclosure({
       name: 'read_workspace_file', recovery: 'retry-read-only', label: 'Read workspace file',
-      description: 'Read UTF-8 text from an open workspace file. Uses one-based line numbers and returns at most 400 lines / 128 KiB. Continue with nextLine until it is null. Only the first 4 MiB are accessible; fileTruncated or lineTruncated indicate omitted content that cannot be recovered by advancing lines. Read only; no shell access.',
-      parameters: Type.Object({ ...base, path: Type.String(), startLine: Type.Optional(Type.Integer({ minimum: 1 })), lineCount: Type.Optional(Type.Integer({ minimum: 1, maximum: 400 })) }, { additionalProperties: false }),
+      description: WORKSPACE_READ_CATALOG.description,
+      parameters: Type.Object({
+        ...base,
+        path: Type.Optional(Type.String()),
+        startLine: Type.Optional(Type.Integer({ minimum: 1 })),
+        lineCount: Type.Optional(Type.Integer({ minimum: 1, maximum: 400 })),
+        ...flagHelpProperties()
+      }, { additionalProperties: false }),
       async execute(_id, input, signal) {
+        requirePath(input.path);
         const target = await locate(input, signal);
         const startLine = input.startLine ?? 1, lineCount = input.lineCount ?? 200;
         if (!Number.isSafeInteger(startLine) || startLine < 1 || !Number.isSafeInteger(lineCount) || lineCount < 1 || lineCount > 400) throw new TypeError('Invalid line range');
@@ -75,6 +89,10 @@ export async function createWorkspaceTools(workspaceRoots = []) {
             truncated: fileTruncated || lineTruncated || nextLine !== null, fileTruncated, lineTruncated, accessibleLines: lines.length, nextLine });
         } finally { await handle.close(); }
       }
-    }
+    }, { ...WORKSPACE_READ_CATALOG, mode: 'flag' })
   ];
+}
+
+function requirePath(path) {
+  if (typeof path !== 'string' || !path.trim()) throw failure('INVALID_WORKSPACE_PATH', 'path is required');
 }

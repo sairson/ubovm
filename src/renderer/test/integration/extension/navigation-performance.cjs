@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const { readFileSync } = require('node:fs');
 const vm = require('node:vm');
 const source = readFileSync(require.resolve('../../../extension.cjs'), 'utf8');
-const navigation = source.slice(source.indexOf('  function selectConversation('), source.indexOf('  async function deleteConversation('));
+const navigation = source.slice(source.indexOf('  async function lockConversationChrome()'), source.indexOf('  async function deleteConversation('));
 
 function fixture() {
   let current = 'first';
@@ -13,6 +13,16 @@ function fixture() {
     messageQueue: Promise.resolve(),
     shuttingDown: false,
     sessionsView: undefined,
+    settingsPage: '',
+    settingsOpenRevision: 0,
+    settingsOpening: 0,
+    settingsSection: 'model',
+    sidebarChanged: { fire() {} },
+    welcome: undefined,
+    chromeLockedSessionId: undefined,
+    chromeLockWatchdog: undefined,
+    setTimeout: () => 1,
+    clearTimeout() {},
     sessions: {
       summary: () => ({ id: current }),
       async select(id) { calls.push('select:' + id); current = id; },
@@ -20,7 +30,10 @@ function fixture() {
     },
     async restoreExecution() { calls.push('restore:' + current); },
     async openWelcome() { calls.push('open:' + current); },
-    publishState() { calls.push('publish:' + current); return { id: current }; }
+    publishState() { calls.push('publish:' + current); return { id: current }; },
+    vscode: { commands: { executeCommand: async (command, key, value) => {
+      if (command === 'setContext' && key === 'ubovm.contentReady' && value === false) calls.push('lock');
+    } } }
   };
   vm.runInNewContext(navigation, sandbox);
   return { sandbox, calls };
@@ -30,7 +43,7 @@ test('conversation navigation restores once and publishes one final snapshot', a
   const f = fixture();
   const result = await f.sandbox.selectConversation('second');
   assert.equal(result, undefined);
-  assert.deepEqual(f.calls, ['select:second', 'open:second', 'restore:second', 'publish:second']);
+  assert.deepEqual(f.calls, ['select:second', 'lock', 'open:second', 'publish:second', 'restore:second', 'publish:second']);
 });
 
 test('reopening the selected conversation skips execution recovery and preserves related validation', async () => {

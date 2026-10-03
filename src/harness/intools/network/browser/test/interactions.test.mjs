@@ -23,8 +23,10 @@ root.querySelector('#nested').attachShadow({mode:'open'}).innerHTML = '<button>N
 
 test('browser schema exposes enhanced interactions', () => {
   assert.ok(BROWSER_ACTIONS.includes('check'));
+  assert.ok(BROWSER_ACTIONS.includes('help'));
   for (const action of ['popup_policy', 'console']) assert.ok(BROWSER_ACTIONS.includes(action));
-  for (const name of ['checked', 'values', 'full_page', 'allow_popups', 'level']) assert.ok(browserActionParameters.properties[name]);
+  for (const name of ['checked', 'values', 'full_page', 'allow_popups', 'level', 'topic']) assert.ok(browserActionParameters.properties[name]);
+  assert.equal(browserActionParameters.properties.action.type, 'string');
 });
 
 test('real Chromium browser interactions', { skip: !executablePath && 'Set BROWSER_TEST_EXECUTABLE to run browser integration tests' }, async t => {

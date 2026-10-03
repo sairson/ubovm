@@ -28,10 +28,11 @@ const { readTheme, setTheme } = require('./host/system/theme.cjs');
 
 let shutdownHarness = async () => {};
 
-const UI_REVISION = 10;
+const UI_REVISION = 11;
 const UI_KEYS = [
   'workbench.colorTheme', 'window.autoDetectColorScheme', 'window.titleBarStyle',
   'window.menuBarVisibility', 'window.enableMenuBarMnemonics', 'window.customMenuBarAltFocus', 'window.commandCenter', 'window.density.editorTabHeight',
+  'workbench.browser.showInTitleBar',
   'workbench.experimental.modernUI', 'workbench.experimental.modernUIUppercaseViewHeaders',
   'workbench.activityBar.location', 'workbench.sideBar.location',
   'workbench.secondarySideBar.defaultVisibility', 'workbench.secondarySideBar.forceMaximized',
@@ -61,7 +62,7 @@ async function activate(context) {
   let layoutTimer;
   let sessionsView;
   let settingsPage = '', settingsSection = 'model';
-  const settingsNavigation = [['model', '模型', 'settings-gear'], ['ssh', 'SSH 连接', 'remote'], ['web', '浏览器与搜索', 'globe'], ['python', 'Python 执行', 'terminal'], ['summary', '上下文与摘要', 'note'], ['reason', '思考Agent', 'list-tree'], ['worker', '执行Agent', 'play']];
+  const settingsNavigation = [['model', '模型', 'settings-gear'], ['ssh', 'SSH 连接', 'remote'], ['web', '浏览器与搜索', 'globe'], ['python', 'Python 执行', 'terminal'], ['summary', '上下文与摘要', 'note'], ['reason', '规划设置', 'list-tree'], ['worker', '任务执行', 'play']];
   const sidebarChanged = new vscode.EventEmitter();
   let publishedMode;
   let folderCheckTimer;
@@ -77,6 +78,8 @@ async function activate(context) {
   let settingsOpenRevision = 0;
   let settingsOpening = 0;
   let recovering = true;
+  let chromeLockedSessionId;
+  let chromeLockWatchdog;
   let switchingTheme = false;
   let recoveryTimer;
   let releaseFirstPaint;
@@ -95,7 +98,7 @@ async function activate(context) {
   const modelConfiguration = createModelConfiguration(vscode, context);
   const settingsConfiguration = createSettingsConfiguration(vscode, context);
   const output = vscode.window.createOutputChannel('UBOVM');
-  context.subscriptions.push(new vscode.Disposable(() => { shuttingDown = true; clearTimeout(layoutTimer); clearTimeout(recoveryTimer); releaseFirstPaint(); executionPublisher?.dispose(); void shutdownHarness().catch(error => output.appendLine(String(error))); }), output);
+  context.subscriptions.push(new vscode.Disposable(() => { shuttingDown = true; clearTimeout(layoutTimer); clearTimeout(recoveryTimer); clearTimeout(chromeLockWatchdog); releaseFirstPaint(); executionPublisher?.dispose(); void shutdownHarness().catch(error => output.appendLine(String(error))); }), output);
   // Persist commits are frequent during streaming; coalesce so the host thread
   // is not rebuilding full conversation snapshots on every message write.
   const sessions = createSessions(vscode, context, () => schedulePublishState(), { isBusy: id => harness?.isBusy(id) === true, createWorkspace: createDefaultWorkspace });
@@ -119,13 +122,13 @@ async function activate(context) {
   context.subscriptions.push(workerPanel, vscode.window.registerWebviewViewProvider('ubovm.workerLogs', workerPanel, { webviewOptions: { retainContextWhenHidden: true } }));
   executionPublisher = createExecutionPublisher({
     currentId: () => sessions.summary().id,
-    canPublish: () => !shuttingDown && (workerPanel.visible || welcomeReady && welcome?.visible === true && !settingsPage),
+    canPublish: () => !shuttingDown && (workerPanel.visible === true || conversationNeedsSnapshot()),
     readExecution: () => assistantExecution(sessions.summary()),
     postMessage: message => {
       // Worker delivery owns its own bounded queue. A slow or closing sidebar
       // must not hold the main conversation's streaming publication open.
       if (message.type === 'executionState') void workerPanel.publish({ sessionId: message.conversationId, workers: message.execution.workers || [], error: message.execution.workerViewError?.message });
-      if (!(welcomeReady && welcome?.visible === true && !settingsPage)) return undefined;
+      if (!conversationNeedsSnapshot()) return undefined;
       // Full snapshots already carry a revision from publishState; do not burn a second slot.
       const revision = Number.isInteger(message.viewRevision) ? message.viewRevision : ++viewRevision;
       return welcome.webview.postMessage({ ...message, viewRevision: revision });
@@ -144,22 +147,58 @@ async function activate(context) {
         void vscode.window.showWarningMessage('Python 沙箱自动初始化失败：' + errorText(error) + '。可运行“UBOVM: 初始化 Python 沙箱”重试。');
       });
   }
-  const browserInstaller = require('./host/system/browser-install.cjs').createBrowserInstaller({ sdkPath: sdkPath ?? sdkCandidates[0] });
+  const { createBrowserInstaller, BROWSER_PATH_KEY } = require('./host/system/browser-install.cjs');
+  const { createIdeBrowserHost } = require('./host/system/ide-browser-host.cjs');
+  const browserInstaller = createBrowserInstaller({
+    sdkPath: sdkPath ?? sdkCandidates[0],
+    cachedPath: context.globalState.get(BROWSER_PATH_KEY),
+    onReady: executablePath => { void context.globalState.update(BROWSER_PATH_KEY, executablePath); }
+  });
+  const ideBrowserHost = createIdeBrowserHost(vscode);
+  context.subscriptions.push({ dispose: () => ideBrowserHost.dispose() });
+  const browserSidebar = require('./host/ui/browser-sidebar.cjs').createBrowserSidebar(vscode, {
+    host: ideBrowserHost,
+    onError: error => output.appendLine('浏览器侧栏：' + String(error))
+  });
+  context.subscriptions.push(browserSidebar, vscode.window.registerWebviewViewProvider('ubovm.browserSidebar', browserSidebar, { webviewOptions: { retainContextWhenHidden: true } }));
   let browserInstallOperation;
-  function installBrowser(notifyError = true) {
+  let lastBrowserProgressPost = 0;
+  function postBrowserProgress(payload, target) {
+    const now = Date.now();
+    // Heartbeat even without percent so the wizard does not look frozen during
+    // indeterminate Playwright phases; percent updates share the same cadence.
+    if (now - lastBrowserProgressPost < 400) return;
+    lastBrowserProgressPost = now;
+    const webview = target?.webview ?? welcome?.webview;
+    void webview?.postMessage({ type: 'settingsBrowserInstallProgress', ...payload, installation: browserInstaller.status() });
+  }
+  function installBrowser(notifyError = true, target) {
     if (browserInstallOperation) return browserInstallOperation;
-    browserInstallOperation = vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: '正在下载并安装内置浏览器…', cancellable: false }, async () => {
+    browserInstallOperation = vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: '正在下载并安装内置浏览器…', cancellable: true }, async (progress, token) => {
+      const controller = typeof AbortController === 'function' ? new AbortController() : null;
+      const cancel = token.onCancellationRequested(() => {
+        browserInstaller.cancel('浏览器安装已取消。');
+        controller?.abort();
+      });
       try {
-        const executablePath = await browserInstaller.install(text => output.append(text));
+        const executablePath = await browserInstaller.install({
+          signal: controller?.signal,
+          onLog: text => output.append(text),
+          onProgress: update => {
+            progress.report({ message: update.message || (update.percent != null ? `${update.percent}%` : undefined) });
+            postBrowserProgress(update, target);
+          }
+        });
         output.appendLine('内置浏览器已就绪：' + executablePath);
-        void vscode.window.showInformationMessage('内置浏览器已安装，将在下一次运行时自动使用（已有外部浏览器配置优先）。');
-        return { ok: true, message: '内置浏览器已安装，将在下一次运行时生效。' };
+        void vscode.window.showInformationMessage('内置浏览器已安装，可立即使用（已有外部浏览器配置优先）。');
+        return { ok: true, message: '内置浏览器已安装，可立即使用。' };
       } catch (error) {
         output.appendLine(String(error));
+        if (error?.cancelled) return { ok: false, cancelled: true, message: errorText(error) || '浏览器安装已取消。' };
         if (notifyError) void vscode.window.showErrorMessage('内置浏览器安装失败：' + errorText(error));
         return { ok: false, message: errorText(error), failure: normalizeError(error, 'settingsInstallBrowser') };
-      }
-    }).finally(() => { browserInstallOperation = undefined; });
+      } finally { cancel.dispose(); }
+    }).finally(() => { browserInstallOperation = undefined; lastBrowserProgressPost = 0; });
     return browserInstallOperation;
   }
   const sshConnectionTest = createSSHConnectionTest({ loadSSH: () => import(pathToFileURL(path.join(path.dirname(sdkPath ?? sdkCandidates[0]), 'intools', 'terminals', 'ssh-terminal', 'commands.mjs')).href) });
@@ -184,8 +223,18 @@ async function activate(context) {
   const codeSummaryRuns = new Map();
   harness = createHarnessService({
     onError: error => output.appendLine('Agent 后端连接失败：' + JSON.stringify(error)),
+    onStall: event => {
+      if (event?.stalled) output.appendLine('Agent 后端响应变慢（连接保持中）：' + (event.error?.message || ''));
+    },
+    onConnectionChange: () => {
+      // Soft stall / recover should refresh the connection strip without a probe round-trip.
+      if (shuttingDown) return;
+      const backend = probeBackend();
+      void welcome?.webview.postMessage({ type: 'connectionStatus', unsolicited: true, backend }).catch(error => output.appendLine(errorText(error)));
+    },
     beforeSession: async () => { await learningStartup; return learningRecovery?.pause(); },
     requestToolApproval: request => toolApprovals.request(request),
+    ideBrowserHost,
     sdkPath: sdkPath ?? sdkCandidates[0],
     storageDirectory: path.join((context.storageUri ?? context.globalStorageUri).fsPath, 'harness'),
     workspaceRoots: id => sessionFolders(id).map(folder => folder.uri.fsPath),
@@ -243,10 +292,46 @@ async function activate(context) {
     })().catch(() => output.appendLine('后台学习本地恢复暂不可用，未完成任务仍保留。'));
   }).finally(() => { recovering = false; if (!shuttingDown) publishState(); });
   messageQueue = messageQueue.catch(error => output.appendLine('会话初始化失败：' + String(error)));
+  function settingsSidebarItems() {
+    const keys = settingsPage === 'initialize'
+      ? ['model', 'ssh', 'web']
+      : settingsNavigation.map(([key]) => key);
+    return keys.map(key => {
+      const entry = settingsNavigation.find(([id]) => id === key) || [key, key, 'settings-gear'];
+      return { kind: 'setting', id: entry[0], label: entry[1], icon: entry[2] };
+    });
+  }
+
+  function isCurrentSettingsItem(key) {
+    if (!settingsPage) return false;
+    if (key === 'model') return ['model', 'reasonModel', 'workerModel', 'summaryModel'].includes(settingsSection);
+    return settingsSection === key;
+  }
+
   const sidebarProvider = {
     onDidChangeTreeData: sidebarChanged.event,
-    getChildren: element => sessions.provider.getChildren(element),
-    getTreeItem: entry => sessions.provider.getTreeItem(entry)
+    getParent: element => element?.kind === 'setting' ? undefined : sessions.provider.getParent(element),
+    getChildren: element => {
+      // System config replaces the session tree with selectable preference groups.
+      if (settingsPage === 'settings' || settingsPage === 'initialize') {
+        return element ? [] : settingsSidebarItems();
+      }
+      return sessions.provider.getChildren(element);
+    },
+    getTreeItem: entry => {
+      if (entry?.kind === 'setting') {
+        const current = isCurrentSettingsItem(entry.id);
+        const item = new vscode.TreeItem(entry.label, vscode.TreeItemCollapsibleState.None);
+        item.id = 'setting-' + entry.id;
+        item.contextValue = 'ubovm.setting';
+        item.iconPath = new vscode.ThemeIcon(entry.icon);
+        item.tooltip = entry.label + (current ? '（当前）' : '');
+        item.accessibilityInformation = { label: `${entry.label}${current ? '，当前设置' : ''}` };
+        item.command = { command: 'ubovm.selectSettings', title: entry.label, arguments: [entry.id] };
+        return item;
+      }
+      return sessions.provider.getTreeItem(entry);
+    }
   };
   context.subscriptions.push(sidebarChanged, sessions.provider.onDidChangeTreeData(() => sidebarChanged.fire()));
   sessionsView = vscode.window.createTreeView('ubovm.sessions', { treeDataProvider: sidebarProvider, showCollapseAll: false });
@@ -348,12 +433,25 @@ async function activate(context) {
     return welcomeReady && welcome?.visible === true && !settingsPage;
   }
 
+  function conversationNeedsSnapshot() {
+    // A chrome lock must still reach the conversation page while settings are
+    // closing or the editor is in the background, or the overlay never unlocks.
+    return Boolean(welcomeReady && welcome && (chromeLockedSessionId || conversationConsumesSnapshot()));
+  }
+
   function publishSidebarChrome(conversation) {
     const title = conversation.mode === 'goal' ? '探索工作台' : '协助对话';
     if (welcome && welcome.title !== title) welcome.title = title;
     if (sessionsView) {
-      const sidebarTitle = settingsPage ? (settingsPage === 'initialize' ? '首次初始化' : settingsPage === 'settings' ? '系统配置' : '扩展管理') : conversation.mode === 'goal' ? '探索' : '协助';
-      const description = settingsPage ? '' : `${conversation.historyCount ?? sessions.summary().historyCount}`;
+      // Mode lives in the switcher; the pane title stays stable unless settings are open.
+      const sidebarTitle = settingsPage === 'initialize' ? '首次初始化'
+        : settingsPage === 'settings' ? '系统配置'
+        : settingsPage === 'mcp' ? 'MCP'
+        : settingsPage === 'skills' ? 'Skills'
+        : settingsPage ? '扩展管理'
+        : '项目与会话';
+      const count = conversation.historyCount ?? sessions.summary().historyCount;
+      const description = settingsPage ? '' : (count ? `${count} 条` : '');
       if (sessionsView.title !== sidebarTitle) sessionsView.title = sidebarTitle;
       if (sessionsView.description !== description) sessionsView.description = description;
     }
@@ -366,7 +464,7 @@ async function activate(context) {
 
   function publishState() {
     if (shuttingDown) return;
-    const showConversation = conversationConsumesSnapshot();
+    const showConversation = conversationNeedsSnapshot();
     const showWorkers = workerPanel.visible === true;
     // While the chat webview is hidden, skip mapping the full message history.
     // Visibility / ready handlers republish a complete snapshot when it returns.
@@ -404,6 +502,8 @@ async function activate(context) {
 
   function probeBackend() {
     const backend = harness?.connectionState() ?? { status: 'idle' };
+    // Soft transport stalls keep the worker alive; surface them without looking offline.
+    if (backend.status === 'stalled') return { status: 'stalled', recovering: true, error: backend.error };
     // A busy session with a flapping worker is degraded, not an IDE disconnect.
     // Keep the probe green and let ensureIdle repair in the background.
     if (backend.status === 'disconnected' && harness) {
@@ -419,9 +519,9 @@ async function activate(context) {
     // Never await the bridge: a stalled postMessage must not block the extension
     // host or the next inbound heartbeat.
     void target?.webview.postMessage({ type: 'connectionStatus', probeId, backend }).catch(error => output.appendLine(errorText(error)));
-    if (harness && (backend.status === 'disconnected' || backend.recovering)) {
+    if (harness && (backend.status === 'disconnected' || backend.recovering && backend.status !== 'stalled')) {
       void harness.ensureIdle().then(result => {
-        if (shuttingDown || result?.status !== 'connected') return;
+        if (shuttingDown || !['connected', 'stalled'].includes(result?.status)) return;
         const currentId = sessions.summary()?.id;
         if (currentId && harness.state(currentId).canResume) publishState();
         else schedulePublishState(0);
@@ -494,7 +594,16 @@ async function activate(context) {
   }
 
   function setMode(mode, expectedSessionId) {
-    return updateSession(expectedSessionId, async () => { await sessions.setMode(mode, expectedSessionId); await restoreExecution(); });
+    const operation = messageQueue.then(async () => {
+      assertCurrentSession(expectedSessionId);
+      const previous = sessions.summary().id;
+      await sessions.setMode(mode, expectedSessionId);
+      const switched = sessions.summary().id !== previous;
+      if (switched) await lockConversationChrome();
+      await finishConversationSwitch(switched);
+    });
+    messageQueue = operation.catch(() => {});
+    return operation;
   }
 
   function assertIdle(id = sessions.current().id) {
@@ -593,6 +702,18 @@ async function activate(context) {
             output.appendLine(errorText(error));
             void vscode.window.showErrorMessage('输入已保存，但未能启动执行：' + errorText(error) + '。可取回队列输入或回退该消息后重试。');
           }
+        } else {
+          const latest = sessions.current();
+          const execution = harness.state(latest.id);
+          const item = latest.inputQueue.at(-1);
+          if (item && latest.inputQueue.length === 1 && !latest.queuePaused && !item.delivery
+            && typeof harness.steer === 'function' && execution.canSteer && execution.runId) {
+            try { await steerQueuedInput(latest.id, item.id, execution.runId); }
+            catch (error) {
+              output.appendLine(errorText(error));
+              void vscode.window.showErrorMessage(errorText(error));
+            }
+          }
         }
         return publishState();
       }
@@ -649,32 +770,34 @@ async function activate(context) {
     publishState();
   }
 
+  async function steerQueuedInput(id, inputId, runId) {
+    const conversation = sessions.get(id);
+    const item = conversation?.inputQueue.find(input => input.id === inputId);
+    if (!item) throw new Error('该输入已开始执行或已从队列移除。');
+    const execution = harness.state(id);
+    if (shuttingDown || conversation.mode !== 'assist' || !harness.isBusy(id) || !execution.canSteer || runId !== execution.runId) throw new Error('当前运行已变化或尚未就绪，输入仍保留在队列中。');
+    await sessions.beginSteering(id, item.id);
+    let accepted;
+    try { accepted = !shuttingDown && !stoppedInputQueues.has(id) && await harness.steer(id, { id: item.id, runId: execution.runId, text: item.text, context: item.context }); }
+    catch (error) {
+      // Only the backend's pre-injection admission checks can certify that
+      // nothing was sent. Transport errors remain ambiguous and never replay.
+      if (error?.code === 'STEERING_NOT_SENT') {
+        await sessions.finishSteering(id, item.id, 'rejected');
+        throw error;
+      }
+      await sessions.finishSteering(id, item.id, 'uncertain');
+      throw new Error('无法确认引导是否送达，输入及附件仍保留在队列中。请核实执行结果，取回编辑或删除该条后再继续。' + errorText(error));
+    }
+    await sessions.finishSteering(id, item.id, accepted ? 'accepted' : 'rejected');
+    if (!accepted) throw new Error('Agent 尚未就绪或已结束，输入已保留在队列中，请继续发送或稍后引导。');
+  }
+
   function changeInputQueue(message) {
     return updateSession(message.sessionId, async () => {
       const id = message.sessionId;
       if (message.action === 'steerInput') {
-        const conversation = sessions.get(id);
-        const item = conversation?.inputQueue.find(input => input.id === message.inputId);
-        if (!item) throw new Error('该输入已开始执行或已从队列移除。');
-        const execution = harness.state(id);
-        if (shuttingDown || conversation.mode !== 'assist' || !harness.isBusy(id) || !execution.canSteer || message.runId !== execution.runId) throw new Error('当前运行已变化或尚未就绪，输入仍保留在队列中。');
-        await sessions.beginSteering(id, item.id);
-        let accepted;
-        try { accepted = !shuttingDown && !stoppedInputQueues.has(id) && await harness.steer(id, { id: item.id, runId: execution.runId, text: item.text, context: item.context }); }
-        catch (error) {
-          // Only the backend's pre-injection admission checks can certify that
-          // nothing was sent. Transport errors remain ambiguous and never replay.
-          if (error?.code === 'STEERING_NOT_SENT') {
-            await sessions.finishSteering(id, item.id, 'rejected');
-            throw error;
-          }
-          await sessions.finishSteering(id, item.id, 'uncertain');
-          throw new Error('无法确认引导是否送达，输入及附件仍保留在队列中。请核实执行结果，取回编辑或删除该条后再继续。' + errorText(error));
-        }
-        await sessions.finishSteering(id, item.id, accepted ? 'accepted' : 'rejected');
-        if (!accepted) {
-          throw new Error('Agent 尚未就绪或已结束，输入已保留在队列中，请继续发送或稍后引导。');
-        }
+        await steerQueuedInput(id, message.inputId, message.runId);
         publishState();
         return;
       }
@@ -785,12 +908,47 @@ async function activate(context) {
     } finally { if (settingsOpening === revision) settingsOpening = 0; }
   }
 
+  async function lockConversationChrome() {
+    const locked = sessions.summary().id;
+    chromeLockedSessionId = locked;
+    clearTimeout(chromeLockWatchdog);
+    chromeLockWatchdog = setTimeout(() => {
+      chromeLockWatchdog = undefined;
+      if (shuttingDown || chromeLockedSessionId !== locked) return;
+      publishState();
+    }, 1600);
+    if (settingsPage) {
+      ++settingsOpenRevision;
+      settingsOpening = 0;
+      settingsPage = '';
+      settingsSection = 'model';
+      sidebarChanged.fire();
+      await vscode.commands.executeCommand('setContext', 'ubovm.settingsPage', '');
+      await welcome?.webview.postMessage({ type: 'closeSettings' });
+    }
+    await vscode.commands.executeCommand('setContext', 'ubovm.contentReady', false);
+  }
+
+  async function finishConversationSwitch(restore) {
+    try {
+      publishState();
+      if (restore) {
+        await restoreExecution();
+        publishState();
+      }
+      await revealCurrentInSessionsTree();
+    } catch (error) {
+      try { publishState(); } catch { /* Keep the original navigation failure. */ }
+      throw error;
+    }
+  }
+
   function newChat(expectedSessionId, projectId) {
     const operation = messageQueue.then(async () => {
       assertCurrentSession(expectedSessionId);
       await sessions.create(undefined, projectId);
-      await restoreExecution();
-      return publishState();
+      await lockConversationChrome();
+      return finishConversationSwitch(true);
     });
     messageQueue = operation.catch(() => {});
     return operation;
@@ -824,10 +982,10 @@ async function activate(context) {
     const operation = messageQueue.then(async () => {
       const previous = sessions.summary().id;
       await sessions.selectProject(id);
+      const switched = sessions.summary().id !== previous;
+      if (switched) await lockConversationChrome();
       await openAssistant();
-      if (sessions.summary().id !== previous) await restoreExecution();
-      await publishState();
-      await revealCurrentInSessionsTree();
+      await finishConversationSwitch(switched);
     });
     messageQueue = operation.catch(() => {});
     return operation;
@@ -838,10 +996,9 @@ async function activate(context) {
       const alreadySelected = sessions.summary().id === id;
       if (sourceId !== undefined) await sessions.openRelated(sourceId, id);
       else await sessions.select(id, { crossMode: true });
+      if (!alreadySelected) await lockConversationChrome();
       await openWelcome();
-      if (!alreadySelected) await restoreExecution();
-      await publishState();
-      await revealCurrentInSessionsTree();
+      await finishConversationSwitch(!alreadySelected);
     });
     messageQueue = operation.catch(() => {});
     return operation;
@@ -1080,9 +1237,14 @@ async function activate(context) {
     const requestId = typeof message.requestId === 'string' && message.requestId.length <= 100 ? message.requestId : undefined;
     if (message.action === 'settingsInstallBrowser') {
       let result;
-      try { result = { ...await installBrowser(false), installation: browserInstaller.status() }; }
+      try { result = { ...await installBrowser(false, target), installation: browserInstaller.status() }; }
       catch (error) { result = { ok: false, message: errorText(error), failure: normalizeError(error, message.action) }; }
       await target?.webview.postMessage({ type: 'settingsBrowserInstallResult', ...result });
+      return;
+    }
+    if (message.action === 'settingsCancelBrowserInstall') {
+      browserInstaller.cancel('浏览器安装已取消。');
+      await target?.webview.postMessage({ type: 'settingsBrowserStatus', installation: browserInstaller.status() });
       return;
     }
     if (message.action === 'settingsBrowserStatus') {
@@ -1122,7 +1284,7 @@ async function activate(context) {
       if (goalActions.includes(message.action) && typeof message.sessionId !== 'string') {
         throw new Error('缺少会话标识，请重新打开当前会话后重试。');
       }
-      const commands = { folder: 'workbench.action.files.openFolder', terminal: 'ubovm.openLocalTerminal', source: 'ubovm.openSource',
+      const commands = { folder: 'workbench.action.files.openFolder', terminal: 'ubovm.openLocalTerminal', browser: 'ubovm.openBrowser', source: 'ubovm.openSource',
         toggleSessions: 'workbench.action.toggleAuxiliaryBar', toggleFiles: 'workbench.action.toggleSidebarVisibility', manageProjects: 'ubovm.manageProjects' };
       if (Object.hasOwn(commands, message.action)) await vscode.commands.executeCommand(commands[message.action]);
       else if (message.action === 'reloadConversation' && target === welcome) await reloadConversation();
@@ -1136,11 +1298,15 @@ async function activate(context) {
         const firstReady = !welcomeReady;
         welcomeReady = true;
         // Coalesce rapid ready storms from visibility + probe reconnect into one snapshot.
+        // A chrome lock cannot wait on that debounce or the overlay stays up.
         clearTimeout(readyPublishTimer);
-        readyPublishTimer = setTimeout(() => {
-          readyPublishTimer = undefined;
-          if (!shuttingDown) publishState();
-        }, 32);
+        if (chromeLockedSessionId) publishState();
+        else {
+          readyPublishTimer = setTimeout(() => {
+            readyPublishTimer = undefined;
+            if (!shuttingDown) publishState();
+          }, 32);
+        }
         if (pendingProjectSwitcher && welcome) {
           const pending = pendingProjectSwitcher;
           pendingProjectSwitcher = null;
@@ -1157,7 +1323,14 @@ async function activate(context) {
         releaseFirstPaint();
       }
       else if (message.action === 'contentReady') {
-        if (message.sessionId && message.sessionId !== sessions.current().id) return;
+        // A conversation/project lock must be unlocked by that conversation.
+        // Settings/initialize paint has no sessionId and must not clear it.
+        if (chromeLockedSessionId) {
+          if (message.sessionId !== chromeLockedSessionId) return;
+        } else if (message.sessionId && message.sessionId !== sessions.current().id) return;
+        chromeLockedSessionId = undefined;
+        clearTimeout(chromeLockWatchdog);
+        chromeLockWatchdog = undefined;
         await vscode.commands.executeCommand('setContext', 'ubovm.contentReady', true);
         clearTimeout(recoveryTimer);
         releaseFirstPaint();
@@ -1294,10 +1467,9 @@ async function activate(context) {
             await vscode.workspace.fs.createDirectory(folder);
             if (!((await vscode.workspace.fs.stat(folder)).type & vscode.FileType.Directory)) throw new Error('项目目录已不可用，请重新输入。');
             await sessions.createProject(name, folder.fsPath);
+            await lockConversationChrome();
             await openAssistant();
-            publishState();
-            await restoreExecution();
-            await publishState();
+            await finishConversationSwitch(true);
           });
           messageQueue = operation.catch(() => {});
           await operation;
@@ -1571,6 +1743,30 @@ async function activate(context) {
     }
   }
 
+  async function openIntegratedBrowser(url) {
+    const target = typeof url === 'string' && url.trim() ? url.trim() : '';
+    try {
+      const pages = typeof ideBrowserHost.listPages === 'function' ? ideBrowserHost.listPages() : [];
+      const column = vscode.ViewColumn.Two;
+      if (target) {
+        await ideBrowserHost.open(target, { preserveFocus: false, viewColumn: column });
+      } else if (pages.length) {
+        const active = pages.find(item => item.active) || pages[0];
+        if (typeof ideBrowserHost.reveal === 'function') {
+          await ideBrowserHost.reveal(active.url || 'about:blank', { preserveFocus: false, force: true, pageId: active.id });
+        } else {
+          await ideBrowserHost.open(active.url || 'about:blank', { preserveFocus: false, viewColumn: column });
+        }
+      } else {
+        await ideBrowserHost.open('about:blank', { preserveFocus: false, viewColumn: column });
+      }
+      await vscode.commands.executeCommand('workbench.action.browser.focusUrlInput');
+    } catch (error) {
+      output.appendLine('打开内置浏览器：' + errorText(error));
+      await vscode.window.showErrorMessage(`无法打开内置浏览器：${errorText(error)}`);
+    }
+  }
+
   context.subscriptions.push(
     vscode.window.registerWebviewPanelSerializer('ubovm.welcome', {
       async deserializeWebviewPanel(panel) {
@@ -1648,6 +1844,11 @@ async function activate(context) {
     registerCommand('ubovm.configureModel', configureModel),
     registerCommand('ubovm.openSettings', () => openSettings()),
     registerCommand('ubovm.installBrowser', installBrowser),
+    registerCommand('ubovm.openBrowser', url => openIntegratedBrowser(url)),
+    registerCommand('ubovm.openBrowserSidebar', async () => {
+      browserSidebar.requestEnsureOpen();
+      await vscode.commands.executeCommand('workbench.view.extension.ubovm-browser');
+    }),
     registerCommand('ubovm.setupPythonSandbox', async () => {
       const { setupPythonSandbox } = await import(pathToFileURL(path.join(path.dirname(sdkPath ?? sdkCandidates[0]), 'intools', 'terminals', 'python', 'setup.mjs')).href);
       const result = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: '正在初始化 Python 沙箱', cancellable: false }, () => setupPythonSandbox());

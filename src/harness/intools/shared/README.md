@@ -5,6 +5,8 @@
 | 路径 | 职责 |
 | --- | --- |
 | `common.mjs` | 文本/整数校验、路径包含判断、`textResult` / `jsonResult`、中止错误 |
+| `disclosure.mjs` | 渐进式披露：`action=help`（多动词）与 `help=true`（单用途），`withProgressiveDisclosure` |
+| `tool-catalogs.mjs` | 各工具短描述 + tier/docs 目录（供 help 展开） |
 | `http/` | 联网工具共用的 HTTP 客户端、重试与 URL/字节校验（供 `network/fetch`、`network/websearch`） |
 | `store/` | `MemoryStore` 会话持久化及工具侧 `assertSession` / `toolResult` 等辅助 |
 | `process/` | 进程输出合并、本机 spawn、进程树终止、持久 shell、命令队列、中断控制 |

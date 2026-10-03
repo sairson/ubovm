@@ -439,7 +439,7 @@ export class PaneCompositeBar extends Disposable {
 		if (this.options.partContainerClass === 'panel' && viewContainerId !== 'terminal' && viewContainerId !== 'workbench.view.extension.ubovm-workers') {
 			return true;
 		}
-		if (this.options.partContainerClass === 'sidebar' && viewContainerId !== 'workbench.view.explorer' && viewContainerId !== 'workbench.view.search' && viewContainerId !== 'workbench.view.extension.ubovm-workers' && viewContainerId !== 'workbench.view.extension.ubovm-blackboard') {
+		if (this.options.partContainerClass === 'sidebar' && viewContainerId !== 'workbench.view.explorer' && viewContainerId !== 'workbench.view.search' && viewContainerId !== 'workbench.view.extension.ubovm-browser' && viewContainerId !== 'workbench.view.extension.ubovm-workers' && viewContainerId !== 'workbench.view.extension.ubovm-blackboard') {
 			return true;
 		}
 

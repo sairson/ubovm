@@ -105,7 +105,7 @@ function createModelConfiguration(vscode, context) {
   async function read() {
     const result = { model: await credentialModel(setting('model', {})) };
     const backendSelection = setting('worker', {}).swarmBackendSelection ?? 'fixed';
-    if (!['fixed', 'autonomous'].includes(backendSelection)) throw new Error('Swarm 后端选择模式无效。');
+    if (!['fixed', 'autonomous'].includes(backendSelection)) throw new Error('并行任务模型选择模式无效。');
     const library = backendSelection === 'autonomous' ? setting('modelProfiles', []) : [];
     if (!Array.isArray(library) || library.length > 30) throw new Error('模型配置库格式无效。');
     result.collaboration = { backendSelection, models: {} };
@@ -132,8 +132,8 @@ function createModelConfiguration(vscode, context) {
     ]) {
       if (!Number.isSafeInteger(value) || value < min || value > max) throw new Error(`${name} 必须在 ${min} 至 ${max} 之间。`);
     }
-    if (maxConcurrency > openIntents) throw new Error('并行 Worker 数不能超过开放意图上限。');
-    if (maxIntents > openIntents) throw new Error('每轮新增意图上限不能超过开放意图上限。');
+    if (maxConcurrency > openIntents) throw new Error('并行任务数不能超过同时进行上限。');
+    if (maxIntents > openIntents) throw new Error('每轮新增任务上限不能超过同时进行上限。');
     result.openIntents = openIntents;
     result.maxConcurrency = maxConcurrency;
     result.maxRounds = maxRounds;
@@ -175,7 +175,7 @@ function createModelConfiguration(vscode, context) {
       { label: '配置模型', description: '服务商、模型名称、地址与 API Key', action: 'model' },
       { label: '更新 API Key', description: '保存在系统凭据库中', action: 'key' },
       { label: '清除 API Key', description: '删除当前模型端点的凭据', action: 'clear' },
-      { label: '高级设置', description: 'Reason、Worker、MCP、Skills 和摘要', action: 'advanced' },
+      { label: '高级设置', description: '规划、任务执行、MCP、Skills 和摘要', action: 'advanced' },
     ], { title: 'UBOVM 模型与工具' });
     if (!choice) return status();
     if (choice.action === 'advanced') { await vscode.commands.executeCommand('workbench.action.openSettings', '@ext:ubovm.ubovm-core'); return status(); }

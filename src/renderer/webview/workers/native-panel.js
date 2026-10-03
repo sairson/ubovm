@@ -7,7 +7,7 @@
   function cancelFrame() { ++renderGeneration; if (renderFrame) cancelAnimationFrame(renderFrame); renderFrame = 0; }
   const pending = new Map();
   function cancelRequests() {
-    for (const entry of pending.values()) { clearTimeout(entry.timer); entry.reject(new Error('Worker 页面已切换，操作已取消。')); }
+    for (const entry of pending.values()) { clearTimeout(entry.timer); entry.reject(new Error('任务页面已切换，操作已取消。')); }
     pending.clear();
   }
   window.addEventListener('pagehide', () => {
@@ -23,7 +23,7 @@
     else if (!suspended) scheduleLatest();
   });
   function request(action, payload) {
-    if (renderBlocked()) return Promise.reject(new Error('Worker 页面已暂停，请恢复页面后重试。'));
+    if (renderBlocked()) return Promise.reject(new Error('任务页面已暂停，请恢复页面后重试。'));
     if (pending.size >= 32) return Promise.reject(new Error('待处理操作过多，请稍后重试。'));
     return new Promise((resolve, reject) => {
       const requestId = `worker-${++sequence}`;
@@ -77,7 +77,7 @@
     renderSafely(data, reveal);
   });
   const toolbar = document.createElement('div'); toolbar.className = 'worker-native-toolbar';
-  const search = document.createElement('input'); search.type = 'search'; search.className = 'worker-search'; search.placeholder = '查找 Worker 名称或任务'; search.setAttribute('aria-label', search.placeholder);
+  const search = document.createElement('input'); search.type = 'search'; search.className = 'worker-search'; search.placeholder = '查找任务名称'; search.setAttribute('aria-label', search.placeholder);
   const count = document.createElement('span'); count.className = 'worker-search-result'; count.setAttribute('role', 'status');
   const copy = document.createElement('button'); copy.type = 'button'; copy.className = 'worker-copy-log'; copy.textContent = '复制日志';
   let copyTask;
@@ -181,7 +181,7 @@
     panel.update({ ...data, workers });
     const empty = document.getElementById('worker-empty');
     empty.hidden = workers.length > 0;
-    empty.textContent = '当前会话暂无 Worker 执行记录。'; empty.setAttribute('aria-busy', 'false');
+    empty.textContent = '当前会话暂无任务执行记录。'; empty.setAttribute('aria-busy', 'false');
     const error = document.getElementById('worker-error');
     error.textContent = data.error ? '工作记录保存或读取失败：' + data.error : ''; error.hidden = !data.error;
     const id = reveal && workers.some(worker => worker.id === data.selected) ? data.selected : workers.some(worker => worker.id === panel.selected) ? panel.selected : workers[0]?.id;

@@ -3,7 +3,7 @@
   const active = new Set(['pending', 'queued', 'running', 'waiting']);
   const labels = { pending: '待执行', queued: '排队中', running: '执行中', waiting: '等待子任务', completed: '已完成', failed: '失败', interrupted: '已停止' };
   const shortLabels = { ...labels, running: '执行', queued: '排队', pending: '排队', waiting: '等待', completed: '完成', interrupted: '停止' };
-  const toolLabels = { delivery_workflow: '交付闭环', read_workspace_file: '读取文件', list_workspace_files: '查看目录', run_local_shell_command: '运行本地命令', run_python: '运行 Python 沙箱', manage_python_environment: '管理 Python 依赖', run_linux_ssh_command: '运行命令', upload_sftp: 'SFTP 上传', deploy_remote_service: '部署远程服务', web_search: '搜索网页', fetch_web_content: '读取网页', load_skill: '加载技能', spawn_worker: '派发子任务', wait_workers: '等待子任务', list_workers: '检查协作进展' };
+  const toolLabels = { delivery_workflow: '交付闭环', read_workspace_file: '读取文件', list_workspace_files: '查看目录', run_local_shell_command: '运行本地命令', run_python: '运行 Python 沙箱', manage_python_environment: '管理 Python 依赖', run_linux_ssh_command: '运行命令', upload_sftp: 'SFTP 上传', deploy_remote_service: '部署远程服务', web_search: '搜索网页', fetch_web_content: '读取网页', load_skill: '加载技能', spawn_worker: '分派并行任务', wait_workers: '等待并行任务', list_workers: '检查协作进展', cancel_workers: '中断并行任务', manage_workers: '调度并行任务' };
   const node = (tag, className, text) => { const element = document.createElement(tag); if (className) element.className = className; if (text) element.textContent = text; return element; };
   const setText = (element, value) => { if (element.textContent !== value) element.textContent = value; };
   const setAttribute = (element, name, value) => { value = String(value); if (element.getAttribute(name) !== value) element.setAttribute(name, value); };
@@ -24,17 +24,17 @@
     const shell = document.querySelector('.shell'), main = document.getElementById('main-content');
     const goalDirectory = document.getElementById('goal-workers-list'), search = document.getElementById('goal-workers-search'), filter = document.getElementById('goal-workers-filter');
     let goalMode = false;
-    const panel = node('aside', 'worker-panel'); panel.id = 'worker-panel'; panel.hidden = true; panel.setAttribute('aria-label', 'Worker 工作详情');
+    const panel = node('aside', 'worker-panel'); panel.id = 'worker-panel'; panel.hidden = true; panel.setAttribute('aria-label', '任务工作详情');
     const resize = node('div', 'worker-resize-handle'); resize.tabIndex = 0; resize.setAttribute('role', 'separator');
-    resize.setAttribute('aria-orientation', 'vertical'); resize.setAttribute('aria-label', '调整 Worker 面板宽度'); resize.setAttribute('aria-controls', panel.id);
+    resize.setAttribute('aria-orientation', 'vertical'); resize.setAttribute('aria-label', '调整任务面板宽度'); resize.setAttribute('aria-controls', panel.id);
     resize.title = '拖动调整宽度 · 左右键微调 · 双击恢复默认';
     const header = node('header', 'worker-panel-header');
     const expand = node('button', 'worker-expand', '占据主空间'); expand.type = 'button'; expand.setAttribute('aria-controls', panel.id); expand.setAttribute('aria-pressed', 'false');
-    const close = node('button', 'worker-close', '← 主对话'); close.type = 'button'; close.setAttribute('aria-label', '关闭 Worker 详情'); close.title = '返回主对话（Esc），Worker 继续运行';
+    const close = node('button', 'worker-close', '← 主对话'); close.type = 'button'; close.setAttribute('aria-label', '关闭 Worker 详情'); close.title = '返回主对话（Esc），任务继续运行';
     const options = node('details', 'worker-options'), optionsToggle = node('summary', 'worker-options-toggle', '···');
-    optionsToggle.setAttribute('aria-label', 'Worker 视图选项'); optionsToggle.title = 'Worker 视图选项';
+    optionsToggle.setAttribute('aria-label', '任务视图选项'); optionsToggle.title = '任务视图选项';
     const optionsMenu = node('div', 'worker-options-menu'); optionsMenu.append(expand); options.append(optionsToggle, optionsMenu);
-    const pickerLabel = node('label', 'worker-picker-label', '切换 Worker'), picker = node('select', 'worker-picker');
+    const pickerLabel = node('label', 'worker-picker-label', '切换任务'), picker = node('select', 'worker-picker');
     picker.id = 'worker-picker'; pickerLabel.htmlFor = picker.id;
     const controls = node('div', 'worker-panel-controls'); controls.append(pickerLabel, picker);
     header.append(close, controls, options);
@@ -45,7 +45,7 @@
     heading.append(name, status, timer);
     const task = node('p', 'worker-task'), parent = node('button', 'worker-parent'); parent.type = 'button';
     const error = node('p', 'worker-detail-error'); error.setAttribute('role', 'status');
-    const scroller = node('div', 'worker-detail-scroll'); scroller.tabIndex = 0; scroller.setAttribute('aria-label', 'Worker 执行记录');
+    const scroller = node('div', 'worker-detail-scroll'); scroller.tabIndex = 0; scroller.setAttribute('aria-label', '任务执行记录');
     const taskLabel = node('div', 'worker-section-label', '任务');
     const summary = node('div', 'worker-detail-summary'); summary.append(heading, parent, taskLabel, task, error);
     const content = node('div', 'worker-detail-content');
@@ -83,7 +83,7 @@
     if (goalDirectory) lists.set(goalDirectory, new Map());
     search?.addEventListener('input', renderRoster); filter?.addEventListener('change', renderRoster);
     const current = () => workersById.get(selected);
-    const displayName = worker => workerNames.get(worker.id) || worker.name || 'Worker';
+    const displayName = worker => workerNames.get(worker.id) || worker.name || '任务';
     const issue = worker => worker.status === 'failed' || worker.status === 'interrupted';
     const errorText = worker => typeof worker.error === 'string' ? worker.error : worker.error?.message || '';
     const finalResult = worker => worker.status === 'completed' && typeof worker.result === 'string' && worker.result.trim() ? worker.result : '';
@@ -102,34 +102,51 @@
       if (max > 0 && next !== cards.scrollLeft) { event.preventDefault(); cards.scrollLeft = next; }
     }, { passive: false });
     const bounds = () => ({ min: Math.min(300, window.innerWidth), max: window.innerWidth >= 1100 ? Math.min(800, window.innerWidth - 420) : Math.min(800, window.innerWidth) });
-    function layout() {
+    let topbarBottom = 0, resizeFrame = 0, pendingResizeWidth;
+    function measureTopbar() {
+      topbarBottom = document.querySelector('.topbar')?.getBoundingClientRect().bottom || 0;
+      return topbarBottom;
+    }
+    function layout({ remeasureTop = true } = {}) {
       if (standalone) return;
       const { min, max } = bounds(), width = Math.round(Math.max(min, Math.min(max, preferredWidth)));
       shell.style.setProperty('--worker-panel-width', width + 'px');
-      shell.style.setProperty('--worker-panel-top', document.querySelector('.topbar').getBoundingClientRect().bottom + 'px');
+      if (remeasureTop || !topbarBottom) measureTopbar();
+      shell.style.setProperty('--worker-panel-top', topbarBottom + 'px');
       resize.setAttribute('aria-valuemin', String(min)); resize.setAttribute('aria-valuemax', String(max)); resize.setAttribute('aria-valuenow', String(width)); resize.setAttribute('aria-valuetext', `${width} 像素`);
       shell.classList.toggle('worker-panel-expanded', expanded && !panel.hidden);
       resize.hidden = expanded;
       expand.setAttribute('aria-pressed', String(expanded)); setText(expand, expanded ? '恢复侧栏' : '占据主空间');
       main.inert = !panel.hidden && (expanded || window.innerWidth < 1100);
     }
-    function setWidth(width, persist = false) {
-      const { min, max } = bounds(); preferredWidth = Math.round(Math.max(min, Math.min(max, width))); layout();
+    function setWidth(width, persist = false, options) {
+      const { min, max } = bounds(); preferredWidth = Math.round(Math.max(min, Math.min(max, width))); layout(options);
       if (persist) onWidthChange?.(preferredWidth);
+    }
+    function scheduleResizeWidth(width) {
+      pendingResizeWidth = width;
+      if (resizeFrame) return;
+      resizeFrame = requestAnimationFrame(() => {
+        resizeFrame = 0;
+        const next = pendingResizeWidth; pendingResizeWidth = undefined;
+        if (next != null) setWidth(next, false, { remeasureTop: false });
+      });
     }
     function endDrag(cancel = false) {
       if (!drag) return;
       const saved = drag; drag = undefined; shell.classList.remove('worker-panel-resizing');
+      if (resizeFrame) { cancelAnimationFrame(resizeFrame); resizeFrame = 0; pendingResizeWidth = undefined; }
       if (cancel) { preferredWidth = saved.preferred; layout(); } else onWidthChange?.(preferredWidth);
       if (resize.hasPointerCapture(saved.id)) resize.releasePointerCapture(saved.id);
     }
     resize.addEventListener('pointerdown', event => {
       if (event.button !== 0 || !event.isPrimary) return;
       event.preventDefault(); resize.focus();
+      measureTopbar();
       drag = { id: event.pointerId, x: event.clientX, width: panel.getBoundingClientRect().width, preferred: preferredWidth };
       resize.setPointerCapture(event.pointerId); shell.classList.add('worker-panel-resizing');
     });
-    resize.addEventListener('pointermove', event => { if (drag?.id === event.pointerId) setWidth(drag.width + drag.x - event.clientX); });
+    resize.addEventListener('pointermove', event => { if (drag?.id === event.pointerId) scheduleResizeWidth(drag.width + drag.x - event.clientX); });
     resize.addEventListener('pointerup', event => { if (drag?.id === event.pointerId) endDrag(); });
     resize.addEventListener('pointercancel', () => endDrag(true));
     resize.addEventListener('lostpointercapture', () => endDrag());
@@ -228,7 +245,9 @@
     function renderDetailContent(switched = false) {
       const worker = current();
       if (!worker || panel.hidden) return;
-      setText(name, displayName(worker)); setText(status, labels[worker.status] || worker.status || '待执行'); status.dataset.status = worker.status;
+      setText(name, displayName(worker));
+      const rank = Number.isSafeInteger(worker.priority) && worker.priority > 0 ? ` · P${worker.priority}` : '';
+      setText(status, (labels[worker.status] || worker.status || '待执行') + rank); status.dataset.status = worker.status;
       setText(task, worker.description || '');
       const ancestor = workersById.get(worker.parentId);
       parent.hidden = !ancestor; if (ancestor) setText(parent, '来自 ' + displayName(ancestor) + ' ↗');
@@ -239,7 +258,7 @@
       views.delete(selected); views.set(selected, view);
       while (views.size > 8) releaseView(views.keys().next().value);
       if (view.element.parentElement !== content) content.replaceChildren(view.element);
-      const parts = Array.isArray(worker.parts) ? worker.parts : [];
+      const parts = window.UBOVMTimeline.visibleTimelineParts(Array.isArray(worker.parts) ? worker.parts : []);
       const result = finalResult(worker);
       const fallback = result || worker.streamText || worker.result || (parts.length ? '' : worker.status === 'queued' || worker.status === 'pending' ? '任务已派发，等待开始。' : worker.status === 'waiting' ? '正在等待子任务返回结果。' : worker.status === 'interrupted' ? '执行已停止，已有工作记录保留在此。' : worker.status === 'failed' ? '执行失败，请查看错误信息。' : worker.status === 'completed' ? '任务已结束，当前没有更多执行记录。' : '正在执行，输出将在此实时显示。');
       const top = switched ? view.top : scroller.scrollTop;
@@ -260,17 +279,20 @@
         let view = cache.get(worker.id);
         if (!view) {
           const button = node('button', 'worker-card'); button.type = 'button'; button.dataset.workerId = worker.id; button.setAttribute('aria-controls', panel.id);
-          const row = node('span', 'worker-card-heading'), label = node('strong'), state = node('span', 'worker-status'), description = node('span', 'worker-card-task'), preview = node('span', 'worker-card-preview');
+          const row = node('span', 'worker-card-heading'), label = node('strong'), rank = node('span', 'worker-priority'), state = node('span', 'worker-status'), description = node('span', 'worker-card-task'), preview = node('span', 'worker-card-preview');
           const footer = node('span', 'worker-card-footer'), elapsed = node('span', 'worker-duration'), created = node('span', 'worker-card-created');
-          row.append(label, state);
+          row.append(label, rank, state);
           footer.append(preview, elapsed); button.append(row, description, footer, created);
           button.addEventListener('click', () => show(worker.id, button));
-          view = { button, label, state, description, preview, elapsed, created }; cache.set(worker.id, view);
+          view = { button, label, rank, state, description, preview, elapsed, created }; cache.set(worker.id, view);
         }
         view.worker = worker;
         setText(view.label, displayName(worker)); setText(view.state, (container === cards ? shortLabels : labels)[worker.status] || worker.status || '待执行'); setAttribute(view.state, 'data-status', worker.status);
+        const priority = Number.isSafeInteger(worker.priority) && worker.priority > 0 ? `P${worker.priority}` : '';
+        if (view.rank) { setText(view.rank, priority); setHidden(view.rank, !priority); }
+        setAttribute(view.button, 'data-priority', String(Number.isSafeInteger(worker.priority) ? worker.priority : 0));
         setText(view.description, worker.description || '');
-        const last = worker.parts?.at(-1);
+        const last = [...(worker.parts || [])].reverse().find(part => part && !(part.type === 'tool' && part.background === true));
         const latest = last?.type === 'tool' ? `${toolLabels[last.name] || (last.name?.startsWith('mcp_') ? '调用 MCP 工具' : '调用工具')}${last.status === 'failed' ? '失败' : last.status === 'running' ? '…' : last.status === 'interrupted' ? '已停止' : last.status === 'completed' ? '完成' : ''}` : last?.type === 'thinking' ? (last.status === 'streaming' || last.status === 'running' ? '正在思考…' : '已完成思考') : last?.type === 'summary' ? (last.status === 'running' ? '正在整理上下文…' : '上下文摘要已更新') : last?.text;
         const fallback = worker.status === 'queued' || worker.status === 'pending' ? '等待并发名额' : worker.status === 'waiting' ? '等待子任务返回' : worker.status === 'running' ? '等待实时输出…' : '点击查看工作记录';
         const previewSource = errorText(worker) || finalResult(worker) || latest || worker.streamText || worker.result || fallback;
@@ -283,8 +305,8 @@
           view.createdAt = worker.createdAt; view.createdText = true;
         }
         setAttribute(view.button, 'aria-expanded', !panel.hidden && worker.id === selected);
-        setAttribute(view.button, 'title', `${displayName(worker)} · ${labels[worker.status] || worker.status}\n${worker.description || ''}\n${view.preview.textContent}`);
-        setAttribute(view.button, 'aria-label', `${displayName(worker)}，${labels[worker.status] || worker.status}，查看 Worker 会话`);
+        setAttribute(view.button, 'title', `${displayName(worker)} · ${labels[worker.status] || worker.status}${priority ? ' · ' + priority : ''}\n${worker.description || ''}\n${view.preview.textContent}`);
+        setAttribute(view.button, 'aria-label', `${displayName(worker)}，${labels[worker.status] || worker.status}${priority ? '，' + priority : ''}，查看任务记录`);
         setAttribute(view.button, 'data-depth', worker.depth > 1 ? 'nested' : 'root');
         setAttribute(view.button, 'data-status', worker.status);
         const next = previous ? previous.nextSibling : container.firstChild;
@@ -298,7 +320,7 @@
       setText(document.getElementById('worker-count'), String(workers.length));
       const summary = [[count('running'), '执行'], [count('queued') + count('pending'), '排队'], [count('waiting'), '等待'], [count('completed'), '完成'], [issues, '异常']].filter(([n]) => n).map(([n, label]) => `${n} ${label}`).join(' · ');
       const swarmStatus = document.getElementById('worker-swarm-status');
-      setText(swarmStatus, summary || '暂无 Worker'); setAttribute(swarmStatus, 'title', summary);
+      setText(swarmStatus, summary || '暂无任务'); setAttribute(swarmStatus, 'title', summary);
       setAttribute(document.getElementById('worker-count').parentElement, 'title', summary);
       if (!goalMode && cards && visible(cards)) renderList(cards, workers);
       if (goalDirectory && goalMode && visible(goalDirectory)) {
@@ -306,9 +328,9 @@
         const visible = workers.filter(worker => (!query || [worker.id, worker.name, worker.description].some(value => String(value || '').toLowerCase().includes(query))) &&
           (filter.value === 'all' || filter.value === 'active' && active.has(worker.status) || filter.value === 'completed' && worker.status === 'completed' || filter.value === 'issues' && issue(worker)));
         renderList(goalDirectory, visible);
-        setText(document.getElementById('goal-workers-summary'), `${workers.length} 个 Worker${summary ? ' · ' + summary : ''}`);
+        setText(document.getElementById('goal-workers-summary'), `${workers.length} 个任务${summary ? ' · ' + summary : ''}`);
         const empty = document.getElementById('goal-workers-empty'); setHidden(empty, visible.length > 0);
-        setText(empty, workers.length ? '没有匹配的 Worker，试试其他关键词或状态。' : '开始执行目标后，派发的 Worker 将显示在这里。');
+        setText(empty, workers.length ? '没有匹配的任务，试试其他关键词或状态。' : '开始执行目标后，分派的任务将显示在这里。');
       }
     }
     return {
@@ -327,10 +349,10 @@
         }
         workersById = new Map((Array.isArray(input.workers) ? input.workers : []).filter(worker => worker && typeof worker.id === 'string').map(worker => [worker.id, worker]));
         workers = [...workersById.values()];
-        workerNames = new Map(workers.map((worker, index) => [worker.id, worker.name || 'Worker ' + (index + 1)]));
+        workerNames = new Map(workers.map((worker, index) => [worker.id, worker.name || '任务 ' + (index + 1)]));
         syncClock();
         goalMode = Boolean(input.goalMode);
-        setText(close, goalMode ? '← 返回目标' : '← 主对话'); close.title = goalMode ? '返回目标工作区（Esc），Worker 继续运行' : '返回主对话（Esc），Worker 继续运行';
+        setText(close, goalMode ? '← 返回目标' : '← 主对话'); close.title = goalMode ? '返回目标工作区（Esc），任务继续运行' : '返回主对话（Esc），任务继续运行';
         const directoryError = document.getElementById('goal-workers-error');
         if (directoryError) { directoryError.hidden = !input.error; setText(directoryError, input.error ? '工作记录保存或读取失败：' + input.error : ''); }
         const visible = new Set(workers.map(worker => worker.id));
@@ -347,11 +369,13 @@
         for (const worker of workers) {
           let option = pickerOptions.get(worker.id);
           if (!option) { option = node('option'); option.value = worker.id; pickerOptions.set(worker.id, option); }
-          setText(option, `${displayName(worker)} · ${labels[worker.status] || worker.status}`);
+          setText(option, `${displayName(worker)} · ${labels[worker.status] || worker.status}${Number.isSafeInteger(worker.priority) && worker.priority > 0 ? ' · P' + worker.priority : ''}`);
           const next = previous ? previous.nextSibling : picker.firstChild;
           if (option !== next) picker.insertBefore(option, next);
           previous = option;
         }
+        // Closed side panel: keep roster and picker current, skip transcript DOM work.
+        if (panel.hidden) return;
         renderDetail();
       }
     };

@@ -16,7 +16,7 @@
 | `domain-inventory/` | 域名攻击面台账（种子域、关联资产、覆盖状态）；安全阶段验收门禁 |
 | `todo/` | 任务清单工具 |
 | `delivery/` | 交付工作流工具与记录校验 |
-| `shared/` | 跨工具基础：`common.mjs`、`http/`、`store/`（MemoryStore）、`process/`（输出/进程/持久 shell） |
+| `shared/` | 跨工具基础：`common.mjs`、`disclosure.mjs`（渐进式披露）、`tool-catalogs.mjs`、`http/`、`store/`、`process/` |
 | `runtime.mjs` | `createInternalTools` 会话编排（证据、学习接线、Worker 工具缓存） |
 
 `index.mjs` 是工具工厂与 `createInternalTools` 的公开导出入口；编排实现位于 `runtime.mjs`。执行类工具在 `terminals/`，联网类工具在 `network/`。被动学习（`learn_capability`、共享库、后台队列）在 `../learning/`，由 runtime 接入。工具专属实现放在对应目录，跨工具复用的基础代码放在 `shared/`。测试与模块同级 `test/` 目录；新增工具仍通过根 `index.mjs` 注册和导出。Python 的 `setup.mjs` 仅供宿主初始化命令调用，不开放给 AI。

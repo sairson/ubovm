@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { Type } from 'typebox';
 import { assertSession, checkAbort, required, toolResult } from '../shared/store/memory-store.mjs';
+import { withActionHelp, withProgressiveDisclosure } from '../shared/disclosure.mjs';
+import { TODO_CATALOG } from '../shared/tool-catalogs.mjs';
 
 const statuses = ['pending', 'in_progress', 'completed'];
 const text = value => Array.from(required(value, 'content')).slice(0, 500).join('');
@@ -26,12 +28,11 @@ export function createTodoTool({ store, sessionId, workerId = 'worker' } = {}) {
   assertSession(store, sessionId); workerId = required(workerId, 'workerId');
   const tool = {
     name: 'todo', label: 'Session todo board',
-    description: 'Maintain shared progress memory. write replaces your manual notes; other agents can read them. plan- items are read-only host mirrors; an ignored plan update must not be retried. list reviews every worker and clear_completed removes only your completed manual notes.',
-    parameters: Type.Object({
-      action: Type.Union(['write', 'update', 'list', 'clear_completed'].map(value => Type.Literal(value))),
+    description: TODO_CATALOG.description,
+    parameters: Type.Object(withActionHelp({
       items: Type.Optional(Type.Array(Type.Object({ id: Type.Optional(Type.String()), content: Type.String(), status: Type.Optional(Type.String()) }, { additionalProperties: false }), { maxItems: 100 })),
       todo_id: Type.Optional(Type.String()), content: Type.Optional(Type.String()), status: Type.Optional(Type.String())
-    }, { additionalProperties: false }),
+    }), { additionalProperties: false }),
     async execute(_toolCallId, input, signal) {
       checkAbort(signal);
       if (!input || typeof input !== 'object' || Array.isArray(input)) throw new TypeError('todo arguments must be an object');
@@ -103,5 +104,5 @@ export function createTodoTool({ store, sessionId, workerId = 'worker' } = {}) {
     }
   };
   tool.promptSummary = tool.summary;
-  return tool;
+  return withProgressiveDisclosure(tool, TODO_CATALOG);
 }

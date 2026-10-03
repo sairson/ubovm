@@ -5,8 +5,21 @@ import { chromium } from 'playwright-core';
 const native = await readFile(new URL('../../../../vendor/vscode/src/vs/workbench/browser/parts/views/media/views.css', import.meta.url), 'utf8');
 const custom = await readFile(new URL('../../workbench/workbench.css', import.meta.url), 'utf8');
 const patch = await readFile(new URL('../../../../resources/patches/sidebar-mode.patch', import.meta.url), 'utf8');
-const script = patch.split('\n').filter(line => line.startsWith('+') && !line.startsWith('+++'))
-  .map(line => line.slice(1)).filter(line => !line.includes('height = Math.max')).join('\n').replace(': KeyboardEvent', '').replace('<HTMLElement, boolean>', '').replace(': Event', '').replace(' as Node', '').replace(': number | undefined', '');
+const added = patch.split('\n').filter(line => line.startsWith('+') && !line.startsWith('+++'))
+  .map(line => line.slice(1)).filter(line => !line.includes('height = Math.max'));
+const blockStart = added.findIndex(line => /if \(this\.id === 'ubovm\.sessions'\)/.test(line));
+let depth = 0, blockEnd = blockStart;
+for (let index = blockStart; index < added.length; index++) {
+  depth += (added[index].match(/{/g) || []).length;
+  depth -= (added[index].match(/}/g) || []).length;
+  blockEnd = index;
+  if (index > blockStart && depth <= 0) break;
+}
+const script = added.slice(Math.max(0, blockStart), blockEnd + 1).join('\n')
+  .replace(/globalThis\./g, '')
+  .replace(/: KeyboardEvent/g, '').replace(/<HTMLElement, boolean>/g, '').replace(/: Event/g, '')
+  .replace(/ as Node/g, '').replace(/: number \| undefined/g, '')
+  .replace(/: HTMLButtonElement\[\]/g, '').replace(/: boolean/g, '');
 const browser = await chromium.launch({ channel: 'msedge', headless: true });
 try {
   const page = await browser.newPage();
@@ -60,7 +73,10 @@ try {
       }, settingsPage);
       assert(await assist.isVisible());
       assert(await goal.isVisible());
-      assert.equal(await assist.textContent(), '协助模式');
+      assert.equal(await assist.locator('.ubovm-mode-label').textContent(), '协助');
+      assert.equal(await assist.getAttribute('aria-label'), settingsPage ? '协助模式（关闭配置后切换）' : '协助模式');
+      assert(await assist.locator('.codicon-comment').count());
+      assert(await goal.locator('.codicon-target').count());
       await goal.click();
       const commands = await page.evaluate(() => window.commands);
       assert.equal(commands.length, 1, 'settings must confirm closing before switching modes');
@@ -79,6 +95,23 @@ try {
       }), `management must not scroll at height ${height}`);
       assert.equal(await page.locator('.ubovm-management-label').first().evaluate(el => getComputedStyle(el).overflow === 'hidden' || el.getBoundingClientRect().width < 2), true, 'management labels stay visually hidden');
     }
+    await page.evaluate(() => window.updateContext({ 'ubovm.mode': 'assist', 'ubovm.settingsPage': '', 'ubovm.contentReady': true }));
+    assert.equal(await page.locator('#sessions').evaluate(el => el.dataset.activeMode), 'assist', 'active mode is published on the pane');
+    await page.locator('#sessions').evaluate(el => { el.style.width = '180px'; });
+    await page.waitForFunction(() => document.getElementById('sessions')?.classList.contains('ubovm-sessions-narrow'));
+    assert.equal(await assist.locator('.ubovm-mode-label').evaluate(el => getComputedStyle(el).overflow === 'hidden' || el.getBoundingClientRect().width < 2), true, 'narrow mode hides mode labels');
+    assert(await assist.locator('.codicon-comment').evaluate(el => el.getBoundingClientRect().width > 0), 'narrow mode keeps mode icons');
+    await page.locator('#sessions').evaluate(el => { el.style.width = '280px'; });
+    await page.waitForFunction(() => document.getElementById('sessions')?.classList.contains('ubovm-sessions-wide'));
+    assert(await page.locator('.ubovm-management-label').first().evaluate(el => el.getBoundingClientRect().width > 2), 'wide pane reveals management labels');
+    await page.locator('#sessions').evaluate(el => { el.style.width = '230px'; });
+    await page.waitForFunction(() => {
+      const el = document.getElementById('sessions');
+      return el && !el.classList.contains('ubovm-sessions-narrow') && !el.classList.contains('ubovm-sessions-wide');
+    });
+    await page.evaluate(() => window.updateContext({ 'ubovm.settingsPage': 'mcp' }));
+    assert.equal(await page.locator('#sessions').evaluate(el => el.dataset.settingsPage), 'mcp');
+    assert.match(await assist.getAttribute('title') || '', /关闭配置/);
     await page.locator('.sidebar').evaluate(el => { el.style.display = 'none'; });
     await page.locator('.sidebar').evaluate(el => { el.style.display = ''; });
     assert(await assist.isVisible());

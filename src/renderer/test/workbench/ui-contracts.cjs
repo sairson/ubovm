@@ -23,6 +23,12 @@ function attributes(markup) {
     .map(match => [match[1].toLowerCase(), match[2] ?? match[3]]));
 }
 
+test('installed product trusts every domain for link protection', () => {
+  assert.deepEqual(configuration.product.linkProtectionTrustedDomains, ['*']);
+  assert.ok(Array.isArray(product.linkProtectionTrustedDomains) && product.linkProtectionTrustedDomains.includes('*'),
+    'Packaged product.json must default-trust all domains so link prompts do not block the IDE.');
+});
+
 test('installed npm extension hides its view while retaining npm task support', () => {
   const manifest = readJson(path.join(appRoot, 'extensions/npm/package.json'));
   assert.equal(manifest.name, 'npm');
@@ -46,6 +52,14 @@ test('installed startup markup occurs once inside the workbench body', () => {
   assert.ok(html.indexOf(begin) < html.indexOf(end), 'Startup markers must be ordered.');
   const fragment = html.slice(html.indexOf(begin), html.indexOf(end));
   assert.doesNotMatch(fragment, /<script\b|\son[a-z]+\s*=|javascript\s*:/i, 'Startup markup must not introduce inline execution.');
+});
+
+test('source startup fragment keeps correct Chinese aria-label', () => {
+  const startup = readFileSync(path.join(projectRoot, 'src/renderer/workbench/startup.html'), 'utf8');
+  assert.match(startup, /aria-label="正在打开工作空间"/);
+  assert.doesNotMatch(startup, /姝ｅ湪|鎵撳紑/);
+  const vendor = readFileSync(path.join(projectRoot, 'vendor/vscode/src/vs/code/electron-browser/workbench/workbench.html'), 'utf8');
+  assert.match(vendor, /aria-label="正在打开工作空间"/);
 });
 
 test('installed HTML preserves the upstream script policy and external module loader', () => {

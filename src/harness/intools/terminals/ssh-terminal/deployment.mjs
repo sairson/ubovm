@@ -6,6 +6,8 @@ import { resolve, join, posix, isAbsolute } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { Type } from 'typebox';
 import { requireText, integer, expandHome, jsonResult, textResult, abortError } from '../../shared/common.mjs';
+import { flagHelpProperties, withProgressiveDisclosure } from '../../shared/disclosure.mjs';
+import { DEPLOY_CATALOG, SFTP_CATALOG } from '../../shared/tool-catalogs.mjs';
 import { shellQuote } from './commands.mjs';
 
 /** Basenames skipped when exclude_defaults is enabled. */
@@ -468,8 +470,9 @@ export async function uploadSFTP(commands, input, signal, onUpdate, limits = UPL
 }
 
 const uploadFields = {
-  local_path: Type.String({ description: 'Absolute local file or directory path. Directory contents are copied to remote_path. Symlinks are rejected. Prefer a build artifact or archive over full source trees with node_modules/.git.' }),
-  remote_path: Type.String({ description: 'Exact absolute destination on the selected SSH host.' }),
+  // Optional in schema so help=true can be sent alone; execute still requires paths.
+  local_path: Type.Optional(Type.String({ description: 'Absolute local file or directory path. Directory contents are copied to remote_path. Symlinks are rejected. Prefer a build artifact or archive over full source trees with node_modules/.git.' })),
+  remote_path: Type.Optional(Type.String({ description: 'Exact absolute destination on the selected SSH host.' })),
   exclude: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 255 }), {
     maxItems: UPLOAD_LIMITS.maxExcludes,
     description: 'Basenames to skip while walking directories (e.g. node_modules, .git, .venv). Not applied to the root path itself.'
@@ -486,16 +489,12 @@ const uploadFields = {
 };
 
 export function createSFTPUploadTool(commands) {
-  return {
+  return withProgressiveDisclosure({
     name: 'upload_sftp', label: 'Upload via SFTP',
-    description:
-      'Upload a local file or directory through the host-selected SSH profile. Creates parent directories first, then transfers files with bounded concurrency; publishes each file with rename after checking byte size. ' +
-      `Limits: ${formatUploadBytes(UPLOAD_LIMITS.maxFileBytes)}/file, ${formatUploadBytes(UPLOAD_LIMITS.maxTotalBytes)}/transfer, ${UPLOAD_LIMITS.maxEntries} entries, concurrency ${UPLOAD_LIMITS.fileConcurrency}. ` +
-      'Streams with backpressure and reports per-file plus aggregate progress for large transfers; aborts if the transfer stalls. Existing files are replaced on OpenSSH; other servers unlink-then-rename once when needed. ' +
-      'Supports exclude / exclude_defaults, skip_unchanged (size match), and dry_run planning. Does not delete stale remote files outside the upload set. A directory upload is not atomic. Use a fresh release directory for deployments. Prefer compressed build artifacts. No automatic retries.',
-    parameters: Type.Object(uploadFields, { additionalProperties: false }),
+    description: SFTP_CATALOG.description,
+    parameters: Type.Object({ ...uploadFields, ...flagHelpProperties() }, { additionalProperties: false }),
     execute: (_id, input, signal, onUpdate) => uploadSFTP(commands, input, signal, onUpdate)
-  };
+  }, { ...SFTP_CATALOG, mode: 'flag' });
 }
 
 function resolveDeployUploadDeadline(uploads, manifests, limits) {
@@ -506,21 +505,17 @@ function resolveDeployUploadDeadline(uploads, manifests, limits) {
 }
 
 export function createRemoteDeployTool(commands, limits = UPLOAD_LIMITS) {
-  return {
+  return withProgressiveDisclosure({
     name: 'deploy_remote_service', label: 'Deploy remote service',
-    description:
-      'Deploy to the host-selected Linux SSH profile: upload all artifacts over one shared SFTP session with bounded parallel file transfers, execute deployment commands in order, then run a required non-no-op health-check command. ' +
-      'All upload sources are size-checked and excludes applied before any remote mutation (same limits as upload_sftp). Prefer small release artifacts; use exclude_defaults or exclude for source trees. ' +
-      'dry_run validates the full plan without remote mutation. skip_unchanged can speed redeploys when remote sizes already match. ' +
-      'Commands run in remote_cwd using bash and must return zero. Use a service manager (systemd or Docker) for persistent services. Stops on first failure, never retries or rolls back automatically; inspect remote state before retrying. ' +
-      'A healthy result only means the supplied remote check exited zero; it does not prove user-facing accessibility. Before reporting deployment success, independently verify the actual service endpoint from its intended client network with meaningful response/content checks; for web apps also load the page and verify a core flow using the browser. Failed or unavailable verification means deployment is unverified, never successful.',
+    description: DEPLOY_CATALOG.description,
     parameters: Type.Object({
-      uploads: Type.Array(Type.Object(uploadFields, { additionalProperties: false }), { maxItems: 100 }),
-      remote_cwd: Type.String(),
-      commands: Type.Array(Type.String({ minLength: 1 }), { minItems: 1, maxItems: 100 }),
-      health_check_command: Type.String({ minLength: 1, description: 'A real protocol/HTTP request that checks expected status and meaningful content, and exits nonzero on any mismatch or connection failure. No true/echo-only checks or ignored errors. Use bounded readiness retries. A server-local check must be followed by independent verification of the actual user-facing endpoint.' }),
+      uploads: Type.Optional(Type.Array(Type.Object(uploadFields, { additionalProperties: false }), { maxItems: 100 })),
+      remote_cwd: Type.Optional(Type.String()),
+      commands: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { minItems: 1, maxItems: 100 })),
+      health_check_command: Type.Optional(Type.String({ minLength: 1, description: 'A real protocol/HTTP request that checks expected status and meaningful content, and exits nonzero on any mismatch or connection failure. No true/echo-only checks or ignored errors. Use bounded readiness retries. A server-local check must be followed by independent verification of the actual user-facing endpoint.' })),
       dry_run: Type.Optional(Type.Boolean({ description: 'Validate uploads, excludes, timeouts and health_check_command without mutating the remote host or running deploy commands.' })),
-      timeout_seconds: Type.Optional(Type.Integer({ minimum: 1, maximum: commands.maxCommandTimeoutSeconds, description: 'Timeout per deploy/health command, bounded by the SSH profile limit.' }))
+      timeout_seconds: Type.Optional(Type.Integer({ minimum: 1, maximum: commands.maxCommandTimeoutSeconds, description: 'Timeout per deploy/health command, bounded by the SSH profile limit.' })),
+      ...flagHelpProperties()
     }, { additionalProperties: false }),
     async execute(_id, input, signal, onUpdate) {
       const started = Date.now();
@@ -651,5 +646,5 @@ export function createRemoteDeployTool(commands, limits = UPLOAD_LIMITS) {
         throw failure;
       }
     }
-  };
+  }, { ...DEPLOY_CATALOG, mode: 'flag' });
 }

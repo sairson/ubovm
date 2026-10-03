@@ -508,6 +508,10 @@ export interface SwarmRuntime {
   settle(workerId?: string, signal?: AbortSignal): Promise<SwarmWorkerSnapshot[]>;
   /** Cancel every active worker and await cleanup. No saved work is replayed. */
   close(): Promise<void>;
+  /** Live occupancy: who runs next, who can be preempted, which slots are releasing. */
+  admission?(ownerId?: string): unknown;
+  /** Live descendant snapshots plus derived blocked/releasing fields (not persisted). */
+  inspect?(ownerId?: string): { workers: unknown[]; admission: unknown };
 }
 export function createSwarm(options: SwarmOptions): SwarmRuntime;
 
@@ -1098,6 +1102,7 @@ export function createLocalShellTool(options?: LocalShellOptions): AgentTool & {
 export interface PythonToolOptions extends LocalShellOptions {
   /** Absolute CPython override; by default prefer bundled Python, then host PATH. */
   executable?: string;
+  /** Hostnames the sandbox may reach. `*` (default) allows any host. */
   allowedDomains?: string[];
   /** Default false. Writes bypass IDE change snapshots when explicitly enabled. */
   allowWorkspaceWrite?: boolean;

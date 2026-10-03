@@ -43,8 +43,12 @@ try {
     Remove-Managed $manifestFixture $fixture
     Invoke-Checked $git @('init', '--quiet', $fixture)
     foreach ($name in $patchNames) {
-        foreach ($line in [IO.File]::ReadAllLines((Join-Path $ProjectRoot "resources\patches\$name"))) {
+        $lines = [IO.File]::ReadAllLines((Join-Path $ProjectRoot "resources\patches\$name"))
+        for ($i = 0; $i -lt $lines.Length; $i++) {
+            $line = $lines[$i]
             if (-not $line.StartsWith('+++ b/')) { continue }
+            # New files are created by git apply; they are absent from the pinned checkout.
+            if ($i -gt 0 -and $lines[$i - 1] -eq '--- /dev/null') { continue }
             $relative = $line.Substring(6)
             $target = Join-Path $fixture $relative
             Assert-ChildPath $target $fixture

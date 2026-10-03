@@ -30,6 +30,8 @@ try {
     $first = @($files | ForEach-Object { (Get-FileHash (Join-Path $fixture $_)).Hash })
     $bundle = [IO.File]::ReadAllText((Join-Path $fixture $files[0]))
     if (-not $bundle.Contains('_startBlockingIframeDragEvents(){if(this.providedViewType==="ubovm.welcome")return;')) { throw 'Conversation webviews must receive file drops instead of opening editors.' }
+    if ($bundle.Contains('items: HTMLButtonElement[]') -or $bundle -match 'activate:\s*boolean') { throw 'Sidebar mode inject must not leave TypeScript parameter types in the workbench bundle.' }
+    if (-not $bundle.Contains('const focusAdjacent = (items, event, activate) => {') -and -not $bundle.Contains('const focusAdjacent=(items,event,activate)=>{')) { throw 'Sidebar mode keyboard navigation must be injected as plain JavaScript.' }
     if (-not $bundle.Contains('/* UBOVM session explorer */(l&&s.push(l),r||t.push(o))')) { throw 'Empty windows must register the session Explorer view.' }
     if ($bundle.Contains('this.workspaceContextService.getWorkbenchState()===1||this.workspaceContextService.getWorkspace().folders.length===0?(r&&s.push(r),l||t.push(a))')) { throw 'Window workspace must not disable the session Explorer view.' }
     $expectedLabel = [string][char]0x6587 + [char]0x4EF6

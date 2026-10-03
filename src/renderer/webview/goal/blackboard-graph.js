@@ -14,7 +14,7 @@
     fit.setAttribute('aria-label', '适应画布'); fit.title = '重置布局并适应画布';
     controls.append(minus, zoomLabel, plus, fit);
     const navigation = el('div', 'graph-navigation');
-    const search = el('input', 'graph-search'); search.type = 'search'; search.placeholder = '搜索事实、意图或节点 ID'; search.setAttribute('aria-label', '搜索探索图');
+    const search = el('input', 'graph-search'); search.type = 'search'; search.placeholder = '搜索事实、意图或关键词'; search.setAttribute('aria-label', '搜索探索图');
     const next = el('button', '', '下一项'); next.type = 'button';
     const searchCount = el('span', 'graph-search-count'); searchCount.setAttribute('role', 'status');
     const trace = el('select', 'graph-trace'); trace.setAttribute('aria-label', '探索路径');
@@ -134,13 +134,13 @@
     }
     let resizeFrame = 0, viewportSize = '';
     const observer = new ResizeObserver(() => {
-      if (blocked()) return;
+      if (blocked() || drag || panGesture) return;
       const size = `${viewport.clientWidth}:${viewport.clientHeight}`;
       if (!viewport.clientWidth || !viewport.clientHeight || size === viewportSize) return;
       viewportSize = size;
       if (!resizeFrame) resizeFrame = requestAnimationFrame(() => {
         resizeFrame = 0;
-        if (!blocked() && lastSnapshot) render(lastSnapshot, true);
+        if (!blocked() && !drag && !panGesture && lastSnapshot) render(lastSnapshot, true);
       });
     });
     observer.observe(viewport);
@@ -177,6 +177,51 @@
       control?.focus({ preventScroll: true });
     }
     detail.addEventListener('keydown', event => { if (event.key === 'Escape') { event.preventDefault(); closeDetail(); } });
+    function paintConnectedEdges(nodeId) {
+      const byId = new Map((projectedSnapshot?.graphNodes || []).map(n => [n.id, n]));
+      for (const cached of edgeRecords.values()) {
+        const source = cached.line.dataset.source, target = cached.line.dataset.target;
+        if (source !== nodeId && target !== nodeId) continue;
+        const from = positions.get(source), to = positions.get(target);
+        const parent = byId.get(source), child = byId.get(target);
+        if (!from || !to || !parent || !child) continue;
+        const parentHeight = parent.kind === 'root' ? 48 : NODE_HEIGHT;
+        const parentWidth = parent.kind === 'root' ? 88 : NODE_WIDTH;
+        const targetHeight = child.kind === 'frontier' ? 32 : NODE_HEIGHT;
+        const targetWidth = child.kind === 'frontier' ? 32 : NODE_WIDTH;
+        const cx = from.x + NODE_WIDTH / 2, cy = from.y + NODE_HEIGHT / 2;
+        const dx = to.x - from.x, dy = to.y - from.y;
+        let start = 1 / Math.max(Math.abs(dx) / (parentWidth / 2), Math.abs(dy) / (parentHeight / 2));
+        let end = 1 / Math.max(Math.abs(dx) / (targetWidth / 2), Math.abs(dy) / (targetHeight / 2));
+        if (!Number.isFinite(start + end) || start + end >= 1) start = end = .5;
+        const x1 = cx + dx * start, y1 = cy + dy * start;
+        const x2 = cx + dx * (1 - end), y2 = cy + dy * (1 - end);
+        const angle = Math.atan2(y2 - y1, x2 - x1);
+        const route = `M${x1},${y1} L${x2},${y2}`;
+        cached.line.setAttribute('d', `${route} M${x2 - 6 * Math.cos(angle - .5)},${y2 - 6 * Math.sin(angle - .5)} L${x2},${y2} L${x2 - 6 * Math.cos(angle + .5)},${y2 - 6 * Math.sin(angle + .5)}`);
+        cached.hit.setAttribute('d', route);
+        const reverse = x2 < x1 || x2 === x1 && y2 < y1;
+        if (Math.abs(y2 - y1) > Math.abs(x2 - x1)) {
+          const middleX = (x1 + x2) / 2, middleY = (y1 + y2) / 2;
+          const halfLength = Math.hypot(x2 - x1, y2 - y1) / 2;
+          cached.track.setAttribute('d', `M${middleX - halfLength},${middleY} L${middleX + halfLength},${middleY}`);
+        } else {
+          cached.track.setAttribute('d', reverse ? `M${x2},${y2} L${x1},${y1}` : route);
+        }
+      }
+    }
+    function paintDraggedNode(id) {
+      const p = manualPositions.get(positionKey(id));
+      if (!p) return;
+      positions.set(id, p);
+      if (id === goalPositionId) {
+        goalBadge.style.left = p.x + 'px'; goalBadge.style.top = p.y + 'px';
+      } else {
+        const record = records.get(id);
+        if (record) { record.button.style.left = p.x + 'px'; record.button.style.top = p.y + 'px'; }
+      }
+      paintConnectedEdges(id);
+    }
     function attachDrag(button, id) {
       button.addEventListener('pointerdown', event => {
         if (blocked()) return;
@@ -196,13 +241,15 @@
         // Pan can reveal negative world coordinates. Do not clamp nodes to the
         // original layout rectangle or they get stuck at an invisible wall.
         manualPositions.set(positionKey(id), { x: drag.start.x + dx / scale, y: drag.start.y + dy / scale });
-        if (!dragFrame) dragFrame = requestAnimationFrame(() => { dragFrame = 0; render(lastSnapshot, true); });
+        if (!dragFrame) dragFrame = requestAnimationFrame(() => { dragFrame = 0; paintDraggedNode(id); });
       });
       const finish = event => {
         if (!drag || drag.id !== id || drag.pointer !== event.pointerId) return;
-        if (drag.moved) suppressClick = id;
+        const moved = drag.moved;
+        if (moved) suppressClick = id;
         drag = null; button.classList.remove('is-dragging');
         if (button.hasPointerCapture(event.pointerId)) button.releasePointerCapture(event.pointerId);
+        if (moved && lastSnapshot) render(lastSnapshot, true);
       };
       button.addEventListener('pointerup', finish); button.addEventListener('pointercancel', finish); button.addEventListener('lostpointercapture', finish);
     }

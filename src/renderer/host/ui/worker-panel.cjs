@@ -10,7 +10,7 @@ function loadBundle() {
   if (bundle) return bundle;
   const read = file => readFileSync(path.join(__dirname, '../../webview', file), 'utf8');
   const styles = ['styles.css', 'theme.css', 'messages/message-markdown.css', 'messages/message-view.css', 'workers/worker-panel.css', 'preview/html-preview.css'].map(read).join('\n');
-  const scripts = ['vendor/marked.umd.js', 'messages/message-markdown.js', 'messages/message-view.js', 'workers/worker-panel.js', 'preview/html-preview.js', 'workers/native-panel.js'].map(read).join('\n;\n').replace(/<\/script/gi, '<\\/script');
+  const scripts = ['vendor/marked.umd.js', 'messages/message-markdown.js', 'messages/timeline-parts.js', 'messages/message-view.js', 'workers/worker-panel.js', 'preview/html-preview.js', 'workers/native-panel.js'].map(read).join('\n;\n').replace(/<\/script/gi, '<\\/script');
   return bundle = { styles, scripts };
 }
 

@@ -548,7 +548,7 @@ export class CompositeActionViewItem extends CompositeBarActionViewItem {
 		this.updateChecked();
 		this.updateEnabled();
 
-		if (['workbench.view.explorer', 'workbench.view.search', 'workbench.view.extension.ubovm-workers', 'workbench.view.extension.ubovm-blackboard'].includes(this.compositeBarActionItem.id)) {
+		if (['workbench.view.explorer', 'workbench.view.search', 'workbench.view.extension.ubovm-browser', 'workbench.view.extension.ubovm-workers', 'workbench.view.extension.ubovm-blackboard'].includes(this.compositeBarActionItem.id)) {
 			const close = container.ownerDocument.createElement('button');
 			close.className = 'ubovm-sidebar-tab-close';
 			close.type = 'button';
@@ -561,7 +561,7 @@ export class CompositeActionViewItem extends CompositeBarActionViewItem {
 				const tabBar = container.parentElement;
 				const restoreFocus = container.contains(container.ownerDocument.activeElement);
 				this.compositeBar.unpin(this.compositeBarActionItem.id);
-				if (!this.compositeBar.getPinnedCompositeIds().some(id => ['workbench.view.explorer', 'workbench.view.search', 'workbench.view.extension.ubovm-workers', 'workbench.view.extension.ubovm-blackboard'].includes(id))) {
+				if (!this.compositeBar.getPinnedCompositeIds().some(id => ['workbench.view.explorer', 'workbench.view.search', 'workbench.view.extension.ubovm-browser', 'workbench.view.extension.ubovm-workers', 'workbench.view.extension.ubovm-blackboard'].includes(id))) {
 					sidebar.dispatchEvent(new CustomEvent('ubovm-empty-sidebar'));
 				} else if (restoreFocus) {
 					queueMicrotask(() => {

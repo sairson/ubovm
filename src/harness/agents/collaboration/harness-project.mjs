@@ -1,4 +1,6 @@
 import { Type } from 'typebox';
+import { withActionHelp, withProgressiveDisclosure } from '../../intools/shared/disclosure.mjs';
+import { HARNESS_PROJECT_CATALOG } from '../../intools/shared/tool-catalogs.mjs';
 
 const profileSchema = Type.Object({
   name: Type.String({ pattern: '^[a-z][a-z0-9-]{0,47}$' }),
@@ -79,13 +81,16 @@ export function createHarnessProject({ state, save = () => {} } = {}) {
     tail = operation.catch(() => {});
     return operation;
   }
-  return { get, snapshot, manage, tool: {
+  return { get, snapshot, manage, tool: withProgressiveDisclosure({
     name: 'manage_harness_project', label: 'Customize Harness project',
-    description: 'Validate, define immutable task profiles, list versions, or import/export a version-1 JSON project. Validate previews current tools and effective limits without saving or running work. Identical definitions reuse IDs. Supply expectedRevision when editing to reject concurrent changes. Use returned IDs with spawn_worker profile. Profiles only narrow host/parent capabilities; approval and global budgets still apply. Up to 64 saved versions per session.',
-    parameters: Type.Object({ action: Type.Union(['list', 'define', 'import', 'export', 'validate'].map(value => Type.Literal(value))), expectedRevision: Type.Optional(Type.Integer({ minimum: 0 })),
-      profile: Type.Optional(profileSchema), project: Type.Optional(Type.Object({ version: Type.Literal(1), profiles: Type.Array(profileSchema, { minItems: 1, maxItems: 64 }) }, { additionalProperties: false })) }, { additionalProperties: false }),
+    description: HARNESS_PROJECT_CATALOG.description,
+    parameters: Type.Object(withActionHelp({
+      expectedRevision: Type.Optional(Type.Integer({ minimum: 0 })),
+      profile: Type.Optional(profileSchema),
+      project: Type.Optional(Type.Object({ version: Type.Literal(1), profiles: Type.Array(profileSchema, { minItems: 1, maxItems: 64 }) }, { additionalProperties: false }))
+    }), { additionalProperties: false }),
     execute: async (_id, input, signal) => { const value = await manage(input, signal); return { content: [{ type: 'text', text: JSON.stringify(value) }], details: value }; }
-  } };
+  }, HARNESS_PROJECT_CATALOG) };
 }
 
 export function applyHarnessProfile({ profile, options, tools, inherited }) {

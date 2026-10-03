@@ -97,9 +97,10 @@ html.ubovm-shell-loading .monaco-workbench {
 }
 .monaco-workbench:has(.ubovm-sessions-body)::before,
 html.ubovm-shell-loading .monaco-workbench::before {
-  content: '正在准备 UBOVM 工作环境…'; position: absolute; inset: 0; z-index: 1000; pointer-events: none;
+  content: '正在准备工作环境…'; position: absolute; inset: 0; z-index: 1000; pointer-events: none;
   display: flex; align-items: center; justify-content: center; box-sizing: border-box;
-  padding: 72px 24px 0; color: var(--vscode-descriptionForeground); font-size: 13px; text-align: center;
+  padding: 0 24px 48px; color: var(--vscode-descriptionForeground); font-size: 13px; text-align: center;
+  letter-spacing: .2px;
   opacity: 0; visibility: hidden;
   background-color: var(--vscode-editor-background);
   /* Instant appear under the splash; fade only when dismissing after ready. */
@@ -107,27 +108,37 @@ html.ubovm-shell-loading .monaco-workbench::before {
 }
 html.ubovm-content-ready .monaco-workbench:has(.ubovm-sessions-body)::before,
 html.ubovm-content-ready.ubovm-shell-loading .monaco-workbench::before {
-  transition: opacity 100ms ease-out, visibility 100ms;
+  animation: none;
+  transition: opacity 160ms cubic-bezier(.22, 1, .36, 1), visibility 160ms;
 }
 html:not(.ubovm-content-ready):not(.ubovm-content-slow) .monaco-workbench:has(.ubovm-sessions-body)::before,
 html.ubovm-shell-loading:not(.ubovm-content-ready):not(.ubovm-content-slow) .monaco-workbench::before {
-  opacity: 1; visibility: visible; pointer-events: auto;
+  opacity: 1; visibility: visible; pointer-events: none;
 }
-/* Single shell spinner — transform-only to avoid repainting the full mask. */
+/* Startup-aligned indeterminate bar — soft gradient travel across a fixed track. */
 html:not(.ubovm-content-ready):not(.ubovm-content-slow) .monaco-workbench:has(.ubovm-sessions-body)::after,
 html.ubovm-shell-loading:not(.ubovm-content-ready):not(.ubovm-content-slow) .monaco-workbench::after {
   content: ''; position: absolute; z-index: 1001; pointer-events: none;
-  width: 30px; height: 30px; left: calc(50% - 15px); top: calc(50% - 40px);
-  border: 3px solid var(--vscode-widget-border, #dededb);
-  border-top-color: var(--vscode-progressBar-background, #70776a); border-radius: 50%;
-  animation: ubovm-component-wait 600ms linear infinite;
+  width: 110px; height: 2px; left: calc(50% - 55px); top: calc(50% + 28px);
+  border-radius: 999px; overflow: hidden;
+  background:
+    linear-gradient(90deg,
+      transparent 0%,
+      var(--vscode-progressBar-background, #70776a) 35%,
+      var(--vscode-progressBar-background, #70776a) 65%,
+      transparent 100%) 0 / 55% 100% no-repeat,
+    var(--vscode-widget-border, #dededb);
+  animation: ubovm-shell-progress 900ms cubic-bezier(.4, 0, .2, 1) infinite;
 }
-@keyframes ubovm-component-wait { to { transform: rotate(360deg); } }
+@keyframes ubovm-shell-progress {
+  0% { background-position: -45% 0, 0 0; }
+  100% { background-position: 145% 0, 0 0; }
+}
 html.ubovm-loading-paused .monaco-workbench:has(.ubovm-sessions-body)::after,
 html.ubovm-loading-paused.ubovm-shell-loading .monaco-workbench::after { animation-play-state: paused !important; }
 /* Keep the complete sidebar behind the shared mask until recovery and paint
  * have finished. Visibility preserves tree measurements without showing rows. */
-.ubovm-sessions-body > :not(.ubovm-session-loading) { opacity: 1; transition: opacity 100ms ease-out; }
+.ubovm-sessions-body > :not(.ubovm-session-loading) { opacity: 1; transition: opacity 140ms cubic-bezier(.22, 1, .36, 1); }
 html:not(.ubovm-content-ready) .ubovm-sessions-body > :not(.ubovm-session-loading):not(.ubovm-sidebar-modes):not(.ubovm-sidebar-management) { visibility: hidden; opacity: 0; pointer-events: none; transition: none; }
 html:not(.ubovm-content-ready) .pane:has(.ubovm-sessions-body) > .pane-header,
 html:not(.ubovm-content-ready) .pane:has(.ubovm-sessions-body) > .title-actions,
@@ -136,10 +147,15 @@ html:not(.ubovm-content-ready) .part:has(.ubovm-sessions-body) .title-actions { 
   .monaco-workbench:has(.ubovm-sessions-body)::before,
   html.ubovm-shell-loading .monaco-workbench::before,
   html.ubovm-content-ready .monaco-workbench:has(.ubovm-sessions-body)::before,
-  html.ubovm-content-ready.ubovm-shell-loading .monaco-workbench::before { transition: none; }
+  html.ubovm-content-ready.ubovm-shell-loading .monaco-workbench::before { transition: none; animation: none !important; }
   .ubovm-sessions-body > :not(.ubovm-session-loading) { transition: none; }
   .monaco-workbench:has(.ubovm-sessions-body)::after,
-  html.ubovm-shell-loading .monaco-workbench::after { animation: none !important; }
+  html.ubovm-shell-loading .monaco-workbench::after {
+    animation: none !important;
+    transform: none !important;
+    background: var(--vscode-progressBar-background, #70776a);
+    opacity: .45;
+  }
 }
 /* Recovery lives in the sessions pane only after the shared spinner times out. */
 .ubovm-session-loading {
@@ -363,19 +379,72 @@ html:not(.ubovm-content-slow) .ubovm-sessions-loading .tree-explorer-viewlet-tre
   color: var(--vscode-sideBar-foreground, var(--vscode-foreground)) !important;
 }
 .monaco-workbench .part.sidebar .empty-pane-message-area { align-items: center; justify-content: center; padding: 24px; box-sizing: border-box; }
-.monaco-workbench .ubovm-open-file-tree {
-  padding: 8px 18px;
-  border-radius: 6px;
-  border: 1px solid var(--vscode-button-border, transparent);
-  background: var(--vscode-button-background);
-  color: var(--vscode-button-foreground);
+.monaco-workbench .ubovm-empty-sidebar-chooser {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 14px;
+  width: min(240px, 100%);
+  animation: ubovm-empty-enter 180ms ease-out;
+}
+.monaco-workbench .ubovm-empty-sidebar-hint {
+  margin: 0;
+  text-align: center;
+  color: var(--vscode-descriptionForeground);
+  font: 12px/1.5 'Segoe UI', 'Microsoft YaHei UI', 'Microsoft YaHei', sans-serif;
+}
+.monaco-workbench .ubovm-empty-sidebar-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+}
+.monaco-workbench .ubovm-empty-sidebar-action,
+.monaco-workbench .ubovm-open-file-tree,
+.monaco-workbench .ubovm-open-browser,
+.monaco-workbench .ubovm-open-worker {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--vscode-widget-border, var(--vscode-sideBar-border, transparent));
+  background: color-mix(in srgb, var(--vscode-sideBar-foreground, var(--vscode-foreground)) 4%, transparent);
+  color: var(--vscode-foreground);
   font: 13px/1.35 'Segoe UI', 'Microsoft YaHei UI', 'Microsoft YaHei', sans-serif;
-  font-weight: 600;
   letter-spacing: .01em;
   cursor: pointer;
+  text-align: left;
+  transition: background-color 120ms ease-out, border-color 120ms ease-out;
 }
-.monaco-workbench .ubovm-open-file-tree:hover { background: var(--vscode-button-hoverBackground); }
-.monaco-workbench .ubovm-open-file-tree:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 3px; }
+.monaco-workbench .ubovm-empty-sidebar-action-title {
+  font-weight: 600;
+}
+.monaco-workbench .ubovm-empty-sidebar-action-detail {
+  color: var(--vscode-descriptionForeground);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.45;
+}
+.monaco-workbench .ubovm-empty-sidebar-action:hover,
+.monaco-workbench .ubovm-open-file-tree:hover,
+.monaco-workbench .ubovm-open-browser:hover,
+.monaco-workbench .ubovm-open-worker:hover {
+  background: var(--vscode-list-hoverBackground);
+  border-color: var(--vscode-focusBorder, var(--vscode-widget-border));
+}
+.monaco-workbench .ubovm-empty-sidebar-action:focus-visible,
+.monaco-workbench .ubovm-open-file-tree:focus-visible,
+.monaco-workbench .ubovm-open-browser:focus-visible,
+.monaco-workbench .ubovm-open-worker:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 2px; }
+.monaco-workbench.vs-dark .ubovm-empty-sidebar-action,
+.monaco-workbench.vs-dark .ubovm-open-file-tree,
+.monaco-workbench.vs-dark .ubovm-open-browser,
+.monaco-workbench.vs-dark .ubovm-open-worker {
+  background: color-mix(in srgb, #fff 4%, transparent);
+  border-color: color-mix(in srgb, #fff 10%, transparent);
+}
 /* Keep Monaco's virtual row heights and hit targets unchanged. */
 .monaco-workbench .explorer-folders-view .monaco-list-row {
   border-radius: 4px;
@@ -554,20 +623,19 @@ html:not(.ubovm-content-slow) .ubovm-sessions-loading .tree-explorer-viewlet-tre
 
 .monaco-workbench .part.auxiliarybar > .title .title-label h2,
 .monaco-workbench .part.auxiliarybar .pane-header .title {
-  font-size: 14px;
+  font-size: 12px;
   font-weight: 600;
-  letter-spacing: .15px;
-  line-height: 1.35;
+  letter-spacing: .02em;
+  line-height: 1.3;
 }
 
-/* Only the conversation tree receives the roomy treatment. Its virtual list
- * reserves 44px in session-list.patch; CSS never changes row positioning or
- * height. The 36px rounded surface leaves 8px between conversation entries. */
+/* Compact conversation tree. Virtual list reserves 32px in session-list.patch.
+ * Projects read as muted group headers; nested sessions are the scannable body. */
 .monaco-workbench .ubovm-session-tree .monaco-list .monaco-list-row {
-  padding: 0 8px;
-  font-size: 13px;
+  padding: 0 6px;
+  font-size: 12px;
   font-weight: 400;
-  line-height: 1.35;
+  line-height: 1.3;
   color: var(--vscode-sideBar-foreground);
   background: transparent !important;
   outline: none !important;
@@ -575,64 +643,172 @@ html:not(.ubovm-content-slow) .ubovm-sessions-loading .tree-explorer-viewlet-tre
 
 .monaco-workbench .ubovm-session-tree .monaco-tl-row {
   box-sizing: border-box;
-  height: 36px;
-  margin: 4px 0;
-  padding: 0 8px 0 10px;
-  border-radius: 8px;
+  height: 28px;
+  margin: 2px 0;
+  padding: 0 6px 0 4px;
+  border-radius: 6px;
+  transition: background 120ms, box-shadow 120ms, opacity 120ms;
 }
 
-.monaco-workbench .ubovm-session-tree .monaco-tl-twistie,
+/* Project twisties stay visible; indent guides stay off.
+ * Clear the native translateX so the chevron doesn't sit on the folder icon. */
+.monaco-workbench .ubovm-session-tree .monaco-tl-twistie {
+  display: flex !important;
+  align-items: center;
+  justify-content: center;
+  width: 16px !important;
+  margin-right: 4px;
+  padding: 0 !important;
+  transform: none;
+  opacity: .62;
+  font-size: 12px;
+}
 .monaco-workbench .ubovm-session-tree .monaco-tl-indent {
   display: none;
 }
+.monaco-workbench .ubovm-session-tree .monaco-list-row[aria-level="2"] .monaco-tl-row {
+  padding-left: 18px;
+  margin-left: 8px;
+}
 
 .monaco-workbench .ubovm-session-tree .custom-view-tree-node-item {
+  display: flex;
+  align-items: center;
   min-width: 0;
-  height: 36px !important;
-  line-height: 36px !important;
+  overflow: hidden;
+  height: 28px !important;
+  line-height: 28px !important;
 }
 
 .monaco-workbench .ubovm-session-tree .custom-view-tree-node-item-icon {
   flex-shrink: 0;
-  height: 36px !important;
-  padding-right: 7px !important;
+  height: 28px !important;
+  padding-right: 5px !important;
   color: var(--vscode-descriptionForeground);
-  font-size: 14px;
+  font-size: 12px;
 }
 
 .monaco-workbench .ubovm-session-tree .custom-view-tree-node-item-icon.codicon-circle-filled {
-  font-size: 8px;
+  font-size: 7px;
   color: var(--vscode-foreground);
+}
+.monaco-workbench .ubovm-session-tree .custom-view-tree-node-item-icon.codicon-target {
+  color: color-mix(in srgb, var(--vscode-focusBorder) 70%, var(--vscode-descriptionForeground));
+}
+.monaco-workbench .ubovm-session-tree .custom-view-tree-node-item-icon:is(.codicon-folder, .codicon-folder-opened) {
+  font-size: 13px;
+  opacity: .92;
 }
 
 .monaco-workbench .ubovm-session-tree .monaco-highlighted-label,
 .monaco-workbench .ubovm-session-tree .label-name {
-  font-size: 13px;
-  font-weight: 500;
-  letter-spacing: .01em;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: 0;
 }
 
 .monaco-workbench .ubovm-session-tree .label-description {
-  font-size: 11px;
+  flex: 0 1 auto;
+  max-width: 42%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
   font-weight: 400;
-  opacity: .78;
+  opacity: .72;
   margin-left: 6px;
+  font-variant-numeric: tabular-nums;
+}
+.monaco-workbench .ubovm-sessions-body.ubovm-sessions-narrow .ubovm-session-tree .label-description {
+  display: none;
+}
+
+/* Project rows: section/group chrome — quieter and denser than session rows. */
+.monaco-workbench .ubovm-session-tree .monaco-list-row:has(.codicon-folder, .codicon-folder-opened) .monaco-tl-row {
+  height: 26px;
+  margin: 6px 0 2px;
+  padding-left: 4px;
+  border-radius: 5px;
+  background: transparent;
+}
+.monaco-workbench .ubovm-session-tree .monaco-list-row:has(.codicon-folder, .codicon-folder-opened) .custom-view-tree-node-item,
+.monaco-workbench .ubovm-session-tree .monaco-list-row:has(.codicon-folder, .codicon-folder-opened) .custom-view-tree-node-item-icon {
+  height: 26px !important;
+  line-height: 26px !important;
+}
+.monaco-workbench .ubovm-session-tree .monaco-list-row:has(.codicon-folder, .codicon-folder-opened) .custom-view-tree-node-item-icon {
+  margin-left: 2px;
+  padding-right: 6px !important;
+}
+.monaco-workbench .ubovm-session-tree .monaco-list-row:has(.codicon-folder, .codicon-folder-opened) :is(.monaco-highlighted-label, .label-name) {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .03em;
+  color: var(--vscode-sideBarSectionHeader-foreground, var(--vscode-descriptionForeground));
+}
+.monaco-workbench .ubovm-session-tree .monaco-list-row:has(.codicon-folder, .codicon-folder-opened) .label-description {
+  font-size: 10px;
+  font-weight: 400;
+  opacity: .65;
+  color: var(--vscode-descriptionForeground);
+}
+.monaco-workbench .ubovm-session-tree .monaco-list-row:has(.codicon-folder, .codicon-folder-opened) .monaco-tl-twistie {
+  width: 18px !important;
+  margin-right: 6px;
+  opacity: .55;
+}
+
+.monaco-workbench .ubovm-sessions-body[data-active-mode="assist"] .ubovm-session-tree .monaco-list-row:has(.codicon-target) .monaco-tl-row,
+.monaco-workbench .ubovm-sessions-body[data-active-mode="goal"] .ubovm-session-tree .monaco-list-row:has(.codicon-comment) .monaco-tl-row {
+  opacity: .62;
+}
+.monaco-workbench .ubovm-sessions-body[data-active-mode="assist"] .ubovm-session-tree .monaco-list-row:has(.codicon-target):hover .monaco-tl-row,
+.monaco-workbench .ubovm-sessions-body[data-active-mode="goal"] .ubovm-session-tree .monaco-list-row:has(.codicon-comment):hover .monaco-tl-row {
+  opacity: .88;
 }
 
 .monaco-workbench .ubovm-session-tree .monaco-list-row:hover .monaco-tl-row {
   background: var(--vscode-list-hoverBackground);
 }
+.monaco-workbench .ubovm-session-tree .monaco-list-row:has(.codicon-folder, .codicon-folder-opened):hover .monaco-tl-row {
+  background: color-mix(in srgb, var(--vscode-foreground) 4%, transparent);
+}
 
-.monaco-workbench .ubovm-session-tree .monaco-list-row:is(:has(.codicon-circle-filled), [aria-label*="，当前会话，"]) .monaco-tl-row {
+.monaco-workbench .ubovm-session-tree .monaco-list-row:is(
+  :has(.codicon-circle-filled),
+  :has(.codicon-loading)[aria-label*="，当前会话"],
+  [aria-label*="，当前会话"]
+) .monaco-tl-row {
   color: var(--vscode-list-activeSelectionForeground);
   background: var(--vscode-list-activeSelectionBackground);
-  font-weight: 600;
+  font-weight: 500;
+  box-shadow: inset 2px 0 0 var(--vscode-focusBorder);
 }
+.monaco-workbench .ubovm-session-tree .monaco-list-row:is(
+  :has(.codicon-circle-filled),
+  :has(.codicon-loading)[aria-label*="，当前会话"],
+  [aria-label*="，当前会话"]
+) :is(.monaco-highlighted-label, .label-name) {
+  font-weight: 500;
+}
+.monaco-workbench .ubovm-session-tree .monaco-list-row:has(.codicon-folder-opened) .monaco-tl-row,
 .monaco-workbench .ubovm-session-tree .monaco-list-row[aria-label*="，当前项目"] .monaco-tl-row {
-  font-weight: 600;
+  background: color-mix(in srgb, var(--vscode-focusBorder) 8%, transparent);
+  box-shadow: none;
 }
-.monaco-workbench .ubovm-session-tree .monaco-list-row[aria-label*="，当前项目"] :is(.codicon-folder-opened, .label-description) {
-  color: var(--vscode-focusBorder);
+.monaco-workbench .ubovm-session-tree .monaco-list-row:has(.codicon-folder-opened) :is(.codicon-folder-opened, .label-name),
+.monaco-workbench .ubovm-session-tree .monaco-list-row[aria-label*="，当前项目"] :is(.codicon-folder-opened, .label-name) {
+  color: var(--vscode-foreground);
+}
+.monaco-workbench .ubovm-session-tree .monaco-list-row:has(.codicon-folder-opened) .label-description,
+.monaco-workbench .ubovm-session-tree .monaco-list-row[aria-label*="，当前项目"] .label-description {
+  color: var(--vscode-descriptionForeground);
+  opacity: .8;
 }
 
 .monaco-workbench .ubovm-session-tree .monaco-list:focus .monaco-list-row.focused .monaco-tl-row {
@@ -641,7 +817,7 @@ html:not(.ubovm-content-slow) .ubovm-sessions-loading .tree-explorer-viewlet-tre
 }
 
 /* Native welcome views stay keyboard accessible and scroll in short panels. */
-.monaco-workbench .pane > .pane-body.ubovm-sessions-body { position: relative; }
+.monaco-workbench .pane > .pane-body.ubovm-sessions-body { position: relative; container-type: inline-size; }
 .monaco-workbench .pane > .pane-body.ubovm-sessions-body > .ubovm-sidebar-modes,
 .monaco-workbench .pane > .pane-body.ubovm-sessions-body.welcome > .ubovm-sidebar-modes {
   position: absolute;
@@ -649,29 +825,45 @@ html:not(.ubovm-content-slow) .ubovm-sessions-loading .tree-explorer-viewlet-tre
   z-index: 2;
   display: flex;
   align-items: center;
-  gap: 3px;
-  height: 38px;
+  gap: 2px;
+  height: 32px;
   box-sizing: border-box;
-  margin: 4px 10px 8px;
-  padding: 3px;
+  margin: 4px 8px 6px;
+  padding: 2px;
   border: 1px solid var(--vscode-widget-border);
-  border-radius: 9px;
+  border-radius: 7px;
   background: color-mix(in srgb, var(--vscode-foreground) 4%, transparent);
 }
 .monaco-workbench .ubovm-sidebar-modes button {
   position: relative;
+  display: inline-flex;
   flex: 1;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
   min-width: 0;
-  height: 30px;
+  height: 26px;
   padding: 0 6px;
   border: 0;
-  border-radius: 6px;
-  font: 500 13px/1.2 'Segoe UI', 'Microsoft YaHei UI', sans-serif;
-  letter-spacing: .02em;
+  border-radius: 5px;
+  font: 500 11px/1.2 'Segoe UI', 'Microsoft YaHei UI', sans-serif;
+  letter-spacing: .01em;
   color: var(--vscode-descriptionForeground);
   background: transparent;
   cursor: pointer;
-  transition: background 140ms, color 140ms;
+  transition: background 140ms, color 140ms, box-shadow 140ms;
+}
+.monaco-workbench .ubovm-sidebar-modes button .codicon {
+  flex: 0 0 12px;
+  font-size: 12px;
+  line-height: 1;
+  opacity: .88;
+}
+.monaco-workbench .ubovm-sidebar-modes button .ubovm-mode-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .monaco-workbench .ubovm-sidebar-modes button[aria-pressed="true"] {
   color: var(--vscode-foreground);
@@ -679,18 +871,33 @@ html:not(.ubovm-content-slow) .ubovm-sessions-loading .tree-explorer-viewlet-tre
   box-shadow: 0 1px 4px #0000000c;
   font-weight: 600;
 }
+.monaco-workbench .ubovm-sidebar-modes button[aria-pressed="true"] .codicon { opacity: 1; }
 .monaco-workbench .ubovm-sidebar-modes button:hover:enabled { color: var(--vscode-foreground); }
 .monaco-workbench .ubovm-sidebar-modes button[aria-disabled="true"] { cursor: default; opacity: .6; }
 .monaco-workbench .ubovm-sidebar-modes button:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; }
+.monaco-workbench .ubovm-sessions-body.ubovm-sessions-narrow .ubovm-sidebar-modes {
+  margin-inline: 6px;
+}
+.monaco-workbench .ubovm-sessions-body.ubovm-sessions-narrow .ubovm-sidebar-modes button .ubovm-mode-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
 /* Native tree focus must not scroll the pane and move navigation offscreen.
- * Chrome budget: modes ~50px + management ~40px = 90px (keep in sync with sidebar-mode.patch). */
+ * Chrome budget: modes ~42px + management ~40px = 82px (keep in sync with sidebar-mode.patch). */
 .monaco-workbench .pane > .pane-body.ubovm-sessions-body > .tree-explorer-viewlet-tree-view,
 .monaco-workbench .pane > .pane-body.ubovm-sessions-body > .welcome-view {
   position: absolute;
-  top: 50px;
+  top: 42px;
   left: 0;
   width: 100%;
-  height: max(0px, calc(100% - 90px));
+  height: max(0px, calc(100% - 82px));
   overflow: hidden;
 }
 
@@ -763,41 +970,88 @@ html:not(.ubovm-content-slow) .ubovm-sessions-loading .tree-explorer-viewlet-tre
 .monaco-workbench .ubovm-sidebar-management button:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
 .monaco-workbench .ubovm-sidebar-management button:disabled { cursor: default; opacity: .6; }
 
-/* Dark session navigation shares the notebook's muted green selection cues. */
+/* Session navigation tokens — light keeps soft mixes; dark uses solid theme surfaces. */
+.monaco-workbench.vs .ubovm-sessions-body {
+  --ubovm-nav-accent: var(--vscode-focusBorder, #3d7a55);
+  --ubovm-nav-selected: color-mix(in srgb, var(--ubovm-nav-accent) 12%, var(--vscode-sideBar-background));
+  --ubovm-nav-hover: color-mix(in srgb, var(--vscode-foreground) 5%, var(--vscode-sideBar-background));
+}
 .monaco-workbench.vs-dark .ubovm-sessions-body {
-  --ubovm-nav-accent: var(--vscode-focusBorder, #96b3a0);
-  --ubovm-nav-selected: color-mix(in srgb, var(--ubovm-nav-accent) 16%, var(--vscode-sideBar-background));
-  --ubovm-nav-hover: color-mix(in srgb, var(--vscode-foreground) 6%, var(--vscode-sideBar-background));
+  --ubovm-nav-accent: var(--vscode-focusBorder, #a3c0ae);
+  --ubovm-nav-selected: var(--vscode-list-inactiveSelectionBackground, #314339);
+  --ubovm-nav-hover: var(--vscode-list-hoverBackground, #2c352f);
+}
+.monaco-workbench:is(.vs, .vs-dark) .pane > .pane-body.ubovm-sessions-body > .ubovm-sidebar-modes {
+  background: color-mix(in srgb, var(--vscode-foreground) 3%, var(--vscode-sideBar-background));
+  border-color: var(--vscode-sideBar-border, var(--vscode-widget-border));
 }
 .monaco-workbench.vs-dark .pane > .pane-body.ubovm-sessions-body > .ubovm-sidebar-modes {
-  background: color-mix(in srgb, var(--vscode-foreground) 3%, var(--vscode-sideBar-background));
-  border-color: var(--vscode-sideBar-border);
+  background: color-mix(in srgb, var(--vscode-foreground) 7%, var(--vscode-sideBar-background));
+  border-color: color-mix(in srgb, var(--ubovm-nav-accent) 18%, var(--vscode-sideBar-border, var(--vscode-widget-border)));
 }
-.monaco-workbench.vs-dark .ubovm-sidebar-modes button:hover:enabled { background: var(--ubovm-nav-hover); }
-.monaco-workbench.vs-dark .ubovm-sidebar-modes button[aria-pressed="true"] {
+.monaco-workbench:is(.vs, .vs-dark) .ubovm-sidebar-modes button:hover:enabled { background: var(--ubovm-nav-hover); }
+.monaco-workbench:is(.vs, .vs-dark) .ubovm-sidebar-modes button[aria-pressed="true"] {
   color: var(--vscode-foreground);
   background: var(--ubovm-nav-selected);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ubovm-nav-accent) 28%, transparent);
 }
-.monaco-workbench.vs-dark .ubovm-session-tree .monaco-list-row:is(:has(.codicon-circle-filled), [aria-label*="，当前会话，"]) .monaco-tl-row {
+.monaco-workbench.vs-dark .ubovm-sidebar-modes button[aria-pressed="true"] {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ubovm-nav-accent) 42%, transparent);
+}
+.monaco-workbench:is(.vs, .vs-dark) .ubovm-sidebar-modes button[aria-pressed="true"] .codicon { color: var(--ubovm-nav-accent); }
+.monaco-workbench:is(.vs, .vs-dark) .ubovm-session-tree .monaco-list-row:hover .monaco-tl-row {
+  background: var(--ubovm-nav-hover);
+}
+.monaco-workbench:is(.vs, .vs-dark) .ubovm-session-tree .monaco-list-row:is(
+  :has(.codicon-circle-filled),
+  :has(.codicon-loading)[aria-label*="，当前会话"],
+  [aria-label*="，当前会话"]
+) .monaco-tl-row {
   background: var(--ubovm-nav-selected);
-  color: var(--vscode-foreground);
+  color: var(--vscode-list-activeSelectionForeground, var(--vscode-foreground));
   box-shadow: inset 2px 0 0 var(--ubovm-nav-accent);
 }
-.monaco-workbench.vs-dark .ubovm-session-tree .monaco-list-row[aria-label*="，当前项目"] .monaco-tl-row {
-  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--ubovm-nav-accent) 55%, transparent);
+.monaco-workbench.vs-dark .ubovm-session-tree .monaco-list-row:is(
+  :has(.codicon-circle-filled),
+  :has(.codicon-loading)[aria-label*="，当前会话"],
+  [aria-label*="，当前会话"]
+) .monaco-tl-row {
+  box-shadow: inset 3px 0 0 var(--ubovm-nav-accent);
 }
-.monaco-workbench.vs-dark .ubovm-session-tree .monaco-list-row[aria-label*="，当前项目"] :is(.codicon-folder-opened, .label-description) {
+.monaco-workbench:is(.vs, .vs-dark) .ubovm-session-tree .monaco-list-row:has(.codicon-folder-opened) .monaco-tl-row,
+.monaco-workbench:is(.vs, .vs-dark) .ubovm-session-tree .monaco-list-row[aria-label*="，当前项目"] .monaco-tl-row {
+  background: color-mix(in srgb, var(--ubovm-nav-accent) 10%, transparent);
+  box-shadow: none;
+}
+.monaco-workbench:is(.vs, .vs-dark) .ubovm-session-tree .monaco-list-row:has(.codicon-folder, .codicon-folder-opened) :is(.monaco-highlighted-label, .label-name) {
+  color: var(--vscode-sideBarSectionHeader-foreground, var(--vscode-descriptionForeground));
+}
+.monaco-workbench:is(.vs, .vs-dark) .ubovm-session-tree .monaco-list-row:has(.codicon-folder-opened) :is(.monaco-highlighted-label, .label-name),
+.monaco-workbench:is(.vs, .vs-dark) .ubovm-session-tree .monaco-list-row[aria-label*="，当前项目"] :is(.monaco-highlighted-label, .label-name) {
+  color: var(--vscode-foreground);
+}
+.monaco-workbench:is(.vs, .vs-dark) .ubovm-session-tree .monaco-list-row:has(.codicon-folder-opened) .codicon-folder-opened,
+.monaco-workbench:is(.vs, .vs-dark) .ubovm-session-tree .monaco-list-row[aria-label*="，当前项目"] .codicon-folder-opened {
   color: var(--ubovm-nav-accent);
 }
-.monaco-workbench.vs-dark .ubovm-session-tree .custom-view-tree-node-item-icon.codicon-circle-filled { color: var(--ubovm-nav-accent); }
-.monaco-workbench.vs-dark .pane > .pane-body.ubovm-sessions-body > .ubovm-sidebar-management {
-  border-top-color: var(--vscode-sideBar-border);
+.monaco-workbench:is(.vs, .vs-dark) .ubovm-session-tree .custom-view-tree-node-item-icon.codicon-circle-filled,
+.monaco-workbench:is(.vs, .vs-dark) .ubovm-session-tree .custom-view-tree-node-item-icon.codicon-loading {
+  color: var(--ubovm-nav-accent);
+}
+.monaco-workbench.vs-dark .ubovm-session-tree .label-description {
+  opacity: .9;
+  color: var(--vscode-descriptionForeground);
+}
+.monaco-workbench:is(.vs, .vs-dark) .pane > .pane-body.ubovm-sessions-body > .ubovm-sidebar-management {
+  border-top-color: var(--vscode-sideBar-border, var(--vscode-widget-border));
   background: color-mix(in srgb, var(--vscode-foreground) 2%, var(--vscode-sideBar-background));
 }
-.monaco-workbench.vs-dark .ubovm-sidebar-management button:hover:enabled { background: var(--ubovm-nav-hover); }
-.monaco-workbench.vs-dark .ubovm-sidebar-management button[aria-current="page"] { background: var(--ubovm-nav-selected); color: var(--vscode-foreground); }
-.monaco-workbench.vs-dark .ubovm-sidebar-management button[aria-current="page"] .codicon { color: var(--ubovm-nav-accent); }
+.monaco-workbench:is(.vs, .vs-dark) .ubovm-sidebar-management button:hover:enabled { background: var(--ubovm-nav-hover); }
+.monaco-workbench:is(.vs, .vs-dark) .ubovm-sidebar-management button[aria-current="page"] {
+  background: var(--ubovm-nav-selected);
+  color: var(--vscode-foreground);
+}
+.monaco-workbench:is(.vs, .vs-dark) .ubovm-sidebar-management button[aria-current="page"] .codicon { color: var(--ubovm-nav-accent); }
 .monaco-workbench .part:is(.sidebar, .auxiliarybar) .welcome-view > .monaco-scrollable-element {
   height: 100%;
   min-height: 0;

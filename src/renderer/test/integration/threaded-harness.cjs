@@ -178,9 +178,13 @@ test('an SDK error after steering admission cannot claim a safe pre-delivery rej
   f.service.cancel('test'); await f.done;
 });
 
-test('a hung worker is detected without exit and does not replay its task', { timeout: 10000 }, async t => {
-  const f = await fixture(t, "setTimeout(() => { while (true) {} }, 10); await new Promise(() => {});", { heartbeatInterval: 25, heartbeatTimeout: 400 });
+test('a hung worker soft-stalls then is killed without replaying its task', { timeout: 15000 }, async t => {
+  const f = await fixture(t, "setTimeout(() => { while (true) {} }, 10); await new Promise(() => {});", {
+    heartbeatInterval: 25, heartbeatTimeout: 200, heartbeatKillTimeout: 600
+  });
   await f.start();
+  await waitFor(() => f.service.connectionState().status === 'stalled');
+  assert.equal(f.service.isBusy('test'), true, 'soft stall must keep the hung turn alive');
   await waitFor(() => f.service.connectionState().status === 'disconnected');
   await waitFor(() => !f.service.isBusy('test'));
   assert.equal(f.service.state('test').status, 'failed');

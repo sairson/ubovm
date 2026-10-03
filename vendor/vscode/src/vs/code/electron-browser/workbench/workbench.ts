@@ -82,13 +82,30 @@
 		window.document.head.appendChild(style);
 		style.textContent = `body {	background-color: ${shellBackground}; color: ${shellForeground}; margin: 0; padding: 0; }`;
 
+		// Theme-aware brand splash: when #ubovm-startup is present, paint it with
+		// shell colors and skip the detailed monaco-parts-splash skeleton.
+		const brandStartup = window.document.getElementById('ubovm-startup');
+		if (brandStartup && shellBackground) {
+			const root = window.document.documentElement;
+			root.style.setProperty('--ubovm-startup-bg', shellBackground);
+			if (shellForeground) {
+				root.style.setProperty('--ubovm-startup-fg', shellForeground);
+			}
+			const dark = (baseTheme ?? '').includes('dark') || baseTheme === 'hc-black';
+			root.style.setProperty('--ubovm-startup-card', dark ? 'color-mix(in srgb, #ffffff 8%, transparent)' : '#fff');
+			root.style.setProperty('--ubovm-startup-border', dark ? 'color-mix(in srgb, #ffffff 14%, transparent)' : '#e5e5e1');
+			root.style.setProperty('--ubovm-startup-muted', dark ? 'color-mix(in srgb, currentColor 55%, transparent)' : '#8c8e89');
+			root.style.setProperty('--ubovm-startup-track', dark ? 'color-mix(in srgb, #ffffff 16%, transparent)' : '#e6e7e2');
+			root.style.setProperty('--ubovm-startup-bar', dark ? 'color-mix(in srgb, #ffffff 55%, transparent)' : '#656a60');
+		}
+
 		// set zoom level as soon as possible
 		if (typeof data?.zoomLevel === 'number' && typeof preloadGlobals?.webFrame?.setZoomLevel === 'function') {
 			preloadGlobals.webFrame.setZoomLevel(data.zoomLevel);
 		}
 
 		// restore parts if possible (we might not always store layout info)
-		if (data?.layoutInfo) {
+		if (data?.layoutInfo && !brandStartup) {
 			const { layoutInfo, colorInfo } = data;
 			const modernUI = layoutInfo.modernUI === true;
 			const floatingMargin = 4;

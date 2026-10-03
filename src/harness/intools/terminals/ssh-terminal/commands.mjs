@@ -5,10 +5,13 @@ import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { createProcessOutput } from '../../shared/process/process-output.mjs';
 import { Type } from 'typebox';
 import { requireText, integer, expandHome, textResult, abortError, errorFields } from '../../shared/common.mjs';
+import { flagHelpProperties, withProgressiveDisclosure } from '../../shared/disclosure.mjs';
+import { SSH_CATALOG } from '../../shared/tool-catalogs.mjs';
 import { openInteractiveShell } from './interactive.mjs';
 import { PersistentShell, namedShell } from '../../shared/process/persistent-shell.mjs';
 import { abortableSetup } from '../../shared/process/abortable-setup.mjs';
 import { bindShellSignal } from '../../shared/process/shell-signal.mjs';
+import { shouldRetainShellCommand } from '../../shared/process/long-running.mjs';
 const ignoreLateChannelError = () => {};
 const protectLateChannelErrors = channel => {
   for (const target of [channel, channel.stderr]) {
@@ -136,9 +139,9 @@ export class SSHCommands {
       return session.execute(command, { timeout, maxOutputBytes: c.max_output_bytes, reset: input.reset_session, lifecycle,
         details: { session: input.session, profile_id: c.id ?? 'default' } }, signal, onUpdate);
     }
-    return this.#execOneShot(command, timeout, signal, onUpdate, false, lifecycle);
+    return this.#execOneShot(command, timeout, signal, onUpdate, false, lifecycle, input);
   }
-  async #execOneShot(command, timeout, signal, onUpdate, retried, lifecycle) {
+  async #execOneShot(command, timeout, signal, onUpdate, retried, lifecycle, input) {
     const c = this.#config;
     let client = await this.waitForConnection(signal);
     signal?.throwIfAborted();
@@ -156,7 +159,7 @@ export class SSHCommands {
         const subscriptions = [];
         const listen = (target, name, handler) => { target.on(name, handler); subscriptions.push([target, name, handler]); };
         let stream, finished = false, exitCode, unsubscribe;
-        const finish = (error, terminationUnconfirmed = false) => {
+        const finish = (error, terminationUnconfirmed = false, extras = {}) => {
           if (finished) return; finished = true;
           try { unsubscribe?.(); } catch (cleanupError) { error ??= cleanupError; }
           unsubscribe = undefined;
@@ -172,7 +175,7 @@ export class SSHCommands {
             const failure = new Error(`${fields.message}${warning}${text ? `\n${text}` : ''}`, { cause: error });
             failure.name = fields.name;
             if (fields.code !== undefined) failure.code = fields.code;
-            failure.details = { exit_code: exitCode ?? null, profile_id: c.id ?? 'default', ...(terminationUnconfirmed ? { remote_termination_confirmed: false } : {}) };
+            failure.details = { exit_code: exitCode ?? null, profile_id: c.id ?? 'default', ...(terminationUnconfirmed ? { remote_termination_confirmed: false } : extras) };
             reject(failure);
           }
           else resolve(textResult(text, { exit_code: exitCode, profile_id: c.id ?? 'default' }));
@@ -197,7 +200,10 @@ export class SSHCommands {
         signal?.addEventListener('abort', cancel, { once: true });
         try { unsubscribe = lifecycle?.subscribe(() => clearTimeout(timer)); }
         catch (error) { stop(error); return; }
-        const remote = lifecycle ? `bash -lc ${shellQuote(command)}` : buildRemoteCommand(command, timeout);
+        // Host-managed retainBackground always supplies lifecycle; skip remote
+        // timeout(1) only for retained long servers, not ordinary one-shot work.
+        const skipRemoteTimeout = lifecycle?.resident === true || shouldRetainShellCommand(input);
+        const remote = skipRemoteTimeout ? `bash -lc ${shellQuote(command)}` : buildRemoteCommand(command, timeout);
         try {
           client.exec(remote, (error, channel) => {
             if (error) {
@@ -229,7 +235,14 @@ export class SSHCommands {
             listen(channel, 'error', error => stop(error));
             listen(channel.stderr, 'error', error => stop(error));
             listen(channel, 'exit', (code, reason) => { exitCode = code; if (reason) exitCode = `signal ${reason}`; });
-            listen(channel, 'close', code => { exitCode ??= code; finish(exitCode === 0 ? undefined : new Error(`SSH command exited with ${exitCode ?? 'unknown status'}`)); });
+            listen(channel, 'close', code => {
+              exitCode ??= code;
+              if (exitCode === 124 && !skipRemoteTimeout) {
+                finish(new Error(`SSH command timed out after ${timeout} seconds`), false, { remote_termination_confirmed: true });
+                return;
+              }
+              finish(exitCode === 0 ? undefined : new Error(`SSH command exited with ${exitCode ?? 'unknown status'}`));
+            });
           });
         } catch (error) {
           finished = true;
@@ -245,7 +258,7 @@ export class SSHCommands {
         if (this.#client === client) this.#client = undefined;
         try { client.end(); } catch { /* already closed */ }
         signal?.throwIfAborted();
-        return this.#execOneShot(command, timeout, signal, onUpdate, true, lifecycle);
+        return this.#execOneShot(command, timeout, signal, onUpdate, true, lifecycle, input);
       }
       throw error;
     }
@@ -289,14 +302,15 @@ export class SSHCommands {
     this.#toolRefs++;
     const lifetime = new AbortController(), active = new Set();
     let closed = false, closing;
-    return {
-      name: 'run_linux_ssh_command', label: 'Run SSH command', description: 'Preferred execution tool for CTF reconnaissance, enumeration, scanning, probing, vulnerability validation, exploitation, payload execution, and flag retrieval or verification within the challenge scope. Execute Linux commands and scripts on the host-selected remote Linux SSH profile, with streamed stdout/stderr and a remote timeout. Use Linux shell syntax and remote paths; local IDE files, dependencies and localhost services are not automatically available remotely. Check required remote prerequisites and transfer artifacts with supplied file-transfer tools when needed. The SSH host is the execution environment, not automatically the challenge target; use target addresses from task evidence. Prefer this tool over equivalent local shell execution or browser automation for these operations. Set retain=true for long-lived remote servers; the host also auto-retains common patterns like npm run dev. Nonzero exits are errors. The model cannot change the SSH profile.',
+    const tool = {
+      name: 'run_linux_ssh_command', label: 'Run SSH command', description: SSH_CATALOG.description,
       parameters: Type.Object({
-        command: Type.String(),
+        command: Type.Optional(Type.String({ minLength: 1, maxLength: 32768 })),
         session: Type.Optional(Type.String({ minLength: 1, maxLength: 64, description: 'Reuse a named bash shell, retaining cwd and environment. Requires Linux setsid and /proc for process-group cancellation. Calls serialize. A retained command frees the session for a fresh shell. Omit for isolated execution. No stdin reads, shell-native background jobs, or shell-wide output redirection.' })),
         reset_session: Type.Optional(Type.Boolean({ description: 'Force a fresh named shell. After exit, timeout, cancellation or disconnect the next call soft-resets automatically; use this to discard retained cwd/env deliberately.' })),
         retain: Type.Optional(Type.Boolean({ description: 'Host-retain this command after the tool returns so it survives agent end (for remote dev servers). Prefer this over shell background jobs.' })),
-        timeout_seconds: Type.Optional(Type.Integer({ minimum: 1, maximum: this.#config.max_command_timeout_seconds }))
+        timeout_seconds: Type.Optional(Type.Integer({ minimum: 1, maximum: this.#config.max_command_timeout_seconds })),
+        ...flagHelpProperties()
       }, { additionalProperties: false }),
       execute: async (_id, input, signal, onUpdate, lifecycle) => {
         if (closed) throw new Error('SSH shell tool is closed');
@@ -321,6 +335,9 @@ export class SSHCommands {
         return closing;
       }
     };
+    const disclosed = withProgressiveDisclosure(tool, { ...SSH_CATALOG, mode: 'flag' });
+    disclosed.close = (...args) => tool.close(...args);
+    return disclosed;
   }
 }
 export function createSSHTool(options) {

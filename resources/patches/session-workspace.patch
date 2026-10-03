@@ -114,14 +114,13 @@ index df35d48..eff97c7 100644
  			return;
 @@ -299,6 +299,9 @@ class ViewWelcomeController {
  	}
- 
+
  	private getContentDescriptors(): IViewContentDescriptor[] {
 +		if (this.delegate.id === 'workbench.explorer.fileView' && this.contextKeyService.getContextKeyValue('ubovm.noWorkspace') === true) {
 +			return [{ content: '$(folder-opened)\n尚未选择工作空间\n请在项目行或会话顶部选择目录，文件列表将随会话自动更新。' }];
 +		}
  		if (this.delegate.id === 'workbench.explorer.emptyView') {
--			return [{ content: '$(folder-opened)\n尚未选择工作空间\n请在当前会话顶部选择工作空间，文件列表将随会话自动更新。' }];
-+			return [{ content: '$(folder-opened)\n尚未选择工作空间\n请在项目行或会话顶部选择目录，文件列表将随会话自动更新。' }];
+ 			return [{ content: '$(folder-opened)\n尚未选择工作空间\n请在项目行或会话顶部选择目录，文件列表将随会话自动更新。' }];
  		}
 diff --git a/src/vs/workbench/contrib/files/browser/explorerViewlet.ts b/src/vs/workbench/contrib/files/browser/explorerViewlet.ts
 --- a/src/vs/workbench/contrib/files/browser/explorerViewlet.ts

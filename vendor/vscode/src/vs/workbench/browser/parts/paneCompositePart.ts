@@ -262,19 +262,66 @@ export abstract class AbstractPaneCompositePart extends CompositePart<PaneCompos
 		if (this.partId !== 'workbench.parts.sidebar') { return; }
 		// Workspace-scoped state survives hiding the sidebar and restarting the IDE.
 		if (this.storageService.getBoolean('ubovm.sidebar.empty', 1, false)) { this.element.dataset.ubovmEmpty = 'true'; }
-		const button = this.element.ownerDocument.createElement('button');
-		button.className = 'ubovm-open-file-tree';
-		button.type = 'button';
-		button.textContent = '打开文件树';
-		this._register(addDisposableListener(button, 'click', () => { void this.openPaneComposite('workbench.view.explorer', true); }));
-		this.emptyPaneMessageElement?.replaceChildren(button);
+		const doc = this.element.ownerDocument;
+		const chooser = doc.createElement('div');
+		chooser.className = 'ubovm-empty-sidebar-chooser';
+		const hint = doc.createElement('p');
+		hint.className = 'ubovm-empty-sidebar-hint';
+		hint.textContent = '文件树、浏览器与 Worker 同在右侧栏';
+		const actions = doc.createElement('div');
+		actions.className = 'ubovm-empty-sidebar-actions';
+		const makeChoice = (className, title, detail, onActivate) => {
+			const button = doc.createElement('button');
+			button.className = 'ubovm-empty-sidebar-action ' + className;
+			button.type = 'button';
+			button.setAttribute('aria-label', title + '，' + detail);
+			const label = doc.createElement('span');
+			label.className = 'ubovm-empty-sidebar-action-title';
+			label.textContent = title;
+			const description = doc.createElement('span');
+			description.className = 'ubovm-empty-sidebar-action-detail';
+			description.textContent = detail;
+			button.append(label, description);
+			this._register(addDisposableListener(button, 'click', onActivate));
+			return button;
+		};
+		const fileButton = makeChoice('ubovm-open-file-tree', '打开文件树', '浏览与编辑工作区文件', () => {
+			void this.openPaneComposite('workbench.view.explorer', true);
+		});
+		const browserButton = makeChoice('ubovm-open-browser', '打开浏览器', '管理页面；网页在编辑区独立浏览', () => {
+			void this.openPaneComposite('workbench.view.extension.ubovm-browser', true);
+		});
+		const workerButton = makeChoice('ubovm-open-worker', '打开 Worker', '查看协作 Worker 运行日志', () => {
+			void this.openPaneComposite('workbench.view.extension.ubovm-workers', true);
+		});
+		const choices = [fileButton, browserButton, workerButton];
+		this._register(addDisposableListener(actions, 'keydown', event => {
+			const index = choices.indexOf(doc.activeElement);
+			if (index < 0) { return; }
+			if (event.key === 'ArrowDown' || event.key === 'ArrowRight') {
+				event.preventDefault();
+				choices[(index + 1) % choices.length].focus();
+			} else if (event.key === 'ArrowUp' || event.key === 'ArrowLeft') {
+				event.preventDefault();
+				choices[(index - 1 + choices.length) % choices.length].focus();
+			} else if (event.key === 'Home') {
+				event.preventDefault();
+				choices[0].focus();
+			} else if (event.key === 'End') {
+				event.preventDefault();
+				choices[choices.length - 1].focus();
+			}
+		}));
+		actions.append(fileButton, browserButton, workerButton);
+		chooser.append(hint, actions);
+		this.emptyPaneMessageElement?.replaceChildren(chooser);
 		this._register(addDisposableListener(this.element, 'ubovm-empty-sidebar', () => {
 			this.element.dataset.ubovmEmpty = 'true';
 			this.storageService.store('ubovm.sidebar.empty', true, 1, 1);
 			this.hideActiveComposite();
 			this.layoutEmptyMessage();
 			// Keep the sidebar visible with the empty CTA; only explicit hide collapses the pane.
-			button.focus();
+			fileButton.focus();
 		}));
 	}
 

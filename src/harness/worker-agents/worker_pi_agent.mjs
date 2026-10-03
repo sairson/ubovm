@@ -160,8 +160,9 @@ export function createPiWorker({
       agent?.abort();
       return fatal;
     };
-    // Host memory hooks are durability barriers. Unlike onEvent observers, their
-    // failure must stop execution before a model can see inconsistent evidence.
+    // Context / instruction / beforeModel hooks remain durability barriers for
+    // what the model may see. Tool evidence and progress hooks are best-effort:
+    // a failed side store must not discard an already checkpointed tool effect.
     const hostHook = async (name, hook, extra = {}) => {
       if (!hook) return undefined;
       check();
@@ -177,8 +178,37 @@ export function createPiWorker({
         throw rememberFailure(failure('WORKER_HOOK_FAILED', `Worker ${name} hook failed`, cause));
       }
     };
-    const progress = () => hostHook('onProgress', onProgress, { plan: state.plan, completed: state.completed });
-    const recordTool = entry => hostHook('onToolResult', onToolResult, { entry });
+    const progress = async () => {
+      if (!onProgress) return;
+      try {
+        check();
+        await raceAbort(Promise.resolve().then(() => onProgress({
+          node: structuredClone(node), attempt: structuredClone(attempt), phase: state.phase,
+          plan: structuredClone(state.plan), completed: structuredClone(state.completed), signal
+        })), signal);
+        check();
+      } catch (error) {
+        if (signal?.aborted || closed || fatal) throw error;
+        report({ type: 'worker_progress_failed', error: { message: error?.message, code: error?.code, name: error?.name } });
+      }
+    };
+    const recordTool = async entry => {
+      if (!onToolResult) return;
+      try {
+        check();
+        await raceAbort(Promise.resolve().then(() => onToolResult({
+          node: structuredClone(node), attempt: structuredClone(attempt), phase: state.phase,
+          entry: structuredClone(entry), signal
+        })), signal);
+        check();
+      } catch (error) {
+        // Skip rememberFailure: a settled ledger entry must not become a fatal
+        // turn abort just because an evidence side-store rejected the write.
+        if (signal?.aborted || closed || fatal) throw error;
+        report({ type: 'tool_evidence_failed', toolCallId: entry.toolCallId, toolName: entry.toolName,
+          error: { message: error?.message, code: error?.code, name: error?.name } });
+      }
+    };
     const persist = async () => {
       check();
       const data = jsonData(state);

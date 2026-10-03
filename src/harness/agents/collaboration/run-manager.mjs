@@ -1,4 +1,6 @@
 import { Type } from 'typebox';
+import { flagHelpProperties, withProgressiveDisclosure } from '../../intools/shared/disclosure.mjs';
+import { INSPECT_HARNESS_CATALOG } from '../../intools/shared/tool-catalogs.mjs';
 
 /** Per-turn limits shared by the coordinator and every descendant. */
 export function createRunManager({ limits = {}, signal, now, monotonicNow } = {}) {
@@ -48,10 +50,12 @@ export function createRunManager({ limits = {}, signal, now, monotonicNow } = {}
     workers: [...workers].map(([workerId, counts]) => ({ workerId, ...counts })) });
   return {
     signal: combined, beforeModel: id => reserve('model', id), beforeTool: id => reserve('tool', id), snapshot,
-    tool: { name: 'inspect_harness', label: 'Inspect Harness runtime',
-      description: 'Read elapsed runtime, shared model/tool call counts, per-worker counts and global limits (0 means unlimited). Counts include attempted calls, not proof of successful effects. Auxiliary summary model calls are governed separately by context-summary limits.',
-      parameters: Type.Object({}, { additionalProperties: false }),
-      execute: async (_id, _input, callSignal) => { callSignal?.throwIfAborted(); const value = snapshot(); return { content: [{ type: 'text', text: JSON.stringify(value) }], details: value }; } },
+    tool: withProgressiveDisclosure({
+      name: 'inspect_harness', label: 'Inspect Harness runtime',
+      description: INSPECT_HARNESS_CATALOG.description,
+      parameters: Type.Object({ ...flagHelpProperties() }, { additionalProperties: false }),
+      execute: async (_id, _input, callSignal) => { callSignal?.throwIfAborted(); const value = snapshot(); return { content: [{ type: 'text', text: JSON.stringify(value) }], details: value }; }
+    }, { ...INSPECT_HARNESS_CATALOG, mode: 'flag' }),
     close() { if (closed) return; finishedElapsed = elapsed(); closed = true; clearTimeout(timer); }
   };
 }

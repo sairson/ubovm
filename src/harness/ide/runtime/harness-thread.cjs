@@ -65,6 +65,7 @@ const service = createHarnessService({
   additionalTools: async id => (await rpc.call('tools', [id])).map(tool => ({ ...tool,
     execute: (callId, input, signal) => rpc.call('execute', [id, tool.name, callId, input], signal)
   })),
+  ideBrowserCall: (op, payload, signal) => rpc.call('ideBrowser', [op, payload], signal),
   onChange: id => snapshots.schedule(id),
   onMessage: (id, message) => rpc.call('message', [id, message])
 });

@@ -1,0 +1,3 @@
+# Unified diffs must keep LF; CRLF checkout breaks `git apply` on Windows.
+*.patch text eol=lf
+resources/patches/series.json text eol=lf

@@ -14,7 +14,7 @@
   window.addEventListener('ubovm-settings-visibility', () => { tick(); syncClock(); });
   const labels = { running: '运行中', completed: '完成', failed: '失败', interrupted: '已停止' };
   const executionLabels = { queued: '排队中', starting: '准备中', running: '运行中', stopping: '正在停止' };
-  const tools = { delivery_workflow: '交付闭环', search_workspace: '搜索项目代码', inventory_workspace_dependencies: '盘点工作区依赖', scan_workspace_secrets: '扫描疑似密钥', analyze_workspace_call_chain: '分析代码调用链', navigate_workspace_code: '代码符号导航', get_workspace_diagnostics: '读取代码诊断', validate_workspace_changes: '验证代码修改', recover_workspace_changes: '恢复代码修改状态', read_workspace_code: '读取待编辑代码', edit_workspace_file: '编辑代码', list_workspace_changes: '查看代码更改', wait_workers: '等待协作结果', spawn_worker: '启动协作任务', read_worker_evidence: '查看协作记录', read_workspace_file: '读取文件', list_workspace_files: '查看目录', run_local_shell_command: '运行本地命令', run_python: '运行 Python 沙箱', manage_python_environment: '管理 Python 依赖', run_linux_ssh_command: '运行命令', upload_sftp: 'SFTP 上传', deploy_remote_service: '部署远程服务', fetch_web_content: '读取网页', web_search: '搜索网页', load_skill: '加载技能', read_skills_resource: '读取技能资源', run_local_skill_script: '执行技能脚本', note: '更新笔记', todo: '更新任务', browser_action: '浏览器操作', read_context_evidence: '读取上下文证据' };
+  const tools = { delivery_workflow: '交付闭环', search_workspace: '搜索项目代码', inventory_workspace_dependencies: '盘点工作区依赖', scan_workspace_secrets: '扫描疑似密钥', analyze_workspace_call_chain: '分析代码调用链', navigate_workspace_code: '代码符号导航', get_workspace_diagnostics: '读取代码诊断', validate_workspace_changes: '验证代码修改', recover_workspace_changes: '恢复代码修改状态', read_workspace_code: '读取待编辑代码', edit_workspace_file: '编辑代码', list_workspace_changes: '查看代码更改', wait_workers: '等待并行任务', spawn_worker: '分派并行任务', manage_workers: '调度并行任务', cancel_workers: '中断并行任务', list_workers: '检查协作进展', read_worker_evidence: '查看任务记录', read_workspace_file: '读取文件', list_workspace_files: '查看目录', run_local_shell_command: '运行本地命令', run_python: '运行 Python 沙箱', manage_python_environment: '管理 Python 依赖', run_linux_ssh_command: '运行命令', upload_sftp: 'SFTP 上传', deploy_remote_service: '部署远程服务', fetch_web_content: '读取网页', web_search: '搜索网页', load_skill: '加载技能', read_skills_resource: '读取技能资源', run_local_skill_script: '执行技能脚本', note: '更新笔记', todo: '更新任务', browser_action: '浏览器操作', read_context_evidence: '读取上下文证据' };
   const kinds = { delivery_workflow: 'memory', search_workspace: 'search', inventory_workspace_dependencies: 'search', scan_workspace_secrets: 'search', analyze_workspace_call_chain: 'search', navigate_workspace_code: 'search', get_workspace_diagnostics: 'search', validate_workspace_changes: 'tool', recover_workspace_changes: 'file', read_workspace_code: 'file', edit_workspace_file: 'file', list_workspace_changes: 'folder', read_workspace_file: 'file', list_workspace_files: 'folder', run_local_shell_command: 'terminal', run_python: 'terminal', manage_python_environment: 'terminal', run_linux_ssh_command: 'terminal', upload_sftp: 'file', deploy_remote_service: 'terminal', fetch_web_content: 'browser', web_search: 'search', load_skill: 'skill', read_skills_resource: 'skill', run_local_skill_script: 'terminal', note: 'memory', todo: 'memory', browser_action: 'browser', read_context_evidence: 'search' };
   const icons = {
     file: 'M9 3H5v18h14V9L13 3H9m4 0v6h6M8 13h8M8 17h6',
@@ -59,7 +59,59 @@
     try { const value = JSON.parse(part.args || '{}'); return value && typeof value === 'object' && !Array.isArray(value) ? value : {}; }
     catch { return {}; } // Truncated parameters remain visible as plain text.
   }
+  function parseSearchOutput(value) {
+    if (typeof value !== 'string' || !value || value.length > 512 * 1024) return null;
+    try {
+      const data = JSON.parse(value);
+      if (!data || typeof data !== 'object' || Array.isArray(data) || data.mode === 'help') return null;
+      if (typeof data.query !== 'string' || !Array.isArray(data.results)) return null;
+      if (!['ok', 'no_results', 'unavailable'].includes(data.status)) return null;
+      const results = [];
+      for (const item of data.results.slice(0, 20)) {
+        if (!item || typeof item !== 'object' || typeof item.title !== 'string' || typeof item.url !== 'string') continue;
+        let url = item.url.trim();
+        try {
+          const parsed = new URL(url);
+          if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) continue;
+          url = parsed.href;
+        } catch { continue; }
+        results.push({
+          title: item.title.trim().slice(0, 300) || url,
+          url,
+          snippet: typeof item.snippet === 'string' ? item.snippet.trim().slice(0, 800) : '',
+        });
+      }
+      return {
+        query: data.query.trim().slice(0, 512),
+        status: data.status,
+        provider: typeof data.provider === 'string' ? data.provider.slice(0, 80) : '',
+        returned: Number.isSafeInteger(data.returned) ? data.returned : results.length,
+        results,
+        answer: typeof data.answer === 'string' ? data.answer.trim().slice(0, 4000) : '',
+        message: typeof data.message === 'string' ? data.message.trim().slice(0, 500) : '',
+        fallback: data.fallback_used === true,
+        ranking: typeof data.ranking === 'string' ? data.ranking.slice(0, 32) : '',
+      };
+    } catch { return null; }
+  }
+  function hostOf(url) {
+    try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return ''; }
+  }
+  function searchSummary(search) {
+    if (!search) return '';
+    if (search.status === 'unavailable') return '搜索服务不可用';
+    if (search.status === 'no_results' || !search.results.length) return '无可用结果';
+    return `${search.returned || search.results.length} 条结果`;
+  }
   function hint(part, input) {
+    if (part.name === 'web_search') {
+      const search = part.output ? parseSearchOutput(part.output) : null;
+      const query = (search?.query || (typeof input.query === 'string' ? input.query : '')).replace(/\s+/g, ' ').trim();
+      const summary = searchSummary(search);
+      if (query && summary) return `${query.slice(0, 120)} · ${summary}`;
+      if (query) return query.slice(0, 160);
+      if (summary) return summary;
+    }
     for (const key of ['path', 'url', 'query', 'command', 'name', 'skill', 'action']) if (typeof input[key] === 'string' && input[key]) return input[key].replace(/\s+/g, ' ').slice(0, 160);
     return part.name?.startsWith('mcp_') ? part.name.slice(4) : '';
   }
@@ -84,6 +136,62 @@
     if (visible) output.scrollTop = follow ? output.scrollHeight : top;
   }
   function htmlSource(value) { return /^\s*(?:<!doctype\s+html|<(?:html|head|body|main|section|article|div|style|h[1-6]|p)(?:\s|>))/i.test(value); }
+  function renderSearchResults(view, search, source) {
+    if (view.renderedSearchOutput === source) return;
+    const root = view.search;
+    root.replaceChildren();
+    const head = node('div', 'tool-search-head');
+    const status = node('span', 'tool-search-status');
+    status.dataset.status = search.status;
+    setText(status, search.status === 'ok' ? '已完成' : search.status === 'no_results' ? '无结果' : '不可用');
+    const meta = node('span', 'tool-search-meta');
+    const bits = [searchSummary(search)];
+    if (search.provider && search.provider !== 'none') bits.push(search.provider);
+    if (search.fallback) bits.push('已回退');
+    if (search.ranking && search.ranking !== 'strict') bits.push(search.ranking === 'soft' ? '宽松匹配' : '直通结果');
+    setText(meta, bits.filter(Boolean).join(' · '));
+    head.append(status, meta);
+    root.append(head);
+    if (search.query) {
+      const query = node('p', 'tool-search-query');
+      setText(query, '查询：' + search.query);
+      root.append(query);
+    }
+    if (search.answer) {
+      const answer = node('p', 'tool-search-answer');
+      setText(answer, search.answer);
+      root.append(answer);
+    }
+    if (search.message && !search.results.length) {
+      const message = node('p', 'tool-search-empty');
+      setText(message, search.message);
+      root.append(message);
+    }
+    if (search.results.length) {
+      const list = node('ol', 'tool-search-list');
+      for (const item of search.results) {
+        const row = node('li', 'tool-search-item');
+        const link = node('a', 'tool-search-link');
+        link.href = item.url;
+        link.rel = 'noopener noreferrer';
+        link.target = '_blank';
+        setText(link, item.title);
+        const host = node('span', 'tool-search-host');
+        setText(host, hostOf(item.url));
+        row.append(link, host);
+        if (item.snippet) {
+          const snippet = node('p', 'tool-search-snippet');
+          setText(snippet, item.snippet);
+          row.append(snippet);
+        }
+        list.append(row);
+      }
+      root.append(list);
+    }
+    const note = node('p', 'tool-search-note', '摘要来自公开搜索，未经核验。打开链接前请自行确认来源。');
+    root.append(note);
+    view.renderedSearchOutput = source;
+  }
   function createTool() {
     const element = node('details', 'tool-card');
     const summary = node('summary', 'tool-card-summary');
@@ -104,7 +212,9 @@
     live.setAttribute('aria-hidden', 'true');
     const aside = node('button', 'tool-action tool-aside', '放在一边'); aside.type = 'button'; aside.hidden = true;
     summary.append(icon, main, details, aside, stop, chevron, live);
+    summary.setAttribute('aria-label', '工具调用');
     const body = node('div', 'tool-card-body'), meta = node('div', 'tool-detail-name');
+    const search = node('div', 'tool-search'); search.hidden = true; search.setAttribute('aria-label', '搜索结果');
     const input = node('pre', 'tool-parameters'), output = node('pre', 'tool-output');
     output.tabIndex = input.tabIndex = 0; output.setAttribute('aria-label', '工具输出'); input.setAttribute('aria-label', '工具参数');
     const actions = node('div', 'tool-result-toolbar'), info = node('span', 'tool-result-info');
@@ -112,12 +222,19 @@
     copy.type = preview.type = open.type = 'button';
     const latest = node('button', 'tool-action', '回到最新'); latest.type = 'button'; latest.hidden = true;
     latest.title = '滚动到日志底部，继续跟随新输出';
-    actions.append(node('span', 'tool-result-label', '输出'), info, open, preview, latest, copy);
+    const label = node('span', 'tool-result-label', '输出');
+    actions.append(label, info, open, preview, latest, copy);
     const args = node('details', 'tool-arguments'); args.append(node('summary', '', '参数'), meta, input);
     const notice = node('p', 'tool-truncation', '显示内容已截断。');
-    body.append(output, actions, args, notice);
+    body.append(search, output, actions, args, notice);
     element.append(summary, body);
-    const view = { element, icon, iconPath, title, path, status, time, meta, input, output, info, copy, preview, open, stop, aside, notice, live, latest, part: {}, options: {} };
+    const view = { element, icon, iconPath, title, path, status, time, meta, input, output, search, info, label, copy, preview, open, stop, aside, notice, live, latest, part: {}, options: {} };
+    search.addEventListener('click', event => {
+      const link = event.target?.closest?.('a.tool-search-link');
+      if (!link || !search.contains(link) || view.released) return;
+      event.preventDefault();
+      view.options.onOpenLink?.(link.href);
+    });
     latest.addEventListener('click', () => {
       if (view.released || !element.isConnected || !element.open) return;
       output.scrollTop = output.scrollHeight;
@@ -151,6 +268,7 @@
         if (element.open) {
           output.textContent = view.part.output || '';
           view.renderedOutput = output.textContent;
+          search.hidden = true; output.hidden = false;
         }
       }
     });
@@ -189,6 +307,7 @@
     const keys = ['id', 'name', 'status', 'args', 'output', 'startedAt', 'endedAt', 'truncated', 'outputTail', 'commandId', 'interruptRequested', 'executionState', 'background'];
     if (!view.dirty && keys.every(key => part[key] === view.part[key])) return renderToolBody(view);
     const argumentsChanged = view.dirty || part.name !== view.part.name || part.args !== view.part.args;
+    const outputChanged = view.dirty || part.output !== view.part.output || part.status !== view.part.status;
     const streaming = ['run_linux_ssh_command', 'run_local_skill_script', 'run_local_shell_command', 'run_python', 'manage_python_environment', 'upload_sftp', 'deploy_remote_service'].includes(part.name);
     view.dirty = true;
     view.part = { ...part };
@@ -200,15 +319,21 @@
     if (view.element.dataset.executionState !== executionState) view.element.dataset.executionState = executionState;
     const receiving = String(streaming && status === 'running' && !['queued', 'starting', 'stopping'].includes(executionState));
     if (view.element.dataset.streaming !== receiving) view.element.dataset.streaming = receiving;
-    setText(view.title, tools[part.name] || (part.name?.startsWith('mcp_') ? 'MCP 工具' : part.name || '工具调用'));
-    if (argumentsChanged) {
+    const title = tools[part.name] || (part.name?.startsWith('mcp_') ? 'MCP 工具' : part.name || '工具调用');
+    setText(view.title, title);
+    if (argumentsChanged || (part.name === 'web_search' && outputChanged)) {
       const input = parameters(part), kind = kinds[part.name] || (part.name?.startsWith('mcp_') ? 'mcp' : 'tool');
-      view.icon.dataset.kind = kind; view.iconPath.setAttribute('d', icons[kind]);
+      if (argumentsChanged) {
+        view.icon.dataset.kind = kind; view.iconPath.setAttribute('d', icons[kind]);
+        view.title.title = title;
+        view.target = fileTarget(part, input);
+      }
       setText(view.path, hint(part, input)); view.path.title = view.path.textContent;
-      view.title.title = tools[part.name] || part.name || '工具调用';
-      view.target = fileTarget(part, input);
     }
-    setText(view.status, status === 'running' && part.background ? '后台运行' : executionLabels[executionState] || labels[status]);
+    const statusText = status === 'running' && part.background ? '后台运行' : executionLabels[executionState] || labels[status];
+    setText(view.status, statusText);
+    const summaryLabel = [title, view.path.textContent, statusText].filter(Boolean).join(' · ');
+    if (view.element.firstElementChild.getAttribute('aria-label') !== summaryLabel) view.element.firstElementChild.setAttribute('aria-label', summaryLabel);
     renderLivePreview(view);
     renderToolBody(view);
     trackDuration(view);
@@ -248,21 +373,34 @@
       view.renderedArgs = args;
     }
     const waiting = { queued: '正在等待同一会话的前一条命令结束，可单独中断此排队命令。', starting: '正在准备命令执行…', stopping: '正在停止命令并清理进程…' };
-    setOutput(view, part.output || (status === 'running' ? waiting[part.executionState] || (streaming ? '正在执行，等待输出…' : '等待工具返回…') : status === 'interrupted' ? '调用已停止，执行状态请以已有记录为准。' : '无文本输出。'));
-    const output = part.output || '', previousOutput = view.lineOutput || '';
-    const appended = output.startsWith(previousOutput);
-    const tail = appended ? output.slice(previousOutput.length) : output;
-    let newlines = appended ? view.newlines || 0 : 0;
-    // Count without allocating one array entry per line in large shell logs.
-    for (let index = tail.indexOf('\n'); index !== -1; index = tail.indexOf('\n', index + 1)) newlines++;
-    view.newlines = newlines;
-    view.lineOutput = output;
-    const lines = output ? view.newlines + (output.endsWith('\n') ? 0 : 1) : 0;
-    setText(view.info, (status === 'running' ? executionLabels[part.executionState] || '接收中' : '') + (lines ? (status === 'running' ? ' · ' : '') + lines + ' 行' : ''));
-    const previewHidden = !part.output || !htmlSource(part.output);
+    const search = part.name === 'web_search' && part.output ? parseSearchOutput(part.output) : null;
+    const placeholder = status === 'running' ? waiting[part.executionState] || (streaming ? '正在执行，等待输出…' : '等待工具返回…') : status === 'interrupted' ? '调用已停止，执行状态请以已有记录为准。' : '无文本输出。';
+    if (search) {
+      renderSearchResults(view, search, part.output);
+      if (view.search.hidden) view.search.hidden = false;
+      if (!view.output.hidden) view.output.hidden = true;
+      setText(view.label, '结果');
+      setText(view.info, [searchSummary(search), search.provider && search.provider !== 'none' ? search.provider : ''].filter(Boolean).join(' · '));
+    } else {
+      if (!view.search.hidden) { view.search.hidden = true; view.renderedSearchOutput = undefined; view.search.replaceChildren(); }
+      if (view.output.hidden) view.output.hidden = false;
+      setText(view.label, '输出');
+      setOutput(view, part.output || placeholder);
+      const output = part.output || '', previousOutput = view.lineOutput || '';
+      const appended = output.startsWith(previousOutput);
+      const tail = appended ? output.slice(previousOutput.length) : output;
+      let newlines = appended ? view.newlines || 0 : 0;
+      // Count without allocating one array entry per line in large shell logs.
+      for (let index = tail.indexOf('\n'); index !== -1; index = tail.indexOf('\n', index + 1)) newlines++;
+      view.newlines = newlines;
+      view.lineOutput = output;
+      const lines = output ? view.newlines + (output.endsWith('\n') ? 0 : 1) : 0;
+      setText(view.info, (status === 'running' ? executionLabels[part.executionState] || '接收中' : '') + (lines ? (status === 'running' ? ' · ' : '') + lines + ' 行' : ''));
+    }
+    const previewHidden = !part.output || !htmlSource(part.output) || Boolean(search);
     if (view.open.hidden !== !view.target) view.open.hidden = !view.target;
     if (view.copy.hidden !== !part.output) view.copy.hidden = !part.output;
-    if (view.latest.hidden !== !part.output) view.latest.hidden = !part.output;
+    if (view.latest.hidden !== (!part.output || Boolean(search))) view.latest.hidden = !part.output || Boolean(search);
     if (view.preview.hidden !== previewHidden) view.preview.hidden = previewHidden;
     if (view.notice.hidden !== !part.truncated) view.notice.hidden = !part.truncated;
     setText(view.notice, part.outputTail ? '仅显示最新输出，较早内容已截断。' : '显示内容已截断。');
@@ -296,7 +434,14 @@
     if (kind === 'summary') body.append(metrics);
     body.append(content, notice); element.append(summary, body);
     const view = { element, title, source, time, body, content, metrics, notice, part: {}, options: {}, rendered: false };
+    summary.addEventListener('click', () => { view.userGesture = true; });
+    summary.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') view.userGesture = true; });
     element.addEventListener('toggle', () => {
+      if (!view.syncing && view.userGesture) {
+        view.userGesture = false;
+        if (element.open) { view.openedByUser = true; view.collapsedByUser = false; }
+        else { view.collapsedByUser = true; view.openedByUser = false; }
+      } else view.userGesture = false;
       if (view.released || !element.open) return;
       try { renderThinking(view); }
       catch {
@@ -306,6 +451,20 @@
       }
     });
     return view;
+  }
+  function syncThinkingOpen(view, status) {
+    const live = status === 'running';
+    const previous = view.foldStatus;
+    view.foldStatus = status;
+    let want;
+    if (live) want = !view.collapsedByUser;
+    else if (status === 'completed' && previous === 'running' && !view.openedByUser) want = false;
+    else if (status === 'completed' && previous === undefined && !view.openedByUser) want = false;
+    else return;
+    if (view.element.open === want) return;
+    view.syncing = true;
+    view.element.open = want;
+    view.syncing = false;
   }
   function updateThinking(view, part, options) {
     const actionsChanged = ['onCopy', 'onOpenLink', 'onPreviewHtml'].some(key => view.options[key] !== options[key]);
@@ -320,10 +479,11 @@
     if (view.element.dataset.status !== status) view.element.dataset.status = status;
     if (view.element.dataset.source !== source) view.element.dataset.source = source;
     setText(view.title, status === 'running' ? '思考中' : status === 'interrupted' ? '思考已停止' : '已思考');
-    setText(view.source, source === 'reason' ? 'Reason' : source === 'worker' ? 'Worker' : '');
-    const title = source === 'worker' && part.workerId ? 'Worker · ' + part.workerId : view.source.textContent;
+    setText(view.source, source === 'reason' ? '规划' : source === 'worker' ? '子任务' : '');
+    const title = view.source.textContent;
     if (view.source.title !== title) view.source.title = title;
     if (view.notice.hidden !== !part.truncated) view.notice.hidden = !part.truncated;
+    syncThinkingOpen(view, status);
     trackDuration(view);
     renderThinking(view);
     view.dirty = false;
@@ -340,7 +500,7 @@
     const status = ['running', 'failed', 'interrupted'].includes(part.status) ? part.status : 'completed';
     if (view.element.dataset.status !== status) view.element.dataset.status = status;
     setText(view.title, { running: '正在整理上下文', completed: '上下文摘要', failed: '摘要未完成', interrupted: '摘要已停止' }[status]);
-    setText(view.source, part.source === 'reason' ? 'Reason' : part.source === 'worker' ? 'Worker' : '');
+    setText(view.source, part.source === 'reason' ? '规划' : part.source === 'worker' ? '子任务' : '');
     const title = part.workerId || view.source.textContent;
     if (view.source.title !== title) view.source.title = title;
     view.displayText = part.text || { running: '正在整理较早的对话与工具记录，完成后会在此显示摘要。', completed: '本次上下文整理已完成。', failed: '上下文整理未完成，请查看本轮执行错误。', interrupted: '上下文整理已停止。' }[status];
@@ -478,7 +638,7 @@
         const failed = part.entries.some(entry => entry.status === 'failed');
         const interrupted = part.entries.some(entry => entry.status === 'interrupted');
         const count = part.entries.filter(entry => entry.type === 'summary').length;
-        const label = failed ? '后台步骤失败，请展开查看' : interrupted ? '后台步骤已停止' : running?.type === 'summary' ? '正在整理上下文' : running ? '正在等待协作结果' : '后台步骤已完成';
+        const label = failed ? '后台步骤失败，请展开查看' : interrupted ? '后台步骤已停止' : running?.type === 'summary' ? '正在整理上下文' : running ? '正在等待并行任务' : '后台步骤已完成';
         item.label = label + (count ? ` · ${count} 次上下文整理` : '') + ' · 查看详情';
         setText(item.title, item.label);
         const status = failed ? 'failed' : running ? 'running' : 'completed';

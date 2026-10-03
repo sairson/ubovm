@@ -49,6 +49,30 @@ test('large tool arguments execute once and remain durable', async () => {
   assert.doesNotThrow(() => restoreWorkerCheckpoint(fixture.saved.at(-1), { intentId: 'intent', goal: 'verify' }));
 });
 
+test('onToolResult hook failures do not abort the worker after a finished tool call', async () => {
+  const fixture = setup('execute');
+  const events = [];
+  let requests = 0;
+  const worker = createPiWorker({ model, maxModelCalls: 8,
+    onToolResult: async () => { throw Object.assign(new Error('Evidence store unavailable'), { code: 'EVIDENCE_STORE_FAILED' }); },
+    onEvent: event => events.push(event.type),
+    tools: [{ name: 'inspect', description: 'Inspect a scoped source',
+      parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
+      execute: async () => ({ content: [{ type: 'text', text: 'Source verified' }] }) }],
+    streamFn: () => {
+      requests++;
+      if (requests === 1) return response([{ type: 'toolCall', id: 'inspect-1', name: 'inspect', arguments: { path: 'src' } }], 'toolUse');
+      if (requests === 2) return response([{ type: 'text', text: 'verified' }]);
+      if (requests === 3) return response([{ type: 'text', text: '{"done":true}' }]);
+      return response([{ type: 'text', text: fact }]);
+    }
+  });
+  const result = JSON.parse((await worker(fixture.args)).content);
+  assert.equal(result.outcome, 'blocked');
+  assert.equal(events.includes('tool_evidence_failed'), true);
+  assert.equal(fixture.saved.at(-1).ledger[0].isError, false);
+});
+
 test('structured tool errors stay failures, allow corrective execution, and cannot support a finding', async () => {
   const fixture = setup('execute');
   let calls = 0;

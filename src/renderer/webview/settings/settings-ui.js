@@ -83,26 +83,34 @@ function createSettingsPanel(vscode) {
   let browserInstalling = false, browserTimer;
   let browserInstallResult = '';
   let browserInstallation = {}, browserInstallFailed = false;
-  function trackBrowserInstallation(installing) {
-    browserInstalling = installing;
-    if (!installing) { clearTimeout(browserTimer); browserTimer = undefined; return; }
-    // Snapshot restoration and status notifications share the same bounded wait.
-    // Repeated progress must not keep extending the watchdog indefinitely.
-    if (browserTimer !== undefined) return;
+  function armBrowserWatchdog() {
+    clearTimeout(browserTimer);
     browserTimer = setTimeout(() => {
       browserTimer = undefined; browserInstalling = false; browserInstallFailed = true;
-      browserInstallResult = '安装结果尚未返回。请查看安装日志并刷新状态，确认是否仍在下载。'; refreshBrowserInstall();
+      browserInstallResult = '安装结果尚未返回。请查看安装日志并刷新状态，确认是否仍在下载。';
+      status(browserInstallResult, true); refreshBrowserInstall();
     }, 600000);
+  }
+  function trackBrowserInstallation(installing, { heartbeat = false } = {}) {
+    browserInstalling = installing;
+    if (!installing) { clearTimeout(browserTimer); browserTimer = undefined; return; }
+    if (heartbeat || browserTimer === undefined) armBrowserWatchdog();
   }
   function browserAction(action) {
     try { vscode.postMessage({ action }); }
     catch (error) { status(error, true); }
   }
-  const setupSteps = [['model', '模型'], ['ssh', 'SSH 环境'], ['web', '可选工具']];
+  const setupSteps = [['model', '模型'], ['ssh', '远程环境'], ['web', '可选能力']];
+  function sectionKicker() {
+    return page === 'initialize' ? '开始配置' : page === 'settings' ? '系统设置' : '扩展能力';
+  }
+  function readyStatus() {
+    return section === 'web' ? '浏览器安装立即生效；其余配置从下一轮对话生效。' : '保存后，下一轮对话生效。';
+  }
   const nextSetupSection = () => !data?.initialization?.model ? 'model' : !data?.initialization?.ssh ? 'ssh' : 'web';
   function focusSetupSection() {
     if (page !== 'initialize') return;
-    $('settings-section-title').focus({ preventScroll: true }); form.scrollTop = 0;
+    $('settings-init-title')?.focus?.({ preventScroll: true }); form.scrollTop = 0;
   }
   function refreshInitialization() {
     const initializing = page === 'initialize', ready = data?.initialization;
@@ -114,14 +122,19 @@ function createSettingsPanel(vscode) {
     $('settings-close').setAttribute('aria-label', initializing ? '稍后配置' : '返回对话');
     if (!initializing) return;
     setText($('settings-title'), '首次初始化');
-    setText($('settings-section-kicker'), 'GET STARTED');
+    setText($('settings-section-kicker'), '开始配置');
+    const stepTitle = section === 'model' ? '配置对话模型' : section === 'ssh' ? '配置远程命令环境' : '可选能力';
+    setText($('settings-init-title'), stepTitle);
     setText($('settings-save'), saveUncertain ? '请先确认保存状态' : saving && operation === 'save' ? '正在保存…' : section === 'web' ? '保存可选配置' : !dirty && ready?.[section] ? '继续下一步' : '保存并继续');
     setText($('settings-initialization-status'), !ready ? '正在读取已保存的配置…' : ready.complete
-      ? '基础配置已保存。可选工具可以稍后配置；保存状态不代表连接测试已通过。'
-      : `基础配置 ${Number(ready.model) + Number(ready.ssh)}/2 · 请完成` + [!ready.model && '模型', !ready.ssh && 'SSH 环境'].filter(Boolean).join('和') + '配置。模型凭据按服务商要求填写；SSH 支持在保存前测试连接。');
+      ? '基础配置已就绪。搜索、浏览器和 MCP 可稍后配置。'
+      : `基础配置 ${Number(ready.model) + Number(ready.ssh)}/2 · 请完成` + [!ready.model && '模型', !ready.ssh && '远程环境'].filter(Boolean).join('和') + '。');
     for (const [key, label] of setupSteps) {
       const button = dialog.querySelector(`[data-setup-step="${key}"]`);
-      button.disabled = saving || !data;
+      const waiting = !data;
+      button.disabled = saving || waiting;
+      setAttribute(button, 'aria-busy', String(waiting));
+      if (waiting) button.title = '正在读取配置…'; else button.removeAttribute('title');
       setText(button, `${ready?.[key] ? '✓' : setupSteps.findIndex(([step]) => step === key) + 1} · ${label}`);
       if (section === key) { if (button.getAttribute('aria-current') !== 'step') button.setAttribute('aria-current', 'step'); } else button.removeAttribute('aria-current');
     }
@@ -134,24 +147,51 @@ function createSettingsPanel(vscode) {
       if (request('settingsRead', {}, 'finish')) status('正在确认最新保存的基础配置…');
     });
   });
+  let browserInstallView = '';
   function refreshBrowserInstall() {
     const state = browserInstalling ? 'installing' : browserInstallFailed ? 'error' : browserInstallation.state || 'unknown';
+    const percent = browserInstallation.percent;
+    const progressText = browserInstalling
+      ? (browserInstallation.message || (percent != null ? `正在下载… ${percent}%` : '正在下载 Chromium…'))
+      : '';
+    const path = browserInstallation.executablePath || '';
+    const noteText = browserInstalling
+      ? `${progressText} 可继续配置其他选项；失败后可直接重试（已下载部分会被复用）。`
+      : browserInstallResult || browserInstallation.message || (state === 'ready' ? '内置 Chromium 已就绪，可立即使用（外部浏览器配置优先）。' : '安装后，对话即可在浏览器中打开和操作网页。');
+    const buttonLabel = browserInstalling ? (percent != null ? `正在下载 ${percent}%` : '正在下载并安装…') : state === 'ready' ? '已安装' : browserInstallFailed ? '重试安装' : '下载并安装内置浏览器';
+    const badgeLabel = { installing: percent != null ? `${percent}%` : '安装中', ready: '已就绪', missing: '未安装', error: '需要处理', unknown: '尚未检测' }[state] || '尚未检测';
+    const view = JSON.stringify([state, browserInstalling, buttonLabel, badgeLabel, noteText, path, percent ?? null]);
+    const installButton = fields.querySelector('[data-install-browser]');
+    if (view === browserInstallView && installButton?.textContent === buttonLabel) {
+      if (browserInstalling && progressText) status(progressText);
+      return;
+    }
+    browserInstallView = view;
     const button = fields.querySelector('[data-install-browser]');
     if (button) {
       const disabled = browserInstalling || state === 'ready';
       if (button.disabled !== disabled) button.disabled = disabled;
-      setText(button, browserInstalling ? '正在下载并安装…' : state === 'ready' ? '已安装' : browserInstallFailed ? '重试安装' : '下载并安装内置浏览器');
+      setText(button, buttonLabel);
+    }
+    const cancel = fields.querySelector('[data-cancel-browser]');
+    if (cancel) {
+      const hidden = !browserInstalling;
+      if (cancel.hidden !== hidden) cancel.hidden = hidden;
+      if (cancel.disabled === browserInstalling) cancel.disabled = !browserInstalling;
     }
     const note = fields.querySelector('[data-browser-install-status]');
-    if (note) { setText(note, browserInstalling ? '正在下载 Chromium，可继续配置其他选项。详细进度请查看安装日志。' : browserInstallResult || browserInstallation.message || (state === 'ready' ? '内置 Chromium 已就绪，下次运行可自动使用。' : '安装后，Agent 可使用浏览器工具访问和操作网页。')); setAttribute(note, 'data-error', String(state === 'error')); }
+    if (note) {
+      setText(note, noteText);
+      setAttribute(note, 'data-error', String(state === 'error'));
+    }
     const badge = fields.querySelector('[data-browser-badge]');
-    if (badge) { setText(badge, { installing: '安装中', ready: '已就绪', missing: '未安装', error: '需要处理', unknown: '尚未检测' }[state] || '尚未检测'); setAttribute(badge, 'data-state', state); }
+    if (badge) { setText(badge, badgeLabel); setAttribute(badge, 'data-state', state); }
     const location = fields.querySelector('[data-browser-location]');
     if (location) {
-      const path = browserInstallation.executablePath || '';
       setText(location, path); setAttribute(location, 'title', path);
       if (location.parentElement.hidden !== !path) location.parentElement.hidden = !path;
     }
+    if (browserInstalling && progressText) status(progressText);
   }
   function finishSSHTest(id, result) {
     const pending = sshTests.get(id); if (!pending) return;
@@ -167,7 +207,7 @@ function createSettingsPanel(vscode) {
     pending.status.dataset.error = String(unchanged && !result.ok);
     pending.status.textContent = unchanged ? (result.ok ? result.message || '连接成功。' : window.UBOVMErrors.text(result.failure || result.message)) + (result.ok && Number.isFinite(result.durationMs) ? `（${result.durationMs} ms）` : '') : currentRevision ? '配置已更改，请重新测试连接。' : '已保存配置发生变化，请重新测试连接。';
   }
-  const modelRoles = [['model', '默认模型'], ['reasonModel', '思考Agent'], ['workerModel', '执行Agent'], ['summaryModel', '摘要模型']];
+  const modelRoles = [['model', '默认模型'], ['reasonModel', '规划模型'], ['workerModel', '任务模型'], ['summaryModel', '摘要模型']];
   const iconTemplates = new Map();
   function providerIcon(key) {
     const markup = UBOVM_PROVIDER_ICONS[key];
@@ -318,7 +358,7 @@ function createSettingsPanel(vscode) {
     let control;
     if (spec.type === 'checklist') {
       control = element('div', 'settings-checklist'); control.id = id;
-      for (const option of spec.options) { const row = element('label'); const box = element('input'); box.type = 'checkbox'; box.value = option; box.checked = (value ?? spec.default ?? []).includes(option); row.append(box, element('span', '', option)); control.append(row); }
+      for (const option of spec.options) { const row = element('label'); const box = element('input'); box.type = 'checkbox'; box.value = option; box.checked = (value ?? spec.default ?? []).includes(option); row.append(box, element('span', '', spec.labels?.[option] ?? option)); control.append(row); }
     } else if (spec.type === 'select') {
       control = element('select');
       if (spec.key === 'provider' && CSS.supports('appearance', 'base-select')) {
@@ -405,7 +445,7 @@ function createSettingsPanel(vscode) {
       const enabled = cards.filter(card => card.querySelector('[data-setting="enabled"]').checked).length;
       summary.textContent = cards.length + ' 个服务 · ' + enabled + ' 个已启用';
       list.querySelector('.settings-empty')?.remove();
-      if (!cards.length) list.append(element('div', 'settings-empty', '尚未添加服务。连接本地工具或远程 MCP 服务，扩展 Agent 的能力。'));
+      if (!cards.length) list.append(element('div', 'settings-empty', '尚未添加服务。连接本地工具或远程 MCP 后，对话就能调用它们。'));
       filter();
     };
     root.append(toolbar, search, list, noMatch, element('p', 'settings-library-hint', '保存后在下次任务运行时连接。已启用仅表示允许加载，不代表连接成功。')); 
@@ -552,6 +592,7 @@ function createSettingsPanel(vscode) {
     const advanced = element('details', 'settings-ssh-advanced'); advanced.append(element('summary', '', '高级选项 · 主机校验与超时'));
     advanced.append(element('p', 'settings-ssh-hint', 'known_hosts 和指纹均为可选；都留空时跳过主机身份校验。'));
     addFields(advanced, ['id', 'known_hosts_file', 'host_key_sha256', 'connect_timeout_seconds', 'default_command_timeout_seconds', 'max_command_timeout_seconds']);
+    if (page === 'initialize') advanced.open = false;
     grid.append(connection, auth, advanced);
     const actions = element('div', 'settings-ssh-actions'), label = element('label', 'settings-ssh-default'), radio = element('input'); radio.type = 'radio'; radio.name = 'settings-default-ssh'; radio.dataset.defaultSsh = '';
     radio.checked = value.id === data.values.ssh.defaultId || !fields.querySelector('.settings-profile');
@@ -735,31 +776,64 @@ function createSettingsPanel(vscode) {
     const card = element('section', 'settings-cooperation-guide');
     card.dataset.cooperationGuide = ''; card.setAttribute('aria-label', '模型与协作关系');
     const help = element('details', 'settings-model-help');
-    help.append(element('summary', '', '模型角色与 Swarm 如何配合？'));
+    help.append(element('summary', '', '模型和并行任务如何配合？'));
     const steps = element('ol');
     for (const [title, text] of [
-      ['连接', '统一使用 Pi Agent。配置库保存可重复使用的模型连接。'],
-      ['角色', '默认模型用于对话，思考模型用于规划，执行模型用于子任务，摘要模型用于压缩上下文。继承时无需重复配置。'],
-      ['协作', 'Swarm 将任务分派给多个 Agent。固定模式共用执行模型，自主选择模式可选用配置库中的模型。'],
+      ['连接', '配置库保存可重复使用的模型连接，默认模型即可开始对话。'],
+      ['角色', '默认模型用于对话，规划模型用于拆步骤，任务模型用于子任务，摘要模型用于压缩上下文。继承时无需重复配置。'],
+      ['协作', '复杂请求会拆成多个并行任务。固定模式共用任务模型，自主选择模式可选用配置库中的模型。'],
     ]) { const row = element('li'); row.append(element('strong', '', title), element('span', '', text)); steps.append(row); }
     help.append(steps);
     const current = element('p', 'settings-cooperation-current'); current.setAttribute('role', 'status');
-    const describe = model => `Pi · ${model?.modelId || '尚未配置模型'}`;
+    const describe = model => model?.modelId || '尚未配置模型';
     const main = data.values.model, worker = data.values.workerModel;
     const workerModel = worker?.inherit === false ? worker : main;
     const refresh = () => {
       const mode = fields.querySelector('[data-setting="swarmBackendSelection"]')?.value ?? data.values.worker?.swarmBackendSelection ?? 'fixed';
       current.textContent = `主对话：${describe(main)}\n子任务：${describe(workerModel)}`;
       const note = mode === 'autonomous'
-        ? '自主选择：主对话模型保持不变，子任务可选择默认、执行、思考角色及配置库中的模型。请先保存要使用的模型与密钥；所有子任务均使用 Pi Agent。'
-        : '固定模式：子任务统一使用执行 Agent 模型。只想用一个模型时，配置默认模型并保持执行 Agent 继承即可。';
+        ? '自主选择：主对话模型保持不变，子任务可从已配置的角色和配置库里选模型。请先保存要用的模型和密钥。'
+        : '固定模式：子任务统一使用任务模型。只想用一个模型时，配置默认模型并保持任务模型继承即可。';
       explanation.textContent = note + ' 更改保存后，下一轮对话生效。';
     };
     const explanation = element('p', 'settings-model-hint');
-    const action = element('button', '', section === 'worker' ? '选择执行 Agent 模型 →' : '设置 Swarm 协作模式 →'); action.type = 'button';
+    const action = element('button', '', section === 'worker' ? '选择任务模型 →' : '设置并行任务模式 →'); action.type = 'button';
     action.addEventListener('click', () => switchTo(section === 'worker' ? 'workerModel' : 'worker', true));
     help.append(explanation); card.append(current, help, action);
     card.refresh = refresh; refresh(); return card;
+  }
+  function capabilityOverview() {
+    const sshProfiles = data.values.ssh?.profiles ?? [];
+    const sshReady = sshProfiles.some(profile => profile.host && profile.username);
+    const defaultId = data.values.ssh?.defaultId;
+    const defaultSsh = sshProfiles.find(profile => profile.id === defaultId) || sshProfiles.find(profile => profile.host);
+    const mcpServers = (data.values.mcp?.servers ?? []).filter(server => server.enabled !== false);
+    const searchKey = data.secretState.web?.apiKey;
+    const fallback = data.values.web?.fallbackToPublicProviders !== false;
+    const ideBrowser = data.values.web?.ideBrowser !== false;
+    const browserReady = ideBrowser || data.browserInstallation?.state === 'ready';
+    const modelId = data.values.model?.modelId;
+    const items = [
+      ['对话', modelId || '待配置', Boolean(modelId)],
+      ['远程命令', sshReady ? (defaultSsh?.name || defaultSsh?.host || '已配置') : '未配置', sshReady],
+      ['浏览网页', browserReady ? (ideBrowser ? 'IDE 内嵌' : '独立浏览器') : '待安装', browserReady],
+      ['网络搜索', searchKey ? '已配置' : fallback ? '公共回退' : '待配置', Boolean(searchKey || fallback)],
+      ['Python', '本地沙箱', true],
+      ['MCP', mcpServers.length ? mcpServers.length + ' 个服务' : '未连接', mcpServers.length > 0]
+    ];
+    const card = element('section', 'settings-capability-overview');
+    card.dataset.capabilityOverview = '';
+    card.setAttribute('aria-label', '当前可用能力');
+    card.append(element('h4', '', '当前能力'));
+    const list = element('ul', 'settings-capability-list');
+    for (const [name, detail, ready] of items) {
+      const item = element('li');
+      item.dataset.ready = String(ready);
+      item.append(element('span', 'settings-capability-name', name), element('span', 'settings-capability-detail', detail));
+      list.append(item);
+    }
+    card.append(list);
+    return card;
   }
   function render(preserve, modelDraft) {
     const previous = { section: renderedSection, nodes: [...fields.children], view: viewState() }, recovering = Boolean(renderFailure);
@@ -796,7 +870,7 @@ function createSettingsPanel(vscode) {
     let fingerprint = modelDraft ? undefined : keys.get(fingerprintKey);
     if (fingerprint === undefined) {
       fingerprint = JSON.stringify([page, spec, value, data.secretState[section], [data.values.model, data.values.workerModel, data.values.worker?.swarmBackendSelection], section === 'ssh' ? data.sshFields : section === 'mcp' ? data.mcpFields : null,
-        modelRoles.some(([key]) => key === section) ? [data.modelPresets, data.values.model, section === 'summaryModel' ? data.values.reasonModel : null, data.modelProfiles, modelDraft?.id] : null, section === 'skills' ? data.skillsCatalog : null]);
+        modelRoles.some(([key]) => key === section) ? [data.modelPresets, data.values.model, section === 'summaryModel' ? data.values.reasonModel : null, data.modelProfiles, modelDraft?.id] : null,         section === 'skills' ? data.skillsCatalog : null, page === 'settings' && section === 'model' ? [data.values.ssh?.profiles, data.values.web, data.values.mcp?.servers, data.secretState.web, data.browserInstallation?.state] : null]);
       if (!modelDraft) keys.set(fingerprintKey, fingerprint);
     }
     const unchanged = renderedSection === section && renderedFingerprint === fingerprint;
@@ -807,12 +881,12 @@ function createSettingsPanel(vscode) {
     dialog.dataset.page = page;
     $('settings-skeleton').hidden = true; $('settings-load-error').hidden = true; fields.hidden = false;
     setText($('settings-title'), page === 'initialize' ? '首次初始化' : page === 'mcp' ? 'MCP 服务' : page === 'skills' ? 'Skills' : '系统配置');
-    setText($('settings-section-kicker'), page === 'initialize' ? 'GET STARTED' : page === 'settings' ? 'PREFERENCES' : 'EXTENSIONS');
+    setText($('settings-section-kicker'), sectionKicker());
     const isModel = modelRoles.some(([key]) => key === section);
     setText($('settings-section-title'), isModel ? data.sections.model.title : section === 'web' ? '浏览器与搜索' : spec.title);
-    const description = page === 'initialize' && section === 'ssh' ? '连接用于侦察、探测和运行解题脚本的 Linux 环境。填写主机、用户名和认证信息，可先测试连接，再保存为默认环境。'
-      : page === 'initialize' && section === 'web' ? '浏览器与网络搜索均为可选项，可按需配置，也可以直接完成初始化。'
-      : isModel ? spec.description : section === 'web' ? '管理 Agent 的网页浏览能力与网络搜索服务。' : spec.description;
+    const description = page === 'initialize' && section === 'ssh' ? '填写主机、用户名和认证信息。可先测试连接，再保存为默认远程环境。'
+      : page === 'initialize' && section === 'web' ? '浏览器与网络搜索均可选。不配也能完成初始化，之后随时可补。'
+      : spec.description;
     setText($('settings-description'), description);
     publishNavigation();
     roles.hidden = !isModel;
@@ -824,7 +898,9 @@ function createSettingsPanel(vscode) {
       if (!unchanged) { fields.replaceChildren(...cached.nodes); views.delete(section); }
       renderedSection = section; renderedFingerprint = fingerprint;
       refreshBrowserInstall();
-      restoreView(preserve ?? (unchanged ? viewState() : cached.view), Boolean(preserve)); status('更改将在下一次运行时生效。'); return;
+      restoreView(preserve ?? (unchanged ? viewState() : cached.view), Boolean(preserve));
+      status(readyStatus());
+      return;
     }
     evictView(section);
     fields.replaceChildren();
@@ -839,12 +915,17 @@ function createSettingsPanel(vscode) {
       const card = element('section', 'settings-browser-card wide'); card.setAttribute('aria-label', '内置浏览器');
       const heading = element('div', 'settings-browser-heading'), badge = element('span', 'settings-browser-badge'); badge.dataset.browserBadge = '';
       heading.append(element('h3', '', '内置浏览器'), badge);
-      card.append(heading, element('p', 'settings-card-description', '为 Agent 提供 Chromium 网页浏览与操作能力。'));
+      card.append(heading, element('p', 'settings-card-description', '默认在 IDE 内嵌浏览器中查看网页；对话操作时页面只读。也可安装独立 Chromium 作为回退。'));
+      const ide = field(spec.fields.find(entry => entry.key === 'ideBrowser'), value.ideBrowser !== false, data.secretState[section]);
+      const ideHint = element('p', 'settings-field-hint', '开启后在编辑器内查看网页；操作期间显示只读遮盖。关闭后改用下方独立 Chromium。');
+      ideHint.id = 'web-hint-ideBrowser'; ide.querySelector('[data-setting]').setAttribute('aria-describedby', ideHint.id);
+      ide.append(ideHint);
       const mode = field(spec.fields.find(entry => entry.key === 'headless'), value.headless, data.secretState[section]);
-      const modeHint = element('p', 'settings-field-hint', '关闭后显示浏览器窗口，下次启动生效。连接已有浏览器时，沿用其窗口模式。');
+      const modeHint = element('p', 'settings-field-hint', '仅在关闭 IDE 内嵌浏览器时生效。关闭无头后显示独立浏览器窗口，下次启动生效。');
       modeHint.id = 'web-hint-headless'; mode.querySelector('[data-setting]').setAttribute('aria-describedby', modeHint.id);
       mode.append(modeHint);
       const button = element('button'); button.type = 'button'; button.dataset.installBrowser = '';
+      const cancel = element('button', '', '取消'); cancel.type = 'button'; cancel.dataset.cancelBrowser = ''; cancel.hidden = true;
       const note = element('p', 'settings-card-status'); note.dataset.browserInstallStatus = ''; note.setAttribute('role', 'status');
       button.addEventListener('click', () => {
         if (browserInstalling) return;
@@ -852,15 +933,16 @@ function createSettingsPanel(vscode) {
         try { vscode.postMessage({ action: 'settingsInstallBrowser' }); }
         catch (error) { trackBrowserInstallation(false); browserInstallFailed = true; browserInstallResult = window.UBOVMErrors.text(error); refreshBrowserInstall(); }
       });
+      cancel.addEventListener('click', () => browserAction('settingsCancelBrowserInstall'));
       const actions = element('div', 'settings-browser-actions'), check = element('button', '', '检查状态'), logs = element('button', '', '查看安装日志');
       check.type = logs.type = 'button';
       check.addEventListener('click', () => browserAction('settingsBrowserStatus'));
       logs.addEventListener('click', () => browserAction('settingsBrowserLogs'));
-      actions.append(button, check, logs);
+      actions.append(button, cancel, check, logs);
       const details = element('details', 'settings-browser-details'), location = element('code'); location.dataset.browserLocation = '';
       location.tabIndex = 0; location.setAttribute('aria-label', '浏览器可执行文件完整路径');
       details.append(element('summary', '', '浏览器文件位置'), location);
-      card.append(note, actions, mode, details, element('p', 'settings-browser-hint', '安装无需保存配置。已有外部浏览器连接或路径配置时，优先使用外部浏览器。'));
+      card.append(note, actions, ide, mode, details, element('p', 'settings-browser-hint', '安装无需保存配置。已有外部浏览器连接或路径配置时，独立模式优先使用外部浏览器。'));
       fields.append(card); refreshBrowserInstall();
     }
     if (section === 'ssh') {
@@ -892,8 +974,13 @@ function createSettingsPanel(vscode) {
         timeoutMs: '单次请求等待上限，单位为毫秒。',
         providerRetryAttempts: '请求失败后的重试配置，上限为 5。'
       };
+      const optional = page === 'initialize' ? element('details', 'settings-advanced settings-search-optional') : null;
+      if (optional) {
+        optional.append(element('summary', '', '可选：联网搜索（Tavily）'));
+        optional.append(element('p', 'settings-card-description', '可跳过。配置后对话可以检索网页信息。'));
+      }
       for (const specField of spec.fields) {
-        if (specField.key === 'headless') continue;
+        if (specField.key === 'headless' || specField.key === 'ideBrowser') continue;
         const row = field(specField, value[specField.key], data.secretState[section]);
         if (hints[specField.key]) {
           const hint = element('p', 'settings-field-hint', hints[specField.key]); hint.id = 'web-hint-' + specField.key;
@@ -901,6 +988,7 @@ function createSettingsPanel(vscode) {
         }
         (advancedKeys.has(specField.key) ? extra : common).append(row);
       }
+      if (optional) optional.append(common, advanced);
       const savedEndpoint = value.baseURL || 'https://api.tavily.com';
       const refresh = () => {
         const key = card.querySelector('[data-setting="apiKey"]');
@@ -918,15 +1006,23 @@ function createSettingsPanel(vscode) {
         setAttribute(key, 'placeholder', saved ? '已保存 · 留空保留，输入新值替换' : '填写当前服务地址的 API Key');
         setText(card.querySelector('.settings-secret-help span'), '清除当前服务地址的凭据');
       };
-      card.append(heading, element('p', 'settings-card-description', '配置 Tavily 搜索服务，为 Agent 获取网页信息。'), summary, common, advanced); fields.append(card);
+      if (optional) {
+        card.append(heading, summary, optional);
+      } else {
+        card.append(heading, element('p', 'settings-card-description', '配置 Tavily 后即可检索网页；也可以只使用公共搜索回退。'), summary, common, advanced);
+      }
+      fields.append(card);
       card.addEventListener('input', refresh); card.addEventListener('change', refresh); refresh();
     } else if (isModel) {
       fields.append(modelConnection(spec, value, modelSecretState));
     } else {
       const advancedKeys = modelRoles.some(([key]) => key === section) ? ['contextWindow', 'maxTokens', 'reasoning', 'input', 'compat', 'streamOptions']
         : page === 'skills' ? spec.fields.map(field => field.key)
-        : page === 'mcp' ? ['credentials', 'connectTimeoutMs', 'callTimeoutMs', 'maxResultBytes'] : [];
-      const advanced = element('details', 'settings-advanced'); advanced.append(element('summary', '', page === 'skills' ? '加载限制' : page === 'mcp' ? '凭据与高级选项' : '高级选项'));
+        : page === 'mcp' ? ['credentials', 'connectTimeoutMs', 'callTimeoutMs', 'maxResultBytes']
+        : section === 'python' ? ['maxTimeoutSeconds', 'maxOutputBytes']
+        : section === 'reason' ? ['maxIntents', 'maxRepairs', 'maxResponseBytes', 'systemPrompt']
+        : section === 'worker' ? ['maxModelCalls', 'maxToolCalls', 'maxPlanSteps', 'maxResponseBytes', 'maxCheckpointBytes', 'maxToolResultBytes', 'systemPrompt'] : [];
+      const advanced = element('details', 'settings-advanced'); advanced.append(element('summary', '', page === 'skills' ? '加载限制' : page === 'mcp' ? '凭据与高级选项' : section === 'reason' || section === 'worker' ? '预算与提示词' : '高级选项'));
       const body = element('div', 'settings-advanced-fields'); advanced.append(body);
       for (const entry of spec.fields) (advancedKeys.includes(entry.key) ? body : fields).append(field(entry, value[entry.key], modelSecretState));
       if (body.children.length) fields.append(advanced);
@@ -936,17 +1032,19 @@ function createSettingsPanel(vscode) {
     if (inherit) {
       const note = element('div', 'settings-inherit-note');
       const model = section === 'summaryModel' && !data.values.reasonModel.inherit ? data.values.reasonModel : data.values.model;
-      const source = section === 'summaryModel' ? '思考 Agent 模型' : '默认模型';
+      const source = section === 'summaryModel' ? '规划模型' : '默认模型';
       note.append(providerIcon(model.provider), element('div', '', '使用' + source + ' · ' + (model.backend ?? 'pi') + ' · ' + (data.modelPresets[model.provider]?.label ?? model.provider) + ' / ' + model.modelId));
       note.append(element('p', '', '关闭上方继承开关，即可为此角色选择已有配置或设置独立模型。')); fields.append(note);
-      const update = () => { for (const row of fields.children) if (!row.contains(inherit) && !row.hasAttribute('data-cooperation-guide')) row.hidden = row === note ? !inherit.checked : inherit.checked; };
+      const update = () => { for (const row of fields.children) if (!row.contains(inherit) && !row.hasAttribute('data-cooperation-guide') && !row.hasAttribute('data-capability-overview')) row.hidden = row === note ? !inherit.checked : inherit.checked; };
       inherit.addEventListener('change', update); update();
     }
     if (page !== 'initialize' && (isModel || section === 'worker')) {
       const guide = collaborationGuide(); fields.prepend(guide);
       fields.querySelector('[data-setting="swarmBackendSelection"]')?.addEventListener('change', guide.refresh);
     }
-    restoreView(preserve, Boolean(preserve)); status('更改将在下一次运行时生效。');
+    if (page === 'settings' && section === 'model') fields.prepend(capabilityOverview());
+    restoreView(preserve, Boolean(preserve));
+    status(readyStatus());
     renderedFingerprint = fingerprint;
   }
   function request(action, payload = {}, kind = '') {
@@ -984,8 +1082,19 @@ function createSettingsPanel(vscode) {
     });
   }
   function markDirty() { const changed = !dirty; dirty = true; if (changed) refreshInitialization(); }
-  form.addEventListener('input', () => { markDirty(); status('有未保存的更改。'); });
-  form.addEventListener('change', markDirty);
+  function isSettingsControl(target) {
+    const control = target?.closest?.('[data-setting], [data-clear-secret], [data-default-ssh], [data-custom-for]');
+    if (!control) return false;
+    return !control.closest('.settings-library-search') && !control.classList?.contains('settings-library-search');
+  }
+  form.addEventListener('input', event => {
+    if (!isSettingsControl(event.target)) return;
+    markDirty(); status('有未保存的更改。');
+  });
+  form.addEventListener('change', event => {
+    if (!isSettingsControl(event.target)) return;
+    markDirty();
+  });
   // Native validation must be able to reveal invalid advanced fields.
   form.addEventListener('invalid', event => {
     for (let parent = event.target.parentElement; parent && parent !== form; parent = parent.parentElement) if (parent.tagName === 'DETAILS') parent.open = true;
@@ -1079,7 +1188,7 @@ function createSettingsPanel(vscode) {
     renderFailure = undefined; $('settings-render-retry').hidden = true;
     data = undefined; dirty = false; dialog.dataset.page = page;
     $('settings-title').textContent = page === 'mcp' ? 'MCP 服务' : page === 'skills' ? 'Skills' : '系统配置';
-    $('settings-section-kicker').textContent = page === 'settings' ? 'PREFERENCES' : 'EXTENSIONS';
+    $('settings-section-kicker').textContent = sectionKicker();
     $('settings-section-title').textContent = page === 'initialize' ? '首次初始化' : page === 'settings' ? '系统配置' : page === 'mcp' ? 'MCP 服务' : 'Skills';
     const loadingText = page === 'skills' ? '正在扫描已安装技能并读取预览…' : page === 'mcp' ? '正在读取 MCP 服务与连接配置…' : '正在读取配置…';
     $('settings-description').textContent = loadingText; roles.hidden = true; fields.hidden = true;
@@ -1089,10 +1198,31 @@ function createSettingsPanel(vscode) {
     busy(true, 'open'); status(loadingText); showDialog(); publishNavigation(); finishOpen(pending);
   }
   function receiveSettingsMessage(message) {
+    if (message?.type === 'settingsBrowserInstallProgress') {
+      browserInstallation = { ...browserInstallation, ...message.installation, percent: message.percent, phase: message.phase, message: message.message };
+      trackBrowserInstallation(true, { heartbeat: true });
+      browserInstallFailed = false; browserInstallResult = '';
+      refreshBrowserInstall();
+      return;
+    }
     if (message?.type === 'settingsBrowserStatus') {
       browserInstallation = message.installation || {}; trackBrowserInstallation(browserInstallation.state === 'installing'); browserInstallFailed = false; browserInstallResult = ''; refreshBrowserInstall(); return;
     }
-    if (message?.type === 'settingsBrowserInstallResult') { trackBrowserInstallation(false); browserInstallFailed = !message.ok; browserInstallation = message.installation || { state: message.ok ? 'ready' : 'error' }; browserInstallResult = message.ok ? message.message || '浏览器已安装。' : window.UBOVMErrors.text(message.failure || message.message); refreshBrowserInstall(); return; }
+    if (message?.type === 'settingsBrowserInstallResult') {
+      trackBrowserInstallation(false);
+      browserInstallFailed = !message.ok && !message.cancelled;
+      browserInstallation = message.installation || { state: message.ok ? 'ready' : 'error' };
+      browserInstallResult = message.ok
+        ? message.message || '浏览器已安装。'
+        : message.cancelled
+          ? (message.message || '浏览器安装已取消。')
+          : window.UBOVMErrors.text(message.failure || message.message);
+      refreshBrowserInstall();
+      if (message.ok) status(browserInstallResult);
+      else if (message.cancelled) status(browserInstallResult);
+      else status(browserInstallResult, true);
+      return;
+    }
     if (message?.type === 'settingsSSHTestResult') { finishSSHTest(message.requestId, message); return; }
     if (message?.type === 'settingsLoading') {
       if (saving && operation !== 'open') { status('正在处理配置，请完成后重试。'); return; }

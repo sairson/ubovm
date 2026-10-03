@@ -451,6 +451,7 @@ test('depth, total-worker and descendant ownership limits are enforced', async (
     await assert.rejects(invoke(swarm, 'wait_workers', { worker_ids: [target] }, first.worker_id), /outside your descendants/);
   }
   assert.deepEqual((await invoke(swarm, 'list_workers', {}, first.worker_id)).workers, []);
+  assert.equal((await invoke(swarm, 'list_workers', {}, first.worker_id)).capacity.queued_workers, 0);
   await assert.rejects(invoke(swarm, 'wait_workers', { timeout_ms: 60001 }), /timeout_ms/);
   gate.resolve('done');
   await swarm.settle();
@@ -691,3 +692,223 @@ test('close waits for pending worker creation to persist its final interrupted s
     assert.equal(writes, finishedWrites, 'no journal writes may arrive after close returns');
   } finally { initialization.resolve(); finalWrite.resolve(); await spawning; await closing; }
 });
+
+test('higher-priority queued workers start before earlier lower-priority peers', { timeout: 3000 }, async () => {
+  const gates = { low: deferred(), high: deferred() };
+  const started = [];
+  const swarm = createSwarm({ sessionId: 'root', maxConcurrency: 1, runWorker: async ({ task, signal }) => {
+    started.push(task);
+    await gates[task].promise;
+    signal.throwIfAborted();
+    return task;
+  } });
+  try {
+    await invoke(swarm, 'spawn_worker', { task: 'low', priority: 1 });
+    await invoke(swarm, 'spawn_worker', { task: 'high', priority: 9 });
+    await nextTurn();
+    assert.deepEqual(started, ['low']);
+    gates.low.resolve();
+    await invoke(swarm, 'wait_workers', { mode: 'any' });
+    await nextTurn();
+    assert.deepEqual(started, ['low', 'high']);
+    gates.high.resolve();
+    const workers = await swarm.settle();
+    assert.deepEqual(workers.map(worker => worker.priority), [1, 9]);
+  } finally {
+    gates.low.resolve(); gates.high.resolve();
+    await swarm.close();
+  }
+});
+
+test('manage_workers can raise priority, interrupt, and preempt a lower-priority runner', { timeout: 3000 }, async () => {
+  const running = deferred(), cleanup = deferred();
+  const started = [];
+  const swarm = createSwarm({ sessionId: 'root', maxConcurrency: 1, runWorker: async ({ task, signal }) => {
+    started.push(task);
+    if (task === 'background') {
+      running.resolve();
+      await new Promise(resolve => signal.addEventListener('abort', resolve, { once: true }));
+      await cleanup.promise;
+      signal.throwIfAborted();
+    }
+    return task;
+  } });
+  try {
+    const background = await invoke(swarm, 'spawn_worker', { task: 'background', priority: 1 });
+    const critical = await invoke(swarm, 'spawn_worker', { task: 'critical' });
+    await running.promise;
+    await assert.rejects(invoke(swarm, 'spawn_worker', { task: 'bad', priority: 10 }), /priority/);
+    await assert.rejects(invoke(swarm, 'manage_workers', { action: 'shuffle', worker_ids: [critical.worker_id], priority: 9 }), /prioritize or interrupt/);
+    const help = await invoke(swarm, 'manage_workers', { action: 'help' });
+    assert.equal(help.mode, 'help');
+    const ranked = await invoke(swarm, 'manage_workers', { action: 'prioritize', worker_ids: [critical.worker_id], priority: 9, preempt: true });
+    assert.deepEqual(ranked.updated, [critical.worker_id]);
+    assert.deepEqual(ranked.preempted, [background.worker_id]);
+    assert.equal(swarm.snapshot().workers.find(worker => worker.id === critical.worker_id).priority, 9);
+    const stopped = await invoke(swarm, 'manage_workers', { action: 'interrupt', worker_ids: [critical.worker_id], reason: 'replaced' });
+    assert.deepEqual(stopped.cancellation_requested, [critical.worker_id]);
+    cleanup.resolve();
+    const settled = await swarm.settle();
+    assert.equal(settled.find(worker => worker.id === background.worker_id).status, 'interrupted');
+    assert.equal(settled.find(worker => worker.id === critical.worker_id).status, 'interrupted');
+    assert.deepEqual(started, ['background']);
+    const restored = createSwarm({ sessionId: 'root', state: swarm.snapshot(), runWorker: async () => 'unused' });
+    try { assert.equal(restored.snapshot().workers.find(worker => worker.id === critical.worker_id).priority, 9); }
+    finally { await restored.close(); }
+  } finally { cleanup.resolve(); await swarm.close(); }
+});
+
+test('preempt does not cancel a running ancestor of the preferred queued worker', { timeout: 3000 }, async () => {
+  const parentStarted = deferred(), allowChild = deferred(), childId = deferred(), parentReady = deferred(), parentHold = deferred();
+  let swarm;
+  swarm = createSwarm({ sessionId: 'root', maxConcurrency: 2, maxDepth: 2, runWorker: async ({ workerId, task, signal }) => {
+    if (task === 'parent') {
+      parentStarted.resolve();
+      await allowChild.promise;
+      const child = await invoke(swarm, 'spawn_worker', { task: 'critical-child', priority: 9 }, workerId);
+      childId.resolve(child.worker_id);
+      parentReady.resolve();
+      await parentHold.promise;
+      return 'parent';
+    }
+    await new Promise(resolve => signal.addEventListener('abort', resolve, { once: true }));
+    signal.throwIfAborted();
+  } });
+  try {
+    const sibling = await invoke(swarm, 'spawn_worker', { task: 'sibling', priority: 0 });
+    const parent = await invoke(swarm, 'spawn_worker', { task: 'parent', priority: 0 });
+    await parentStarted.promise;
+    allowChild.resolve();
+    await parentReady.promise;
+    const queued = await childId.promise;
+    await invoke(swarm, 'manage_workers', { action: 'prioritize', worker_ids: [queued], priority: 9, preempt: true });
+    const snapshot = swarm.snapshot();
+    const parentState = snapshot.workers.find(worker => worker.id === parent.worker_id);
+    const siblingState = snapshot.workers.find(worker => worker.id === sibling.worker_id);
+    const childState = snapshot.workers.find(worker => worker.id === queued);
+    assert.equal(parentState.status, 'running');
+    assert.equal(parentState.cancelRequestedAt, undefined);
+    assert.ok(siblingState.cancelRequestedAt);
+    assert.ok(['running', 'interrupted'].includes(siblingState.status));
+    assert.notEqual(childState.status, 'interrupted');
+  } finally { parentHold.resolve(); await swarm.close(); }
+});
+
+test('spawn can preempt a lower-priority runner and list_workers exposes admission', { timeout: 3000 }, async () => {
+  const running = deferred(), cleanup = deferred();
+  const started = [];
+  const swarm = createSwarm({ sessionId: 'root', maxConcurrency: 1, runWorker: async ({ task, signal }) => {
+    started.push(task);
+    if (task === 'background') {
+      running.resolve();
+      await new Promise(resolve => signal.addEventListener('abort', resolve, { once: true }));
+      await cleanup.promise;
+      signal.throwIfAborted();
+    }
+    return task;
+  } });
+  try {
+    await invoke(swarm, 'spawn_worker', { task: 'background', priority: 1 });
+    await running.promise;
+    const listed = await invoke(swarm, 'list_workers');
+    assert.equal(listed.capacity.occupied_slots, 1);
+    assert.equal(listed.admission.ready_queue.length, 0);
+    const spawned = await invoke(swarm, 'spawn_worker', { task: 'critical', priority: 9, preempt: true, reason: 'critical path' });
+    assert.equal(spawned.priority, 9);
+    assert.equal(spawned.preempted.length, 1);
+    assert.equal(spawned.admission.preemptable.length, 0);
+    cleanup.resolve();
+    const settled = await swarm.settle();
+    assert.equal(settled.find(worker => worker.task === 'background').status, 'interrupted');
+    assert.equal(settled.find(worker => worker.task === 'critical').status, 'completed');
+    assert.deepEqual(started, ['background', 'critical']);
+  } finally { cleanup.resolve(); await swarm.close(); }
+});
+
+test('higher-priority queued work starts before a lower-priority slot reacquisition', { timeout: 3000 }, async () => {
+  const parentStarted = deferred(), beginWait = deferred(), blockerStarted = deferred(), blockerFinish = deferred();
+  const started = [];
+  let swarm;
+  swarm = createSwarm({ sessionId: 'root', maxConcurrency: 1, runWorker: async ({ workerId, task }) => {
+    started.push(task);
+    if (task === 'blocker') { blockerStarted.resolve(); await blockerFinish.promise; return 'blocker'; }
+    if (task === 'high') return 'high';
+    if (task === 'child') return 'child';
+    parentStarted.resolve(); await beginWait.promise;
+    const child = await invoke(swarm, 'spawn_worker', { task: 'child' }, workerId);
+    await invoke(swarm, 'wait_workers', { worker_ids: [child.worker_id], timeout_ms: 5 }, workerId);
+    return 'parent';
+  } });
+  try {
+    await invoke(swarm, 'spawn_worker', { task: 'parent', priority: 0 });
+    await parentStarted.promise;
+    await invoke(swarm, 'spawn_worker', { task: 'blocker', priority: 0 });
+    beginWait.resolve();
+    await blockerStarted.promise;
+    for (let attempt = 0; attempt < 100 && (await invoke(swarm, 'list_workers')).capacity.resuming_workers !== 1; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 2));
+    }
+    assert.equal((await invoke(swarm, 'list_workers')).capacity.resuming_workers, 1);
+    const high = await invoke(swarm, 'spawn_worker', { task: 'high', priority: 9 });
+    assert.equal(high.status, 'queued');
+    assert.equal((await invoke(swarm, 'list_workers')).admission.next.kind, 'queue');
+    blockerFinish.resolve();
+    const waited = await invoke(swarm, 'wait_workers', { worker_ids: [high.worker_id] });
+    assert.equal(waited.workers[0].status, 'completed');
+    assert.ok(started.indexOf('high') > started.indexOf('blocker'));
+    assert.equal(started.includes('child') ? started.indexOf('high') < started.indexOf('child') : true, true);
+  } finally { beginWait.resolve(); blockerFinish.resolve(); await swarm.close(); }
+});
+
+test('queued workers report why they are blocked and skip preemption until dependencies complete', { timeout: 3000 }, async () => {
+  const hold = deferred();
+  const swarm = createSwarm({ sessionId: 'root', maxConcurrency: 1, runWorker: async ({ task }) => {
+    if (task === 'source') { await hold.promise; return 'source'; }
+    return task;
+  } });
+  try {
+    const source = await invoke(swarm, 'spawn_worker', { task: 'source', priority: 1 });
+    const dependent = await invoke(swarm, 'spawn_worker', {
+      task: 'critical', priority: 9, preempt: true, depends_on: [source.worker_id],
+    });
+    assert.equal(dependent.status, 'queued');
+    assert.equal(dependent.skip_preempt, 'dependencies');
+    assert.equal(dependent.preempted.length, 0);
+    assert.equal(dependent.blocked.reason, 'dependencies');
+    assert.deepEqual(dependent.blocked.worker_ids, [source.worker_id]);
+    const listed = await invoke(swarm, 'list_workers');
+    const row = listed.workers.find(worker => worker.id === dependent.worker_id);
+    assert.equal(row.blocked.reason, 'dependencies');
+    const timed = await invoke(swarm, 'wait_workers', { worker_ids: [dependent.worker_id], timeout_ms: 5 });
+    assert.equal(timed.timed_out, true);
+    assert.match(timed.guidance, /blocked/);
+    assert.equal(timed.admission.occupied_slots, 1);
+    hold.resolve();
+    await swarm.settle();
+  } finally { hold.resolve(); await swarm.close(); }
+});
+
+test('prioritize+preempt on a running worker does not interrupt unrelated runners', { timeout: 3000 }, async () => {
+  const started = { a: deferred(), b: deferred() };
+  const hold = { a: deferred(), b: deferred() };
+  const swarm = createSwarm({ sessionId: 'root', maxConcurrency: 2, runWorker: async ({ task }) => {
+    started[task].resolve();
+    await hold[task].promise;
+    return task;
+  } });
+  try {
+    const first = await invoke(swarm, 'spawn_worker', { task: 'a', priority: 1 });
+    const second = await invoke(swarm, 'spawn_worker', { task: 'b', priority: 1 });
+    await Promise.all([started.a.promise, started.b.promise]);
+    const ranked = await invoke(swarm, 'manage_workers', { action: 'prioritize', worker_ids: [first.worker_id], priority: 9, preempt: true });
+    assert.deepEqual(ranked.updated, [first.worker_id]);
+    assert.deepEqual(ranked.preempted, []);
+    assert.equal(ranked.skip_preempt, 'no_ready_queued_target');
+    const snapshot = swarm.snapshot();
+    assert.equal(snapshot.workers.find(worker => worker.id === second.worker_id).cancelRequestedAt, undefined);
+    assert.equal(snapshot.workers.find(worker => worker.id === first.worker_id).status, 'running');
+    const occupancy = swarm.inspect();
+    assert.equal(occupancy.workers.find(worker => worker.id === first.worker_id).blocked, undefined);
+  } finally { hold.a.resolve(); hold.b.resolve(); await swarm.close(); }
+});
+

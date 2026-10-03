@@ -2,6 +2,8 @@ import { realpath, stat } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { Type } from 'typebox';
 import { requireText, integer } from '../../shared/common.mjs';
+import { flagHelpProperties, withProgressiveDisclosure } from '../../shared/disclosure.mjs';
+import { LOCAL_SHELL_CATALOG } from '../../shared/tool-catalogs.mjs';
 import { runLocalProcess } from '../../shared/process/local-process.mjs';
 import { PersistentShell, namedShell } from '../../shared/process/persistent-shell.mjs';
 import { openLocalShell } from '../../shared/process/local-shell-transport.mjs';
@@ -20,18 +22,19 @@ export function createLocalShellTool({ cwd = process.cwd(), defaultTimeoutSecond
   const lifetime = new AbortController(), active = new Set();
   let closed = false, closing;
   const executable = windows ? join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe') : '/bin/sh';
-  return {
+  const tool = {
     name: 'run_local_shell_command', label: 'Run local shell command',
-    description: `${LOCAL_SHELL_POLICY} Shell: ${windows ? 'Windows PowerShell' : '/bin/sh'}. Default cwd: ${cwd}. Non-interactive; stdout/stderr stream, nonzero exits are errors. Set retain=true for long-lived servers (dev/watch); the host also auto-retains common patterns like npm run dev. Set session to reuse a named shell and preserve variables and working directory across calls. Same-session commands run serially; a retained command frees the session for a fresh shell. Omit session for isolated execution. After a timeout, cancellation, exit, or transport failure the next call soft-resets that named shell; set reset_session=true to force a fresh shell. Do not redirect shell-wide stdout/stderr or read stdin in a named session.`,
+    description: LOCAL_SHELL_CATALOG.description,
     parameters: Type.Object({
-      command: Type.String({ minLength: 1, maxLength: 32768 }),
-      purpose: Type.Union([Type.Literal('code'), Type.Literal('environment_setup')]),
-      reason: Type.String({ minLength: 1, maxLength: 2048 }),
+      command: Type.Optional(Type.String({ minLength: 1, maxLength: 32768 })),
+      purpose: Type.Optional(Type.Union([Type.Literal('code'), Type.Literal('environment_setup')])),
+      reason: Type.Optional(Type.String({ minLength: 1, maxLength: 2048 })),
       cwd: Type.Optional(Type.String({ description: 'Absolute path or path relative to default cwd.' })),
       session: Type.Optional(Type.String({ minLength: 1, maxLength: 64 })),
       reset_session: Type.Optional(Type.Boolean()),
       retain: Type.Optional(Type.Boolean({ description: 'Host-retain this command after the tool returns so it survives agent end (for dev servers). Prefer this over shell background jobs.' })),
-      timeout_seconds: Type.Optional(Type.Integer({ minimum: 1, maximum: maxTimeoutSeconds }))
+      timeout_seconds: Type.Optional(Type.Integer({ minimum: 1, maximum: maxTimeoutSeconds })),
+      ...flagHelpProperties()
     }, { additionalProperties: false }),
     async execute(_id, input, signal, onUpdate, lifecycle) {
       // Await the command before release(): `return promise` runs finally immediately
@@ -83,4 +86,7 @@ export function createLocalShellTool({ cwd = process.cwd(), defaultTimeoutSecond
       return closing;
     }
   };
+  const disclosed = withProgressiveDisclosure(tool, { ...LOCAL_SHELL_CATALOG, mode: 'flag' });
+  disclosed.close = (...args) => tool.close(...args);
+  return disclosed;
 }

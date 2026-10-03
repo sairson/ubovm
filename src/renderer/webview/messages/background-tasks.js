@@ -195,7 +195,7 @@
       };
       for (const message of state.messages || []) collect(message.parts, '主 Agent');
       collect(state.execution?.parts, '主 Agent');
-      for (const worker of state.execution?.workers || []) collect(worker.parts, worker.title || worker.intent?.description || worker.id || 'Worker');
+      for (const worker of state.execution?.workers || []) collect(worker.parts, worker.title || worker.intent?.description || worker.id || '并行任务');
       // Existing rows stay where the user clicked as tasks finish or new ones
       // arrive. Preserve their identity, focus and list scroll position.
       const order = new Map(tasks.map((task, index) => [task.commandId, index]));

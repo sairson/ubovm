@@ -1,5 +1,7 @@
 import { Type } from 'typebox';
 import { assertSession, checkAbort, required, toolResult } from '../shared/store/memory-store.mjs';
+import { withActionHelp, withProgressiveDisclosure } from '../shared/disclosure.mjs';
+import { DELIVERY_CATALOG } from '../shared/tool-catalogs.mjs';
 
 import { DELIVERY_STAGES, hasStageAcceptance } from './record.mjs';
 import { assertCoverageComplete, coverageSummary, emptyInventory } from '../domain-inventory/record.mjs';
@@ -84,11 +86,10 @@ function acceptanceDetails(stage, input, inventory) {
 
 export function createDeliveryTool({ store, sessionId, workerId = 'worker' } = {}) {
   assertSession(store, sessionId);
-  return {
+  const tool = {
     name: 'delivery_workflow', label: '交付闭环',
-    description: 'Full delivery ledger ONLY for creating a new development project. Standalone development/audit/security/deployment/operations use their own tools without this ledger or stage dependencies. Initialization requires projectType=new-development. Writes require expectedRevision from status and recorded successful execution evidence. Tracks agent assessments, not independent certification.',
-    parameters: Type.Object({
-      action: Type.Union(['status', 'history', 'initialize', 'accept', 'block', 'invalidate', 'finding', 'resolve', 'reopen'].map(Type.Literal)),
+    description: DELIVERY_CATALOG.description,
+    parameters: Type.Object(withActionHelp({
       expectedRevision: Type.Optional(Type.Integer({ minimum: 0 })),
       projectType: Type.Optional(Type.Literal('new-development')),
       objective: Type.Optional(Type.String()), artifact: Type.Optional(Type.String()), stage: Type.Optional(Type.String()),
@@ -98,7 +99,7 @@ export function createDeliveryTool({ store, sessionId, workerId = 'worker' } = {
       rollback: Type.Optional(Type.String()), monitoring: Type.Optional(Type.String()), owner: Type.Optional(Type.String()),
       offset: Type.Optional(Type.Integer({ minimum: 0 })), limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100 })),
       evidence: Type.Optional(Type.Array(Type.Object({ workerId: Type.String(), toolCallId: Type.String() }, { additionalProperties: false }), { minItems: 1, maxItems: 20 }))
-    }, { additionalProperties: false }),
+    }), { additionalProperties: false }),
     async execute(_id, input, signal) {
       checkAbort(signal);
       if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some(key => !['action', 'expectedRevision', 'projectType', 'objective', 'artifact', 'stage', 'summary', 'findingId', 'severity', 'evidence', 'scope', 'endpoint', 'vantage', 'rollback', 'monitoring', 'owner', 'offset', 'limit'].includes(key))) throw new Error('Invalid delivery arguments');
@@ -187,4 +188,8 @@ export function createDeliveryTool({ store, sessionId, workerId = 'worker' } = {
       return '# New development project delivery ledger\nOnly applies to this new project, never standalone tasks. Agent assessments, not independent certification. Compact index: use delivery_workflow status/history to read full scope, findings and evidence before acceptance or completion. Security acceptance requires complete domain_inventory coverage.\n' + JSON.stringify(compact);
     }
   };
+  const disclosed = withProgressiveDisclosure(tool, DELIVERY_CATALOG);
+  disclosed.summary = tool.summary.bind(tool);
+  disclosed.promptSummary = tool.summary.bind(tool);
+  return disclosed;
 }

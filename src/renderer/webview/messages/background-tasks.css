@@ -1,5 +1,12 @@
-.background-tasks { position: relative; flex: 0 0 auto; min-width: 0; border: 1px solid color-mix(in srgb, var(--border) 70%, transparent); border-radius: 10px; background: var(--canvas); font-size: 11px; }
-.background-tasks-header { display: flex; align-items: center; gap: 8px; min-height: 38px; padding: 3px 10px; }
+.background-tasks {
+  position: fixed; z-index: 40; right: 12px; bottom: 12px; width: min(480px, calc(100vw - 24px));
+  max-height: min(480px, calc(100dvh - 24px)); display: flex; flex-direction: column; min-width: 0;
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent); border-radius: 10px;
+  background: var(--canvas); box-shadow: 0 12px 40px #00000018, 0 2px 8px #0000000a; font-size: 11px;
+}
+.background-tasks[hidden] { display: none; }
+body[data-mode="assist"] .background-tasks { bottom: 108px; }
+.background-tasks-header { display: flex; align-items: center; gap: 8px; min-height: 38px; padding: 3px 10px; flex: 0 0 auto; }
 .background-tasks-toggle { display: flex; flex: 1; align-items: center; gap: 8px; min-width: 0; padding: 7px 2px; border: 0; background: transparent; text-align: left; }
 .background-tasks-title { font-size: 11px; font-weight: 500; white-space: nowrap; }
 .background-tasks-count { min-width: 0; color: var(--muted); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -10,7 +17,7 @@
 .background-task-stop { color: var(--vscode-errorForeground, #b7554b); }
 .background-task-action[aria-pressed="true"] { color: var(--accent); background: transparent; }
 .background-tasks-peek { margin: 0; padding: 0 12px 9px 28px; color: var(--muted); font: 10px/1.5 var(--vscode-editor-font-family, Consolas, monospace); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.background-tasks-body { display: grid; grid-template-rows: auto minmax(0, 1fr); max-height: min(360px, 44vh); overflow: auto; border-top: 1px solid color-mix(in srgb, var(--border) 55%, transparent); overscroll-behavior: contain; scrollbar-width: thin; }
+.background-tasks-body { display: grid; grid-template-rows: auto minmax(0, 1fr); min-height: 0; max-height: min(360px, 44vh); overflow: auto; border-top: 1px solid color-mix(in srgb, var(--border) 55%, transparent); overscroll-behavior: contain; scrollbar-width: thin; }
 .background-task-list { min-width: 0; min-height: 0; max-height: 100px; overflow: auto; padding: 5px; scrollbar-width: thin; overscroll-behavior: contain; }
 .background-task-select { display: flex; width: 100%; gap: 8px; align-items: center; text-align: left; border: 1px solid transparent; border-radius: 5px; padding: 7px 6px; background: transparent; }
 .background-task-select:hover { background: var(--wash); }
@@ -39,7 +46,10 @@
 .background-task-log { margin: 8px 0 0; padding: 9px 10px; min-height: 64px; max-height: 180px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--ink); background: color-mix(in srgb, var(--wash) 65%, transparent); border: 0; border-radius: 5px; font: 12px/1.7 var(--vscode-editor-font-family, Consolas, monospace); overscroll-behavior: contain; scrollbar-width: thin; }
 .background-task-notice:empty { display: none; }
 .background-task-notice { padding-top: 5px; color: var(--muted); }
-#main-content > .background-tasks { margin: 8px var(--goal-inset) 12px; }
-@media (max-width: 380px) { .background-tasks-header { gap: 2px; } .background-tasks-toggle { gap: 5px; } .background-tasks-clear { padding: 3px; font-size: 10px; } }
+@media (max-width: 380px) {
+  .background-tasks { left: 12px; right: 12px; width: auto; }
+  body[data-mode="assist"] .background-tasks { bottom: 96px; }
+  .background-tasks-header { gap: 2px; } .background-tasks-toggle { gap: 5px; } .background-tasks-clear { padding: 3px; font-size: 10px; }
+}
 @media (min-width: 700px) { .background-tasks-body { grid-template-columns: minmax(160px, 28%) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); } .background-task-list { max-height: 280px; } .background-task-detail { border-top: 0; border-left: 1px solid color-mix(in srgb, var(--border) 55%, transparent); } }
 @media (prefers-reduced-motion: reduce) { .background-tasks .background-task-indicator, .background-tasks-body { animation: none !important; } .background-tasks-chevron { transition: none; } }

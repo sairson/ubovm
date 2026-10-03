@@ -310,10 +310,14 @@ function Update-ManagedKeyboardPolicy([string]$Text, [string]$Legacy, [string]$C
     if ($Text.Contains($after)) { return $Text }
     if ($policies.Count -eq 1) {
         $policy = $policies[0].Groups['policy'].Value
-        # Only the generated search allow-list may vary. All surrounding
-        # keyboard behavior must still exactly match our original policy.
+        # The generated search allow-list and basic-editing exceptions may
+        # grow. All surrounding keyboard behavior must still match.
         $normalized = [regex]::Replace($policy, '(?m)^\t+const fileSearch = /[^\r\n;]+/;\r?\n', '')
         $normalized = $normalized.Replace(' && !fileSearch.test(command)', '')
+        $legacyEditing = [regex]::Match($Legacy, '(?m)^\t+const basicEditing = /[^\r\n;]+/;').Value
+        if ($legacyEditing) {
+            $normalized = [regex]::Replace($normalized, '(?m)^\t+const basicEditing = /[^\r\n;]+/;', { param($match) $legacyEditing })
+        }
         if ($normalized -ceq $Legacy) {
             return Replace-CoreSnippet $Text $policies[0].Value $after
         }
@@ -515,7 +519,16 @@ function Get-WorkbenchStyle {
     $css = [IO.File]::ReadAllText((Join-Path $ProjectRoot 'src/renderer/workbench/workbench.css'))
     $logo = [IO.File]::ReadAllText((Join-Path $ProjectRoot 'src/renderer/media/icon.svg'))
     $uri = 'data:image/svg+xml;base64,' + [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($logo))
-    return $css.Replace('{{PRODUCT_LOGO_URI}}', $uri)
+    $agentLock = @'
+
+/* UBOVM browser agent-control lock */
+.browser-root .browser-overlay-paused.agent-control.visible {
+	pointer-events: all;
+	cursor: not-allowed;
+	background-color: color-mix(in srgb, var(--vscode-editor-background) 55%, transparent);
+}
+'@
+    return $css.Replace('{{PRODUCT_LOGO_URI}}', $uri) + $agentLock
 }
 
 function Set-ProductBranding($Root) {
@@ -645,7 +658,11 @@ function Set-FixedConversationCore($Product) {
     $bundle = Replace-CoreSnippet $bundle 'static{this.activePanelSettingsKey="workbench.panelpart.activepanelid"}' 'static{this.activePanelSettingsKey="workbench.panelpart.activepanelid"}async openPaneComposite(e,t){if(e!==void 0&&e!=="terminal"&&e!=="workbench.view.extension.ubovm-workers")return;return super.openPaneComposite(e??this.getLastActivePaneCompositeId(),t)}getPaneComposite(e){return e==="terminal"||e==="workbench.view.extension.ubovm-workers"?super.getPaneComposite(e):void 0}getPaneComposites(){return super.getPaneComposites().filter(e=>e.id==="terminal"||e.id==="workbench.view.extension.ubovm-workers")}getLastActivePaneCompositeId(){const e=super.getLastActivePaneCompositeId();return e==="workbench.view.extension.ubovm-workers"?e:"terminal"}'
     $bundle = $bundle.Replace('shouldShowCompositeBar(){return!1}getCompositeBarPosition(){return Ad.TITLE}toJSON(){return{type:"workbench.parts.panel"}}', 'shouldShowCompositeBar(){return!0}getCompositeBarPosition(){return Ad.TITLE}toJSON(){return{type:"workbench.parts.panel"}}')
     $bundle = Replace-CoreSnippet $bundle 'shouldBeHidden(e,t){const s=Oe(e)?this.getViewContainer(e):e,n=Oe(e)?e:e.id;' 'shouldBeHidden(e,t){const s=Oe(e)?this.getViewContainer(e):e,n=Oe(e)?e:e.id;if(this.options.partContainerClass==="panel"&&n!=="terminal"&&n!=="workbench.view.extension.ubovm-workers")return!0;'
-    $bundle = $bundle.Replace('&&n!=="workbench.view.extension.ubovm-workers"&&n!=="workbench.view.extension.ubovm-blackboard")return!0;', '&&n!=="workbench.view.extension.ubovm-workers")return!0;')
+    # Do not strip Blackboard from the current sidebar allow-list; that suffix
+    # is also the end of the finished explorer/search/browser policy.
+    if (-not $bundle.Contains('n!=="workbench.view.extension.ubovm-browser"&&n!=="workbench.view.extension.ubovm-workers"&&n!=="workbench.view.extension.ubovm-blackboard")return!0;')) {
+        $bundle = $bundle.Replace('&&n!=="workbench.view.extension.ubovm-workers"&&n!=="workbench.view.extension.ubovm-blackboard")return!0;', '&&n!=="workbench.view.extension.ubovm-workers")return!0;')
+    }
     $bundle = Replace-CoreSnippet $bundle 'if(this.options.partContainerClass==="panel"&&n!=="terminal"&&n!=="workbench.view.extension.ubovm-workers")return!0;' 'if(this.options.partContainerClass==="panel"&&n!=="terminal"&&n!=="workbench.view.extension.ubovm-workers")return!0;if(this.options.partContainerClass==="sidebar"&&n!=="workbench.view.explorer"&&n!=="workbench.view.extension.ubovm-workers")return!0;'
     $bundle = Replace-CoreSnippet $bundle 'partContainerClass:"sidebar",pinnedViewContainersKey:FZ.pinnedViewContainersKey,placeholderViewContainersKey:FZ.placeholderViewContainersKey,viewContainersWorkspaceStateKey:FZ.viewContainersWorkspaceStateKey,icon:!0' 'partContainerClass:"sidebar",pinnedViewContainersKey:FZ.pinnedViewContainersKey,placeholderViewContainersKey:FZ.placeholderViewContainersKey,viewContainersWorkspaceStateKey:FZ.viewContainersWorkspaceStateKey,icon:!1'
     # Right-side tabs share the title row so single-view logs do not repeat their title.
@@ -666,22 +683,33 @@ function Set-FixedConversationCore($Product) {
     if (-not $emptyMethod) { throw 'Missing empty sidebar implementation.' }
     $emptyMethod = $emptyMethod.Replace('private ', '').Replace('(): void', '()').Replace('addDisposableListener(', 'U(')
     # Soft last-tab close: keep the empty CTA visible; do not auto-hide the sidebar part.
-    $autoHideMethod = $emptyMethod.Replace('button.focus();', 'this.hideActivePaneComposite();')
+    $autoHideMethod = $emptyMethod.Replace('fileButton.focus();', 'this.hideActivePaneComposite();').Replace('button.focus();', 'this.hideActivePaneComposite();')
     if ($bundle.Contains($autoHideMethod)) { $bundle = $bundle.Replace($autoHideMethod, $emptyMethod) }
+    $existingEmpty = [regex]::Match($bundle, 'initializeUbovmEmptySidebar\(\)\{.*?\n\t\}', [System.Text.RegularExpressions.RegexOptions]::Singleline)
+    if ($existingEmpty.Success -and -not $existingEmpty.Value.Contains('ubovm-empty-sidebar-chooser')) {
+        $bundle = $bundle.Substring(0, $existingEmpty.Index) + $emptyMethod.TrimStart() + $bundle.Substring($existingEmpty.Index + $existingEmpty.Length)
+    }
     if (-not $bundle.Contains('initializeUbovmEmptySidebar(){') -and -not $bundle.Contains('initializeUbovmEmptySidebar() {')) {
         $bundle = Replace-CoreSnippet $bundle 'createEmptyPaneMessage(e){' ($emptyMethod + "`n" + 'createEmptyPaneMessage(e){')
     }
     $bundle = Replace-CoreSnippet $bundle 'this.createEmptyPaneMessage(this.contentArea),this.updateCompositeBar();' 'this.createEmptyPaneMessage(this.contentArea),this.updateCompositeBar();this.initializeUbovmEmptySidebar();'
     $bundle = Replace-CoreSnippet $bundle 'onDidOpen(e){const t=e.getId();' 'onDidOpen(e){if(this.partId==="workbench.parts.sidebar"){delete this.element.dataset.ubovmEmpty;this.storageService.remove("ubovm.sidebar.empty",1)}const t=e.getId();'
     $bundle = Replace-CoreSnippet $bundle 'getLastActivePaneCompositeId(){return this.getLastActiveCompositeId()}' 'getLastActivePaneCompositeId(){if(this.partId==="workbench.parts.sidebar"&&this.element.dataset.ubovmEmpty==="true")return"";return this.getLastActiveCompositeId()}'
-    $bundle = Replace-CoreSnippet $bundle 'if(this.options.partContainerClass==="sidebar"&&n!=="workbench.view.explorer"&&n!=="workbench.view.extension.ubovm-workers")return!0;' 'if(this.options.partContainerClass==="sidebar"&&n!=="workbench.view.explorer"&&n!=="workbench.view.search"&&n!=="workbench.view.extension.ubovm-workers"&&n!=="workbench.view.extension.ubovm-blackboard")return!0;'
-    $bundle = Replace-CoreSnippet $bundle 'if(this.options.partContainerClass==="sidebar"&&n!=="workbench.view.explorer"&&n!=="workbench.view.extension.ubovm-workers"&&n!=="workbench.view.extension.ubovm-blackboard")return!0;' 'if(this.options.partContainerClass==="sidebar"&&n!=="workbench.view.explorer"&&n!=="workbench.view.search"&&n!=="workbench.view.extension.ubovm-workers"&&n!=="workbench.view.extension.ubovm-blackboard")return!0;'
+    $bundle = Replace-CoreSnippet $bundle 'if(this.options.partContainerClass==="sidebar"&&n!=="workbench.view.explorer"&&n!=="workbench.view.extension.ubovm-workers")return!0;' 'if(this.options.partContainerClass==="sidebar"&&n!=="workbench.view.explorer"&&n!=="workbench.view.search"&&n!=="workbench.view.extension.ubovm-browser"&&n!=="workbench.view.extension.ubovm-workers"&&n!=="workbench.view.extension.ubovm-blackboard")return!0;'
+    $bundle = Replace-CoreSnippet $bundle 'if(this.options.partContainerClass==="sidebar"&&n!=="workbench.view.explorer"&&n!=="workbench.view.extension.ubovm-workers"&&n!=="workbench.view.extension.ubovm-blackboard")return!0;' 'if(this.options.partContainerClass==="sidebar"&&n!=="workbench.view.explorer"&&n!=="workbench.view.search"&&n!=="workbench.view.extension.ubovm-browser"&&n!=="workbench.view.extension.ubovm-workers"&&n!=="workbench.view.extension.ubovm-blackboard")return!0;'
+    $bundle = Replace-CoreSnippet $bundle 'if(this.options.partContainerClass==="sidebar"&&n!=="workbench.view.explorer"&&n!=="workbench.view.search"&&n!=="workbench.view.extension.ubovm-workers"&&n!=="workbench.view.extension.ubovm-blackboard")return!0;' 'if(this.options.partContainerClass==="sidebar"&&n!=="workbench.view.explorer"&&n!=="workbench.view.search"&&n!=="workbench.view.extension.ubovm-browser"&&n!=="workbench.view.extension.ubovm-workers"&&n!=="workbench.view.extension.ubovm-blackboard")return!0;'
     $bundle = $bundle.Replace(
       "['workbench.view.explorer', 'workbench.view.extension.ubovm-workers', 'workbench.view.extension.ubovm-blackboard']",
-      "['workbench.view.explorer', 'workbench.view.search', 'workbench.view.extension.ubovm-workers', 'workbench.view.extension.ubovm-blackboard']")
+      "['workbench.view.explorer', 'workbench.view.search', 'workbench.view.extension.ubovm-browser', 'workbench.view.extension.ubovm-workers', 'workbench.view.extension.ubovm-blackboard']")
     $bundle = $bundle.Replace(
       '["workbench.view.explorer","workbench.view.extension.ubovm-workers","workbench.view.extension.ubovm-blackboard"]',
-      '["workbench.view.explorer","workbench.view.search","workbench.view.extension.ubovm-workers","workbench.view.extension.ubovm-blackboard"]')
+      '["workbench.view.explorer","workbench.view.search","workbench.view.extension.ubovm-browser","workbench.view.extension.ubovm-workers","workbench.view.extension.ubovm-blackboard"]')
+    $bundle = $bundle.Replace(
+      "['workbench.view.explorer', 'workbench.view.search', 'workbench.view.extension.ubovm-workers', 'workbench.view.extension.ubovm-blackboard']",
+      "['workbench.view.explorer', 'workbench.view.search', 'workbench.view.extension.ubovm-browser', 'workbench.view.extension.ubovm-workers', 'workbench.view.extension.ubovm-blackboard']")
+    $bundle = $bundle.Replace(
+      '["workbench.view.explorer","workbench.view.search","workbench.view.extension.ubovm-workers","workbench.view.extension.ubovm-blackboard"]',
+      '["workbench.view.explorer","workbench.view.search","workbench.view.extension.ubovm-browser","workbench.view.extension.ubovm-workers","workbench.view.extension.ubovm-blackboard"]')
     $startupCode = (Get-PatchAdditions (Join-Path $ProjectRoot 'resources/patches/startup-ui.patch') 'src/vs/workbench/contrib/splash/browser/partsSplash.ts').Replace('mainWindow', 'et')
     $startupStart = $bundle.IndexOf('_removePartsSplash(){')
     if ($startupStart -lt 0) { throw 'Unsupported workbench bundle: the startup transition anchor is missing.' }
@@ -690,6 +718,8 @@ function Set-FixedConversationCore($Product) {
         $bundle = $bundle.Substring(0, $startupStart) + '_removePartsSplash(){' + $bundle.Substring($startupEnd)
     }
     $bundle = Replace-CoreSnippet $bundle '_removePartsSplash(){const e=et.document.getElementById(Vni._splashElementId);' ('_removePartsSplash(){' + "`n" + $startupCode + 'const e=et.document.getElementById(Vni._splashElementId);')
+    # Colors are removed inside the injected finish()/else path; drop the immediate strip.
+    $bundle = $bundle.Replace('const t=et.document.head.getElementsByClassName("initialShellColors");t[0]?.remove()', '')
     # Keep source and pinned prebuilt startup width recovery identical.
     $sidebarSizeCode = (Get-PatchAdditions (Join-Path $ProjectRoot 'resources/patches/sidebar-size.patch') 'src/vs/workbench/browser/layout.ts').Replace('LayoutStateKeys.', 'Ti.').Replace('width * 0.4', 'this._mainContainerDimension.width * 0.4').Replace('width / 4', 'this._mainContainerDimension.width / 4')
     if (-not $bundle.Contains('// Repair oversized persisted sidebars')) {
@@ -740,7 +770,9 @@ function Set-FixedConversationCore($Product) {
     $bundle = Replace-CoreSnippet $bundle 'this.folderContext=Hh.bindTo(u),' 'this.ubovmEditingContext=u.createKey("ubovm.explorerEditing",false),this.folderContext=Hh.bindTo(u),'
     $bundle = Replace-CoreSnippet $bundle 'async setEditable(e,t){t?(this.horizontalScrolling=' 'async setEditable(e,t){this.ubovmEditingContext.set(t);t?(this.horizontalScrolling='
     $bundle = Replace-CoreSnippet $bundle 'this.delegate.id==="workbench.explorer.fileView"&&(this.contextKeyService.getContextKeyValue("ubovm.emptyFolder")' 'this.delegate.id==="workbench.explorer.fileView"&&this.contextKeyService.getContextKeyValue("ubovm.explorerEditing")!==true&&(this.contextKeyService.getContextKeyValue("ubovm.emptyFolder")'
-    $modeCode = (Get-PatchAdditions (Join-Path $ProjectRoot 'resources/patches/sidebar-mode.patch') 'src/vs/workbench/browser/parts/views/treeView.ts').Replace(': KeyboardEvent', '').Replace('<HTMLElement, boolean>', '').Replace(': Event', '').Replace(' as Node', '').Replace(': number | undefined', '')
+    $modeCode = (Get-PatchAdditions (Join-Path $ProjectRoot 'resources/patches/sidebar-mode.patch') 'src/vs/workbench/browser/parts/views/treeView.ts').Replace(': KeyboardEvent', '').Replace(': globalThis.Event', '').Replace('<HTMLElement, boolean>', '').Replace(': Event', '').Replace(' as Node', '').Replace(': number | undefined', '').Replace(': HTMLButtonElement[]', '').Replace(': boolean', '')
+    # Prebuilt injection must stay plain JS; reject leftover parameter type annotations.
+    if ($modeCode -match '(?m)(?:\(|,\s*)[A-Za-z_$][\w$]*\s*:\s*[A-Za-z_$]') { throw 'sidebar-mode patch still contains TypeScript parameter types after stripping; update Set-FixedConversationCore.' }
     $modeLayoutPattern = '(?m)^\s*if \(this.id === ''ubovm.sessions''\) \{ height = Math.max\(0, height - (?<reserved>\d+)\); \}\s*$'
     $modeLayout = [regex]::Match($modeCode, $modeLayoutPattern)
     $modeParts = [regex]::Split($modeCode, $modeLayoutPattern.Replace('(?<reserved>\d+)', '\d+'))
@@ -760,6 +792,14 @@ function Set-FixedConversationCore($Product) {
     $bundle = Replace-CoreSnippet $bundle 'this.treeContainer=E(this.domNode,x(".customview-tree")),this.treeContainer.classList.add("file-icon-themable-tree","show-file-icons")' 'this.treeContainer=E(this.domNode,x(".customview-tree")),this.treeContainer.classList.add("file-icon-themable-tree","show-file-icons"),this.treeContainer.classList.toggle("ubovm-session-tree",this.id==="ubovm.sessions")'
     # Reserve the taller header in the native grid and Electron overlay layout.
     $bundle = Replace-CoreSnippet $bundle 'get minimumHeight(){const e=oi&&fke();let t=this.isCommandCenterVisible||e?Jxe:30;' 'get minimumHeight(){const e=oi&&fke();let t=Math.max(44,this.isCommandCenterVisible||e?Jxe:30);'
+    # Agent-control lock for Integrated Browser: hide WCV + show read-only overlay.
+    $bundle = Replace-CoreSnippet $bundle '_shouldShowPage(){return this._editorVisible&&!this._overlayObscured&&!!this._model?.url&&!this._model?.error}' '_shouldShowPage(){return this._editorVisible&&!this._overlayObscured&&!globalThis.__ubovmBrowserAgentLock&&!!this._model?.url&&!this._model?.error}'
+    $bundle = Replace-CoreSnippet $bundle '_refresh(){const e=!!this._model?.url&&!this._model?.error;this._placeholderScreenshot.style.display=e?"":"none";const t=!!this._model?.url&&this._editorVisible&&this._overlayObscured;if(this._overlayPauseEl.classList.toggle("visible",t),!this._model)return;' '_refresh(){const e=!!this._model?.url&&!this._model?.error;this._placeholderScreenshot.style.display=e?"":"none";const agentLock=!!globalThis.__ubovmBrowserAgentLock,t=!!this._model?.url&&this._editorVisible&&(this._overlayObscured||agentLock);if(this._overlayPauseEl.classList.toggle("agent-control",agentLock),agentLock){const heading=this._overlayPauseEl.querySelector(".browser-overlay-paused-heading"),detail=this._overlayPauseEl.querySelector(".browser-overlay-paused-detail");heading&&(heading.textContent=globalThis.__ubovmBrowserAgentLockReason||"Agent 正在操作浏览器（只读）"),detail&&(detail.textContent="Agent 操作完成前页面只读，请勿点击。"),this._overlayPauseEl.classList.add("show-message")}if(this._overlayPauseEl.classList.toggle("visible",t),!this._model)return;'
+    $bundle = Replace-CoreSnippet $bundle 'this._register(this._overlayManager.onDidChangeOverlayState(()=>this._refreshOverlayObscured())),this._refresh()}' 'this._register(this._overlayManager.onDidChangeOverlayState(()=>this._refreshOverlayObscured())),this._register((()=>{const refresh=()=>this._refresh();return window.addEventListener("ubovm-browser-agent-lock",refresh),{dispose:()=>window.removeEventListener("ubovm-browser-agent-lock",refresh)}})()),this._refresh()}'
+    $browserLockCommand = '$e.registerCommand("workbench.action.browser.setAgentControlLock",(accessor,locked,reason)=>{globalThis.__ubovmBrowserAgentLock=locked===!0,globalThis.__ubovmBrowserAgentLockReason=typeof reason==="string"&&reason.trim()?reason.trim():"Agent 正在操作浏览器（只读）";try{window.dispatchEvent(new CustomEvent("ubovm-browser-agent-lock"))}catch{}});'
+    if (-not $bundle.Contains('workbench.action.browser.setAgentControlLock')) {
+        $bundle = Replace-CoreSnippet $bundle 'registerContribution(eni);' ('registerContribution(eni);' + $browserLockCommand)
+    }
     [IO.File]::WriteAllText($bundlePath, $bundle, [Text.UTF8Encoding]::new($false))
     Set-CoreChecksum $Product 'vs/workbench/workbench.desktop.main.js'
     # The same stylesheet is appended to the source and compiled workbench.
@@ -794,6 +834,16 @@ function Sync-Application {
     if (-not (Test-Path -LiteralPath $basePath)) { Copy-Item -LiteralPath $productPath -Destination $basePath }
     $product = Get-Content -LiteralPath $basePath -Raw | ConvertFrom-Json
     foreach ($property in $Config.product.PSObject.Properties) {
+        if ($property.Name -eq 'extensionEnabledApiProposals') {
+            # Merge UBOVM proposals into the runtime map; do not replace other extensions.
+            if (-not $product.extensionEnabledApiProposals) {
+                $product | Add-Member -NotePropertyName extensionEnabledApiProposals -NotePropertyValue ([pscustomobject]@{}) -Force
+            }
+            foreach ($proposal in $property.Value.PSObject.Properties) {
+                $product.extensionEnabledApiProposals | Add-Member -NotePropertyName $proposal.Name -NotePropertyValue $proposal.Value -Force
+            }
+            continue
+        }
         $product | Add-Member -NotePropertyName $property.Name -NotePropertyValue $property.Value -Force
     }
     Set-FixedConversationCore $product

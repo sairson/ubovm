@@ -140,11 +140,19 @@ export class PartsSplash {
 		// Hand off to the shared shell loading mask before the splash fades out,
 		// so there is no blank frame between first-paint cover and contentReady.
 		mainWindow.document.documentElement.classList.add('ubovm-shell-loading');
+		const removeShellColors = () => {
+			// eslint-disable-next-line no-restricted-syntax
+			const defaultStyles = mainWindow.document.head.getElementsByClassName('initialShellColors');
+			defaultStyles[0]?.remove();
+		};
 		const startup = mainWindow.document.getElementById('ubovm-startup');
 		if (startup) {
 			const finish = () => {
 				startup.remove();
 				mainWindow.document.getElementById('ubovm-startup-style')?.remove();
+				// Keep body colors until the brand overlay finishes exiting so the
+				// fade does not reveal an unthemed page underneath.
+				removeShellColors();
 			};
 			startup.setAttribute('aria-hidden', 'true');
 			startup.classList.add('ubovm-startup-exit');
@@ -154,16 +162,13 @@ export class PartsSplash {
 				startup.addEventListener('transitionend', finish, { once: true });
 				mainWindow.setTimeout(finish, 180); // cleanup if no transition event fires
 			}
+		} else {
+			removeShellColors();
 		}
 		// eslint-disable-next-line no-restricted-syntax
 		const element = mainWindow.document.getElementById(PartsSplash._splashElementId);
 		if (element) {
 			element.style.display = 'none';
 		}
-
-		// remove initial colors
-		// eslint-disable-next-line no-restricted-syntax
-		const defaultStyles = mainWindow.document.head.getElementsByClassName('initialShellColors');
-		defaultStyles[0]?.remove();
 	}
 }
