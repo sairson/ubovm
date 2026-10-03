@@ -905,12 +905,45 @@ function Expand-RuntimeArchive($Archive, $Staging) {
     Invoke-Checked 'tar' @('-xf', $Archive, '-C', $Staging)
 }
 
+function Test-RuntimeLayout($Root, $ExecutableRel, $AppRel) {
+    if ($ExecutableRel -and (Test-Path -LiteralPath (Join-Path $Root $ExecutableRel))) { return $true }
+    if ($AppRel -and (Test-Path -LiteralPath (Join-Path $Root (Join-Path $AppRel 'package.json')))) { return $true }
+    foreach ($rel in @('VSCodium.app/Contents/Resources/app', 'resources/app', 'Contents/Resources/app')) {
+        if (Test-Path -LiteralPath (Join-Path $Root (Join-Path $rel 'package.json'))) { return $true }
+    }
+    return $false
+}
+
+function Resolve-ExtractedRuntimeRoot($Staging, $ExecutableRel = [string]$Config.core.runtime.executable, $AppRel = $script:AppDirectory) {
+    if (Test-RuntimeLayout $Staging $ExecutableRel $AppRel) { return $Staging }
+    $children = @(Get-ChildItem -LiteralPath $Staging -Force | Where-Object { $_.PSIsContainer })
+    if ($children.Count -eq 1 -and $children[0].Name -notlike '*.app') {
+        $inner = $children[0].FullName
+        if (Test-RuntimeLayout $inner $ExecutableRel $AppRel) { return $inner }
+    }
+    return $Staging
+}
+
+function Resolve-RuntimeAppDirectory($Root) {
+    $candidates = @()
+    if ([string]$Config.core.runtime.appDirectory) { $candidates += [string]$Config.core.runtime.appDirectory }
+    $candidates += @('VSCodium.app/Contents/Resources/app', 'resources/app', 'Contents/Resources/app')
+    $seen = @{}
+    foreach ($rel in $candidates) {
+        if (-not $rel -or $seen.ContainsKey($rel)) { continue }
+        $seen[$rel] = $true
+        if (Test-Path -LiteralPath (Join-Path $Root (Join-Path $rel 'package.json'))) { return $rel }
+    }
+    return $null
+}
+
 function Resolve-RuntimeExecutable($Root) {
     $pinned = [string]$Config.core.runtime.executable
     if ($pinned -and (Test-Path -LiteralPath (Join-Path $Root $pinned))) { return $pinned }
-    if ($HostPlatform -eq 'darwin') {
-        foreach ($name in @('Electron', 'VSCodium', 'codium')) {
-            $relative = "VSCodium.app/Contents/MacOS/$name"
+    $names = @('Electron', 'VSCodium', 'codium', 'vscodium')
+    foreach ($prefix in @('VSCodium.app/Contents/MacOS', 'Contents/MacOS')) {
+        foreach ($name in $names) {
+            $relative = "$prefix/$name"
             if (Test-Path -LiteralPath (Join-Path $Root $relative)) { return $relative }
         }
     }
@@ -943,12 +976,10 @@ function Initialize-Runtime {
         try {
             Write-Host '[UBOVM] Extracting Electron and the workbench...'
             Expand-RuntimeArchive $archive $staging
-            $extractedRoot = $staging
-            if (-not (Test-Path -LiteralPath (Join-Path $extractedRoot $Config.core.runtime.executable))) {
-                $children = @(Get-ChildItem -LiteralPath $staging -Force | Where-Object { $_.Name -ne '.' -and $_.Name -ne '..' })
-                if ($children.Count -eq 1 -and $children[0].PSIsContainer) { $extractedRoot = $children[0].FullName }
-            }
-            $extractedApp = Join-Path $extractedRoot $AppDirectory
+            $extractedRoot = Resolve-ExtractedRuntimeRoot $staging
+            $resolvedApp = Resolve-RuntimeAppDirectory $extractedRoot
+            if (-not $resolvedApp) { throw 'Archive contains no workbench app directory.' }
+            $extractedApp = Join-Path $extractedRoot $resolvedApp
             $manifest = Get-Content -LiteralPath (Join-Path $extractedApp 'package.json') -Raw | ConvertFrom-Json
             if ($manifest.version -ne $Config.core.runtime.version) { throw "Unexpected runtime version: $($manifest.version)" }
             $resolvedExecutable = Resolve-RuntimeExecutable $extractedRoot
@@ -975,6 +1006,10 @@ function Initialize-Runtime {
     if (-not (Test-Path -LiteralPath $script:Executable)) {
         throw 'The installed runtime does not match resources/app.json.'
     }
+    $resolvedApp = Resolve-RuntimeAppDirectory $Runtime
+    if (-not $resolvedApp) { throw 'The installed runtime does not match resources/app.json.' }
+    $script:AppDirectory = $resolvedApp
+    $script:AppRoot = Join-Path $Runtime $resolvedApp
     Sync-Application
     Write-Host "[UBOVM] Ready: VS Code $($Config.core.source.ref) / VSCodium $($Config.core.runtime.version) ($RuntimeKey)"
 }

@@ -3,10 +3,28 @@ $ProjectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../..'))
 $tokens = $null; $errors = $null
 $ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $ProjectRoot 'build.ps1'), [ref]$tokens, [ref]$errors)
 if ($errors.Count) { throw ($errors | Out-String) }
-foreach ($name in @('Assert-ChildPath', 'Remove-Managed', 'Start-SourceDesktop')) {
+foreach ($name in @('Assert-ChildPath', 'Remove-Managed', 'Start-SourceDesktop', 'Test-RuntimeLayout', 'Resolve-ExtractedRuntimeRoot')) {
     $definition = $ast.Find({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true)
     . ([scriptblock]::Create($definition.Extent.Text))
 }
+$layout = Join-Path $ProjectRoot ('.cache/runtime-layout-' + [Guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Force -Path $layout | Out-Null
+try {
+    $darwin = Join-Path $layout 'darwin-zip'
+    $appJson = Join-Path $darwin 'VSCodium.app/Contents/Resources/app'
+    New-Item -ItemType Directory -Force -Path $appJson | Out-Null
+    [IO.File]::WriteAllText((Join-Path $appJson 'package.json'), '{"name":"vscodium"}')
+    $kept = Resolve-ExtractedRuntimeRoot $darwin 'VSCodium.app/Contents/MacOS/Electron' 'VSCodium.app/Contents/Resources/app'
+    if ($kept -ne $darwin) { throw "Unwrapped the macOS app bundle: $kept" }
+    $wrapped = Join-Path $layout 'wrapped'
+    $inner = Join-Path $wrapped 'VSCodium-darwin-arm64'
+    $wrappedApp = Join-Path $inner 'VSCodium.app/Contents/Resources/app'
+    New-Item -ItemType Directory -Force -Path $wrappedApp | Out-Null
+    [IO.File]::WriteAllText((Join-Path $wrappedApp 'package.json'), '{"name":"vscodium"}')
+    $unwrapped = Resolve-ExtractedRuntimeRoot $wrapped 'VSCodium.app/Contents/MacOS/Electron' 'VSCodium.app/Contents/Resources/app'
+    if ($unwrapped -ne $inner) { throw "Did not unwrap the outer archive folder: $unwrapped" }
+    Write-Host '[OK] macOS runtime extraction keeps VSCodium.app and unwraps wrapper folders'
+} finally { Remove-Managed $layout (Join-Path $ProjectRoot '.cache') }
 $fixture = Join-Path $ProjectRoot ('.cache/platform-test-' + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force -Path $fixture | Out-Null
 $repository = $ProjectRoot
