@@ -119,8 +119,8 @@ function createHarnessService(options) {
       // must not become a second unhandled rejection in the IDE host.
       try { Promise.resolve(options.onError?.({ ...serializeError(error), threadId: worker.threadId })).catch(() => {}); } catch {}
       void owner.terminated.catch(() => {});
-      notifyConnection();
-      // Completed/idle conversations survive an unrelated runtime failure.
+      // Interrupt busy sessions before connection observers sample isBusy(), so a
+      // dead worker is never masked as connected while the busy flag still lingers.
       for (const id of new Set([...states.keys(), ...owner.requests.keys()])) {
         const state = states.get(id) ?? idle();
         if (!state.busy && !owner.requests.has(id)) continue;
@@ -130,6 +130,7 @@ function createHarnessService(options) {
         summaries.set(id, readonly({ ...summaries.get(id), status: 'failed', busy: false, phase: null, activeWorkers: 0, error: failure }));
         notify(id);
       }
+      notifyConnection();
     }
     worker.on('error', fail);
     worker.on('exit', code => fail(new Error('Agent thread exited (' + code + ')')));

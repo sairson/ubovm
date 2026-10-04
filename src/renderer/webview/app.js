@@ -85,7 +85,19 @@
   function beginPageTransition(label = '正在切换页面…', kind = 'route') {
     cancelPageAnimation();
     routePending = true; routePaintReady = false;
-    if (renderFrame) { renderGeneration++; cancelAnimationFrame(renderFrame); renderFrame = 0; }
+    // Route changes always need one full paint; arm it before any interleaved
+    // execution-only scheduleRender(true) can commit and clear the loader early.
+    fullRenderPending = true;
+    renderPending = true;
+    cancelRenderTimer();
+    if (renderFrame) {
+      renderGeneration++;
+      cancelAnimationFrame(renderFrame);
+      renderFrame = 0;
+    }
+    // Cancelling a delayed/streaming paint must also clear the runtime pending
+    // clock, otherwise route churn can trip the 15s recovery banner without a host fault.
+    window.UBOVMRuntime?.cancel();
     setText(byId('route-loading-label'), label);
     const loader = byId('route-loading');
     loader.dataset.kind = kind;
@@ -1882,8 +1894,13 @@
   // One render per animation frame; background tabs retain only the latest state.
   // Acknowledgements still run immediately so request and draft ownership is exact.
   let fullRenderPending = false, committedRender, paintAcknowledgement;
+  let contentReadyRetryTimer = 0, contentReadyRetried = false;
   const isCurrentPaint = commit => commit && commit === committedRender &&
     commit.state === hostState && commit.epoch === viewEpoch && commit.generation === renderGeneration;
+  function cancelContentReadyRetry() {
+    clearTimeout(contentReadyRetryTimer);
+    contentReadyRetryTimer = 0;
+  }
   function cancelPaintAcknowledgement() {
     const acknowledgement = paintAcknowledgement;
     paintAcknowledgement = undefined;
@@ -1941,6 +1958,7 @@
   function queueContentReady() {
     const commit = committedRender;
     if (!contentReadyPending || contentReadyFrame || paintAcknowledgement || pageHidden() || !isCurrentPaint(commit)) return;
+    cancelContentReadyRetry();
     contentReadyFrame = requestAnimationFrame(() => {
       contentReadyFrame = 0;
       if (pageHidden()) return;
@@ -1951,6 +1969,7 @@
         if (!isCurrentPaint(commit)) { queueContentReady(); return; }
         const acknowledgement = {};
         paintAcknowledgement = acknowledgement;
+        let paintError;
         try {
           if (!firstPaintAcknowledged) {
             if (await deliverPaintSignal({ action: 'firstPaint' }, acknowledgement) === false) throw new Error('First paint acknowledgement failed');
@@ -1961,20 +1980,28 @@
           // The sidebar needs the committed conversation, not execution history
           // or skill provisioning. Those can be slow while the chat is usable.
           if (await deliverPaintSignal({ action: 'contentReady', sessionId: currentSessionId }, acknowledgement) === false) throw new Error('Content acknowledgement failed');
-          if (paintAcknowledgement === acknowledgement && isCurrentPaint(commit)) contentReadyPending = false;
-        }
-        catch (error) {
-          if (!acknowledgement.cancelled && paintAcknowledgement === acknowledgement && !pageHidden() && error?.code === 'PAINT_DELIVERY_TIMEOUT') {
-            window.UBOVMRuntime?.fail('页面加载状态同步超时。请同步最新状态或重新加载页面。');
+          if (paintAcknowledgement === acknowledgement && isCurrentPaint(commit)) {
+            contentReadyPending = false;
+            contentReadyRetried = false;
           }
-          // Retry after user action, fresh rendering or visibility recovery.
         }
+        catch (error) { paintError = error; }
         finally {
           // A render that arrived while the bridge was pending still needs its
-          // own two-frame acknowledgement; failures do not create a retry loop.
+          // own two-frame acknowledgement. One delayed retry covers stable-commit
+          // bridge timeouts without spinning an animation-frame loop.
           if (paintAcknowledgement === acknowledgement) {
             paintAcknowledgement = undefined;
             if (commit !== committedRender) queueContentReady();
+            else if (contentReadyPending && !acknowledgement.cancelled && !pageHidden() && isCurrentPaint(commit) && !contentReadyRetried) {
+              contentReadyRetried = true;
+              contentReadyRetryTimer = setTimeout(() => {
+                contentReadyRetryTimer = 0;
+                if (contentReadyPending && isCurrentPaint(commit)) queueContentReady();
+              }, 400);
+            } else if (contentReadyPending && !acknowledgement.cancelled && !pageHidden() && paintError?.code === 'PAINT_DELIVERY_TIMEOUT') {
+              window.UBOVMRuntime?.fail('页面加载状态同步超时。请同步最新状态或重新加载页面。');
+            }
           }
         }
       });
@@ -1983,12 +2010,15 @@
   function cancelVisualFrames() {
     committedRender = undefined;
     cancelPaintAcknowledgement();
+    cancelContentReadyRetry();
+    contentReadyRetried = false;
     // Hidden/idle suspension must force a full paint after restore even when
     // contentReady already completed, otherwise a discarded compositor stays blank.
     if (hostState) { renderPending = true; fullRenderPending = true; contentReadyPending = true; }
     renderGeneration++;
     window.UBOVMRuntime?.cancel();
     cancelRenderTimer(); cancelPageAnimation(); cancelScroll();
+    try { finishPageTransition(); } catch { /* Independent recovery controls remain usable. */ }
     if (renderFrame) { cancelAnimationFrame(renderFrame); renderFrame = 0; renderPending = true; }
     for (const frame of [inputFrame, latestFrame, focusFrame, contentReadyFrame]) if (frame) cancelAnimationFrame(frame);
     inputFrame = latestFrame = focusFrame = contentReadyFrame = 0;
@@ -2008,8 +2038,13 @@
   let renderTimer = 0, renderRestUntil = 0;
   function cancelRenderTimer() { clearTimeout(renderTimer); renderTimer = 0; }
   function scheduleRender(executionOnly = false) {
-    committedRender = undefined;
-    if (executionOnly !== true || routePending) fullRenderPending = true;
+    // Execution-only ticks keep the last committed paint identity so an in-flight
+    // contentReady handshake is not invalidated by every stream token. Route
+    // changes call scheduleRender() without executionOnly and arm a full paint.
+    if (executionOnly !== true) {
+      committedRender = undefined;
+      fullRenderPending = true;
+    }
     renderPending = true;
     // Expensive streaming paints need an idle interval for input and scrolling.
     // Keep only hostState (the newest snapshot), never queue individual tokens.
@@ -2029,12 +2064,16 @@
     renderFrame = requestAnimationFrame(() => {
       if (generation !== renderGeneration) return;
       renderFrame = 0;
-      if (pageHidden()) return;
+      if (pageHidden()) {
+        // Suspended paint must not leave the runtime pending clock armed.
+        window.UBOVMRuntime?.cancel();
+        return;
+      }
       // Commit the lightweight loader for one frame before building heavy DOM.
       // The next frame reads the latest route/state, never a captured stale page.
       if (routePending && !routePaintReady) {
         routePaintReady = true;
-        scheduleRender();
+        scheduleRender(executionOnly === true);
         return;
       }
       renderPending = false;
@@ -2078,7 +2117,10 @@
     } finally {
       // An error surface is usable content too; never trap it behind startup.
       let housekeepingFailed = false;
-      for (const finish of [finishInitialPaint, finishPageTransition,
+      for (const finish of [finishInitialPaint,
+        // Only a full paint (or a failed paint that must not trap the loader)
+        // may clear the route transition; execution-only ticks keep it armed.
+        () => { if (full || !succeeded) finishPageTransition(); },
         () => { if (succeeded && full) animateCurrentPage(); }, renderConnectionStatus]) {
         try { finish(); }
         catch { housekeepingFailed = true; }
@@ -2092,6 +2134,7 @@
         // recovery controls, but a newer snapshot cannot inherit an old paint.
         if (state === hostState && epoch === viewEpoch && generation === renderGeneration) {
           committedRender = { state, epoch, generation };
+          contentReadyRetried = false;
           queueContentReady();
         }
         if (succeeded) window.UBOVMRuntime?.painted();
@@ -2366,6 +2409,8 @@
       // next committed paint can unlock it; the first acknowledgement must not
       // be the last one this page ever sends.
       contentReadyPending = true;
+      contentReadyRetried = false;
+      cancelContentReadyRetry();
       if (firstContentPaint) beginPageTransition('正在加载会话…', 'session');
       const cleanup = operation => { try { operation(); } catch { window.UBOVMRuntime?.fail(); } };
       cleanup(() => window.UBOVMHtmlPreview.close({ restoreFocus: false }));

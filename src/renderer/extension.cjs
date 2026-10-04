@@ -499,11 +499,13 @@ async function activate(context) {
     const backend = harness?.connectionState() ?? { status: 'idle' };
     // Soft transport stalls keep the worker alive; surface them without looking offline.
     if (backend.status === 'stalled') return { status: 'stalled', recovering: true, error: backend.error };
-    // A busy session with a flapping worker is degraded, not an IDE disconnect.
-    // Keep the probe green and let ensureIdle repair in the background.
+    // A dead/disconnected runtime must stay disconnected even while a session is
+    // still marked busy (launch race). ensureIdle repairs in the background.
     if (backend.status === 'disconnected' && harness) {
       const currentId = sessions.summary()?.id;
-      if (currentId && harness.isBusy(currentId)) return { status: 'connected', recovering: true };
+      if (currentId && harness.isBusy(currentId)) {
+        return { status: 'disconnected', recovering: true, error: backend.error };
+      }
     }
     return backend;
   }
@@ -517,9 +519,9 @@ async function activate(context) {
     if (harness && (backend.status === 'disconnected' || backend.recovering && backend.status !== 'stalled')) {
       void harness.ensureIdle().then(result => {
         if (shuttingDown || !['connected', 'stalled'].includes(result?.status)) return;
-        const currentId = sessions.summary()?.id;
-        if (currentId && harness.state(currentId).canResume) publishState();
-        else schedulePublishState(0);
+        // Coalesce with ready/visibility publishes; never rebuild a full snapshot
+        // synchronously on the heartbeat acknowledgement path.
+        schedulePublishState(0);
       }).catch(error => output.appendLine('Agent 空闲恢复：' + errorText(error)));
     }
     return true;
@@ -910,7 +912,17 @@ async function activate(context) {
     chromeLockWatchdog = setTimeout(() => {
       chromeLockWatchdog = undefined;
       if (shuttingDown || chromeLockedSessionId !== locked) return;
+      // First escape hatch: republish so the webview can ack contentReady again.
       publishState();
+      chromeLockWatchdog = setTimeout(() => {
+        chromeLockWatchdog = undefined;
+        if (shuttingDown || chromeLockedSessionId !== locked) return;
+        // Second escape hatch: never leave native chrome locked forever when
+        // paint acknowledgement is lost under load.
+        chromeLockedSessionId = undefined;
+        void vscode.commands.executeCommand('setContext', 'ubovm.contentReady', true)
+          .catch(error => output.appendLine(errorText(error)));
+      }, 1600);
     }, 1600);
     if (settingsPage) {
       ++settingsOpenRevision;

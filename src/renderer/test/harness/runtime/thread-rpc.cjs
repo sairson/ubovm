@@ -132,9 +132,9 @@ test('local scheduler stalls renew the probe; soft stall precedes a hard kill', 
     for (now = 20; now <= 50; now += 10) tick();
     now = 80; tick();
     assert.equal(failure, undefined, '30ms local stall must not time out the old 70ms probe');
-    assert.notEqual(sent.at(-1).id, old);
-    // Answer the current probe so lastActivity advances without relying on a retired id.
-    port.emit('message', { type: 'pong', id: sent.at(-1).id });
+    assert.equal(sent.at(-1).id, old, 'local stall keeps the outstanding probe instead of racing a replacement');
+    // Answer the kept probe so lastActivity advances without requiring a new id.
+    port.emit('message', { type: 'pong', id: old });
     assert.equal(rpc.isStalled(), false);
     const aliveAt = now;
     // Silence past heartbeatTimeout soft-stalls without killing.

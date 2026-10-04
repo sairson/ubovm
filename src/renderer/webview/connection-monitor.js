@@ -5,6 +5,9 @@
     }
     if (timeout <= interval) throw new TypeError('Heartbeat timeout must exceed interval');
     let sequence = 0, pending, timer, disposed = false, suspended = false, status = 'connecting', lastTick = Date.now();
+    // Last successful bridge acknowledgement. Used to distinguish a local event-loop
+    // gap (reply already queued) from sleep/background where state may be stale.
+    let lastPong = 0;
     let wasHidden = document.hidden;
     // One missed probe is usually UI/extension-host churn; require two consecutive
     // failures before declaring hard disconnect so operating the IDE does not flash offline.
@@ -26,9 +29,10 @@
     function openGrace() {
       graceUntil = Date.now() + Math.min(timeout, Math.max(interval * 2, 500));
     }
-    function noteMiss(fromTimeout = false) {
-      // One post-show timeout is usually a discarded probe after panel churn.
-      if (fromTimeout && Date.now() < graceUntil) {
+    function noteMiss() {
+      // One post-show miss (timeout or failed bridge delivery) is usually panel
+      // churn; soft-reconnect without counting toward hard disconnect.
+      if (Date.now() < graceUntil) {
         graceUntil = 0;
         change('reconnecting');
         return;
@@ -45,7 +49,7 @@
         const failed = () => {
           if (disposed || suspended || pending !== request) return;
           pending = undefined;
-          noteMiss(false);
+          noteMiss();
           if (!disposed && !suspended && !document.hidden && missCount < 2) queueMicrotask(probe);
         };
         try {
@@ -61,22 +65,37 @@
       if (disposed || suspended) return;
       const now = Date.now();
       if (now - lastTick > Math.min(timeout, interval * 2) || now < lastTick) {
-        pending = undefined;
-        // Sleep or a delayed local event loop cannot prove remote failure. A fresh
-        // pong must trigger full state resync even if we were still connected.
-        if (!document.hidden && !suspended) change('reconnecting');
+        // Clock rollback invalidates in-flight probes. A delayed local event loop
+        // (heavy paint) does not — keep the outstanding probe and extend its
+        // deadline so a late reply still proves the bridge is alive.
+        if (now < lastTick) {
+          pending = undefined;
+          // Rollback cannot prove remote failure, but state may be stale.
+          if (!document.hidden && !suspended) change('reconnecting');
+        } else if (pending) {
+          pending.sent = now;
+          // Keep `connected` while a live probe is outstanding so paint stalls do
+          // not flip reconnecting→connected and storm a full ready resync.
+        } else if (status === 'connected' && lastPong > lastTick) {
+          // The pong was delivered while the page was blocked; the bridge is alive
+          // and a ready storm would only deepen the stall.
+        } else if (!document.hidden && !suspended) {
+          // Sleep without an in-flight probe: require a fresh pong + state resync.
+          change('reconnecting');
+        }
       }
       lastTick = now;
       if (document.hidden) { pending = undefined; return; }
       if (pending && now - pending.sent >= timeout) {
         pending = undefined;
-        noteMiss(true);
+        noteMiss();
       }
       probe();
     }
     function applyBackend(backend) {
       if (!['idle', 'connected', 'disconnected', 'closed', 'stalled'].includes(backend?.status)) return false;
       missCount = 0;
+      lastPong = Date.now();
       if (backend.status === 'stalled') {
         // Transport is slow but the worker is still alive — soft banner only.
         backendMissCount = 0;

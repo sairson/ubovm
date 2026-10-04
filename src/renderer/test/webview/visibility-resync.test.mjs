@@ -27,11 +27,15 @@ test('conversation page forces full paint and ready resync after visibility rest
   assert.match(extension, /visibilityPublishTimer/);
   assert.match(extension, /Always answer the heartbeat first/);
   assert.match(extension, /replyConnectionProbe/);
+  assert.match(extension, /Coalesce with ready\/visibility publishes/);
   assert.match(extension, /schedulePublishState/);
   assert.match(extension, /conversationConsumesSnapshot/);
   assert.match(extension, /conversationNeedsSnapshot/);
   assert.match(extension, /chromeLockedSessionId/);
   assert.match(extension, /chromeLockWatchdog/);
+  assert.match(extension, /never leave native chrome locked forever/);
+  assert.match(extension, /status: 'disconnected', recovering: true/);
+  assert.doesNotMatch(extension, /isBusy\(currentId\)\) return \{ status: 'connected'/);
   assert.match(extension, /if \(switched\) await lockConversationChrome\(\);/);
   assert.match(extension, /createSessions\(vscode, context, \(\) => schedulePublishState\(\)/);
   assert.match(extension, /ensureIdle/);
@@ -41,7 +45,20 @@ test('conversation page forces full paint and ready resync after visibility rest
   assert.match(monitor, /backendMissCount/);
   assert.match(monitor, /graceUntil/);
   assert.match(app, /Soft reconnect ticks only need the connection strip/);
+  assert.match(app, /window\.UBOVMRuntime\?\.cancel\(\)/);
+  assert.match(app, /if \(executionOnly !== true\) \{\s*committedRender = undefined;\s*fullRenderPending = true;\s*\}/s);
+  assert.match(app, /fullRenderPending = true;\s*renderPending = true;\s*cancelRenderTimer\(\);/s);
+  assert.match(app, /if \(full \|\| !succeeded\) finishPageTransition\(\)/);
+  assert.match(app, /contentReadyRetried/);
+  assert.match(app, /finishPageTransition\(\)/);
+  assert.match(monitor, /Keep `connected` while a live probe is outstanding/);
+  assert.match(monitor, /else if \(pending\) \{\s*pending\.sent = now;/s);
+  assert.match(monitor, /lastPong > lastTick/);
+  assert.match(monitor, /let lastPong = 0/);
+  assert.match(monitor, /One post-show miss \(timeout or failed bridge delivery\)/);
   assert.match(extension, /retainContextWhenHidden: true \}/);
+  const threadRpc = fs.readFileSync(path.join(root, '../harness/ide/runtime/thread-rpc.cjs'), 'utf8');
+  assert.match(threadRpc, /else if \(probe\) probe\.sent = now/);
   assert.match(extension, /registerWebviewViewProvider\('ubovm\.blackboardDetails'[\s\S]*retainContextWhenHidden: true/);
 });
 

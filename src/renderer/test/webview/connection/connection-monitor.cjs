@@ -19,9 +19,45 @@ function fixture(sendResult) {
   const monitor = window.createConnectionMonitor({ send: message => { messages.push(message); return sendResult?.(message); }, onChange: status => changes.push(status), interval: 5, timeout: 20 });
   function flush() { while (microtasks.length) microtasks.shift()(); }
   flush();
-  return { window, document, monitor, messages, changes, clocks, flush, step(value) { now = value; tick(); },
+  return { window, document, monitor, messages, changes, clocks, flush,
+    advance(value) { now = value; },
+    step(value) { now = value; tick(); },
     reply(id = messages.at(-1).probeId) { window.emit('message', { data: { type: 'connectionStatus', probeId: id, backend: { status: 'connected' } } }); } };
 }
+
+test('paint-stall gaps keep an in-flight probe and accept its late reply without disconnect', () => {
+  const f = fixture();
+  try {
+    f.reply();
+    assert.equal(f.changes.at(-1), 'connected');
+    f.monitor.probe();
+    const inflight = f.messages.at(-1).probeId;
+    const sent = f.messages.length;
+    // Stall past the gap threshold but inside the probe timeout (timeout=20).
+    f.step(12);
+    assert.equal(f.changes.at(-1), 'connected', 'local stall with a live probe must not soft-reconnect');
+    assert.equal(f.messages.length, sent, 'must not replace the outstanding probe id');
+    f.reply(inflight);
+    assert.equal(f.changes.at(-1), 'connected');
+    assert.equal(f.changes.includes('disconnected'), false);
+  } finally { f.monitor.dispose(); }
+});
+
+test('pong delivered during a paint stall does not soft-reconnect after the gap tick', () => {
+  const f = fixture();
+  try {
+    f.reply();
+    assert.equal(f.changes.at(-1), 'connected');
+    f.monitor.probe();
+    const inflight = f.messages.at(-1).probeId;
+    // Advance wall time while blocked, deliver the pong, then let the gap tick run.
+    f.advance(12);
+    f.reply(inflight);
+    f.step(12);
+    assert.equal(f.changes.at(-1), 'connected', 'a pong that landed during the stall must not arm ready-resync');
+    assert.equal(f.changes.includes('reconnecting'), false);
+  } finally { f.monitor.dispose(); }
+});
 
 test('queued heartbeat callbacks cannot notify or send after suspension or disposal', () => {
   for (const lifecycle of ['suspend', 'dispose']) {
@@ -96,6 +132,28 @@ test('unsolicited stalled backend updates soft-banner without counting as discon
   } finally { f.monitor.dispose(); }
 });
 
+test('post-show false delivery uses grace before counting toward disconnect', async () => {
+  let fail = false;
+  const f = fixture(() => fail ? false : undefined);
+  try {
+    f.reply();
+    assert.equal(f.changes.at(-1), 'connected');
+    fail = true;
+    f.document.hidden = true; f.document.emit('visibilitychange');
+    f.document.hidden = false; f.document.emit('visibilitychange');
+    await Promise.resolve();
+    assert.equal(f.changes.at(-1), 'reconnecting');
+    assert.equal(f.changes.includes('disconnected'), false, 'grace absorbs the first post-show false delivery');
+    f.flush();
+    await Promise.resolve();
+    assert.equal(f.changes.at(-1), 'reconnecting', 'first counted false delivery is still soft');
+    assert.equal(f.changes.includes('disconnected'), false);
+    f.flush();
+    await Promise.resolve();
+    assert.equal(f.changes.at(-1), 'disconnected', 'two counted false deliveries disconnect');
+  } finally { f.monitor.dispose(); }
+});
+
 test('a single false delivery soft-reconnects; two consecutive failures disconnect', async () => {
   let rejectOld, sends = 0;
   const f = fixture(() => {
@@ -104,15 +162,19 @@ test('a single false delivery soft-reconnects; two consecutive failures disconne
     return false;
   });
   try {
-    // Drop the unresolved first probe, then fail the replacement once.
+    // Drop the unresolved first probe; post-show grace absorbs the first false delivery.
     f.document.hidden = true; f.document.emit('visibilitychange');
     f.document.hidden = false; f.document.emit('visibilitychange');
     await Promise.resolve();
-    assert.equal(f.changes.at(-1), 'reconnecting', 'one false delivery must not flash hard disconnect');
-    // Soft miss schedules an immediate follow-up probe; its false delivery hard-disconnects.
+    assert.equal(f.changes.at(-1), 'reconnecting', 'post-show false delivery must not flash hard disconnect');
+    assert.equal(f.changes.includes('disconnected'), false);
+    // Soft miss schedules an immediate follow-up probe; first counted false stays soft.
     f.flush();
     await Promise.resolve();
-    assert.equal(f.changes.at(-1), 'disconnected', 'two consecutive false deliveries disconnect');
+    assert.equal(f.changes.at(-1), 'reconnecting', 'first counted false delivery soft-reconnects');
+    f.flush();
+    await Promise.resolve();
+    assert.equal(f.changes.at(-1), 'disconnected', 'two counted false deliveries disconnect');
     f.monitor.probe(); f.reply();
     rejectOld(new Error('late send failure'));
     await Promise.resolve(); await Promise.resolve();

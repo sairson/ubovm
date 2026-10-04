@@ -162,9 +162,12 @@ function createRPC(port, handle, {
     heartbeat = setInterval(() => {
       const now = Date.now();
       // Sleep or a stalled host cannot establish that the other side died.
-      // Even a stall shorter than the timeout can carry an old probe past its
-      // deadline while its pong is waiting in this process's event queue.
-      if (now - lastTick > Math.min(heartbeatTimeout, heartbeatInterval * 2) || now < lastTick) probe = undefined;
+      // Clock rollback invalidates the probe; a delayed local event loop keeps it
+      // and extends the deadline so a late pong is not raced with a replacement id.
+      if (now - lastTick > Math.min(heartbeatTimeout, heartbeatInterval * 2) || now < lastTick) {
+        if (now < lastTick) probe = undefined;
+        else if (probe) probe.sent = now;
+      }
       lastTick = now;
       if (probe) {
         const probeAge = now - probe.sent;
