@@ -1,6 +1,12 @@
 ﻿# Shared Windows PowerShell 5.1 / PowerShell 7 build logic.
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+# Windows PowerShell 5.1 defaults to the system ANSI code page for BOM-less
+# files. Force UTF-8 so Chinese patch/source injections keep valid JS quotes.
+$Utf8 = New-Object System.Text.UTF8Encoding $false
+function Read-Utf8Text([string]$Path) { [IO.File]::ReadAllText($Path, $Utf8) }
+function Read-Utf8Lines([string]$Path) { [IO.File]::ReadAllLines($Path, $Utf8) }
+function Write-Utf8Text([string]$Path, [string]$Text) { [IO.File]::WriteAllText($Path, $Text, $Utf8) }
 $ProjectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $OnWindows = [Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT
 $OnMac = -not $OnWindows -and $IsMacOS
@@ -104,7 +110,8 @@ function Get-RuntimeDownloadUrls {
             }
         }
         if ($primary -match '^https://github\.com/') {
-            [void]$urls.Add('https://ghfast.top/' + $primary)
+            # ghfast.top currently presents a mismatched TLS certificate
+            # (SEC_E_WRONG_PRINCIPAL), so keep only the working proxy mirror.
             [void]$urls.Add('https://ghproxy.net/' + $primary)
         }
     }
@@ -132,9 +139,11 @@ function Invoke-ArchiveDownload($Urls, $Destination, $ExpectedSha256) {
         [IO.File]::WriteAllText($sourceMarker, ($url + [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
         try {
             if ($curl) {
+                # Do not use --retry-all-errors: TLS/SNI failures are permanent
+                # for a mirror and must fall through to the next URL immediately.
                 Invoke-Checked $curl.Source @(
                     '-fL', '--connect-timeout', '30', '--max-time', '0',
-                    '--retry', '8', '--retry-delay', '5', '--retry-all-errors',
+                    '--retry', '3', '--retry-delay', '2',
                     '-C', '-', '-o', $partial, $url
                 )
             } else {
@@ -376,7 +385,7 @@ function Get-AppliedSourcePatches($SourceRoot, $PatchNames) {
         # Isolate git apply from any enclosing checkout's path prefix.
         Invoke-Checked (Get-Command git).Source @('init', '--quiet', $probeRoot)
         foreach ($name in $PatchNames) {
-            foreach ($line in [IO.File]::ReadAllLines((Join-Path $ProjectRoot "resources/patches/$name"))) {
+            foreach ($line in Read-Utf8Lines (Join-Path $ProjectRoot "resources/patches/$name")) {
                 if (-not $line.StartsWith('+++ b/')) { continue }
                 $relative = $line.Substring(6)
                 $source = Join-Path $SourceRoot $relative
@@ -420,7 +429,7 @@ function Update-LegacyMinimalUiPatch($SourceRoot, $Patch, $commands = $null) {
     }
     # Verify the entire known legacy patch before upgrading its one changed line.
     # Never reset the checkout or treat an arbitrary failed patch as already applied.
-    $current = [IO.File]::ReadAllText($Patch)
+    $current = Read-Utf8Text $Patch
     if ([regex]::Matches($current, [regex]::Escape($commands)).Count -ne 1) { return $false }
     $legacy = $current.Replace($commands, '')
     $cache = Join-Path $ProjectRoot '.cache'
@@ -457,7 +466,7 @@ function Update-LegacyMinimalUiPatch($SourceRoot, $Patch, $commands = $null) {
 function Update-LegacySidebarCloseTabsPatch($SourceRoot) {
     # Normalize the known pre-autorepeat version before peeling overlapping patches.
     $patch = Join-Path $ProjectRoot 'resources/patches/sidebar-close-tabs.patch'
-    $current = [IO.File]::ReadAllText($patch)
+    $current = Read-Utf8Text $patch
     $guard = 'if (!event.repeat) { closeTab(); }'
     if ([regex]::Matches($current, [regex]::Escape($guard)).Count -ne 1) { return $false }
     $line = @($current -split "`r?`n" | Where-Object { $_.StartsWith('+') -and $_.Contains($guard) })
@@ -520,7 +529,7 @@ function Update-LegacySidebarModePatch($SourceRoot) {
 
 function Get-PatchAdditions($Patch, $SourceFile) {
     $selected = $false
-    $lines = foreach ($line in [IO.File]::ReadAllLines($Patch)) {
+    $lines = foreach ($line in (Read-Utf8Lines $Patch)) {
         if ($line.StartsWith('diff --git ')) { $selected = $line.EndsWith(' b/' + $SourceFile) }
         elseif ($selected -and $line.StartsWith('+') -and -not $line.StartsWith('+++')) { $line.Substring(1) }
     }
@@ -535,8 +544,8 @@ function Set-CoreChecksum($Product, $RelativeFile) {
 }
 
 function Get-WorkbenchStyle {
-    $css = [IO.File]::ReadAllText((Join-Path $ProjectRoot 'src/renderer/workbench/workbench.css'))
-    $logo = [IO.File]::ReadAllText((Join-Path $ProjectRoot 'src/renderer/media/icon.svg'))
+    $css = Read-Utf8Text (Join-Path $ProjectRoot 'src/renderer/workbench/workbench.css')
+    $logo = Read-Utf8Text (Join-Path $ProjectRoot 'src/renderer/media/icon.svg')
     $uri = 'data:image/svg+xml;base64,' + [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($logo))
     $agentLock = @'
 
@@ -562,20 +571,20 @@ function Set-ProductBranding($Root) {
 }
 
 function Set-StartupHtml($Path) {
-    $html = [IO.File]::ReadAllText($Path)
+    $html = Read-Utf8Text $Path
     $html = [regex]::Replace($html, '(?s)<!-- UBOVM STARTUP BEGIN -->.*?<!-- UBOVM STARTUP END -->\s*', '')
     $body = [regex]::Match($html, '<body\b[^>]*>\s*')
     if (-not $body.Success) { throw "Missing workbench body: $Path" }
-    $fragment = [IO.File]::ReadAllText((Join-Path $ProjectRoot 'src/renderer/workbench/startup.html'))
-    $logo = [IO.File]::ReadAllText((Join-Path $ProjectRoot 'src/renderer/media/icon.svg'))
+    $fragment = Read-Utf8Text (Join-Path $ProjectRoot 'src/renderer/workbench/startup.html')
+    $logo = Read-Utf8Text (Join-Path $ProjectRoot 'src/renderer/media/icon.svg')
     $fragment = $fragment.Replace('{{PRODUCT_LOGO}}', $logo)
     $html = $html.Replace($body.Value, $body.Value.TrimEnd() + "`n" + $fragment.TrimEnd() + "`n")
-    [IO.File]::WriteAllText($Path, $html, [Text.UTF8Encoding]::new($false))
+    Write-Utf8Text $Path $html
 }
 
 function Set-FixedConversationCore($Product) {
     $bundlePath = Join-Path $AppRoot 'out/vs/workbench/workbench.desktop.main.js'
-    $bundle = [IO.File]::ReadAllText($bundlePath)
+    $bundle = Read-Utf8Text $bundlePath
     $bundle = Replace-CoreSnippet $bundle '_startBlockingIframeDragEvents(){' '_startBlockingIframeDragEvents(){if(this.providedViewType==="ubovm.welcome")return;'
     $bundle = $bundle.Replace("new Set(['ubovm.emptyFolder', 'ubovm.noWorkspace', 'ubovm.explorerEditing'])", "new Set(['ubovm.emptyFolder', 'ubovm.noWorkspace'])")
     $bundle = $bundle.Replace('&&this.contextKeyService.getContextKeyValue("ubovm.explorerEditing")!==true', '')
@@ -606,7 +615,10 @@ function Set-FixedConversationCore($Product) {
     $keyboardPolicy = $keyboardPolicy.Replace('resolveResult.commandId', 'l.commandId')
     $bundle = Update-ManagedKeyboardPolicy $bundle $legacyKeyboardPolicy $keyboardPolicy
     $bundle = Replace-CoreSnippet $bundle 'findClosest(i){const e=this.contextService.getWorkspaceFolder(i);if(e){const t=this.roots.find(s=>this.uriIdentityService.extUri.isEqual(s.resource,e.uri));if(t)return t.find(i)}return null}' 'findClosest(i){const e=this.contextService.getWorkspaceFolder(i);if(e){const t=this.roots.find(s=>this.uriIdentityService.extUri.isEqual(s.resource,e.uri));if(t)return t.find(i)}const root=this.roots.filter(r=>this.uriIdentityService.extUri.isEqualOrParent(i,r.resource)).sort((a,b)=>b.resource.path.length-a.resource.path.length)[0];return root?.find(i)??null}'
-    $bundle = Replace-CoreSnippet $bundle 'get name(){return this.labelService.getWorkspaceLabel(this.contextService.getWorkspace())}' 'get name(){if(this.explorerService.roots.length<=1)return this.explorerService.roots[0]?.name??"文件";return this.labelService.getWorkspaceLabel(this.contextService.getWorkspace())}'
+    $explorerTitleApplied = 'explorerService.roots.length<=1)return this.explorerService.roots[0]?.name??"'
+    if (-not $bundle.Contains($explorerTitleApplied)) {
+        $bundle = Replace-CoreSnippet $bundle 'get name(){return this.labelService.getWorkspaceLabel(this.contextService.getWorkspace())}' 'get name(){if(this.explorerService.roots.length<=1)return this.explorerService.roots[0]?.name??"\u6587\u4ef6";return this.labelService.getWorkspaceLabel(this.contextService.getWorkspace())}'
+    }
     $bundle = Replace-CoreSnippet $bundle 'setContextKeys(e){const t=this.contextService.getWorkspace().folders,s=e?e.resource:t[t.length-1].uri;if(e=e||this.explorerService.findClosest(s),' 'setContextKeys(e){const t=this.explorerService.roots,s=e?e.resource:t[t.length-1]?.resource;if(e=e||(s?this.explorerService.findClosest(s):undefined),'
     $bundle = Replace-CoreSnippet $bundle 'const t=this.explorerService.roots;let s=t[0];(this.contextService.getWorkbenchState()!==2||t[0].error)&&(s=t);' 'const t=this.explorerService.roots;let s=t[0];this.updateTitle(this.name);(t.length!==1||t[0]?.error)&&(s=t);'
     # This exact anchor belongs to WebviewInput in the SHA-256-pinned runtime.
@@ -677,12 +689,19 @@ function Set-FixedConversationCore($Product) {
     $bundle = Replace-CoreSnippet $bundle 'static{this.activePanelSettingsKey="workbench.panelpart.activepanelid"}' 'static{this.activePanelSettingsKey="workbench.panelpart.activepanelid"}async openPaneComposite(e,t){if(e!==void 0&&e!=="terminal"&&e!=="workbench.view.extension.ubovm-workers")return;return super.openPaneComposite(e??this.getLastActivePaneCompositeId(),t)}getPaneComposite(e){return e==="terminal"||e==="workbench.view.extension.ubovm-workers"?super.getPaneComposite(e):void 0}getPaneComposites(){return super.getPaneComposites().filter(e=>e.id==="terminal"||e.id==="workbench.view.extension.ubovm-workers")}getLastActivePaneCompositeId(){const e=super.getLastActivePaneCompositeId();return e==="workbench.view.extension.ubovm-workers"?e:"terminal"}'
     $bundle = $bundle.Replace('shouldShowCompositeBar(){return!1}getCompositeBarPosition(){return Ad.TITLE}toJSON(){return{type:"workbench.parts.panel"}}', 'shouldShowCompositeBar(){return!0}getCompositeBarPosition(){return Ad.TITLE}toJSON(){return{type:"workbench.parts.panel"}}')
     $bundle = Replace-CoreSnippet $bundle 'shouldBeHidden(e,t){const s=Oe(e)?this.getViewContainer(e):e,n=Oe(e)?e:e.id;' 'shouldBeHidden(e,t){const s=Oe(e)?this.getViewContainer(e):e,n=Oe(e)?e:e.id;if(this.options.partContainerClass==="panel"&&n!=="terminal"&&n!=="workbench.view.extension.ubovm-workers")return!0;'
-    # Do not strip Blackboard from the current sidebar allow-list; that suffix
-    # is also the end of the finished explorer/search/browser policy.
-    if (-not $bundle.Contains('n!=="workbench.view.extension.ubovm-browser"&&n!=="workbench.view.extension.ubovm-workers"&&n!=="workbench.view.extension.ubovm-blackboard")return!0;')) {
-        $bundle = $bundle.Replace('&&n!=="workbench.view.extension.ubovm-workers"&&n!=="workbench.view.extension.ubovm-blackboard")return!0;', '&&n!=="workbench.view.extension.ubovm-workers")return!0;')
+    # Sidebar allow-list must appear exactly once. A short explorer/workers-only
+    # guard inserted before the full policy hides Search/Blackboard and can leave
+    # the right sidebar with no restorable composite after Browser removal.
+    $fullSidebarHidden = 'if(this.options.partContainerClass==="sidebar"&&n!=="workbench.view.explorer"&&n!=="workbench.view.search"&&n!=="workbench.view.extension.ubovm-workers"&&n!=="workbench.view.extension.ubovm-blackboard")return!0;'
+    $shortSidebarHidden = 'if(this.options.partContainerClass==="sidebar"&&n!=="workbench.view.explorer"&&n!=="workbench.view.extension.ubovm-workers")return!0;'
+    $bundle = $bundle.Replace($shortSidebarHidden, '')
+    $bundle = $bundle.Replace('&&n!=="workbench.view.search"&&n!=="workbench.view.extension.ubovm-browser"&&n!=="workbench.view.extension.ubovm-workers")return!0;', '&&n!=="workbench.view.search"&&n!=="workbench.view.extension.ubovm-workers"&&n!=="workbench.view.extension.ubovm-blackboard")return!0;')
+    if (-not $bundle.Contains($fullSidebarHidden)) {
+        $bundle = Replace-CoreSnippet $bundle 'if(this.options.partContainerClass==="panel"&&n!=="terminal"&&n!=="workbench.view.extension.ubovm-workers")return!0;' ('if(this.options.partContainerClass==="panel"&&n!=="terminal"&&n!=="workbench.view.extension.ubovm-workers")return!0;' + $fullSidebarHidden)
     }
-    $bundle = Replace-CoreSnippet $bundle 'if(this.options.partContainerClass==="panel"&&n!=="terminal"&&n!=="workbench.view.extension.ubovm-workers")return!0;' 'if(this.options.partContainerClass==="panel"&&n!=="terminal"&&n!=="workbench.view.extension.ubovm-workers")return!0;if(this.options.partContainerClass==="sidebar"&&n!=="workbench.view.explorer"&&n!=="workbench.view.extension.ubovm-workers")return!0;'
+    while ($bundle.Contains($fullSidebarHidden + $fullSidebarHidden)) {
+        $bundle = $bundle.Replace($fullSidebarHidden + $fullSidebarHidden, $fullSidebarHidden)
+    }
     $bundle = Replace-CoreSnippet $bundle 'partContainerClass:"sidebar",pinnedViewContainersKey:FZ.pinnedViewContainersKey,placeholderViewContainersKey:FZ.placeholderViewContainersKey,viewContainersWorkspaceStateKey:FZ.viewContainersWorkspaceStateKey,icon:!0' 'partContainerClass:"sidebar",pinnedViewContainersKey:FZ.pinnedViewContainersKey,placeholderViewContainersKey:FZ.placeholderViewContainersKey,viewContainersWorkspaceStateKey:FZ.viewContainersWorkspaceStateKey,icon:!1'
     # Right-side tabs share the title row so single-view logs do not repeat their title.
     $bundle = Replace-CoreSnippet $bundle 'getCompositeBarPosition(){switch(this.configurationService.getValue("workbench.activityBar.location")){case"top":return Ad.TOP;' 'getCompositeBarPosition(){switch(this.configurationService.getValue("workbench.activityBar.location")){case"top":return Ad.TITLE;'
@@ -704,8 +723,13 @@ function Set-FixedConversationCore($Product) {
     # Soft last-tab close: keep the empty CTA visible; do not auto-hide the sidebar part.
     $autoHideMethod = $emptyMethod.Replace('fileButton.focus();', 'this.hideActivePaneComposite();').Replace('button.focus();', 'this.hideActivePaneComposite();')
     if ($bundle.Contains($autoHideMethod)) { $bundle = $bundle.Replace($autoHideMethod, $emptyMethod) }
-    $existingEmpty = [regex]::Match($bundle, 'initializeUbovmEmptySidebar\(\)\{.*?\n\t\}', [System.Text.RegularExpressions.RegexOptions]::Singleline)
-    if ($existingEmpty.Success -and -not $existingEmpty.Value.Contains('ubovm-empty-sidebar-chooser')) {
+    $existingEmpty = [regex]::Match($bundle, 'initializeUbovmEmptySidebar\(\)\s*\{.*?\n\t\}', [System.Text.RegularExpressions.RegexOptions]::Singleline)
+    if ($existingEmpty.Success -and (
+            $existingEmpty.Value.Contains('ubovm-open-browser') -or
+            -not $existingEmpty.Value.Contains('ubovm-empty-sidebar-chooser') -or
+            $existingEmpty.Value.Contains('Workspace-scoped state survives') -or
+            -not $existingEmpty.Value.Contains('Empty CTA is session-local')
+        )) {
         $bundle = $bundle.Substring(0, $existingEmpty.Index) + $emptyMethod.TrimStart() + $bundle.Substring($existingEmpty.Index + $existingEmpty.Length)
     }
     if (-not $bundle.Contains('initializeUbovmEmptySidebar(){') -and -not $bundle.Contains('initializeUbovmEmptySidebar() {')) {
@@ -714,21 +738,18 @@ function Set-FixedConversationCore($Product) {
     $bundle = Replace-CoreSnippet $bundle 'this.createEmptyPaneMessage(this.contentArea),this.updateCompositeBar();' 'this.createEmptyPaneMessage(this.contentArea),this.updateCompositeBar();this.initializeUbovmEmptySidebar();'
     $bundle = Replace-CoreSnippet $bundle 'onDidOpen(e){const t=e.getId();' 'onDidOpen(e){if(this.partId==="workbench.parts.sidebar"){delete this.element.dataset.ubovmEmpty;this.storageService.remove("ubovm.sidebar.empty",1)}const t=e.getId();'
     $bundle = Replace-CoreSnippet $bundle 'getLastActivePaneCompositeId(){return this.getLastActiveCompositeId()}' 'getLastActivePaneCompositeId(){if(this.partId==="workbench.parts.sidebar"&&this.element.dataset.ubovmEmpty==="true")return"";return this.getLastActiveCompositeId()}'
-    $bundle = Replace-CoreSnippet $bundle 'if(this.options.partContainerClass==="sidebar"&&n!=="workbench.view.explorer"&&n!=="workbench.view.extension.ubovm-workers")return!0;' 'if(this.options.partContainerClass==="sidebar"&&n!=="workbench.view.explorer"&&n!=="workbench.view.search"&&n!=="workbench.view.extension.ubovm-browser"&&n!=="workbench.view.extension.ubovm-workers"&&n!=="workbench.view.extension.ubovm-blackboard")return!0;'
-    $bundle = Replace-CoreSnippet $bundle 'if(this.options.partContainerClass==="sidebar"&&n!=="workbench.view.explorer"&&n!=="workbench.view.extension.ubovm-workers"&&n!=="workbench.view.extension.ubovm-blackboard")return!0;' 'if(this.options.partContainerClass==="sidebar"&&n!=="workbench.view.explorer"&&n!=="workbench.view.search"&&n!=="workbench.view.extension.ubovm-browser"&&n!=="workbench.view.extension.ubovm-workers"&&n!=="workbench.view.extension.ubovm-blackboard")return!0;'
-    $bundle = Replace-CoreSnippet $bundle 'if(this.options.partContainerClass==="sidebar"&&n!=="workbench.view.explorer"&&n!=="workbench.view.search"&&n!=="workbench.view.extension.ubovm-workers"&&n!=="workbench.view.extension.ubovm-blackboard")return!0;' 'if(this.options.partContainerClass==="sidebar"&&n!=="workbench.view.explorer"&&n!=="workbench.view.search"&&n!=="workbench.view.extension.ubovm-browser"&&n!=="workbench.view.extension.ubovm-workers"&&n!=="workbench.view.extension.ubovm-blackboard")return!0;'
     $bundle = $bundle.Replace(
       "['workbench.view.explorer', 'workbench.view.extension.ubovm-workers', 'workbench.view.extension.ubovm-blackboard']",
-      "['workbench.view.explorer', 'workbench.view.search', 'workbench.view.extension.ubovm-browser', 'workbench.view.extension.ubovm-workers', 'workbench.view.extension.ubovm-blackboard']")
+      "['workbench.view.explorer', 'workbench.view.search', 'workbench.view.extension.ubovm-workers', 'workbench.view.extension.ubovm-blackboard']")
     $bundle = $bundle.Replace(
       '["workbench.view.explorer","workbench.view.extension.ubovm-workers","workbench.view.extension.ubovm-blackboard"]',
-      '["workbench.view.explorer","workbench.view.search","workbench.view.extension.ubovm-browser","workbench.view.extension.ubovm-workers","workbench.view.extension.ubovm-blackboard"]')
+      '["workbench.view.explorer","workbench.view.search","workbench.view.extension.ubovm-workers","workbench.view.extension.ubovm-blackboard"]')
     $bundle = $bundle.Replace(
       "['workbench.view.explorer', 'workbench.view.search', 'workbench.view.extension.ubovm-workers', 'workbench.view.extension.ubovm-blackboard']",
-      "['workbench.view.explorer', 'workbench.view.search', 'workbench.view.extension.ubovm-browser', 'workbench.view.extension.ubovm-workers', 'workbench.view.extension.ubovm-blackboard']")
+      "['workbench.view.explorer', 'workbench.view.search', 'workbench.view.extension.ubovm-workers', 'workbench.view.extension.ubovm-blackboard']")
     $bundle = $bundle.Replace(
       '["workbench.view.explorer","workbench.view.search","workbench.view.extension.ubovm-workers","workbench.view.extension.ubovm-blackboard"]',
-      '["workbench.view.explorer","workbench.view.search","workbench.view.extension.ubovm-browser","workbench.view.extension.ubovm-workers","workbench.view.extension.ubovm-blackboard"]')
+      '["workbench.view.explorer","workbench.view.search","workbench.view.extension.ubovm-workers","workbench.view.extension.ubovm-blackboard"]')
     $startupCode = (Get-PatchAdditions (Join-Path $ProjectRoot 'resources/patches/startup-ui.patch') 'src/vs/workbench/contrib/splash/browser/partsSplash.ts').Replace('mainWindow', 'et')
     $startupStart = $bundle.IndexOf('_removePartsSplash(){')
     if ($startupStart -lt 0) { throw 'Unsupported workbench bundle: the startup transition anchor is missing.' }
@@ -782,7 +803,7 @@ function Set-FixedConversationCore($Product) {
     $bundle = $bundle.Replace("new Set(['ubovm.emptyFolder'])", "new Set(['ubovm.emptyFolder', 'ubovm.noWorkspace'])")
     $bundle = $bundle.Replace("if (event.affectsSome(new Set(['ubovm.emptyFolder', 'ubovm.noWorkspace']))) { this.onDidChangeViewWelcomeState(); }", "if (event.affectsSome(new Set(['ubovm.emptyFolder', 'ubovm.noWorkspace']))) { this.onDidChangeViewWelcomeState(); if (this._enabled) { this.render(); } }")
     $bundle = $bundle.Replace('&&this.contextKeyService.getContextKeyValue("ubovm.emptyFolder")===true', '&&(this.contextKeyService.getContextKeyValue("ubovm.emptyFolder")===true||this.contextKeyService.getContextKeyValue("ubovm.noWorkspace")===true)')
-    $noWorkspaceContent = 'if(this.delegate.id==="workbench.explorer.fileView"&&this.contextKeyService.getContextKeyValue("ubovm.noWorkspace")===true){return [{content:"$(folder-opened)\n尚未选择工作空间\n请在当前会话顶部选择工作空间，文件列表将随会话自动更新。"}];}'
+    $noWorkspaceContent = 'if(this.delegate.id==="workbench.explorer.fileView"&&this.contextKeyService.getContextKeyValue("ubovm.noWorkspace")===true){return [{content:"$(folder-opened)\n\u5c1a\u672a\u9009\u62e9\u5de5\u4f5c\u7a7a\u95f4\n\u8bf7\u5728\u5f53\u524d\u4f1a\u8bdd\u9876\u90e8\u9009\u62e9\u5de5\u4f5c\u7a7a\u95f4\uff0c\u6587\u4ef6\u5217\u8868\u5c06\u968f\u4f1a\u8bdd\u81ea\u52a8\u66f4\u65b0\u3002"}];}'
     $bundle = $bundle.Replace("getContentDescriptors(){`n", "getContentDescriptors(){`n" + $noWorkspaceContent)
     # Inline file/folder creation must take precedence over the empty-folder welcome.
     $bundle = $bundle.Replace("new Set(['ubovm.emptyFolder', 'ubovm.noWorkspace'])", "new Set(['ubovm.emptyFolder', 'ubovm.noWorkspace', 'ubovm.explorerEditing'])")
@@ -813,22 +834,27 @@ function Set-FixedConversationCore($Product) {
     $bundle = Replace-CoreSnippet $bundle 'get minimumHeight(){const e=oi&&fke();let t=this.isCommandCenterVisible||e?Jxe:30;' 'get minimumHeight(){const e=oi&&fke();let t=Math.max(44,this.isCommandCenterVisible||e?Jxe:30);'
     # Agent-control lock for Integrated Browser: hide WCV + show read-only overlay.
     $bundle = Replace-CoreSnippet $bundle '_shouldShowPage(){return this._editorVisible&&!this._overlayObscured&&!!this._model?.url&&!this._model?.error}' '_shouldShowPage(){return this._editorVisible&&!this._overlayObscured&&!globalThis.__ubovmBrowserAgentLock&&!!this._model?.url&&!this._model?.error}'
-    $bundle = Replace-CoreSnippet $bundle '_refresh(){const e=!!this._model?.url&&!this._model?.error;this._placeholderScreenshot.style.display=e?"":"none";const t=!!this._model?.url&&this._editorVisible&&this._overlayObscured;if(this._overlayPauseEl.classList.toggle("visible",t),!this._model)return;' '_refresh(){const e=!!this._model?.url&&!this._model?.error;this._placeholderScreenshot.style.display=e?"":"none";const agentLock=!!globalThis.__ubovmBrowserAgentLock,t=!!this._model?.url&&this._editorVisible&&(this._overlayObscured||agentLock);if(this._overlayPauseEl.classList.toggle("agent-control",agentLock),agentLock){const heading=this._overlayPauseEl.querySelector(".browser-overlay-paused-heading"),detail=this._overlayPauseEl.querySelector(".browser-overlay-paused-detail");heading&&(heading.textContent=globalThis.__ubovmBrowserAgentLockReason||"Agent 正在操作浏览器（只读）"),detail&&(detail.textContent="Agent 操作完成前页面只读，请勿点击。"),this._overlayPauseEl.classList.add("show-message")}if(this._overlayPauseEl.classList.toggle("visible",t),!this._model)return;'
+    $bundle = Replace-CoreSnippet $bundle '_refresh(){const e=!!this._model?.url&&!this._model?.error;this._placeholderScreenshot.style.display=e?"":"none";const t=!!this._model?.url&&this._editorVisible&&this._overlayObscured;if(this._overlayPauseEl.classList.toggle("visible",t),!this._model)return;' '_refresh(){const e=!!this._model?.url&&!this._model?.error;this._placeholderScreenshot.style.display=e?"":"none";const agentLock=!!globalThis.__ubovmBrowserAgentLock,t=!!this._model?.url&&this._editorVisible&&(this._overlayObscured||agentLock);if(this._overlayPauseEl.classList.toggle("agent-control",agentLock),agentLock){const heading=this._overlayPauseEl.querySelector(".browser-overlay-paused-heading"),detail=this._overlayPauseEl.querySelector(".browser-overlay-paused-detail");heading&&(heading.textContent=globalThis.__ubovmBrowserAgentLockReason||"Agent \u6b63\u5728\u64cd\u4f5c\u6d4f\u89c8\u5668\uff08\u53ea\u8bfb\uff09"),detail&&(detail.textContent="Agent \u64cd\u4f5c\u5b8c\u6210\u524d\u9875\u9762\u53ea\u8bfb\uff0c\u8bf7\u52ff\u70b9\u51fb\u3002"),this._overlayPauseEl.classList.add("show-message")}if(this._overlayPauseEl.classList.toggle("visible",t),!this._model)return;'
     $bundle = Replace-CoreSnippet $bundle 'this._register(this._overlayManager.onDidChangeOverlayState(()=>this._refreshOverlayObscured())),this._refresh()}' 'this._register(this._overlayManager.onDidChangeOverlayState(()=>this._refreshOverlayObscured())),this._register((()=>{const refresh=()=>this._refresh();return window.addEventListener("ubovm-browser-agent-lock",refresh),{dispose:()=>window.removeEventListener("ubovm-browser-agent-lock",refresh)}})()),this._refresh()}'
-    $browserLockCommand = '$e.registerCommand("workbench.action.browser.setAgentControlLock",(accessor,locked,reason)=>{globalThis.__ubovmBrowserAgentLock=locked===!0,globalThis.__ubovmBrowserAgentLockReason=typeof reason==="string"&&reason.trim()?reason.trim():"Agent 正在操作浏览器（只读）";try{window.dispatchEvent(new CustomEvent("ubovm-browser-agent-lock"))}catch{}});'
+    $browserLockCommand = '$e.registerCommand("workbench.action.browser.setAgentControlLock",(accessor,locked,reason)=>{globalThis.__ubovmBrowserAgentLock=locked===!0,globalThis.__ubovmBrowserAgentLockReason=typeof reason==="string"&&reason.trim()?reason.trim():"Agent \u6b63\u5728\u64cd\u4f5c\u6d4f\u89c8\u5668\uff08\u53ea\u8bfb\uff09";try{window.dispatchEvent(new CustomEvent("ubovm-browser-agent-lock"))}catch{}});'
     if (-not $bundle.Contains('workbench.action.browser.setAgentControlLock')) {
         $bundle = Replace-CoreSnippet $bundle 'registerContribution(eni);' ('registerContribution(eni);' + $browserLockCommand)
     }
-    [IO.File]::WriteAllText($bundlePath, $bundle, [Text.UTF8Encoding]::new($false))
+    Write-Utf8Text $bundlePath $bundle
+    $node = Get-Command $NodeCommand -ErrorAction SilentlyContinue
+    if ($node) {
+        $check = & $node.Source '--check' $bundlePath 2>&1
+        if ($LASTEXITCODE -ne 0) { throw ('Patched workbench bundle has a JavaScript syntax error (often UTF-8 mis-decoded Chinese quotes). ' + ($check | Out-String)) }
+    }
     Set-CoreChecksum $Product 'vs/workbench/workbench.desktop.main.js'
     # The same stylesheet is appended to the source and compiled workbench.
     $cssPath = Join-Path $AppRoot 'out/vs/workbench/workbench.desktop.main.css'
-    $css = [IO.File]::ReadAllText($cssPath)
+    $css = Read-Utf8Text $cssPath
     $cssMarker = '/* UBOVM COMPACT WORKBENCH */'
     $offset = $css.IndexOf($cssMarker)
     if ($offset -ge 0) { $css = $css.Substring(0, $offset) }
     $css += $cssMarker + "`n" + (Get-WorkbenchStyle)
-    [IO.File]::WriteAllText($cssPath, $css, [Text.UTF8Encoding]::new($false))
+    Write-Utf8Text $cssPath $css
     Set-CoreChecksum $Product 'vs/workbench/workbench.desktop.main.css'
     Set-StartupHtml (Join-Path $AppRoot 'out/vs/code/electron-browser/workbench/workbench.html')
     Set-CoreChecksum $Product 'vs/code/electron-browser/workbench/workbench.html'
@@ -836,12 +862,12 @@ function Set-FixedConversationCore($Product) {
 
 function Set-BackgroundTrayCore {
     $mainPath = Join-Path $AppRoot 'out/main.js'
-    $main = [IO.File]::ReadAllText($mainPath)
+    $main = Read-Utf8Text $mainPath
     $anchor = 'i.add(k.fromNodeEventEmitter(s,"close")(r=>{const n=e.id;this.windowToCloseRequest.delete(n)||('
     $replacement = 'i.add(k.fromNodeEventEmitter(s,"close")(r=>{s.emit("ubovm-before-close",r,this._quitRequested);if(r.defaultPrevented)return;const n=e.id;this.windowToCloseRequest.delete(n)||('
     if (-not $main.Contains($replacement)) {
         $main = Replace-CoreSnippet $main $anchor $replacement
-        [IO.File]::WriteAllText($mainPath, $main, [Text.UTF8Encoding]::new($false))
+        Write-Utf8Text $mainPath $main
     }
 }
 
@@ -1270,11 +1296,11 @@ function Test-Runtime {
     Write-Host "[OK] $($rg[0].FullName.Substring($AppRoot.Length + 1))"
     $manifest = Get-Content -LiteralPath (Join-Path $AppRoot 'package.json') -Raw | ConvertFrom-Json
     if ($manifest.main -ne './ubovm/main/index.mjs') { throw 'The custom Electron main entry is not connected.' }
-    if (-not ([IO.File]::ReadAllText((Join-Path $AppRoot 'out/main.js'))).Contains('s.emit("ubovm-before-close",r,this._quitRequested)')) { throw 'The background lifecycle hook is missing. Run node build/build.mjs setup.' }
+    if (-not ((Read-Utf8Text (Join-Path $AppRoot 'out/main.js'))).Contains('s.emit("ubovm-before-close",r,this._quitRequested)')) { throw 'The background lifecycle hook is missing. Run node build/build.mjs setup.' }
     $legacyKeys = (Get-PatchAdditions (Join-Path $ProjectRoot 'resources/patches/keyboard-policy.patch') 'src/vs/platform/keybinding/common/abstractKeybindingService.ts').Replace('resolveResult.commandId', 'l.commandId')
     $searchKeys = Get-PatchAdditions (Join-Path $ProjectRoot 'resources/patches/file-search.patch') 'src/vs/platform/keybinding/common/abstractKeybindingService.ts'
     $currentKeys = [regex]::Replace($legacyKeys, '(?m)^.*if \(/\^\(\?:workbench.*\{\r?$', $searchKeys.TrimEnd())
-    Assert-CurrentKeyboardPolicy ([IO.File]::ReadAllText((Join-Path $AppRoot 'out/vs/workbench/workbench.desktop.main.js'))) $legacyKeys $currentKeys
+    Assert-CurrentKeyboardPolicy (Read-Utf8Text (Join-Path $AppRoot 'out/vs/workbench/workbench.desktop.main.js')) $legacyKeys $currentKeys
     Write-Host '[OK] Runtime keyboard policy matches source'
     Write-Host "[OK] Electron entry connected; runtime $($manifest.version)"
 }

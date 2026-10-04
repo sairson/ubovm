@@ -260,14 +260,18 @@ export abstract class AbstractPaneCompositePart extends CompositePart<PaneCompos
 
 	private initializeUbovmEmptySidebar(): void {
 		if (this.partId !== 'workbench.parts.sidebar') { return; }
-		// Workspace-scoped state survives hiding the sidebar and restarting the IDE.
-		if (this.storageService.getBoolean('ubovm.sidebar.empty', 1, false)) { this.element.dataset.ubovmEmpty = 'true'; }
+		// Empty CTA is session-local. Persisting it across restart left the forced-hidden
+		// right sidebar unrestorable after Browser removal (no composite + no CTA paint).
+		if (this.storageService.getBoolean('ubovm.sidebar.empty', 1, false)) {
+			this.storageService.remove('ubovm.sidebar.empty', 1);
+			delete this.element.dataset.ubovmEmpty;
+		}
 		const doc = this.element.ownerDocument;
 		const chooser = doc.createElement('div');
 		chooser.className = 'ubovm-empty-sidebar-chooser';
 		const hint = doc.createElement('p');
 		hint.className = 'ubovm-empty-sidebar-hint';
-		hint.textContent = '文件树、浏览器与 Worker 同在右侧栏';
+		hint.textContent = '文件树与 Worker 同在右侧栏';
 		const actions = doc.createElement('div');
 		actions.className = 'ubovm-empty-sidebar-actions';
 		const makeChoice = (className, title, detail, onActivate) => {
@@ -288,13 +292,10 @@ export abstract class AbstractPaneCompositePart extends CompositePart<PaneCompos
 		const fileButton = makeChoice('ubovm-open-file-tree', '打开文件树', '浏览与编辑工作区文件', () => {
 			void this.openPaneComposite('workbench.view.explorer', true);
 		});
-		const browserButton = makeChoice('ubovm-open-browser', '打开浏览器', '管理页面；网页在编辑区独立浏览', () => {
-			void this.openPaneComposite('workbench.view.extension.ubovm-browser', true);
-		});
 		const workerButton = makeChoice('ubovm-open-worker', '打开 Worker', '查看协作 Worker 运行日志', () => {
 			void this.openPaneComposite('workbench.view.extension.ubovm-workers', true);
 		});
-		const choices = [fileButton, browserButton, workerButton];
+		const choices = [fileButton, workerButton];
 		this._register(addDisposableListener(actions, 'keydown', event => {
 			const index = choices.indexOf(doc.activeElement);
 			if (index < 0) { return; }
@@ -312,7 +313,7 @@ export abstract class AbstractPaneCompositePart extends CompositePart<PaneCompos
 				choices[choices.length - 1].focus();
 			}
 		}));
-		actions.append(fileButton, browserButton, workerButton);
+		actions.append(fileButton, workerButton);
 		chooser.append(hint, actions);
 		this.emptyPaneMessageElement?.replaceChildren(chooser);
 		this._register(addDisposableListener(this.element, 'ubovm-empty-sidebar', () => {
@@ -321,6 +322,9 @@ export abstract class AbstractPaneCompositePart extends CompositePart<PaneCompos
 			this.hideActiveComposite();
 			this.layoutEmptyMessage();
 			// Keep the sidebar visible with the empty CTA; only explicit hide collapses the pane.
+			if (!this.layoutService.isVisible(this.partId)) {
+				this.layoutService.setPartHidden(false, this.partId);
+			}
 			fileButton.focus();
 		}));
 	}
@@ -348,7 +352,10 @@ export abstract class AbstractPaneCompositePart extends CompositePart<PaneCompos
 			this.emptyPaneMessageElement!.style.backgroundColor = backgroundColor;
 		};
 
-		if (this.viewDescriptorService.canMoveViews()) {
+		const allowPartDragAndDrop = this.viewDescriptorService.canMoveViews()
+			&& this.location !== ViewContainerLocation.Sidebar
+			&& this.location !== ViewContainerLocation.AuxiliaryBar;
+		if (allowPartDragAndDrop) {
 			this._register(CompositeDragAndDropObserver.INSTANCE.registerTarget(this.element, {
 				onDragOver: (e) => {
 					EventHelper.stop(e.eventData, true);
@@ -445,12 +452,17 @@ export abstract class AbstractPaneCompositePart extends CompositePart<PaneCompos
 		this.titleContainer = parent;
 
 		const titleLabel = super.createTitleLabel(parent);
-		this.titleLabelElement!.draggable = this.viewDescriptorService.canMoveViews();
-		const draggedItemProvider = (): { type: 'view' | 'composite'; id: string } => {
-			const activeViewlet = this.getActivePaneComposite()!;
-			return { type: 'composite', id: activeViewlet.getId() };
-		};
-		this._register(CompositeDragAndDropObserver.INSTANCE.registerDraggable(this.titleLabelElement!, draggedItemProvider, {}));
+		const allowTitleDrag = this.viewDescriptorService.canMoveViews()
+			&& this.location !== ViewContainerLocation.Sidebar
+			&& this.location !== ViewContainerLocation.AuxiliaryBar;
+		this.titleLabelElement!.draggable = allowTitleDrag;
+		if (allowTitleDrag) {
+			const draggedItemProvider = (): { type: 'view' | 'composite'; id: string } => {
+				const activeViewlet = this.getActivePaneComposite()!;
+				return { type: 'composite', id: activeViewlet.getId() };
+			};
+			this._register(CompositeDragAndDropObserver.INSTANCE.registerDraggable(this.titleLabelElement!, draggedItemProvider, {}));
+		}
 
 		return titleLabel;
 	}
