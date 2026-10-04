@@ -76,3 +76,14 @@ test('legacy fixtures work until versioned messages arrive, and malformed states
   assert.equal(order.full(full(undefined), current), null);
   assert.equal(order.execution(delta(undefined), current), null);
 });
+
+test('execution ticks can clear recovering without replacing conversation history', () => {
+  const order = createStateOrder();
+  let current = order.full({ ...full(1), recovering: true, messages: ['saved'] });
+  assert.equal(current.recovering, true);
+  current = order.execution({ ...delta(2), recovering: false }, current);
+  assert.equal(current.recovering, false);
+  assert.deepEqual(current.messages, ['saved']);
+  current = order.execution(delta(3, 'a', 'running'), current);
+  assert.equal(current.recovering, false);
+});

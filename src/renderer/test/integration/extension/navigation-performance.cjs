@@ -31,8 +31,10 @@ function fixture() {
     async restoreExecution() { calls.push('restore:' + current); },
     async openWelcome() { calls.push('open:' + current); },
     publishState() { calls.push('publish:' + current); return { id: current }; },
+    executionPublisher: { schedule(id) { calls.push('execution:' + id); } },
     vscode: { commands: { executeCommand: async (command, key, value) => {
       if (command === 'setContext' && key === 'ubovm.contentReady' && value === false) calls.push('lock');
+      return undefined;
     } } }
   };
   vm.runInNewContext(navigation, sandbox);
@@ -43,7 +45,7 @@ test('conversation navigation restores once and publishes one final snapshot', a
   const f = fixture();
   const result = await f.sandbox.selectConversation('second');
   assert.equal(result, undefined);
-  assert.deepEqual(f.calls, ['select:second', 'lock', 'open:second', 'publish:second', 'restore:second', 'publish:second']);
+  assert.deepEqual(f.calls, ['select:second', 'lock', 'open:second', 'publish:second', 'restore:second', 'execution:second']);
 });
 
 test('reopening the selected conversation skips execution recovery and preserves related validation', async () => {

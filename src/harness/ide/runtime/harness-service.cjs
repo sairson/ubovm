@@ -212,7 +212,18 @@ function createHarnessService({ sdkPath, storageDirectory, workspaceRoots = [], 
     if (closed) return;
     const publish = () => { if (!closed) try { Promise.resolve(onChange?.(entry.id)).catch(() => {}); } catch {} };
     if (immediate) { clearTimeout(entry.notification); entry.notification = undefined; publish(); return; }
-    if (!entry.notification) entry.notification = setTimeout(() => { entry.notification = undefined; publish(); }, 40);
+    // Coalesce streaming ticks; stretch the pause while thinking/tool text grows
+    // so structured-clone snapshots cannot starve the agent heartbeat.
+    if (!entry.notification) {
+      const records = (entry.parts?.length || 0) + (entry.activities?.length || 0) + (entry.workers?.length || 0);
+      let textChars = typeof entry.streamText === 'string' ? entry.streamText.length : 0;
+      for (const part of entry.parts || []) {
+        if (typeof part?.text === 'string') textChars += part.text.length;
+        if (typeof part?.output === 'string') textChars += part.output.length;
+      }
+      const pace = Math.min(250, 40 + Math.ceil(records / 20) + Math.ceil(textChars / 8000));
+      entry.notification = setTimeout(() => { entry.notification = undefined; publish(); }, pace);
+    }
   }
   function runEvents(entry, handler) {
     const run = entry.eventRun;

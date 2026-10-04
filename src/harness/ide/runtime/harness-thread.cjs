@@ -40,7 +40,9 @@ const rpc = createRPC(parentPort, async (method, args) => {
   try { await service.close(); }
   finally { parentPort.close(); }
 } });
-const snapshots = createSnapshotQueue({ delay: 75, read: snapshot, send: async (value, isCurrent) => {
+// Pace UI projections above the per-entry notify coalesce so thinking streams
+// do not flood the host bridge while heartbeats still share the same RPC lane.
+const snapshots = createSnapshotQueue({ delay: 120, read: snapshot, send: async (value, isCurrent) => {
   // Model/tool calls may briefly fill the request budget. A UI snapshot waits
   // for capacity instead of permanently losing the streaming subscription.
   while (isCurrent()) {

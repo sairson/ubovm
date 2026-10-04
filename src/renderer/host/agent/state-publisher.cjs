@@ -67,8 +67,24 @@ function createExecutionPublisher({ currentId, canPublish, readExecution, postMe
       const full = fullState?.conversation?.id === conversationId ? fullState : undefined;
       // Large active timelines need fewer full IPC copies. Keep only the latest
       // pending state, with a bounded delay; never truncate persisted history.
+      // Count both record cardinality and streamed text length: a single growing
+      // thinking part keeps records≈1 but still congests the webview bridge.
       const records = (execution.parts?.length || 0) + (execution.activities?.length || 0) + (execution.workers?.length || 0);
-      publicationDelay = execution.busy ? Math.max(delay, Math.min(500, Math.ceil(records / 10))) : delay;
+      let textChars = typeof execution.streamText === 'string' ? execution.streamText.length : 0;
+      for (const part of execution.parts || []) {
+        if (typeof part?.text === 'string') textChars += part.text.length;
+        if (typeof part?.output === 'string') textChars += part.output.length;
+      }
+      for (const worker of execution.workers || []) {
+        if (typeof worker?.streamText === 'string') textChars += worker.streamText.length;
+        for (const part of worker?.parts || []) {
+          if (typeof part?.text === 'string') textChars += part.text.length;
+          if (typeof part?.output === 'string') textChars += part.output.length;
+        }
+      }
+      publicationDelay = execution.busy
+        ? Math.max(delay, Math.min(750, Math.ceil(records / 10) + Math.ceil(textChars / 4000)))
+        : delay;
       if (disposed || publicationRevision !== revision || conversationId !== currentId()) return;
       // Only snapshots are retried: never replay user commands or tool effects.
       attempted = true;

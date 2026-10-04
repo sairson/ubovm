@@ -199,11 +199,40 @@
     const preview = node('button', 'md-code-button', '预览 HTML'); preview.type = 'button';
     const copy = node('button', 'md-code-button', '复制代码'); copy.type = 'button';
     const pre = node('pre'); const code = node('code'); pre.appendChild(code);
-    const entry = { card, language, status, toggle, preview, copy, pre, code, lines: [], text: '', lang: '' };
+    const entry = { card, language, status, toggle, preview, copy, pre, code, lines: [], text: '', lang: '', highlighted: false };
     toggle.dataset.mdToggle = ''; copy.dataset.mdCopy = ''; preview.dataset.mdCodePreview = '';
     actions.append(toggle, preview, copy); toolbar.append(language, status, actions); card.append(toolbar, pre); block.element.appendChild(card);
     block.code = entry;
     return entry;
+  }
+
+  function paintCodeLines(code, text, language, { highlight, append }) {
+    const start = append ? code.lines.length - 1 : 0;
+    const offset = append ? code.text.lastIndexOf('\n') + 1 : 0;
+    const lines = text.slice(offset).split('\n'), count = start + lines.length;
+    const added = [], fragment = document.createDocumentFragment();
+    for (const [localIndex, value] of lines.entries()) {
+      const index = start + localIndex;
+      const withNewline = value + (localIndex < lines.length - 1 ? '\n' : '');
+      let line = code.lines[index];
+      if (!line) {
+        line = { element: node('span', 'md-code-line'), text: undefined, language: undefined, highlighted: undefined };
+        added.push(line); fragment.appendChild(line.element);
+      }
+      if (line.text !== withNewline || line.language !== language || line.highlighted !== highlight) {
+        if (highlight) patchChildren(line.element, highlightLine(withNewline, language));
+        else line.element.textContent = withNewline;
+        line.text = withNewline; line.language = language; line.highlighted = highlight;
+      }
+    }
+    // Commit new lines together. Until painting succeeds, detached lines
+    // never enter the cache, so a failed render can retry the same text safely.
+    if (added.length) {
+      code.code.appendChild(fragment);
+      for (const line of added) code.lines.push(line);
+    }
+    while (code.lines.length > count) code.lines.pop().element.remove();
+    code.text = text; code.lang = language; code.highlighted = highlight;
   }
 
   function renderCode(block, token, view, streaming) {
@@ -217,33 +246,21 @@
     const previewDisabled = typeof view.options.onPreviewHtml !== 'function';
     if (code.preview.hidden !== previewHidden) code.preview.hidden = previewHidden;
     if (code.preview.disabled !== previewDisabled) code.preview.disabled = previewDisabled;
-    const append = code.lang === language && typeof code.text === 'string' && text.startsWith(code.text) && code.lines.length;
-    const start = append ? code.lines.length - 1 : 0;
-    const offset = append ? code.text.lastIndexOf('\n') + 1 : 0;
-    const lines = text.slice(offset).split('\n'), count = start + lines.length;
-    if (code.toggle.hidden !== (count <= 18)) code.toggle.hidden = count <= 18;
-    const added = [], fragment = document.createDocumentFragment();
-    for (const [localIndex, value] of lines.entries()) {
-      const index = start + localIndex;
-      const withNewline = value + (localIndex < lines.length - 1 ? '\n' : '');
-      let line = code.lines[index];
-      if (!line) {
-        line = { element: node('span', 'md-code-line'), text: undefined, language: undefined };
-        added.push(line); fragment.appendChild(line.element);
-      }
-      if (line.text !== withNewline || line.language !== language) {
-        patchChildren(line.element, highlightLine(withNewline, language));
-        line.text = withNewline; line.language = language;
-      }
-    }
-    // Commit new lines together. Until highlighting succeeds, detached lines
-    // never enter the cache, so a failed render can retry the same text safely.
-    if (added.length) {
-      code.code.appendChild(fragment);
-      for (const line of added) code.lines.push(line);
-    }
-    while (code.lines.length > count) code.lines.pop().element.remove();
-    code.text = text; code.lang = language;
+    const lineCount = text.length ? text.split('\n').length : 1;
+    if (code.toggle.hidden !== (lineCount <= 18)) code.toggle.hidden = lineCount <= 18;
+    // Collapsed long fences keep plain text until expand; streaming and short
+    // cards stay highlighted so the visible surface remains readable.
+    const expanded = code.card.dataset.expanded === 'true';
+    const highlight = active || expanded || lineCount <= 18;
+    const append = highlight === code.highlighted && code.lang === language && typeof code.text === 'string'
+      && text.startsWith(code.text) && code.lines.length;
+    paintCodeLines(code, text, language, { highlight, append });
+  }
+
+  function expandCodeCard(card, view) {
+    const block = view.blocks.find(entry => entry.code?.card === card);
+    if (!block?.code || block.code.highlighted || !block.code.text) return;
+    paintCodeLines(block.code, block.code.text, block.code.lang || 'text', { highlight: true, append: false });
   }
 
   function renderBlock(block, token, view, streaming) {
@@ -264,10 +281,17 @@
       const copy = node('button', 'md-code-button', '复制代码'); copy.type = 'button'; copy.dataset.mdCopy = '';
       actions.append(toggle, preview, copy); toolbar.append(node('span', 'md-code-language', language), actions);
       code.replaceChildren();
+      // Nested fences inherit the same collapsed-plain / expanded-highlight rule.
+      const highlight = lines.length <= 18;
       for (const [index, value] of lines.entries()) {
         const line = node('span', 'md-code-line');
-        line.appendChild(highlightLine(value + (index < lines.length - 1 ? '\n' : ''), language)); code.appendChild(line);
+        const withNewline = value + (index < lines.length - 1 ? '\n' : '');
+        if (highlight) line.appendChild(highlightLine(withNewline, language));
+        else line.textContent = withNewline;
+        code.appendChild(line);
       }
+      card._plainCode = !highlight;
+      card._codeLanguage = language;
       pre.replaceWith(card); card.append(toolbar, pre);
     }
     // Tables scroll within the message instead of widening the entire webview.
@@ -330,6 +354,18 @@
           if (action.hasAttribute('data-md-toggle')) {
             const expanded = card.dataset.expanded !== 'true'; card.dataset.expanded = String(expanded);
             action.setAttribute('aria-expanded', String(expanded)); setText(action, expanded ? '收起代码' : '展开代码');
+            if (expanded) {
+              expandCodeCard(card, view);
+              if (card._plainCode) {
+                const language = card._codeLanguage || 'text';
+                const code = card.querySelector('code');
+                for (const line of code.querySelectorAll('.md-code-line')) {
+                  const text = line.textContent;
+                  line.replaceChildren(highlightLine(text, language));
+                }
+                card._plainCode = false;
+              }
+            }
           } else if (action.hasAttribute('data-md-code-preview')) view.options.onPreviewHtml?.(card.querySelector('code').textContent, action);
           else if (!action.disabled) {
             clearTimeout(view.resets.get(action)); view.resets.delete(action);

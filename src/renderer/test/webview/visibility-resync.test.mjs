@@ -51,6 +51,12 @@ test('conversation page forces full paint and ready resync after visibility rest
   assert.match(app, /if \(full \|\| !succeeded\) finishPageTransition\(\)/);
   assert.match(app, /contentReadyRetried/);
   assert.match(app, /finishPageTransition\(\)/);
+  assert.match(app, /HISTORY_TAIL/);
+  assert.match(app, /scheduleHistoryFill/);
+  assert.match(app, /queueThreadTeardown/);
+  assert.match(app, /flushThreadTeardown/);
+  assert.match(extension, /executionPublisher\.schedule\(sessions\.summary\(\)\.id\)/);
+  assert.match(extension, /Carry host recovery chrome on execution ticks/);
   assert.match(monitor, /Keep `connected` while a live probe is outstanding/);
   assert.match(monitor, /else if \(pending\) \{\s*pending\.sent = now;/s);
   assert.match(monitor, /lastPong > lastTick/);

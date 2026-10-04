@@ -173,9 +173,26 @@ test('large timelines back off publication and a view change resets the delay', 
   publisher.schedule('s'); t.mock.timers.tick(75); await nextTurn();
   assert.equal(sends, 1);
   for (let i = 0; i < 1000; i++) publisher.schedule('s');
-  t.mock.timers.tick(499); await nextTurn(); assert.equal(sends, 1);
+  // 10000 parts → ceil(10000/10)+ceil(30000/4000) = 1000+8, capped at 750ms.
+  t.mock.timers.tick(749); await nextTurn(); assert.equal(sends, 1);
   t.mock.timers.tick(1); await nextTurn(); assert.equal(sends, 2);
   publisher.clear(); publisher.schedule('s'); t.mock.timers.tick(75); await nextTurn(); assert.equal(sends, 3);
+});
+
+test('a growing thinking stream backs off by payload size even with few records', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let sends = 0;
+  // ~480k chars → ceil(1/10)+ceil(480000/4000) = 1+120 = 121ms between publishes.
+  const thinking = 'x'.repeat(480000);
+  const publisher = createExecutionPublisher({ currentId: () => 's', canPublish: () => true,
+    readExecution: () => ({ busy: true, parts: [{ id: 'thought', type: 'thinking', text: thinking, status: 'running' }] }),
+    postMessage: () => { sends++; } });
+  t.after(() => publisher.dispose());
+  publisher.schedule('s'); t.mock.timers.tick(75); await nextTurn();
+  assert.equal(sends, 1);
+  for (let i = 0; i < 100; i++) publisher.schedule('s');
+  t.mock.timers.tick(120); await nextTurn(); assert.equal(sends, 1);
+  t.mock.timers.tick(1); await nextTurn(); assert.equal(sends, 2);
 });
 
 test('an undelivered final snapshot retries without further events and retries remain bounded', async t => {

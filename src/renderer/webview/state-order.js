@@ -31,7 +31,9 @@
         if (next ? next <= executionRevision : executionRevision > 0) return null;
         validateExecution(message.execution);
         executionRevision = next;
-        return { ...current, execution: message.execution, busy: message.busy };
+        const nextState = { ...current, execution: message.execution, busy: message.busy };
+        if (typeof message.recovering === 'boolean') nextState.recovering = message.recovering;
+        return nextState;
       },
       full(message, current) {
         if (typeof message.conversation?.id !== 'string' || !message.conversation.id) return null;

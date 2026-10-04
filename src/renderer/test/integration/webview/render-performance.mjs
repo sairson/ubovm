@@ -859,7 +859,9 @@ test('streaming updates do not rescan unchanged published history', async t => {
     const items = Array.from({ length: 100 }, (_, i) => ({ get role() { window.historyReads++; return 'assistant'; }, text: 'History ' + i }));
     window.dispatchEvent(new MessageEvent('message', { data: { type: 'state', mode: 'assist', conversation: { id: 'assist-1' }, messages: items, execution: {} } }));
   });
-  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  // Progressive history fill also reads role while prepending older turns; wait
+  // until that catch-up finishes before measuring streaming updates.
+  await page.waitForFunction(() => document.querySelectorAll('#messages > .message').length >= 100);
   await page.evaluate(() => { window.historyReads = 0; });
   for (let i = 0; i < 5; i++) await send(page, { type: 'executionState', conversationId: 'assist-1', busy: true, execution: { status: 'running', streamText: 'Live ' + i } });
   assert.equal(await page.evaluate(() => window.historyReads), 0);
@@ -924,6 +926,45 @@ test('unchanged execution logs keep headers and worker links intact during strea
   current.execution.parts[0].text += ' updated'; current.execution.busy = true;
   await send(page, current);
   assert.equal(await page.evaluate(() => window.stableChanges), 0);
+});
+
+test('thinking and schedule logs keep following new content until the reader scrolls away', async t => {
+  const page = await pageFor(t, { viewport: { width: 1100, height: 760 }, reducedMotion: 'reduce' });
+  const current = state('follow-logs', 'goal');
+  current.busy = true;
+  current.execution = {
+    status: 'running', busy: true,
+    parts: Array.from({ length: 40 }, (_, i) => ({
+      id: 'thought-' + i, type: 'thinking', source: 'reason', status: 'completed',
+      startedAt: 1000 + i, text: ('规划步骤 ' + i + '。\n').repeat(12)
+    }))
+  };
+  const waitBottom = () => page.waitForFunction(() => {
+    const n = document.getElementById('goal-output-content');
+    return n && n.scrollHeight > n.clientHeight + 40 && n.scrollHeight - n.scrollTop - n.clientHeight < 40;
+  });
+  await send(page, current);
+  await waitBottom();
+  current.execution.parts.push({
+    id: 'thought-live', type: 'thinking', source: 'reason', status: 'running',
+    startedAt: 2000, text: ('继续推进。\n').repeat(20)
+  });
+  await send(page, current);
+  await waitBottom();
+  assert.match(await page.locator('#goal-output-content').textContent(), /继续推进/);
+  await page.locator('#goal-output-content').evaluate(n => { n.scrollTop = 0; });
+  current.execution.parts[40].text += ('追加观察。\n').repeat(20);
+  await send(page, current);
+  assert.ok(await page.locator('#goal-output-content').evaluate(n => n.scrollTop < 40), 'manual scroll up stops following');
+  await page.locator('#goal-log-bottom').click();
+  await waitBottom();
+  current.execution.parts.push({
+    id: 'thought-after', type: 'thinking', source: 'reason', status: 'running',
+    startedAt: 3000, text: ('回到底部后继续。\n').repeat(16)
+  });
+  await send(page, current);
+  await waitBottom();
+  assert.match(await page.locator('#goal-output-content').textContent(), /回到底部后继续/);
 });
 
 test('large overview history avoids serialization and only updates changed bodies', async t => {
@@ -1157,6 +1198,48 @@ test('switching conversations after the first paint sends another contentReady a
     await page.evaluate(() => sent.filter(message => message.action === 'contentReady').map(message => message.sessionId)),
     ['project-session-a', 'project-session-b']
   );
+});
+
+test('long history clears the loader after the newest turns and fills older messages later', async t => {
+  const page = await pageFor(t);
+  const messages = Array.from({ length: 40 }, (_, i) => ({
+    id: 'msg-' + i,
+    role: i % 2 ? 'assistant' : 'user',
+    text: 'History turn ' + i
+  }));
+  await send(page, { ...state('long-history'), messages, viewRevision: 1 });
+  await page.waitForFunction(() => document.body.dataset.loading === 'false');
+  await page.waitForFunction(() => sent.some(message => message.action === 'contentReady'));
+  assert.match(await page.locator('#messages').textContent(), /History turn 39/);
+  await page.waitForFunction(() => document.getElementById('messages').textContent.includes('History turn 0'));
+  assert.match(await page.locator('#messages').textContent(), /History turn 0/);
+  assert.match(await page.locator('#messages').textContent(), /History turn 20/);
+  assert.equal(await page.evaluate(() => sent.filter(message => message.action === 'contentReady').length), 1);
+});
+
+test('collapsed long code fences skip tokenization until expanded', async t => {
+  const page = await pageFor(t);
+  const result = await page.evaluate(() => {
+    const target = document.createElement('div'); document.body.append(target);
+    try {
+      const long = '```javascript\n' + Array.from({ length: 40 }, (_, i) => `const value${i} = ${i};`).join('\n') + '\n```';
+      UBOVMMarkdown.update(target, long);
+      const card = target.querySelector('.md-code-card');
+      const before = card.querySelectorAll('.md-token-keyword').length;
+      card.querySelector('[data-md-toggle]').click();
+      const after = card.querySelectorAll('.md-token-keyword').length;
+      const expanded = card.dataset.expanded;
+      UBOVMMarkdown.release(target);
+      target.replaceChildren();
+      UBOVMMarkdown.update(target, '```javascript\nconst short = 1;\n```');
+      const shortTokens = target.querySelectorAll('.md-token-keyword').length;
+      return { before, after, shortTokens, expanded };
+    } finally { UBOVMMarkdown.release(target); target.remove(); }
+  });
+  assert.equal(result.before, 0, 'collapsed long fences stay plain until expand');
+  assert.ok(result.after > 0, 'expanding tokenizes keywords');
+  assert.equal(result.expanded, 'true');
+  assert.ok(result.shortTokens > 0, 'short fences still highlight immediately');
 });
 
 test('session loading fills the conversation column and switch overlay uses a thread skeleton', async t => {

@@ -6,22 +6,70 @@
   window.createGoalExecutionLog = (container, { actions, statusText, openWorker }) => {
     const pageSize = 120, rows = new Map();
     let session = '', latestExecution, start = null, firstId;
+    let follow = true, lastTop = 0, total = 0, followFrame = 0;
     const pager = element('div', 'goal-log-pager'); pager.hidden = true;
     const earlier = element('button', '', '较早日志'), newer = element('button', '', '较新日志'), latest = element('button', '', '最新日志'), range = element('span', '');
     for (const button of [earlier, newer, latest]) button.type = 'button';
     range.setAttribute('role', 'status'); pager.append(earlier, range, newer, latest); container.before(pager);
-    function reset() {
-      for (const row of rows.values()) window.UBOVMMessage.release?.(row.body);
-      rows.clear(); container.replaceChildren(); latestExecution = undefined; firstId = undefined; start = null; session = ''; pager.hidden = true;
+    function nearBottom(threshold = 32) {
+      return container.scrollHeight - container.scrollTop - container.clientHeight < threshold;
     }
-    function page(offset) { start = Math.max(0, (start ?? Math.max(0, total - pageSize)) + offset); firstId = undefined; update(session, latestExecution); container.scrollTop = 0; }
-    let total = 0;
+    function pinLatestPage() {
+      if (start === null && firstId) start = Math.max(0, total - pageSize);
+    }
+    function cancelFollowFrame() {
+      if (followFrame) { cancelAnimationFrame(followFrame); followFrame = 0; }
+    }
+    function stickFollow() {
+      if (!follow || start !== null) return false;
+      container.scrollTop = container.scrollHeight;
+      lastTop = container.scrollTop;
+      return true;
+    }
+    // Sibling visibility / flex height settle after the caller finishes this tick.
+    // Re-stick on the next frame so growth is not left stranded at scrollTop 0.
+    function scheduleFollow() {
+      cancelFollowFrame();
+      if (!stickFollow()) return;
+      followFrame = requestAnimationFrame(() => {
+        followFrame = 0;
+        stickFollow();
+      });
+    }
+    container.addEventListener('scroll', () => {
+      if (container.scrollTop < lastTop - 1) {
+        follow = false;
+        cancelFollowFrame();
+        pinLatestPage();
+      } else if (container.scrollTop > lastTop + 1 && nearBottom()) {
+        follow = true;
+        if (start !== null && start >= Math.max(0, total - pageSize)) start = null;
+      }
+      lastTop = container.scrollTop;
+    }, { passive: true });
+    function reset() {
+      cancelFollowFrame();
+      for (const row of rows.values()) window.UBOVMMessage.release?.(row.body);
+      rows.clear(); container.replaceChildren(); latestExecution = undefined; firstId = undefined; start = null; session = '';
+      follow = true; lastTop = 0; total = 0; pager.hidden = true;
+    }
+    function page(offset) {
+      follow = false;
+      start = Math.max(0, (start ?? Math.max(0, total - pageSize)) + offset);
+      firstId = undefined;
+      update(session, latestExecution);
+      container.scrollTop = 0;
+      lastTop = container.scrollTop;
+    }
     earlier.addEventListener('click', () => page(-pageSize)); newer.addEventListener('click', () => page(pageSize));
-    function showLatest() { start = null; firstId = undefined; if (latestExecution) update(session, latestExecution); }
-    latest.addEventListener('click', () => { showLatest(); container.scrollTop = container.scrollHeight; });
+    function showLatest() {
+      start = null; follow = true; firstId = undefined;
+      if (latestExecution) update(session, latestExecution);
+      scheduleFollow();
+    }
+    latest.addEventListener('click', () => showLatest());
     function update(sessionId, execution) {
       if (session !== sessionId) { reset(); session = sessionId; }
-      if (start === null && firstId && container.scrollHeight - container.scrollTop - container.clientHeight > 80) start = Math.max(0, total - pageSize);
       latestExecution = execution;
       const entries = [], parts = execution.parts || [];
       const inline = window.UBOVMTimeline.visibleTimelineParts(parts);
@@ -94,8 +142,10 @@
         if (next !== row.root) container.insertBefore(row.root, next); previous = row.root;
       }
       for (const [id, row] of rows) if (!kept.has(id)) { window.UBOVMMessage.release?.(row.body); row.root.remove(); rows.delete(id); }
+      // Stick to the newest content while following; growth alone must not pin an older page.
+      if (follow && start === null) scheduleFollow();
       return entries.length;
     }
-    return { update, reset, showLatest, dispose() { reset(); pager.remove(); } };
+    return { update, reset, showLatest, alignFollow: scheduleFollow, dispose() { cancelFollowFrame(); reset(); pager.remove(); } };
   };
 })();

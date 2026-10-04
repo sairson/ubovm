@@ -199,7 +199,7 @@ export async function createMcpMiddleware({ servers = [], connectTimeoutMs = 20_
       const diagnostic = { name: server.name, transport: server.transport ?? 'stdio', enabled: server.enabled, required: server.required, connected: false, tools: [] };
       diagnostics.push(diagnostic);
       if (!server.enabled) continue;
-      const client = new Client({ name: 'ubovm-harness', version: '0.1.1' }, { capabilities: {} });
+      const client = new Client({ name: 'ubovm-harness', version: '0.1.2' }, { capabilities: {} });
       const transport = makeTransport(server, maxResultBytes);
       client.onclose = () => { diagnostic.connected = false; };
       let connected = false;

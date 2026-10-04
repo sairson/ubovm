@@ -142,6 +142,44 @@
   const scrollPositions = new WeakMap();
   const goalViewScroll = new Map();
   let pendingScroll;
+  // Long histories paint the newest turns first so loaders can clear before older
+  // Markdown work. Prefill runs on later frames without a second full snapshot.
+  const HISTORY_TAIL = 14;
+  const HISTORY_BATCH = 8;
+  let historyFillFrame = 0;
+  let pendingThreadTeardown;
+  function cancelHistoryFill() {
+    if (historyFillFrame) { cancelAnimationFrame(historyFillFrame); historyFillFrame = 0; }
+  }
+  function releaseMessageView(view) {
+    if (!view) return;
+    for (const entry of view.entries || []) try { window.UBOVMMessage.release(entry.body); } catch { /* Independent teardown. */ }
+    if (view.stream) try { window.UBOVMMessage.release(view.stream.body); } catch { /* Independent teardown. */ }
+  }
+  function flushThreadTeardown() {
+    const pending = pendingThreadTeardown;
+    pendingThreadTeardown = undefined;
+    if (!pending) return;
+    for (const view of pending.views) releaseMessageView(view);
+    for (const container of pending.containers) try { container.replaceChildren(); } catch { /* Independent teardown. */ }
+  }
+  function queueThreadTeardown() {
+    const views = [], containers = [];
+    for (const [container, view] of messageViews) {
+      views.push(view);
+      containers.push(container);
+    }
+    messageViews.clear();
+    if (!views.length) return;
+    // A faster second switch must not leak the previous deferred teardown.
+    if (pendingThreadTeardown) {
+      for (const view of pendingThreadTeardown.views) releaseMessageView(view);
+      for (const container of pendingThreadTeardown.containers) try { container.replaceChildren(); } catch { /* Independent teardown. */ }
+    }
+    pendingThreadTeardown = { views, containers };
+    // Without a painted route mask the old thread would flash; release immediately.
+    if (!firstContentPaint || !routePending) flushThreadTeardown();
+  }
   let latestFrame = 0;
   function refreshLatest() {
     if (latestFrame || visualSuspended()) return;
@@ -381,6 +419,7 @@
   document.querySelector('.shell')?.append(backgroundTasks.element);
   const workerPanel = window.createWorkerPanel(messageActions, { openNative: id => { if (!hostState?.nativeWorkerPanel) return false; if (!hasPending('openWorker')) void renderRequest('openWorker', { workerId: id }).catch(() => {}); return true; }, initialWidth: workerPanelWidth, onWidthChange: width => { workerPanelWidth = width; persistDrafts(); } });
   byId('goal-log-bottom').addEventListener('click', () => {
+    // showLatest re-enables follow mode so later stream ticks stay pinned to the end.
     goalExecutionLog?.showLatest();
     const log = byId('goal-output-content');
     const behavior = matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth';
@@ -710,6 +749,122 @@
     if (last) attachResumeNote(note, last);
     else if (showingConversation) messages.appendChild(note);
   }
+  function createMessageEntry(role, text, parts, streaming = false) {
+    const article = document.createElement('article');
+    article.className = 'message ' + role + (streaming ? ' streaming-message' : '');
+    if (streaming) article.dataset.streaming = 'true';
+    const heading = document.createElement('div');
+    heading.className = 'message-heading';
+    heading.textContent = role === 'user' ? '你' : 'UBOVM';
+    const body = document.createElement('div');
+    body.className = 'message-text';
+    window.UBOVMMessage.update(body, text, { ...messageActions, role, parts, streaming, preserveBody: !streaming });
+    article.append(heading, body);
+    return { article, heading, body, role, text, parts };
+  }
+  function messageHistoryKey(item) {
+    return typeof item.id === 'string' && item.id ? JSON.stringify([item.role, 'message', item.id])
+      : item.parts?.[0]?.id ? JSON.stringify([item.role, 'part', item.parts[0].id]) : undefined;
+  }
+  function decorateHistoryEntry(entry, item) {
+    const hideEmpty = item.role === 'assistant' && !hasVisibleTimeline(item.text, item.parts);
+    let changed = false;
+    if (entry.article.hidden !== hideEmpty) { entry.article.hidden = hideEmpty; changed = true; }
+    const steeringStatus = item.role === 'user' ? item.steeringStatus : undefined;
+    entry.article.classList.toggle('steering-message', Boolean(steeringStatus));
+    if (steeringStatus) {
+      entry.article.dataset.steeringStatus = steeringStatus;
+      if (entry.steeringStatus !== steeringStatus) {
+        const badge = document.createElement('span'); badge.className = 'message-steering-badge'; badge.textContent = '引导';
+        const status = document.createElement('span'); status.className = 'message-steering-status';
+        status.setAttribute('role', 'status'); status.setAttribute('aria-atomic', 'true');
+        status.textContent = steeringStatus === 'accepted' ? '已送达' : steeringStatus === 'sending' ? '等待送达确认' : '送达待确认';
+        status.title = steeringStatus === 'accepted' ? '已交给当前 Agent，将用于调整后续执行；不表示任务已经完成' : '请核实队列与执行结果，未确认的输入不会自动重发';
+        entry.heading.replaceChildren(badge, status); changed = true;
+        if (steeringStatus !== 'accepted') {
+          const hint = document.createElement('span'); hint.className = 'message-steering-hint';
+          hint.textContent = steeringStatus === 'sending' ? '确认送达前不会自动重复发送' : '请核实执行结果，再决定是否重新提交';
+          entry.heading.appendChild(hint);
+        }
+      }
+    } else if (entry.article.dataset.steeringStatus) {
+      delete entry.article.dataset.steeringStatus;
+      entry.heading.textContent = item.role === 'user' ? '你' : 'UBOVM';
+      changed = true;
+    }
+    entry.steeringStatus = steeringStatus;
+    if (hostState?.mode === 'assist' && item.role === 'user' && item.id) {
+      if (!entry.rewind) {
+        entry.rewind = document.createElement('button');
+        entry.rewind.className = 'message-rewind'; entry.rewind.type = 'button';
+        entry.rewind.setAttribute('aria-label', '回退到此消息');
+        entry.rewind.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5 4 10l5 5M4 10h10a6 6 0 0 1 0 12" transform="translate(0 -2)"/></svg>';
+        entry.rewind.title = '停止 Agent，移除此消息及后续对话并取回输入；不会撤销文件或外部操作';
+        entry.article.appendChild(entry.rewind);
+      }
+      const button = entry.rewind, sessionId = currentSessionId;
+      const rewind = () => {
+        if (!button.isConnected || button.disabled || button.onclick !== rewind || sessionId !== currentSessionId || rewindControlsBlocked()) return;
+        restoreInput('rewindInput', { messageId: item.id }, item.text);
+      };
+      button.onclick = rewind;
+      button.disabled = rewindControlsBlocked();
+    }
+    entry.messageId = item.id;
+    return changed;
+  }
+  function scheduleHistoryFill() {
+    if (historyFillFrame || pageHidden()) return;
+    historyFillFrame = requestAnimationFrame(() => {
+      historyFillFrame = 0;
+      if (pageHidden() || hostState?.mode === 'goal') return;
+      const view = messageViews.get(messages);
+      if (!view || view.sessionId !== currentSessionId || !(view.historyStart > 0) || !Array.isArray(view.history)) return;
+      const batchEnd = view.historyStart;
+      const batchStart = Math.max(0, batchEnd - HISTORY_BATCH);
+      const batch = view.history.slice(batchStart, batchEnd);
+      const scroller = conversation;
+      const position = scrollPositions.get(scroller);
+      const previousHeight = scroller.scrollHeight;
+      const previousTop = scroller.scrollTop;
+      const following = position.following && scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 32;
+      const fragment = document.createDocumentFragment();
+      const prefix = [];
+      for (const item of batch) {
+        const parts = item.role === 'assistant' ? visibleTimelineParts(item.parts) : item.parts;
+        const entry = createMessageEntry(item.role, item.text, parts);
+        entry.key = messageHistoryKey(item);
+        decorateHistoryEntry(entry, item);
+        if (entry.role === 'assistant' && typeof entry.messageId === 'string' && entry.messageId.startsWith('assist:')) {
+          entry.changes = document.createElement('section');
+          entry.article.appendChild(entry.changes);
+          window.UBOVMCodeChanges.update(entry.changes, hostState?.codeChanges?.[entry.messageId.slice(7)], {
+            turnId: entry.messageId.slice(7), busy, onAction: (action, payload) => new Promise((resolve, reject) => {
+              if (!entry.changes.isConnected || view.sessionId !== currentSessionId) { reject(new Error('会话已切换，请返回原会话操作。')); return; }
+              if (!request(action, payload, resolve, reject)) reject(new Error('操作未发送，请稍后重试。'));
+            })
+          });
+        }
+        prefix.push(entry);
+        fragment.appendChild(entry.article);
+      }
+      const anchor = view.entries[0]?.article || view.stream?.article || null;
+      messages.insertBefore(fragment, anchor);
+      view.entries = prefix.concat(view.entries);
+      view.historyStart = batchStart;
+      if (!following) {
+        scroller.scrollTop = previousTop + (scroller.scrollHeight - previousHeight);
+        position.top = scroller.scrollTop;
+      } else {
+        scroller.scrollTop = scroller.scrollHeight;
+        position.top = scroller.scrollTop;
+        position.following = true;
+      }
+      try { renderConversationOutline(); } catch { /* Outline can catch up on the next full paint. */ }
+      refreshLatest();
+      if (view.historyStart > 0) scheduleHistoryFill();
+    });
+  }
   function renderMessages(items) {
     parkResumeNote();
     let view = messageViews.get(messages);
@@ -734,33 +889,25 @@
       (position.following && (followingPending || scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 32));
     forceScroll = false;
     if (view?.sessionId !== currentSessionId) {
+      cancelHistoryFill();
       container.replaceChildren();
-      view = { sessionId: currentSessionId, entries: [], stream: null, busy: undefined };
+      view = { sessionId: currentSessionId, entries: [], stream: null, busy: undefined, historyStart: 0 };
       messageViews.set(container, view);
     }
-    let changed = view.busy !== busy || view.entries.length !== safeMessages.length;
-    const createMessage = (role, text, parts, streaming = false) => {
-      const article = document.createElement('article');
-      article.className = 'message ' + role + (streaming ? ' streaming-message' : '');
-      if (streaming) article.dataset.streaming = 'true';
-      const heading = document.createElement('div');
-      heading.className = 'message-heading';
-      heading.textContent = role === 'user' ? '你' : 'UBOVM';
-      const body = document.createElement('div');
-      body.className = 'message-text';
-      window.UBOVMMessage.update(body, text, { ...messageActions, role, parts, streaming, preserveBody: !streaming });
-      article.append(heading, body);
-      return { article, heading, body, role, text, parts };
-    };
+    // Fresh session mounts paint the newest turns first so the loader can clear
+    // before older Markdown work. Same-session history edits keep full reconcile.
+    const progressive = historyChanged && view.entries.length === 0 && safeMessages.length > HISTORY_TAIL;
+    const paintStart = progressive ? safeMessages.length - HISTORY_TAIL : 0;
+    let changed = view.busy !== busy || view.entries.length !== safeMessages.length - paintStart;
     // Keep published history in place while only the transient reply grows.
     // Reading selections, focus, and scroll anchors survive token updates.
     if (historyChanged) {
-      const messageKey = item => typeof item.id === 'string' && item.id ? JSON.stringify([item.role, 'message', item.id])
-        : item.parts?.[0]?.id ? JSON.stringify([item.role, 'part', item.parts[0].id]) : undefined;
+      cancelHistoryFill();
+      const paintMessages = safeMessages.slice(paintStart);
       const retained = new Map(view.entries.filter(entry => entry.key).map(entry => [entry.key, entry]));
       const used = new Set(), entries = [];
-      for (const [index, item] of safeMessages.entries()) {
-        const key = messageKey(item);
+      for (const [index, item] of paintMessages.entries()) {
+        const key = messageHistoryKey(item);
         let entry = key ? retained.get(key) : view.entries[index]?.key ? undefined : view.entries[index];
         if (used.has(entry)) entry = undefined;
         const publishedIds = new Set((item.parts || []).map(part => part.id));
@@ -773,7 +920,7 @@
           entry.text = item.text; entry.parts = parts;
           changed = true;
         } else if (!entry) {
-          entry = createMessage(item.role, item.text, parts);
+          entry = createMessageEntry(item.role, item.text, parts);
           changed = true;
         } else if (entry.role !== item.role || entry.text !== item.text || !sameParts(entry.parts, parts)) {
           entry.article.className = 'message ' + item.role;
@@ -783,44 +930,7 @@
           entry.role = item.role; entry.text = item.text; entry.parts = parts;
           changed = true;
         }
-        const hideEmpty = item.role === 'assistant' && !hasVisibleTimeline(item.text, item.parts);
-        if (entry.article.hidden !== hideEmpty) { entry.article.hidden = hideEmpty; changed = true; }
-        const steeringStatus = item.role === 'user' ? item.steeringStatus : undefined;
-        entry.article.classList.toggle('steering-message', Boolean(steeringStatus));
-        if (steeringStatus) {
-          entry.article.dataset.steeringStatus = steeringStatus;
-          if (entry.steeringStatus !== steeringStatus) {
-            const badge = document.createElement('span'); badge.className = 'message-steering-badge'; badge.textContent = '引导';
-            const status = document.createElement('span'); status.className = 'message-steering-status';
-            status.setAttribute('role', 'status'); status.setAttribute('aria-atomic', 'true');
-            status.textContent = steeringStatus === 'accepted' ? '已送达' : steeringStatus === 'sending' ? '等待送达确认' : '送达待确认';
-            status.title = steeringStatus === 'accepted' ? '已交给当前 Agent，将用于调整后续执行；不表示任务已经完成' : '请核实队列与执行结果，未确认的输入不会自动重发';
-            entry.heading.replaceChildren(badge, status); changed = true;
-            if (steeringStatus !== 'accepted') {
-              const hint = document.createElement('span'); hint.className = 'message-steering-hint';
-              hint.textContent = steeringStatus === 'sending' ? '确认送达前不会自动重复发送' : '请核实执行结果，再决定是否重新提交';
-              entry.heading.appendChild(hint);
-            }
-          }
-        } else if (entry.article.dataset.steeringStatus) { delete entry.article.dataset.steeringStatus; entry.heading.textContent = item.role === 'user' ? '你' : 'UBOVM'; changed = true; }
-        entry.steeringStatus = steeringStatus;
-        if (hostState?.mode === 'assist' && item.role === 'user' && item.id) {
-          if (!entry.rewind) {
-            entry.rewind = document.createElement('button');
-            entry.rewind.className = 'message-rewind'; entry.rewind.type = 'button';
-            entry.rewind.setAttribute('aria-label', '回退到此消息');
-            entry.rewind.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5 4 10l5 5M4 10h10a6 6 0 0 1 0 12" transform="translate(0 -2)"/></svg>';
-            entry.rewind.title = '停止 Agent，移除此消息及后续对话并取回输入；不会撤销文件或外部操作';
-            entry.article.appendChild(entry.rewind);
-          }
-          const button = entry.rewind, sessionId = currentSessionId;
-          const rewind = () => {
-            if (!button.isConnected || button.disabled || button.onclick !== rewind || sessionId !== currentSessionId || rewindControlsBlocked()) return;
-            restoreInput('rewindInput', { messageId: item.id }, item.text);
-          };
-          button.onclick = rewind;
-          button.disabled = rewindControlsBlocked();
-        }
+        if (decorateHistoryEntry(entry, item)) changed = true;
         entry.key = key; used.add(entry); entries.push(entry);
       }
       // Remove expired history first so trimming does not detach retained
@@ -833,10 +943,12 @@
         previous = entry.article;
       }
       view.entries = entries;
+      view.historyStart = paintStart;
+      if (paintStart > 0) scheduleHistoryFill();
     }
     if (hasLive) {
       if (!view.stream) {
-        view.stream = createMessage('assistant', streamText, liveParts, busy);
+        view.stream = createMessageEntry('assistant', streamText, liveParts, busy);
         container.appendChild(view.stream.article);
         changed = true;
       } else if (view.stream.text !== streamText || !sameParts(view.stream.parts, liveParts) || view.busy !== busy) {
@@ -863,8 +975,9 @@
     // Avoid serializing every completed turn's file list for each new token.
     // Busy changes still refresh undo availability; failed renders never cache.
     if (historyChanged || view.busy !== busy || view.codeChanges !== hostState?.codeChanges) {
+      const historyOffset = view.historyStart || 0;
       for (const [index, entry] of view.entries.entries()) {
-        const id = safeMessages[index]?.id;
+        const id = entry.messageId || safeMessages[historyOffset + index]?.id;
         if (entry.role !== 'assistant' || !id?.startsWith('assist:')) continue;
         if (!entry.changes) { entry.changes = document.createElement('section'); entry.article.appendChild(entry.changes); changed = true; }
         changed = updateChanges(entry.changes, id.slice(7)) || changed;
@@ -1286,6 +1399,8 @@
       setText(byId('goal-output-empty'), busy ? '正在启动，执行日志将在事件产生后显示。' : '执行后，规划、任务派发和工具调用会按顺序显示在这里。');
       setText(byId('goal-output-title'), '思考与调度日志');
       setText(byId('goal-output-status'), label + ' · ' + count + ' 条记录');
+      // Empty-state / flex height changes after update; re-align follow once layout settles.
+      if (count) goalExecutionLog.alignFollow?.();
     }
     let remainingActivities = [];
     if (!goalMode) {
@@ -2012,6 +2127,8 @@
     cancelPaintAcknowledgement();
     cancelContentReadyRetry();
     contentReadyRetried = false;
+    cancelHistoryFill();
+    flushThreadTeardown();
     // Hidden/idle suspension must force a full paint after restore even when
     // contentReady already completed, otherwise a discarded compositor stays blank.
     if (hostState) { renderPending = true; fullRenderPending = true; contentReadyPending = true; }
@@ -2070,9 +2187,10 @@
         return;
       }
       // Commit the lightweight loader for one frame before building heavy DOM.
-      // The next frame reads the latest route/state, never a captured stale page.
+      // Release the previous thread only after that mask is on screen.
       if (routePending && !routePaintReady) {
         routePaintReady = true;
+        flushThreadTeardown();
         scheduleRender(executionOnly === true);
         return;
       }
@@ -2416,12 +2534,9 @@
       cleanup(() => window.UBOVMHtmlPreview.close({ restoreFocus: false }));
       cleanup(() => goalExecutionLog?.reset());
       cleanup(() => blackboardGraph?.dispose()); blackboardGraph = undefined;
-      for (const [container, view] of messageViews) {
-        for (const entry of view.entries) cleanup(() => window.UBOVMMessage.release(entry.body));
-        if (view.stream) cleanup(() => window.UBOVMMessage.release(view.stream.body));
-        container.replaceChildren();
-      }
-      messageViews.clear();
+      // Defer message DOM release until the route loader has painted one frame.
+      cancelHistoryFill();
+      queueThreadTeardown();
       cleanup(() => conversationOutline?.reset());
       cleanup(closeNoteEditor);
       cleanup(() => projectSwitcher.close());

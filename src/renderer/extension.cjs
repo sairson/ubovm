@@ -127,7 +127,12 @@ async function activate(context) {
     postMessage: message => {
       // Worker delivery owns its own bounded queue. A slow or closing sidebar
       // must not hold the main conversation's streaming publication open.
-      if (message.type === 'executionState') void workerPanel.publish({ sessionId: message.conversationId, workers: message.execution.workers || [], error: message.execution.workerViewError?.message });
+      if (message.type === 'executionState') {
+        void workerPanel.publish({ sessionId: message.conversationId, workers: message.execution.workers || [], error: message.execution.workerViewError?.message });
+        // Carry host recovery chrome on execution ticks so a post-restore
+        // publish does not need a second full transcript snapshot.
+        message = { ...message, recovering };
+      }
       if (!conversationNeedsSnapshot()) return undefined;
       // Full snapshots already carry a revision from publishState; do not burn a second slot.
       const revision = Number.isInteger(message.viewRevision) ? message.viewRevision : ++viewRevision;
@@ -285,7 +290,18 @@ async function activate(context) {
         storageDirectory: path.join((context.storageUri ?? context.globalStorageUri).fsPath, 'harness'),
         onEvent: event => { if (event.type === 'knowledge.failed') output.appendLine(event.message || '后台学习本地恢复暂未完成，将保留任务。'); } });
     })().catch(() => output.appendLine('后台学习本地恢复暂不可用，未完成任务仍保留。'));
-  }).finally(() => { recovering = false; if (!shuttingDown) publishState(); });
+  }).finally(() => {
+    recovering = false;
+    // Prefer an execution tick so first-paint history is not rebuilt after restore.
+    if (shuttingDown) return;
+    try {
+      const id = typeof sessions.summary === 'function' ? sessions.summary()?.id : undefined;
+      if (id && typeof executionPublisher?.schedule === 'function') executionPublisher.schedule(id);
+      else publishState();
+    } catch (error) {
+      try { publishState(); } catch { output.appendLine('会话初始化失败：' + errorText(error)); }
+    }
+  });
   messageQueue = messageQueue.catch(error => output.appendLine('会话初始化失败：' + String(error)));
   function settingsSidebarItems() {
     const keys = settingsPage === 'initialize'
@@ -933,7 +949,10 @@ async function activate(context) {
       await vscode.commands.executeCommand('setContext', 'ubovm.settingsPage', '');
       await welcome?.webview.postMessage({ type: 'closeSettings' });
     }
-    await vscode.commands.executeCommand('setContext', 'ubovm.contentReady', false);
+    // Do not await workbench context updates; the first snapshot must leave
+    // immediately. Watchdogs still unlock if paint acknowledgement is lost.
+    void vscode.commands.executeCommand('setContext', 'ubovm.contentReady', false)
+      .catch(error => output.appendLine(errorText(error)));
   }
 
   async function finishConversationSwitch(restore) {
@@ -941,7 +960,8 @@ async function activate(context) {
       publishState();
       if (restore) {
         await restoreExecution();
-        publishState();
+        // History already painted; restore only needs an execution delta.
+        executionPublisher.schedule(sessions.summary().id);
       }
       await revealCurrentInSessionsTree();
     } catch (error) {
