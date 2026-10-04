@@ -87,8 +87,9 @@
  * Tab close buttons live in .tab-actions and are intentionally retained.
  */
 /* Independent snapshots let the editor grow while an outgoing pane fades away. */
-/* Startup: one shared mask + spinner over sessions sidebar and editor together.
- * Reveal both regions only after the conversation reports contentReady.
+/* Cold startup: one shared mask over sidebar + editor until first paint.
+ * After html.ubovm-shell-ready, conversation switches only re-lock the main
+ * webview (route-loading); the sessions sidebar stays painted and interactive.
  * html.ubovm-shell-loading bridges splash exit before sessions-body exists. */
 .monaco-workbench:has(.ubovm-sessions-body),
 html.ubovm-shell-loading .monaco-workbench {
@@ -106,18 +107,18 @@ html.ubovm-shell-loading .monaco-workbench::before {
   /* Instant appear under the splash; fade only when dismissing after ready. */
   transition: none;
 }
-html.ubovm-content-ready .monaco-workbench:has(.ubovm-sessions-body)::before,
-html.ubovm-content-ready.ubovm-shell-loading .monaco-workbench::before {
+html.ubovm-shell-ready .monaco-workbench:has(.ubovm-sessions-body)::before,
+html.ubovm-shell-ready.ubovm-shell-loading .monaco-workbench::before {
   animation: none;
   transition: opacity 160ms cubic-bezier(.22, 1, .36, 1), visibility 160ms;
 }
-html:not(.ubovm-content-ready):not(.ubovm-content-slow) .monaco-workbench:has(.ubovm-sessions-body)::before,
-html.ubovm-shell-loading:not(.ubovm-content-ready):not(.ubovm-content-slow) .monaco-workbench::before {
+html:not(.ubovm-shell-ready):not(.ubovm-content-slow) .monaco-workbench:has(.ubovm-sessions-body)::before,
+html.ubovm-shell-loading:not(.ubovm-shell-ready):not(.ubovm-content-slow) .monaco-workbench::before {
   opacity: 1; visibility: visible; pointer-events: none;
 }
 /* Startup-aligned indeterminate bar — soft gradient travel across a fixed track. */
-html:not(.ubovm-content-ready):not(.ubovm-content-slow) .monaco-workbench:has(.ubovm-sessions-body)::after,
-html.ubovm-shell-loading:not(.ubovm-content-ready):not(.ubovm-content-slow) .monaco-workbench::after {
+html:not(.ubovm-shell-ready):not(.ubovm-content-slow) .monaco-workbench:has(.ubovm-sessions-body)::after,
+html.ubovm-shell-loading:not(.ubovm-shell-ready):not(.ubovm-content-slow) .monaco-workbench::after {
   content: ''; position: absolute; z-index: 1001; pointer-events: none;
   width: 110px; height: 2px; left: calc(50% - 55px); top: calc(50% + 28px);
   border-radius: 999px; overflow: hidden;
@@ -136,18 +137,18 @@ html.ubovm-shell-loading:not(.ubovm-content-ready):not(.ubovm-content-slow) .mon
 }
 html.ubovm-loading-paused .monaco-workbench:has(.ubovm-sessions-body)::after,
 html.ubovm-loading-paused.ubovm-shell-loading .monaco-workbench::after { animation-play-state: paused !important; }
-/* Keep the complete sidebar behind the shared mask until recovery and paint
- * have finished. Visibility preserves tree measurements without showing rows. */
+/* Hide session rows only for cold startup. After shell-ready, keep the sidebar
+ * visible through conversation switches so selection/refresh stay interactive. */
 .ubovm-sessions-body > :not(.ubovm-session-loading) { opacity: 1; transition: opacity 140ms cubic-bezier(.22, 1, .36, 1); }
-html:not(.ubovm-content-ready) .ubovm-sessions-body > :not(.ubovm-session-loading):not(.ubovm-sidebar-modes):not(.ubovm-sidebar-management) { visibility: hidden; opacity: 0; pointer-events: none; transition: none; }
-html:not(.ubovm-content-ready) .pane:has(.ubovm-sessions-body) > .pane-header,
-html:not(.ubovm-content-ready) .pane:has(.ubovm-sessions-body) > .title-actions,
-html:not(.ubovm-content-ready) .part:has(.ubovm-sessions-body) .title-actions { visibility: hidden; pointer-events: none; }
+html:not(.ubovm-shell-ready) .ubovm-sessions-body > :not(.ubovm-session-loading):not(.ubovm-sidebar-modes):not(.ubovm-sidebar-management) { visibility: hidden; opacity: 0; pointer-events: none; transition: none; }
+html:not(.ubovm-shell-ready) .pane:has(.ubovm-sessions-body) > .pane-header,
+html:not(.ubovm-shell-ready) .pane:has(.ubovm-sessions-body) > .title-actions,
+html:not(.ubovm-shell-ready) .part:has(.ubovm-sessions-body) .title-actions { visibility: hidden; pointer-events: none; }
 @media (prefers-reduced-motion: reduce) {
   .monaco-workbench:has(.ubovm-sessions-body)::before,
   html.ubovm-shell-loading .monaco-workbench::before,
-  html.ubovm-content-ready .monaco-workbench:has(.ubovm-sessions-body)::before,
-  html.ubovm-content-ready.ubovm-shell-loading .monaco-workbench::before { transition: none; animation: none !important; }
+  html.ubovm-shell-ready .monaco-workbench:has(.ubovm-sessions-body)::before,
+  html.ubovm-shell-ready.ubovm-shell-loading .monaco-workbench::before { transition: none; animation: none !important; }
   .ubovm-sessions-body > :not(.ubovm-session-loading) { transition: none; }
   .monaco-workbench:has(.ubovm-sessions-body)::after,
   html.ubovm-shell-loading .monaco-workbench::after {
@@ -157,16 +158,16 @@ html:not(.ubovm-content-ready) .part:has(.ubovm-sessions-body) .title-actions { 
     opacity: .45;
   }
 }
-/* Recovery lives in the sessions pane only after the shared spinner times out. */
+/* Recovery lives in the sessions pane only after the cold-start spinner times out. */
 .ubovm-session-loading {
   position: absolute; inset: 50% 18px auto; transform: translateY(-50%); z-index: 1002;
   text-align: center; color: var(--vscode-descriptionForeground); font-size: 12px; line-height: 1.8;
 }
-html:not(.ubovm-content-ready):not(.ubovm-content-slow) .ubovm-session-loading {
+html:not(.ubovm-shell-ready):not(.ubovm-content-slow) .ubovm-session-loading {
   visibility: hidden; opacity: 0; pointer-events: none;
 }
-html.ubovm-content-slow:not(.ubovm-content-ready) .monaco-workbench:has(.ubovm-sessions-body)::before,
-html.ubovm-content-slow.ubovm-shell-loading:not(.ubovm-content-ready) .monaco-workbench::before {
+html.ubovm-content-slow:not(.ubovm-shell-ready) .monaco-workbench:has(.ubovm-sessions-body)::before,
+html.ubovm-content-slow.ubovm-shell-loading:not(.ubovm-shell-ready) .monaco-workbench::before {
   opacity: 1; visibility: visible; pointer-events: none;
 }
 .ubovm-session-loading[hidden] { display: none; }
@@ -401,7 +402,6 @@ html:not(.ubovm-content-slow) .ubovm-sessions-loading .tree-explorer-viewlet-tre
 }
 .monaco-workbench .ubovm-empty-sidebar-action,
 .monaco-workbench .ubovm-open-file-tree,
-.monaco-workbench .ubovm-open-browser,
 .monaco-workbench .ubovm-open-worker {
   display: flex;
   flex-direction: column;
@@ -429,18 +429,15 @@ html:not(.ubovm-content-slow) .ubovm-sessions-loading .tree-explorer-viewlet-tre
 }
 .monaco-workbench .ubovm-empty-sidebar-action:hover,
 .monaco-workbench .ubovm-open-file-tree:hover,
-.monaco-workbench .ubovm-open-browser:hover,
 .monaco-workbench .ubovm-open-worker:hover {
   background: var(--vscode-list-hoverBackground);
   border-color: var(--vscode-focusBorder, var(--vscode-widget-border));
 }
 .monaco-workbench .ubovm-empty-sidebar-action:focus-visible,
 .monaco-workbench .ubovm-open-file-tree:focus-visible,
-.monaco-workbench .ubovm-open-browser:focus-visible,
 .monaco-workbench .ubovm-open-worker:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 2px; }
 .monaco-workbench.vs-dark .ubovm-empty-sidebar-action,
 .monaco-workbench.vs-dark .ubovm-open-file-tree,
-.monaco-workbench.vs-dark .ubovm-open-browser,
 .monaco-workbench.vs-dark .ubovm-open-worker {
   background: color-mix(in srgb, #fff 4%, transparent);
   border-color: color-mix(in srgb, #fff 10%, transparent);
@@ -877,6 +874,11 @@ html:not(.ubovm-content-slow) .ubovm-sessions-loading .tree-explorer-viewlet-tre
 .monaco-workbench .ubovm-sidebar-modes button:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; }
 .monaco-workbench .ubovm-sessions-body.ubovm-sessions-narrow .ubovm-sidebar-modes {
   margin-inline: 6px;
+  padding: 3px;
+}
+.monaco-workbench .ubovm-sessions-body.ubovm-sessions-narrow .ubovm-sidebar-modes button {
+  gap: 0;
+  padding: 0;
 }
 .monaco-workbench .ubovm-sessions-body.ubovm-sessions-narrow .ubovm-sidebar-modes button .ubovm-mode-label {
   position: absolute;
@@ -964,6 +966,20 @@ html:not(.ubovm-content-slow) .ubovm-sessions-loading .tree-explorer-viewlet-tre
   clip: rect(0, 0, 0, 0);
   white-space: nowrap;
   border: 0;
+}
+.monaco-workbench .ubovm-sessions-body.ubovm-sessions-wide .ubovm-sidebar-management button {
+  gap: 4px;
+  padding: 0 6px;
+}
+.monaco-workbench .ubovm-sessions-body.ubovm-sessions-wide .ubovm-sidebar-management button .ubovm-management-label {
+  position: static;
+  width: auto;
+  height: auto;
+  margin: 0;
+  clip: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .monaco-workbench .ubovm-sidebar-management button:hover:enabled { color: var(--vscode-foreground); background: var(--vscode-list-hoverBackground); }
 .monaco-workbench .ubovm-sidebar-management button[aria-current="page"] { color: var(--vscode-foreground); background: var(--vscode-list-inactiveSelectionBackground); }

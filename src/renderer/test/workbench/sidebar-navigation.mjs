@@ -41,8 +41,8 @@ try {
     assert(await assist.isVisible(), 'assist must remain visible while native welcome loads');
     assert(await goal.isVisible(), 'goal must remain visible while native welcome loads');
     assert(await assist.isDisabled(), 'loading only disables navigation');
-    assert.equal(await page.locator('.ubovm-session-loading').evaluate(el => getComputedStyle(el).visibility), 'hidden', 'shared shell mask owns startup feedback');
-    assert.equal(await page.locator('.monaco-workbench').evaluate(el => getComputedStyle(el, '::before').opacity), '1', 'one shared overlay covers sidebar and editor');
+    assert.equal(await page.locator('.ubovm-session-loading').evaluate(el => getComputedStyle(el).visibility), 'hidden', 'cold-start shell mask owns startup feedback');
+    assert.equal(await page.locator('.monaco-workbench').evaluate(el => getComputedStyle(el, '::before').opacity), '1', 'cold-start overlay covers sidebar and editor together');
     for (let i = 0; i < 12; i++) {
       await page.evaluate(i => {
         document.getElementById('sessions').classList.toggle('welcome', i % 2 === 0);
@@ -53,7 +53,13 @@ try {
       assert.equal(await page.locator('.ubovm-session-loading').isVisible(), false);
       assert(await page.locator('.ubovm-sidebar-management').isVisible());
     }
-    await page.evaluate(() => window.updateContext({ 'ubovm.mode': 'assist' }));
+    await page.waitForFunction(() => getComputedStyle(document.querySelector('.monaco-workbench'), '::before').opacity === '0');
+    await page.evaluate(() => window.updateContext({ 'ubovm.contentReady': false }));
+    assert.equal(await page.evaluate(() => document.documentElement.classList.contains('ubovm-shell-ready')), true);
+    assert.equal(await page.locator('.monaco-workbench').evaluate(el => getComputedStyle(el, '::before').opacity), '0', 'conversation switch must leave the sessions sidebar uncovered');
+    assert(await assist.isEnabled(), 'mode controls stay usable while the conversation reloads');
+    assert(await page.locator('.ubovm-sidebar-management').isVisible());
+    await page.evaluate(() => window.updateContext({ 'ubovm.mode': 'assist', 'ubovm.contentReady': true }));
     await page.evaluate(() => {
       const container = document.getElementById('sessions');
       container.classList.remove('welcome');

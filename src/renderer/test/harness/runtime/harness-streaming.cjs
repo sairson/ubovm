@@ -815,7 +815,10 @@ test('Reason and goal Worker thinking retain sources while protocol JSON stays h
   const workerThinking = f.service.state('current').workers.find(worker => worker.id === 'goal-worker').parts[0];
   assert.equal(parts[0].source, 'reason'); assert.equal(workerThinking.source, 'worker');
   assert.equal(workerThinking.workerId, 'goal-worker'); assert.equal(workerThinking.startedAt, Date.parse('2026-09-21T08:00:00.000Z'));
+  const workerParts = f.service.state('current').workers.find(worker => worker.id === 'goal-worker').parts;
+  assert.deepEqual(workerParts.map(part => part.type), ['thinking']);
   assert(!JSON.stringify(parts).includes('intents')); assert(!JSON.stringify(parts).includes('steps'));
+  assert(!JSON.stringify(workerParts).includes('steps'));
   const { readFile, readdir } = require('node:fs/promises');
   const storage = path.join(f.directory, 'storage');
   const conversation = path.join(storage, (await readdir(storage))[0]);
@@ -823,6 +826,89 @@ test('Reason and goal Worker thinking retain sources while protocol JSON stays h
   const saved = JSON.parse(await readFile(path.join(goal, 'goal-timeline.json'), 'utf8'));
   assert.deepEqual(saved.parts, parts);
   assert(!JSON.stringify(saved).includes('provider-signature'));
+});
+
+test('Reason decisions project thinking process and human-readable conclusions into the goal log', async t => {
+  const f = await fixture(t, 'goal');
+  const reason = event => f.event({ type: 'reason.event', event: { type: 'pi_event', event } });
+  reason({ type: 'message_start', message: assistant([]) });
+  reason(thinkingEvent('thinking_delta', [thought('Need a file inventory before claiming coverage.')]));
+  reason({ type: 'message_end', message: assistant([
+    thought('Need a file inventory before claiming coverage.'),
+    { type: 'text', text: '{"intents":[{"description":"List project entry files","parentIds":["root"],"priority":"high","keyPoints":["package.json exists"]}]}' }
+  ]) });
+  f.event({ type: 'reason.decision', revision: 2, decision: {
+    intents: [{ description: 'List project entry files', parentIds: ['root'], priority: 'high', keyPoints: ['package.json exists'] }]
+  } });
+  let parts = f.service.state('current').parts;
+  assert.equal(parts[0].type, 'thinking');
+  assert.equal(parts[0].source, 'reason');
+  assert.match(parts[0].text, /file inventory/);
+  assert.equal(parts[1].type, 'text');
+  assert.equal(parts[1].source, 'reason');
+  assert.match(parts[1].text, /派发 1 项任务/);
+  assert.match(parts[1].text, /List project entry files/);
+  assert.match(parts[1].text, /package\.json exists/);
+  assert(!JSON.stringify(parts).includes('"intents"'));
+  f.event({ type: 'reason.decision', revision: 3, decision: { wait: true } });
+  parts = f.service.state('current').parts;
+  assert(parts.some(part => part.source === 'reason' && part.type === 'text' && part.text.includes('等待进行中的任务')));
+  f.event({ type: 'reason.decision', revision: 4, decision: { complete: true, summary: 'Entry files verified', evidenceIds: ['fact-1'] } });
+  parts = f.service.state('current').parts;
+  const completion = parts.filter(part => part.source === 'reason' && part.type === 'text').at(-1);
+  assert.match(completion.text, /目标已完成/);
+  assert.match(completion.text, /Entry files verified/);
+  assert(!JSON.stringify(parts).includes('evidenceIds'));
+  f.complete({ complete: true, revision: 4, summary: 'Entry files verified' }); await f.completion;
+  const delivered = f.delivered[0].parts.filter(part => part.source === 'reason');
+  assert(delivered.some(part => part.type === 'thinking'));
+  assert(delivered.some(part => part.type === 'text' && part.text.includes('目标已完成')));
+});
+
+test('goal Workers stream thinking, conclusions and tools like assist Workers', async t => {
+  const f = await fixture(t, 'goal');
+  const worker = event => f.event({ type: 'worker.event', timestamp: '2026-09-21T08:00:00.000Z',
+    event: { type: 'pi_event', intentId: 'goal-worker', attemptId: 'attempt-1', event } });
+  worker({ type: 'message_start', message: assistant([]) });
+  worker(thinkingEvent('thinking_delta', [thought('Locate the entry file.')]));
+  worker(thinkingEvent('thinking_end', [thought('Locate the entry file.')]));
+  worker({ type: 'tool_execution_start', toolName: 'read_workspace_file', toolCallId: 'tool-1', args: { path: 'src/index.js' } });
+  worker({ type: 'tool_execution_update', toolName: 'read_workspace_file', toolCallId: 'tool-1',
+    partialResult: { content: [{ type: 'text', text: 'export const ready = true;' }] } });
+  worker({ type: 'tool_execution_end', toolName: 'read_workspace_file', toolCallId: 'tool-1',
+    result: { content: [{ type: 'text', text: 'export const ready = true;' }] } });
+  worker({ type: 'message_update', message: assistant([
+    thought('Locate the entry file.'), { type: 'text', text: 'Entry exports ready.' }
+  ]), assistantMessageEvent: { type: 'text_delta', contentIndex: 1, delta: 'Entry exports ready.' } });
+  let live = f.service.state('current').workers.find(item => item.id === 'goal-worker');
+  assert.deepEqual(live.parts.map(part => part.type), ['thinking', 'tool', 'text']);
+  assert.equal(live.parts[0].source, 'worker');
+  assert.equal(live.parts[0].status, 'completed');
+  assert.equal(live.parts[1].status, 'completed');
+  assert.match(live.parts[1].output, /ready = true/);
+  assert.equal(live.parts[2].status, 'streaming');
+  assert.equal(live.parts[2].text, 'Entry exports ready.');
+  assert.match(live.streamText, /Entry exports ready/);
+  worker({ type: 'message_end', message: assistant([
+    thought('Locate the entry file.'), { type: 'text', text: 'Entry exports ready.' }
+  ]) });
+  worker({ type: 'message_start', message: assistant([]) });
+  worker({ type: 'message_update', message: assistant([{ type: 'text', text: '{"outcome":"confirmed","statement":"Part' }]),
+    assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: '{"outcome"' } });
+  live = f.service.state('current').workers.find(item => item.id === 'goal-worker');
+  assert.equal(live.parts.filter(part => part.type === 'text').length, 1, 'incomplete protocol JSON stays hidden');
+  worker({ type: 'message_end', message: assistant([{ type: 'text',
+    text: '{"version":1,"outcome":"confirmed","statement":"Entry exports ready.","coverage":[],"evidence":[],"failedChecks":[],"limitations":[],"nextSteps":[]}' }]) });
+  live = f.service.state('current').workers.find(item => item.id === 'goal-worker');
+  assert.equal(live.parts.filter(part => part.type === 'text').at(-1).text, 'Entry exports ready.');
+  assert(!JSON.stringify(live.parts).includes('"outcome"'));
+  f.event({ type: 'worker.result', intentId: 'goal-worker', result: { fact: { content: JSON.stringify({ statement: 'Entry exports ready.' }) } } });
+  live = f.service.state('current').workers.find(item => item.id === 'goal-worker');
+  assert.equal(live.status, 'completed');
+  assert.equal(live.parts.find(part => part.type === 'text').status, 'completed');
+  assert.equal(live.parts.filter(part => part.type === 'text').at(-1).text, 'Entry exports ready.');
+  assert(!JSON.stringify(f.service.state('current').parts).includes('Entry exports ready'));
+  f.complete({ complete: true, revision: 1, summary: 'Goal complete' }); await f.completion;
 });
 
 test('long timelines keep all earlier fragments without an omission placeholder', () => {

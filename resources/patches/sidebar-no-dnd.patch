@@ -1,0 +1,233 @@
+diff --git a/src/vs/workbench/browser/parts/compositeBar.ts b/src/vs/workbench/browser/parts/compositeBar.ts
+--- a/src/vs/workbench/browser/parts/compositeBar.ts
++++ b/src/vs/workbench/browser/parts/compositeBar.ts
+@@ -107,6 +107,11 @@ export class CompositeDragAndDrop implements ICompositeDragAndDrop {
+ 	}
+ 
+ 	private canDrop(data: CompositeDragAndDropData, targetCompositeId: string | undefined): boolean {
++		// ubovm: primary/secondary side bars keep a fixed layout -- reject all drops there.
++		if (this.targetContainerLocation === ViewContainerLocation.Sidebar || this.targetContainerLocation === ViewContainerLocation.AuxiliaryBar) {
++			return false;
++		}
++
+ 		const dragData = data.getData();
+ 
+ 		if (dragData.type === 'composite') {
+@@ -148,6 +153,11 @@ export interface ICompositeBarOptions {
+ 	readonly dndHandler: ICompositeDragAndDrop;
+ 	readonly activityHoverOptions: IActivityHoverOptions;
+ 	readonly preventLoopNavigation?: boolean;
++	/**
++	 * When false, composite bar items are not draggable and the bar is not a drop target.
++	 * Defaults to true.
++	 */
++	readonly allowDragAndDrop?: boolean;
+ 
+ 	readonly getActivityAction: (compositeId: string) => CompositeBarAction;
+ 	readonly getCompositePinnedAction: (compositeId: string) => IAction;
+@@ -293,7 +303,7 @@ export class CompositeBar extends Widget implements ICompositeBar {
+ 				const item = this.model.findItem(action.id);
+ 				return item && this.instantiationService.createInstance(
+ 					CompositeActionViewItem,
+-					{ ...options, draggable: true, colors: this.options.colors, icon: this.options.icon, hoverOptions: this.options.activityHoverOptions, compact: this.options.compact },
++					{ ...options, draggable: this.options.allowDragAndDrop !== false, colors: this.options.colors, icon: this.options.icon, hoverOptions: this.options.activityHoverOptions, compact: this.options.compact },
+ 					action as CompositeBarAction,
+ 					item.pinnedAction,
+ 					item.toggleBadgeAction,
+@@ -316,8 +326,10 @@ export class CompositeBar extends Widget implements ICompositeBar {
+ 		this._register(addDisposableListener(parent, TouchEventType.Contextmenu, e => this.showContextMenu(getWindow(parent), e)));
+ 
+ 		// Register a drop target on the whole bar to prevent forbidden feedback
+-		const dndCallback = new CompositeBarDndCallbacks(parent, actionBarDiv, this.model, this.options.dndHandler, this.options.orientation);
+-		this._register(CompositeDragAndDropObserver.INSTANCE.registerTarget(parent, dndCallback));
++		if (this.options.allowDragAndDrop !== false) {
++			const dndCallback = new CompositeBarDndCallbacks(parent, actionBarDiv, this.model, this.options.dndHandler, this.options.orientation);
++			this._register(CompositeDragAndDropObserver.INSTANCE.registerTarget(parent, dndCallback));
++		}
+ 
+ 		return actionBarDiv;
+ 	}
+@@ -663,6 +675,10 @@ export class CompositeBar extends Widget implements ICompositeBar {
+ 
+ 	private showContextMenu(targetWindow: Window, e: MouseEvent | GestureEvent): void {
+ 		EventHelper.stop(e, true);
++		// ubovm: sidebar/aux bars lock layout — no composite pin/reorder menu.
++		if (this.options.allowDragAndDrop === false) {
++			return;
++		}
+ 
+ 		const event = new StandardMouseEvent(targetWindow, e);
+ 		this.contextMenuService.showContextMenu({
+diff --git a/src/vs/workbench/browser/parts/compositeBarActions.ts b/src/vs/workbench/browser/parts/compositeBarActions.ts
+--- a/src/vs/workbench/browser/parts/compositeBarActions.ts
++++ b/src/vs/workbench/browser/parts/compositeBarActions.ts
+@@ -583,47 +583,54 @@ export class CompositeActionViewItem extends CompositeBarActionViewItem {
+ 		this._register(addDisposableListener(this.container, EventType.CONTEXT_MENU, e => {
+ 			EventHelper.stop(e, true);
+-
++			// ubovm: sidebar/aux tabs lock layout — no pin/move/hide context menu.
++			if (!this.options.draggable) {
++				return;
++			}
++
+ 			this.showContextMenu(container);
+ 		}));
+ 
+-		// Allow to drag
+-		let insertDropBefore: Before2D | undefined = undefined;
+-		this._register(CompositeDragAndDropObserver.INSTANCE.registerDraggable(this.container, () => { return { type: 'composite', id: this.compositeBarActionItem.id }; }, {
+-			onDragOver: e => {
+-				const isValidMove = e.dragAndDropData.getData().id !== this.compositeBarActionItem.id && this.dndHandler.onDragOver(e.dragAndDropData, this.compositeBarActionItem.id, e.eventData);
+-				toggleDropEffect(e.eventData.dataTransfer, 'move', isValidMove);
+-				insertDropBefore = this.updateFromDragging(container, isValidMove, e.eventData);
+-			},
+-			onDragLeave: e => {
+-				insertDropBefore = this.updateFromDragging(container, false, e.eventData);
+-			},
+-			onDragEnd: e => {
+-				insertDropBefore = this.updateFromDragging(container, false, e.eventData);
+-			},
+-			onDrop: e => {
+-				EventHelper.stop(e.eventData, true);
+-				this.dndHandler.drop(e.dragAndDropData, this.compositeBarActionItem.id, e.eventData, insertDropBefore);
+-				insertDropBefore = this.updateFromDragging(container, false, e.eventData);
+-			},
+-			onDragStart: e => {
+-				if (e.dragAndDropData.getData().id !== this.compositeBarActionItem.id) {
+-					return;
+-				}
++		// Allow to drag (honors ICompositeBarOptions.allowDragAndDrop via options.draggable)
++		if (this.options.draggable) {
++			let insertDropBefore: Before2D | undefined = undefined;
++			this._register(CompositeDragAndDropObserver.INSTANCE.registerDraggable(this.container, () => { return { type: 'composite', id: this.compositeBarActionItem.id }; }, {
++				onDragOver: e => {
++					const isValidMove = e.dragAndDropData.getData().id !== this.compositeBarActionItem.id && this.dndHandler.onDragOver(e.dragAndDropData, this.compositeBarActionItem.id, e.eventData);
++					toggleDropEffect(e.eventData.dataTransfer, 'move', isValidMove);
++					insertDropBefore = this.updateFromDragging(container, isValidMove, e.eventData);
++				},
++				onDragLeave: e => {
++					insertDropBefore = this.updateFromDragging(container, false, e.eventData);
++				},
++				onDragEnd: e => {
++					insertDropBefore = this.updateFromDragging(container, false, e.eventData);
++				},
++				onDrop: e => {
++					EventHelper.stop(e.eventData, true);
++					this.dndHandler.drop(e.dragAndDropData, this.compositeBarActionItem.id, e.eventData, insertDropBefore);
++					insertDropBefore = this.updateFromDragging(container, false, e.eventData);
++				},
++				onDragStart: e => {
++					if (e.dragAndDropData.getData().id !== this.compositeBarActionItem.id) {
++						return;
++					}
+ 
+-				if (e.eventData.dataTransfer) {
+-					e.eventData.dataTransfer.effectAllowed = 'move';
+-				}
++					if (e.eventData.dataTransfer) {
++						e.eventData.dataTransfer.effectAllowed = 'move';
++					}
+ 
+-				this.blur(); // Remove focus indicator when dragging
+-			}
+-		}));
++					this.blur(); // Remove focus indicator when dragging
++				}
++			}));
+ 
+-		// Activate on drag over to reveal targets
+-		[this.badge, this.label].forEach(element => this._register(new DelayedDragHandler(element, () => {
+-			if (!this.action.checked) {
+-				this.action.run();
+-			}
+-		})));
++			// Activate on drag over to reveal targets
++			[this.badge, this.label].forEach(element => this._register(new DelayedDragHandler(element, () => {
++				if (!this.action.checked) {
++					this.action.run();
++				}
++			})));
++		}
+ 
+ 		this.updateStyles();
+ 	}
+diff --git a/src/vs/workbench/browser/parts/paneCompositeBar.ts b/src/vs/workbench/browser/parts/paneCompositeBar.ts
+--- a/src/vs/workbench/browser/parts/paneCompositeBar.ts
++++ b/src/vs/workbench/browser/parts/paneCompositeBar.ts
+@@ -151,6 +151,8 @@ export class PaneCompositeBar extends Disposable {
+ 			compositeSize: this.options.compositeSize,
+ 			overflowActionSize: this.options.overflowActionSize,
+ 			colors: theme => this.options.colors(theme),
++			// ubovm: lock primary/secondary side bar tab order -- no drag/reorder.
++			allowDragAndDrop: this.location !== ViewContainerLocation.Sidebar && this.location !== ViewContainerLocation.AuxiliaryBar,
+ 		}));
+ 	}
+ 
+diff --git a/src/vs/workbench/browser/parts/paneCompositePart.ts b/src/vs/workbench/browser/parts/paneCompositePart.ts
+--- a/src/vs/workbench/browser/parts/paneCompositePart.ts
++++ b/src/vs/workbench/browser/parts/paneCompositePart.ts
+@@ -348,7 +348,10 @@ export abstract class AbstractPaneCompositePart extends CompositePart<PaneCompos
+ 			this.emptyPaneMessageElement!.style.backgroundColor = backgroundColor;
+ 		};
+ 
+-		if (this.viewDescriptorService.canMoveViews()) {
++		const allowPartDragAndDrop = this.viewDescriptorService.canMoveViews()
++			&& this.location !== ViewContainerLocation.Sidebar
++			&& this.location !== ViewContainerLocation.AuxiliaryBar;
++		if (allowPartDragAndDrop) {
+ 			this._register(CompositeDragAndDropObserver.INSTANCE.registerTarget(this.element, {
+ 				onDragOver: (e) => {
+ 					EventHelper.stop(e.eventData, true);
+@@ -445,12 +448,17 @@ export abstract class AbstractPaneCompositePart extends CompositePart<PaneCompos
+ 		this.titleContainer = parent;
+ 
+ 		const titleLabel = super.createTitleLabel(parent);
+-		this.titleLabelElement!.draggable = this.viewDescriptorService.canMoveViews();
+-		const draggedItemProvider = (): { type: 'view' | 'composite'; id: string } => {
+-			const activeViewlet = this.getActivePaneComposite()!;
+-			return { type: 'composite', id: activeViewlet.getId() };
+-		};
+-		this._register(CompositeDragAndDropObserver.INSTANCE.registerDraggable(this.titleLabelElement!, draggedItemProvider, {}));
++		const allowTitleDrag = this.viewDescriptorService.canMoveViews()
++			&& this.location !== ViewContainerLocation.Sidebar
++			&& this.location !== ViewContainerLocation.AuxiliaryBar;
++		this.titleLabelElement!.draggable = allowTitleDrag;
++		if (allowTitleDrag) {
++			const draggedItemProvider = (): { type: 'view' | 'composite'; id: string } => {
++				const activeViewlet = this.getActivePaneComposite()!;
++				return { type: 'composite', id: activeViewlet.getId() };
++			};
++			this._register(CompositeDragAndDropObserver.INSTANCE.registerDraggable(this.titleLabelElement!, draggedItemProvider, {}));
++		}
+ 
+ 		return titleLabel;
+ 	}
+diff --git a/src/vs/workbench/browser/parts/views/viewPaneContainer.ts b/src/vs/workbench/browser/parts/views/viewPaneContainer.ts
+--- a/src/vs/workbench/browser/parts/views/viewPaneContainer.ts
++++ b/src/vs/workbench/browser/parts/views/viewPaneContainer.ts
+@@ -421,7 +421,11 @@ export class ViewPaneContainer<MementoType extends object = object> extends Comp
+ 
+ 		let bounds: BoundingRect;
+ 
+-		if (this.viewDescriptorService.canMoveViews()) {
++		const containerLocation = this.viewDescriptorService.getViewContainerLocation(this.viewContainer);
++		const allowViewDragAndDrop = this.viewDescriptorService.canMoveViews()
++			&& containerLocation !== ViewContainerLocation.Sidebar
++			&& containerLocation !== ViewContainerLocation.AuxiliaryBar;
++		if (allowViewDragAndDrop) {
+ 			this._register(CompositeDragAndDropObserver.INSTANCE.registerTarget(parent, {
+ 				onDragEnter: (e) => {
+ 					bounds = getOverlayBounds();
+@@ -890,7 +894,11 @@ export class ViewPaneContainer<MementoType extends object = object> extends Comp
+ 
+ 		let overlay: ViewPaneDropOverlay | undefined;
+ 
+-		if (this.viewDescriptorService.canMoveViews()) {
++		const paneLocation = this.viewDescriptorService.getViewContainerLocation(this.viewContainer);
++		const allowPaneDragAndDrop = this.viewDescriptorService.canMoveViews()
++			&& paneLocation !== ViewContainerLocation.Sidebar
++			&& paneLocation !== ViewContainerLocation.AuxiliaryBar;
++		if (allowPaneDragAndDrop) {
+ 
+ 			if (pane.draggableElement) {
+ 				store.add(CompositeDragAndDropObserver.INSTANCE.registerDraggable(pane.draggableElement, () => { return { type: 'view', id: pane.id }; }, {}));

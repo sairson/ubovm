@@ -60,7 +60,10 @@ function cleanTimelineParts(value) {
   for (const part of value) {
     if (!part || typeof part.id !== 'string' || !part.id || part.id.length > 200 || seen.has(part.id)) continue;
     if (part.type === 'text' && typeof part.text === 'string') {
-      parts.push({ id: part.id, type: 'text', text: clipped(redactText(part.text), MAX_ASSISTANT_MESSAGE_LENGTH), status: part.status === 'streaming' ? 'streaming' : 'completed' });
+      const startedAt = Number.isFinite(part.startedAt) && part.startedAt >= 0 ? part.startedAt : undefined;
+      parts.push({ id: part.id, type: 'text', text: clipped(redactText(part.text), MAX_ASSISTANT_MESSAGE_LENGTH), status: part.status === 'streaming' ? 'streaming' : 'completed',
+        ...(part.source === 'reason' ? { source: 'reason' } : {}),
+        ...(startedAt !== undefined ? { startedAt } : {}) });
     } else if (['thinking', 'summary'].includes(part.type) && typeof part.text === 'string' && (part.text.trim() || part.type === 'summary') && part.redacted !== true && (part.type === 'summary' ? ['running', 'completed', 'interrupted', 'failed'] : ['running', 'completed', 'interrupted']).includes(part.status) && ['assistant', 'reason', 'worker'].includes(part.source)) {
       const text = redactText(part.text), startedAt = Number.isFinite(part.startedAt) && part.startedAt >= 0 ? part.startedAt : 0;
       // This whitelist persists only the provider's displayable plaintext.
@@ -89,6 +92,44 @@ function cleanTimelineParts(value) {
 }
 
 
+/** Goal Worker prose for the panel; withhold plan/replan JSON and surface conclude statements. */
+function workerDisplayText(value) {
+  if (typeof value !== 'string' || !value) return '';
+  const trimmed = value.trim();
+  if (!trimmed.startsWith('{')) return value;
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return value;
+    if (typeof parsed.statement === 'string' && parsed.statement.trim()) return parsed.statement;
+    if ('steps' in parsed || 'done' in parsed || 'outcome' in parsed || 'intents' in parsed || 'coverage' in parsed) return '';
+    return value;
+  } catch {
+    // Incomplete protocol JSON mid-stream must not flash as a conclusion.
+    return '';
+  }
+}
+
+/** Human-readable Reason decision for the goal planning log; never the raw protocol JSON. */
+function reasonConclusion(decision) {
+  if (!decision || typeof decision !== 'object' || Array.isArray(decision)) return '';
+  if (decision.complete === true) {
+    const summary = typeof decision.summary === 'string' ? decision.summary.trim() : '';
+    return summary ? `目标已完成。\n${summary}` : '目标已完成。';
+  }
+  if (decision.wait === true) return '等待进行中的任务返回结果后再规划。';
+  if (!Array.isArray(decision.intents) || !decision.intents.length) return '';
+  const lines = decision.intents.map((intent, index) => {
+    const description = typeof intent?.description === 'string' ? intent.description.trim() : '';
+    const priority = typeof intent?.priority === 'string' && intent.priority ? `（优先级：${intent.priority}）` : '';
+    const points = Array.isArray(intent?.keyPoints)
+      ? intent.keyPoints.filter(point => typeof point === 'string' && point.trim()).map(point => point.trim())
+      : [];
+    const checkpoints = points.length ? `\n  - ${points.join('\n  - ')}` : '';
+    return `${index + 1}. ${description || '未命名任务'}${priority}${checkpoints}`;
+  });
+  return `派发 ${decision.intents.length} 项任务。\n${lines.join('\n')}`;
+}
+
 /** Finish host-cached progress when its runtime is gone, retaining partial output. */
 function interruptExecution(state, error, now = Date.now()) {
   const active = status => ['queued', 'running', 'waiting'].includes(status);
@@ -106,4 +147,4 @@ function interruptExecution(state, error, now = Date.now()) {
     })) };
 }
 
-module.exports = { cleanTimelineParts, formatToolValue, redactDisplayObject, interruptExecution, STREAMING_TOOLS };
+module.exports = { cleanTimelineParts, formatToolValue, redactDisplayObject, interruptExecution, workerDisplayText, reasonConclusion, STREAMING_TOOLS };

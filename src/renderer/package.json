@@ -78,12 +78,6 @@
         "icon": "$(globe)"
       },
       {
-        "command": "ubovm.openBrowserSidebar",
-        "title": "打开浏览器侧栏（与文件树/任务记录同栏）",
-        "category": "UBOVM",
-        "icon": "$(globe)"
-      },
-      {
         "command": "ubovm.reviewCodeChanges",
         "enablement": "ubovm.mode == assist",
         "title": "代码更改：查看 diff 与撤销",
@@ -390,7 +384,9 @@
         "ubovm.reason": {
           "type": "object",
           "scope": "machine",
-          "default": {},
+          "default": {
+            "thinkingLevel": "medium"
+          },
           "description": "规划参数。model 可覆盖默认模型；模型密钥通过配置模型命令保存。",
           "additionalProperties": false,
           "properties": {
@@ -407,7 +403,8 @@
                 "high",
                 "xhigh",
                 "max"
-              ]
+              ],
+              "default": "medium"
             },
             "systemPrompt": {
               "type": "string"
@@ -723,7 +720,9 @@
                   "items": {
                     "type": "string"
                   },
-                  "default": ["*"]
+                  "default": [
+                    "*"
+                  ]
                 },
                 "allowWorkspaceWrite": {
                   "type": "boolean",
@@ -798,11 +797,6 @@
       ],
       "activitybar": [
         {
-          "id": "ubovm-browser",
-          "title": "浏览器",
-          "icon": "media/icon.svg"
-        },
-        {
           "id": "ubovm-workers",
           "title": "Worker 日志",
           "icon": "media/icon.svg"
@@ -815,14 +809,6 @@
       ]
     },
     "views": {
-      "ubovm-browser": [
-        {
-          "type": "webview",
-          "id": "ubovm.browserSidebar",
-          "name": "浏览器",
-          "contextualTitle": "浏览器"
-        }
-      ],
       "ubovm-workers": [
         {
           "type": "webview",

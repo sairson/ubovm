@@ -29,6 +29,7 @@
     "browser-agent-control.patch",
     "terminal-reveal.patch",
     "sidebar-event-type.patch",
+    "sidebar-no-dnd.patch",
     "file-search.patch",
     "source-postinstall.patch",
     "source-install-cache.patch",

@@ -548,7 +548,7 @@ export class CompositeActionViewItem extends CompositeBarActionViewItem {
 		this.updateChecked();
 		this.updateEnabled();
 
-		if (['workbench.view.explorer', 'workbench.view.search', 'workbench.view.extension.ubovm-browser', 'workbench.view.extension.ubovm-workers', 'workbench.view.extension.ubovm-blackboard'].includes(this.compositeBarActionItem.id)) {
+		if (['workbench.view.explorer', 'workbench.view.search', 'workbench.view.extension.ubovm-workers', 'workbench.view.extension.ubovm-blackboard'].includes(this.compositeBarActionItem.id)) {
 			const close = container.ownerDocument.createElement('button');
 			close.className = 'ubovm-sidebar-tab-close';
 			close.type = 'button';
@@ -561,7 +561,7 @@ export class CompositeActionViewItem extends CompositeBarActionViewItem {
 				const tabBar = container.parentElement;
 				const restoreFocus = container.contains(container.ownerDocument.activeElement);
 				this.compositeBar.unpin(this.compositeBarActionItem.id);
-				if (!this.compositeBar.getPinnedCompositeIds().some(id => ['workbench.view.explorer', 'workbench.view.search', 'workbench.view.extension.ubovm-browser', 'workbench.view.extension.ubovm-workers', 'workbench.view.extension.ubovm-blackboard'].includes(id))) {
+				if (!this.compositeBar.getPinnedCompositeIds().some(id => ['workbench.view.explorer', 'workbench.view.search', 'workbench.view.extension.ubovm-workers', 'workbench.view.extension.ubovm-blackboard'].includes(id))) {
 					sidebar.dispatchEvent(new CustomEvent('ubovm-empty-sidebar'));
 				} else if (restoreFocus) {
 					queueMicrotask(() => {
@@ -582,48 +582,54 @@ export class CompositeActionViewItem extends CompositeBarActionViewItem {
 
 		this._register(addDisposableListener(this.container, EventType.CONTEXT_MENU, e => {
 			EventHelper.stop(e, true);
+			// ubovm: sidebar/aux tabs lock layout — no pin/move/hide context menu.
+			if (!this.options.draggable) {
+				return;
+			}
 
 			this.showContextMenu(container);
 		}));
 
-		// Allow to drag
-		let insertDropBefore: Before2D | undefined = undefined;
-		this._register(CompositeDragAndDropObserver.INSTANCE.registerDraggable(this.container, () => { return { type: 'composite', id: this.compositeBarActionItem.id }; }, {
-			onDragOver: e => {
-				const isValidMove = e.dragAndDropData.getData().id !== this.compositeBarActionItem.id && this.dndHandler.onDragOver(e.dragAndDropData, this.compositeBarActionItem.id, e.eventData);
-				toggleDropEffect(e.eventData.dataTransfer, 'move', isValidMove);
-				insertDropBefore = this.updateFromDragging(container, isValidMove, e.eventData);
-			},
-			onDragLeave: e => {
-				insertDropBefore = this.updateFromDragging(container, false, e.eventData);
-			},
-			onDragEnd: e => {
-				insertDropBefore = this.updateFromDragging(container, false, e.eventData);
-			},
-			onDrop: e => {
-				EventHelper.stop(e.eventData, true);
-				this.dndHandler.drop(e.dragAndDropData, this.compositeBarActionItem.id, e.eventData, insertDropBefore);
-				insertDropBefore = this.updateFromDragging(container, false, e.eventData);
-			},
-			onDragStart: e => {
-				if (e.dragAndDropData.getData().id !== this.compositeBarActionItem.id) {
-					return;
+		// Allow to drag (honors ICompositeBarOptions.allowDragAndDrop via options.draggable)
+		if (this.options.draggable) {
+			let insertDropBefore: Before2D | undefined = undefined;
+			this._register(CompositeDragAndDropObserver.INSTANCE.registerDraggable(this.container, () => { return { type: 'composite', id: this.compositeBarActionItem.id }; }, {
+				onDragOver: e => {
+					const isValidMove = e.dragAndDropData.getData().id !== this.compositeBarActionItem.id && this.dndHandler.onDragOver(e.dragAndDropData, this.compositeBarActionItem.id, e.eventData);
+					toggleDropEffect(e.eventData.dataTransfer, 'move', isValidMove);
+					insertDropBefore = this.updateFromDragging(container, isValidMove, e.eventData);
+				},
+				onDragLeave: e => {
+					insertDropBefore = this.updateFromDragging(container, false, e.eventData);
+				},
+				onDragEnd: e => {
+					insertDropBefore = this.updateFromDragging(container, false, e.eventData);
+				},
+				onDrop: e => {
+					EventHelper.stop(e.eventData, true);
+					this.dndHandler.drop(e.dragAndDropData, this.compositeBarActionItem.id, e.eventData, insertDropBefore);
+					insertDropBefore = this.updateFromDragging(container, false, e.eventData);
+				},
+				onDragStart: e => {
+					if (e.dragAndDropData.getData().id !== this.compositeBarActionItem.id) {
+						return;
+					}
+
+					if (e.eventData.dataTransfer) {
+						e.eventData.dataTransfer.effectAllowed = 'move';
+					}
+
+					this.blur(); // Remove focus indicator when dragging
 				}
+			}));
 
-				if (e.eventData.dataTransfer) {
-					e.eventData.dataTransfer.effectAllowed = 'move';
+			// Activate on drag over to reveal targets
+			[this.badge, this.label].forEach(element => this._register(new DelayedDragHandler(element, () => {
+				if (!this.action.checked) {
+					this.action.run();
 				}
-
-				this.blur(); // Remove focus indicator when dragging
-			}
-		}));
-
-		// Activate on drag over to reveal targets
-		[this.badge, this.label].forEach(element => this._register(new DelayedDragHandler(element, () => {
-			if (!this.action.checked) {
-				this.action.run();
-			}
-		})));
+			})));
+		}
 
 		this.updateStyles();
 	}

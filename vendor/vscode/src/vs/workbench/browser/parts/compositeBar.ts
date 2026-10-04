@@ -107,6 +107,11 @@ export class CompositeDragAndDrop implements ICompositeDragAndDrop {
 	}
 
 	private canDrop(data: CompositeDragAndDropData, targetCompositeId: string | undefined): boolean {
+		// ubovm: primary/secondary side bars keep a fixed layout -- reject all drops there.
+		if (this.targetContainerLocation === ViewContainerLocation.Sidebar || this.targetContainerLocation === ViewContainerLocation.AuxiliaryBar) {
+			return false;
+		}
+
 		const dragData = data.getData();
 
 		if (dragData.type === 'composite') {
@@ -148,6 +153,11 @@ export interface ICompositeBarOptions {
 	readonly dndHandler: ICompositeDragAndDrop;
 	readonly activityHoverOptions: IActivityHoverOptions;
 	readonly preventLoopNavigation?: boolean;
+	/**
+	 * When false, composite bar items are not draggable and the bar is not a drop target.
+	 * Defaults to true.
+	 */
+	readonly allowDragAndDrop?: boolean;
 
 	readonly getActivityAction: (compositeId: string) => CompositeBarAction;
 	readonly getCompositePinnedAction: (compositeId: string) => IAction;
@@ -293,7 +303,7 @@ export class CompositeBar extends Widget implements ICompositeBar {
 				const item = this.model.findItem(action.id);
 				return item && this.instantiationService.createInstance(
 					CompositeActionViewItem,
-					{ ...options, draggable: true, colors: this.options.colors, icon: this.options.icon, hoverOptions: this.options.activityHoverOptions, compact: this.options.compact },
+					{ ...options, draggable: this.options.allowDragAndDrop !== false, colors: this.options.colors, icon: this.options.icon, hoverOptions: this.options.activityHoverOptions, compact: this.options.compact },
 					action as CompositeBarAction,
 					item.pinnedAction,
 					item.toggleBadgeAction,
@@ -316,8 +326,10 @@ export class CompositeBar extends Widget implements ICompositeBar {
 		this._register(addDisposableListener(parent, TouchEventType.Contextmenu, e => this.showContextMenu(getWindow(parent), e)));
 
 		// Register a drop target on the whole bar to prevent forbidden feedback
-		const dndCallback = new CompositeBarDndCallbacks(parent, actionBarDiv, this.model, this.options.dndHandler, this.options.orientation);
-		this._register(CompositeDragAndDropObserver.INSTANCE.registerTarget(parent, dndCallback));
+		if (this.options.allowDragAndDrop !== false) {
+			const dndCallback = new CompositeBarDndCallbacks(parent, actionBarDiv, this.model, this.options.dndHandler, this.options.orientation);
+			this._register(CompositeDragAndDropObserver.INSTANCE.registerTarget(parent, dndCallback));
+		}
 
 		return actionBarDiv;
 	}
@@ -653,6 +665,10 @@ export class CompositeBar extends Widget implements ICompositeBar {
 
 	private showContextMenu(targetWindow: Window, e: MouseEvent | GestureEvent): void {
 		EventHelper.stop(e, true);
+		// ubovm: sidebar/aux bars lock layout — no composite pin/reorder menu.
+		if (this.options.allowDragAndDrop === false) {
+			return;
+		}
 
 		const event = new StandardMouseEvent(targetWindow, e);
 		this.contextMenuService.showContextMenu({

@@ -4,7 +4,7 @@ const { createHash, randomUUID } = require('node:crypto');
 const { access, mkdir, open, readFile, rename, unlink, rm } = require('node:fs/promises');
 const { dirname, join, resolve } = require('node:path');
 const { pathToFileURL } = require('node:url');
-const { cleanTimelineParts, formatToolValue, redactDisplayObject, STREAMING_TOOLS } = require('./projection.cjs');
+const { cleanTimelineParts, formatToolValue, redactDisplayObject, workerDisplayText, reasonConclusion, STREAMING_TOOLS } = require('./projection.cjs');
 const { createLatestWrite } = require('./latest-write.cjs');
 const { workerRecord, WORKER_RECORD_LIMIT, WORKER_RECORD_COUNT } = require('./worker-record.cjs');
 const { formatAssistSourceEvidenceSeed } = require('../../assist-evidence.cjs');
@@ -403,7 +403,10 @@ function createHarnessService({ sdkPath, storageDirectory, workspaceRoots = [], 
   }
   function workerPiEvent(entry, id, event, metadata = {}, stream = true) {
     const view = workerEntry(entry, id, metadata);
-    piEvent(view, event, id, stream, { workerId: id, timestamp: metadata.timestamp, commands: entry.commands });
+    piEvent(view, event, id, stream, {
+      workerId: id, timestamp: metadata.timestamp, commands: entry.commands,
+      ...(metadata.hideProtocol ? { hideProtocol: true } : {})
+    });
     queueWorkers(entry);
   }
   function summaryEvent(entry, event) {
@@ -473,7 +476,8 @@ function createHarnessService({ sdkPath, storageDirectory, workspaceRoots = [], 
       if (delta?.type === 'thinking_start' && Number.isInteger(delta.contentIndex) && delta.contentIndex >= 0 && !track.thinking.has(delta.contentIndex)) track.thinking.set(delta.contentIndex, { startedAt: timestamp });
       if (stream) {
         entry.textMessageId = `text:${track.id}`;
-        entry.lastAssistantText = contentText(event.message);
+        const raw = contentText(event.message);
+        entry.lastAssistantText = metadata.hideProtocol ? workerDisplayText(raw) : raw;
         entry.streamText = formatToolValue(entry.lastAssistantText, 32000).text;
       }
       for (const [index, content] of contents.entries()) {
@@ -495,9 +499,16 @@ function createHarnessService({ sdkPath, storageDirectory, workspaceRoots = [], 
           if (part.status === 'running' && (ended || delta?.type === 'thinking_end' && delta.contentIndex === index || progressed)) { part.status = interrupted ? 'interrupted' : 'completed'; part.endedAt = Math.max(part.startedAt, timestamp); }
         } else if (stream && content.type === 'text' && typeof content.text === 'string' && content.text) {
           const id = `${entry.textMessageId}:${index}`;
+          const text = metadata.hideProtocol ? workerDisplayText(content.text) : content.text;
+          if (!text) {
+            entry.parts = entry.parts.filter(part => part.id !== id);
+            if (entry.textPartIds) entry.textPartIds = entry.textPartIds.filter(partId => partId !== id);
+            withheld = true;
+            continue;
+          }
           let part = entry.parts.find(part => part.id === id);
           if (!part) { part = { id, type: 'text', text: '', status: 'streaming' }; entry.parts.push(part); (entry.textPartIds ??= []).push(id); }
-          part.text = content.text; part.status = ended ? 'completed' : 'streaming';
+          part.text = text; part.status = ended ? 'completed' : 'streaming';
         }
       }
       // End/start boundaries can omit earlier content from their snapshot.
@@ -584,14 +595,29 @@ function createHarnessService({ sdkPath, storageDirectory, workspaceRoots = [], 
   function goalEvent(entry, event) {
     if (closed || entry.controller?.signal.aborted) return;
     if (event.type === 'reason.start') { entry.phase = 'reason'; entry.streamText = ''; activity(entry, 'Reason', 'running', 'reason'); }
-    if (event.type === 'reason.decision') activity(entry, 'Reason', 'completed', 'reason');
+    if (event.type === 'reason.decision') {
+      activity(entry, 'Reason', 'completed', 'reason');
+      const text = reasonConclusion(event.decision);
+      if (text) {
+        const id = `reason-conclusion:${entry.timelineRun}:${hash(String(Number.isSafeInteger(event.revision) ? event.revision : entry.parts.length))}`;
+        const existing = entry.parts.find(part => part.id === id);
+        if (existing) { existing.text = text; existing.status = 'completed'; existing.source = 'reason'; }
+        else entry.parts.push({ id, type: 'text', text, status: 'completed', source: 'reason', startedAt: Date.now() });
+        entry.parts = cleanTimelineParts(entry.parts);
+        void saveTimeline(entry, 'running').catch(() => {});
+      }
+    }
     if (event.type === 'worker.goal_completed') {
       activity(entry, '目标已完成，已通知 Worker 自行收尾：' + event.intentId, 'completed');
     }
     if (event.type === 'worker.event') {
       const value = event.event;
       if (value.phase) { entry.phase = value.phase; const worker = entry.workers.find(worker => worker.id === value.intentId); if (worker) worker.phase = value.phase; }
-      if (value.type === 'pi_event') workerPiEvent(entry, value.intentId, value.event, { attemptId: value.attemptId, timestamp: Number.isFinite(Date.parse(event.timestamp)) ? Date.parse(event.timestamp) : Date.now() }, false);
+      // Stream thinking/tools/prose like assist; hideProtocol keeps plan JSON off the panel.
+      if (value.type === 'pi_event') workerPiEvent(entry, value.intentId, value.event, {
+        attemptId: value.attemptId, hideProtocol: true,
+        timestamp: Number.isFinite(Date.parse(event.timestamp)) ? Date.parse(event.timestamp) : Date.now()
+      });
     }
     if (event.type === 'worker.start') workerEntry(entry, event.intentId, { status: 'running', startedAt: Date.now() });
     if (event.type === 'worker.result' || event.type === 'worker.error') {

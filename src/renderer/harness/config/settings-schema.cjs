@@ -36,7 +36,7 @@ const sections = {
   summary: { title: '上下文摘要', description: '长对话达到阈值后压缩历史上下文，保留最近消息；摘要模型在「模型连接」中单独设置。', fields: [f('enabled', '启用上下文摘要', 'checkbox', { default: true }),
     ...Object.entries({ triggerTokens: ['触发 Token 数', 49152], targetTokens: ['压缩后的目标 Token 数', 24576], triggerMessages: ['触发消息数', 60], keepRecentMessages: ['保留最近消息数', 8], maxSummaryTokens: ['单次摘要最大 Token', 1024], maxSummaryInputTokens: ['单次摘要输入 Token', 12000], maxSummaryCalls: ['单轮摘要次数上限', 16], maxSummaryCallsPerScope: ['每个作用域摘要次数上限', 64], timeoutMs: ['摘要超时（毫秒）', 30000] }).map(([key, [label, value]]) => f(key, label, 'number', { default: value }))] },
   reason: { title: '规划设置', description: '控制同时进行的任务数量、规划轮次，以及思考深度。字节上限和协议修复收在「预算与提示词」里。', fields: [
-    thinking,
+    f('thinkingLevel', '思考级别', 'select', { options: ['', 'off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'], labels: { '': '跟随模型默认', off: '关闭', minimal: '最低', low: '较低', medium: '中等', high: '较高', xhigh: '很高', max: '最高' }, default: 'medium' }),
     f('openIntents', '同时进行的任务上限（排队+执行中）', 'number', { min: 1, max: 20 }),
     f('maxIntents', '每轮新增任务上限（不超过同时进行上限）', 'number', { min: 1, max: 20 }),
     f('maxConcurrency', '并行任务数（不超过同时进行上限）', 'number', { min: 1, max: 10 }),

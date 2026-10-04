@@ -31,7 +31,7 @@ index 2f404600..20d9abe7 100644
 +				'workbench.files.action.refreshFilesExplorer', 'workbench.files.action.collapseExplorerFolders',
 +				'workbench.action.terminal.new', 'workbench.action.terminal.kill', 'workbench.action.terminal.focus'
 +			]);
-+			for (const command of ['workbench.action.browser.open', 'workbench.action.browser.openOrList', 'workbench.action.browser.openFile', 'workbench.action.browser.newTab', 'workbench.action.browser.setAgentControlLock', 'ubovm.openBrowser', 'ubovm.openBrowserSidebar', 'ubovm.installBrowser']) { allowed.add(command); }
++			for (const command of ['workbench.action.browser.open', 'workbench.action.browser.openOrList', 'workbench.action.browser.openFile', 'workbench.action.browser.newTab', 'workbench.action.browser.setAgentControlLock', 'ubovm.openBrowser', 'ubovm.installBrowser']) { allowed.add(command); }
 +			return result.filter(item => 'command' in item && (allowed.has(item.command.id) || /^workbench\.action\.browser\./.test(item.command.id)));
 +		}
  		return result;

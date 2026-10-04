@@ -237,7 +237,7 @@ test('project creation and deletion actions are exposed through native menus and
   assert.equal(manifest.contributes.submenus.some(item => item.id === 'ubovm.create'), true);
   for (const group of ['inline@2', '9_delete']) assert(menus['view/item/context'].some(item => item.command === 'ubovm.deleteProject' && item.group === group && item.when.includes('ubovm.project')));
   const patch = fsSync.readFileSync(path.join(__dirname, '../../../../../resources/patches/minimal-ui.patch'), 'utf8');
-  for (const command of ['ubovm.newProject', 'ubovm.openProject', 'ubovm.manageProjects', 'ubovm.newProjectConversation', 'ubovm.changeProjectWorkspace', 'ubovm.renameProject', 'ubovm.deleteProject', 'ubovm.openBrowser', 'ubovm.openBrowserSidebar', 'workbench.action.browser.openOrList']) {
+  for (const command of ['ubovm.newProject', 'ubovm.openProject', 'ubovm.manageProjects', 'ubovm.newProjectConversation', 'ubovm.changeProjectWorkspace', 'ubovm.renameProject', 'ubovm.deleteProject', 'ubovm.openBrowser', 'workbench.action.browser.openOrList']) {
     if (command.startsWith('ubovm.')) assert(manifest.contributes.commands.some(item => item.command === command));
     assert(patch.includes("'" + command + "'"));
   }

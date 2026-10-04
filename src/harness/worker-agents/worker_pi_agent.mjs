@@ -459,7 +459,14 @@ export function createPiWorker({
           catch (error) {
             if (!['INVALID_PLAN', 'INVALID_FACT'].includes(error.code) || state.repairs >= 1) throw error;
             state.repairs++;
-            state.messages.push({ role: 'user', timestamp: Date.now(), content: [{ type: 'text', text: `The structured response is invalid: ${error.message}\nReturn one corrected JSON object using the required schema. Do not fabricate evidence.` }] });
+            const successfulIds = state.ledger
+              .filter(entry => entry.status === 'completed' && entry.isError === false && entry.result?.isError !== true)
+              .map(entry => entry.toolCallId);
+            const evidenceHint = error.code !== 'INVALID_FACT' ? ''
+              : successfulIds.length
+                ? `\nSuccessful ledger toolCallIds: ${successfulIds.join(', ')}.`
+                : '\nThe ledger has no successful tool calls; use nodeRef evidence or a partial/blocked outcome.';
+            state.messages.push({ role: 'user', timestamp: Date.now(), content: [{ type: 'text', text: `The structured response is invalid: ${error.message}${evidenceHint}\nReturn one corrected JSON object using the required schema. Do not fabricate evidence.` }] });
             await persist();
           }
         }

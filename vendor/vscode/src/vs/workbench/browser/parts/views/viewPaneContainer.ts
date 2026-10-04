@@ -421,7 +421,11 @@ export class ViewPaneContainer<MementoType extends object = object> extends Comp
 
 		let bounds: BoundingRect;
 
-		if (this.viewDescriptorService.canMoveViews()) {
+		const containerLocation = this.viewDescriptorService.getViewContainerLocation(this.viewContainer);
+		const allowViewDragAndDrop = this.viewDescriptorService.canMoveViews()
+			&& containerLocation !== ViewContainerLocation.Sidebar
+			&& containerLocation !== ViewContainerLocation.AuxiliaryBar;
+		if (allowViewDragAndDrop) {
 			this._register(CompositeDragAndDropObserver.INSTANCE.registerTarget(parent, {
 				onDragEnter: (e) => {
 					bounds = getOverlayBounds();
@@ -890,7 +894,11 @@ export class ViewPaneContainer<MementoType extends object = object> extends Comp
 
 		let overlay: ViewPaneDropOverlay | undefined;
 
-		if (this.viewDescriptorService.canMoveViews()) {
+		const paneLocation = this.viewDescriptorService.getViewContainerLocation(this.viewContainer);
+		const allowPaneDragAndDrop = this.viewDescriptorService.canMoveViews()
+			&& paneLocation !== ViewContainerLocation.Sidebar
+			&& paneLocation !== ViewContainerLocation.AuxiliaryBar;
+		if (allowPaneDragAndDrop) {
 
 			if (pane.draggableElement) {
 				store.add(CompositeDragAndDropObserver.INSTANCE.registerDraggable(pane.draggableElement, () => { return { type: 'view', id: pane.id }; }, {}));

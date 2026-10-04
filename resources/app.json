@@ -106,7 +106,6 @@
       "archive": "VSCodium-win32-x64-1.135.06055.zip",
       "url": "https://github.com/VSCodium/vscodium/releases/download/1.135.06055/VSCodium-win32-x64-1.135.06055.zip",
       "mirrorUrls": [
-        "https://ghfast.top/https://github.com/VSCodium/vscodium/releases/download/1.135.06055/VSCodium-win32-x64-1.135.06055.zip",
         "https://ghproxy.net/https://github.com/VSCodium/vscodium/releases/download/1.135.06055/VSCodium-win32-x64-1.135.06055.zip"
       ],
       "sha256": "0bec978f201238624bc9ad43966f5e201ed8afacc37d77035a822252d9c9c200"
@@ -122,7 +121,6 @@
         "archive": "VSCodium-win32-x64-1.135.06055.zip",
         "url": "https://github.com/VSCodium/vscodium/releases/download/1.135.06055/VSCodium-win32-x64-1.135.06055.zip",
         "mirrorUrls": [
-          "https://ghfast.top/https://github.com/VSCodium/vscodium/releases/download/1.135.06055/VSCodium-win32-x64-1.135.06055.zip",
           "https://ghproxy.net/https://github.com/VSCodium/vscodium/releases/download/1.135.06055/VSCodium-win32-x64-1.135.06055.zip"
         ],
         "sha256": "0bec978f201238624bc9ad43966f5e201ed8afacc37d77035a822252d9c9c200"

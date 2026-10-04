@@ -121,6 +121,21 @@ function validateNodeRef(nodeRef, context, label) {
   }
 }
 
+/** Host ledger success: completed, not marked failed, and result is not an explicit tool error. */
+function isSuccessfulLedgerEntry(entry) {
+  return entry?.status === 'completed' && entry.isError === false && entry.result?.isError !== true;
+}
+
+function successfulToolCallIds(ledger) {
+  return ledger.filter(isSuccessfulLedgerEntry).map(entry => entry.toolCallId);
+}
+
+function evidenceSourceHint(ledger) {
+  const valid = successfulToolCallIds(ledger);
+  if (valid.length) return ` Successful ledger toolCallIds: ${valid.join(', ')}.`;
+  return ' The ledger has no successful tool calls; use nodeRef evidence or a partial/blocked outcome.';
+}
+
 /** Validate facts against host-owned key points, completed tools, and the current blackboard. */
 export function parseWorkerFact(text, { keyPoints = [], ledger = [], context, maxBytes = 24576 } = {}) {
   const code = 'INVALID_FACT';
@@ -154,7 +169,9 @@ export function parseWorkerFact(text, { keyPoints = [], ledger = [], context, ma
     result: 'No conclusive result was recorded.',
   });
   if (!Array.isArray(ledger)) throw invalid(code, 'ledger must be an array.');
-  const evidence = list(value.evidence, 'Fact.evidence', code).map((item, index) => {
+  const evidence = [];
+  const droppedToolIds = [];
+  for (const [index, item] of list(value.evidence, 'Fact.evidence', code).entries()) {
     const label = `evidence[${index}]`;
     fields(item, ['toolCallId', 'nodeRef', 'observation'], label, code);
     const hasTool = Object.hasOwn(item, 'toolCallId');
@@ -164,19 +181,30 @@ export function parseWorkerFact(text, { keyPoints = [], ledger = [], context, ma
     if (hasTool) {
       const toolCallId = required(item.toolCallId, `${label}.toolCallId`, code);
       const entries = ledger.filter((entry) => entry?.toolCallId === toolCallId);
-      if (entries.length !== 1 || entries[0].status !== 'completed' || entries[0].isError !== false || entries[0].result?.isError === true) {
-        throw invalid(code, `${label}.toolCallId must identify one successfully completed tool call in the evidence ledger.`);
+      // Keep valid citations; drop unknown/failed IDs so one bad item cannot
+      // discard an otherwise grounded conclusion (models often mix both).
+      if (entries.length !== 1 || !isSuccessfulLedgerEntry(entries[0])) {
+        droppedToolIds.push(toolCallId);
+        continue;
       }
-      return { toolCallId, observation };
+      evidence.push({ toolCallId, observation });
+      continue;
     }
     const nodeRef = required(item.nodeRef, `${label}.nodeRef`, code);
     validateNodeRef(nodeRef, context, `${label}.nodeRef`);
-    return { nodeRef, observation };
-  });
+    evidence.push({ nodeRef, observation });
+  }
   if (['confirmed', 'negative'].includes(status) && evidence.length === 0) {
-    throw invalid(code, 'A confirmed or negative fact requires at least one valid evidence item.');
+    const detail = droppedToolIds.length
+      ? ` Dropped invalid toolCallId citation(s): ${droppedToolIds.join(', ')}.${evidenceSourceHint(ledger)}`
+      : '';
+    throw invalid(code, `A confirmed or negative fact requires at least one valid evidence item.${detail}`);
   }
   const nextSteps = value.nextSteps === undefined ? undefined : stringList(value.nextSteps, 'Fact.nextSteps');
+  const limitations = stringList(value.limitations, 'Fact.limitations');
+  if (droppedToolIds.length) {
+    limitations.push(`Dropped ${droppedToolIds.length} evidence citation(s) that were not successful host ledger tool calls.`);
+  }
   const fact = {
     version: 1,
     outcome: ['confirmed', 'negative'].includes(status) && (nextSteps?.length || coverage.some((item) => ['partial', 'blocked'].includes(item.status)))
@@ -185,7 +213,7 @@ export function parseWorkerFact(text, { keyPoints = [], ledger = [], context, ma
     coverage,
     evidence: [...new Map(evidence.map(item => [JSON.stringify(item), item])).values()],
     failedChecks: stringList(value.failedChecks, 'Fact.failedChecks'),
-    limitations: stringList(value.limitations, 'Fact.limitations'),
+    limitations,
     ...(nextSteps === undefined ? {} : { nextSteps }),
   };
   if (Buffer.byteLength(JSON.stringify(fact), 'utf8') > maxBytes) {

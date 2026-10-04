@@ -9,7 +9,7 @@
 | 主对话与编辑区 | core-ui、editor-layout、conversation-chrome |
 | 菜单与键盘 | minimal-ui、keyboard-policy |
 | 终端与 Worker | terminal-panel、terminal-reveal、worker-panel、worker-sidebar-tabs |
-| 侧栏布局与关闭行为 | panel-ui、sidebar-mode、sidebar-size、sidebar-close-tabs、sidebar-title-row、sidebar-empty、sidebar-auto-close |
+| 侧栏布局与关闭行为 | panel-ui、sidebar-mode、sidebar-size、sidebar-close-tabs、sidebar-title-row、sidebar-empty、sidebar-auto-close、sidebar-no-dnd |
 | 会话与文件树 | session-list、session-workspace、explorer-editing、explorer-background |
 | 启动与主题 | startup-ui、theme-startup |
 | 后台与 Windows 托盘 | background-tray |

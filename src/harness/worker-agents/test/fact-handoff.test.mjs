@@ -26,6 +26,42 @@ test('legacy facts remain compatible and next actions cannot substitute for veri
   assert.throws(() => parseWorkerFact(JSON.stringify({ ...fact, nextSteps: [123] }), { ledger, keyPoints: ['validate'] }), { code: 'INVALID_FACT' });
 });
 
+test('mixed evidence keeps successful ledger citations and drops unknown or failed toolCallIds', () => {
+  const options = {
+    keyPoints: ['validate'],
+    ledger: [
+      { toolCallId: 'ok-1', status: 'completed', isError: false },
+      { toolCallId: 'ok-2', status: 'completed', isError: false },
+      { toolCallId: 'failed', status: 'completed', isError: true, result: { content: [] } },
+      { toolCallId: 'soft-fail', status: 'completed', isError: false, result: { isError: true, content: [] } }
+    ]
+  };
+  const normalized = parseWorkerFact(JSON.stringify({
+    outcome: 'confirmed',
+    statement: 'Validated with mixed citations',
+    coverage: [{ point: 'validate', status: 'confirmed', result: 'Checked' }],
+    evidence: [
+      { toolCallId: 'ok-1', observation: 'first check' },
+      { toolCallId: 'ok-2', observation: 'second check' },
+      { toolCallId: 'missing', observation: 'invented' },
+      { toolCallId: 'failed', observation: 'hard failure' },
+      { toolCallId: 'soft-fail', observation: 'result error' },
+      { toolCallId: 'ok-1', observation: 'first check' },
+      { toolCallId: 'ghost', observation: 'seventh bad citation' }
+    ],
+    failedChecks: [],
+    limitations: []
+  }), options);
+  assert.deepEqual(normalized.evidence, [
+    { toolCallId: 'ok-1', observation: 'first check' },
+    { toolCallId: 'ok-2', observation: 'second check' }
+  ]);
+  assert.match(normalized.limitations.join('\n'), /Dropped 4 evidence citation/);
+  assert.throws(() => parseWorkerFact(JSON.stringify({
+    outcome: 'confirmed', statement: 'No valid sources', evidence: [{ toolCallId: 'ghost', observation: 'missing' }]
+  }), options), /Successful ledger toolCallIds: ok-1, ok-2/);
+});
+
 test('optional fact lists discard blank placeholders while preserving real entries', () => {
   const options = { ledger, keyPoints: ['validate'] };
   const normalized = parseWorkerFact(JSON.stringify({ ...fact,

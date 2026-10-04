@@ -29,7 +29,7 @@
       window.UBOVMTimeline.eachToolPart({ execution }, part => { if (part.type === 'tool' && part.name) toolNames.add(part.name); });
       for (const part of inline) if (part.source !== 'worker' && ['text', 'thinking', 'tool', 'summary'].includes(part.type)) entries.push({
         id: 'part:' + part.id, time: timestamp(part.startedAt), kind: part.type, part,
-        label: part.type === 'thinking' ? '规划 · 思考' : part.type === 'tool' ? '规划 · 工具调用' : part.type === 'summary' ? '上下文摘要' : '规划 · 输出', status: part.status
+        label: part.type === 'thinking' ? '规划 · 思考' : part.type === 'tool' ? '规划 · 工具调用' : part.type === 'summary' ? '上下文摘要' : part.source === 'reason' ? '规划 · 结论' : '规划 · 输出', status: part.status
       });
       for (const worker of execution.workers || []) {
         entries.push({ id: 'worker:' + worker.id, time: timestamp(worker.createdAt ?? worker.startedAt), kind: 'worker', label: '分派任务', worker, status: 'created' });

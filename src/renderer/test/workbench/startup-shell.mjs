@@ -42,7 +42,7 @@ try {
     window.disposeNavigation = () => disposables.forEach(value => value.dispose());
   }, script);
   assert.equal(await page.locator('.message').evaluate(el => getComputedStyle(el).visibility), 'hidden');
-  assert.equal(await page.locator('.ubovm-session-loading').evaluate(el => getComputedStyle(el).visibility), 'hidden', 'sidebar recovery stays behind the shared shell mask');
+  assert.equal(await page.locator('.ubovm-session-loading').evaluate(el => getComputedStyle(el).visibility), 'hidden', 'sidebar recovery stays behind the cold-start shell mask');
   assert.equal(await page.locator('#existing-session').isVisible(), false, 'session rows stay hidden until ready');
   assert.equal(await page.locator('.title-actions').isVisible(), false, 'pane title actions stay hidden until ready');
   assert.equal(await page.locator('[data-mode="goal"]').isDisabled(), true, 'mode chrome may exist but must stay locked');
@@ -50,7 +50,7 @@ try {
   assert.match(await page.locator('.monaco-workbench').evaluate(el => getComputedStyle(el, '::before').content), /准备工作环境/);
   assert.equal(await page.locator('.monaco-workbench').evaluate(el => getComputedStyle(el, '::after').animationName), 'ubovm-shell-progress');
   assert.equal(await page.locator('.monaco-workbench').evaluate(el => getComputedStyle(el, '::after').animationDuration), '0.9s');
-  assert.equal(await page.locator('.part.editor').evaluate(el => getComputedStyle(el, '::after').animationName), 'none', 'editor no longer hosts a separate spinner');
+  assert.equal(await page.locator('.part.editor').evaluate(el => getComputedStyle(el, '::after').animationName), 'none', 'editor loading stays inside the webview after shell unlock');
   await page.evaluate(() => {
     document.getElementById('sessions').classList.remove('ubovm-sessions-body');
     document.documentElement.classList.add('ubovm-shell-loading');
@@ -100,6 +100,7 @@ try {
   assert.equal(await page.locator('.ubovm-session-loading').isVisible(), false);
   assert.equal(await page.locator('.monaco-workbench').evaluate(el => getComputedStyle(el, '::before').opacity), '0');
   assert.equal(await page.evaluate(() => document.documentElement.classList.contains('ubovm-shell-loading')), false, 'ready must clear the splash handoff class');
+  assert.equal(await page.evaluate(() => document.documentElement.classList.contains('ubovm-shell-ready')), true, 'first paint sticks the sessions sidebar unlock');
   assert.equal(await page.locator('.monaco-workbench').evaluate(el => getComputedStyle(el, '::after').animationName), 'none', 'ready components must stop animating');
   assert.equal(await page.locator('[data-mode="goal"]').isEnabled(), true);
   for (const selector of ['#existing-session', '.ubovm-sidebar-modes', '.ubovm-sidebar-management', '.title-actions']) {
@@ -109,19 +110,34 @@ try {
   assert.equal(await page.locator('.title-actions').evaluate(el => el.inert), false);
   await page.locator('#late-session').click();
   assert.equal(await page.evaluate(() => window.treeActions), 1);
+  const armsAfterReady = await page.evaluate(() => window.slowArms);
   await page.evaluate(() => {
     window.updateContext({ 'ubovm.contentReady': false });
     window.firstSlow();
   });
   assert.equal(await page.evaluate(() => document.documentElement.classList.contains('ubovm-content-slow')), false, 'an old timeout cannot expire a new loading cycle');
+  assert.equal(await page.evaluate(() => document.documentElement.classList.contains('ubovm-shell-ready')), true, 'conversation switch keeps shell-ready');
+  assert.equal(await page.evaluate(() => document.documentElement.classList.contains('ubovm-content-ready')), false, 'conversation switch re-locks main content only');
+  assert.equal(await page.locator('.monaco-workbench').evaluate(el => getComputedStyle(el, '::before').opacity), '0', 'session switch must not re-cover the shell');
+  assert.equal(await page.locator('.monaco-workbench').evaluate(el => getComputedStyle(el, '::after').animationName), 'none', 'session switch leaves shell progress off');
+  assert.equal(await page.locator('#existing-session').isVisible(), true, 'sidebar rows stay painted while the conversation reloads');
+  assert.equal(await page.locator('[data-mode="goal"]').isEnabled(), true, 'sidebar navigation stays usable during conversation switch');
+  assert.equal(await page.locator('#late-session').evaluate(el => el.inert), false, 'session tree stays interactive during conversation switch');
+  assert.equal(await page.evaluate(() => window.slowArms), armsAfterReady, 'session switch must not arm another sidebar recovery timer');
+  await page.evaluate(() => window.fireSlow());
+  assert.equal(await page.evaluate(() => document.documentElement.classList.contains('ubovm-content-slow')), false, 'stale cold-start timers cannot revive after shell unlock');
+  await page.evaluate(() => window.updateContext({ 'ubovm.contentReady': true }));
+  assert.equal(await page.evaluate(() => document.documentElement.classList.contains('ubovm-content-ready')), true);
   await page.evaluate(() => {
-    window.fireSlow();
+    document.documentElement.classList.remove('ubovm-shell-ready', 'ubovm-content-ready');
+    window.updateContext({ 'ubovm.contentReady': false });
   });
-  assert.equal(await page.evaluate(() => window.slowArms), 2, 'reopening must arm a new recovery timer');
+  assert.equal(await page.evaluate(() => window.slowArms), armsAfterReady + 1, 'a fresh cold start arms recovery again');
+  await page.evaluate(() => window.fireSlow());
   assert.equal(await page.locator('[data-mode="goal"]').isDisabled(), true, 'slow loading must not unlock navigation');
   assert.equal(await page.locator('#existing-session').isVisible(), false, 'recovery timeout must not reveal incomplete content');
   assert.equal(await page.locator('.monaco-workbench').evaluate(el => getComputedStyle(el, '::after').animationName), 'none', 'slow loading exposes recovery instead of an endless spinner');
-  assert.equal(await page.locator('.ubovm-session-loading').evaluate(el => getComputedStyle(el).visibility), 'visible', 'slow recovery surfaces above the shared mask');
+  assert.equal(await page.locator('.ubovm-session-loading').evaluate(el => getComputedStyle(el).visibility), 'visible', 'slow recovery surfaces above the cold-start mask');
   await page.evaluate(() => { window.failReload = true; });
   await page.locator('.ubovm-session-loading button').click();
   assert.match(await page.locator('.ubovm-session-loading').textContent(), /重新加载未成功/);
@@ -143,6 +159,7 @@ try {
   const arms = await page.evaluate(() => window.slowArms);
   await page.evaluate(() => {
     document.getElementById('sessions').replaceChildren();
+    document.documentElement.classList.remove('ubovm-shell-ready', 'ubovm-content-ready');
     document.documentElement.classList.add('ubovm-content-slow');
     window.mountNavigation();
   });
@@ -150,5 +167,5 @@ try {
   assert.match(await page.locator('.ubovm-session-loading').textContent(), /加载时间较长/);
   assert.equal(await page.evaluate(() => window.slowArms), arms, 'known slow loading must not wait another timeout');
   await page.evaluate(() => window.disposeNavigation());
-  console.log('PASS: native startup frame, shared shell mask, first-content handoff');
+  console.log('PASS: native startup frame, separated shell/sidebar unlock, first-content handoff');
 } finally { await browser.close(); }

@@ -138,6 +138,8 @@ function createModelConfiguration(vscode, context) {
     result.maxConcurrency = maxConcurrency;
     result.maxRounds = maxRounds;
     result.reason = { ...reason, openIntents, maxIntents };
+    // Planning log needs Reason thinking by default; workers stay opt-in.
+    if (result.reason.thinkingLevel === undefined) result.reason.thinkingLevel = 'medium';
     delete result.reason.maxConcurrency;
     delete result.reason.maxRounds;
     result.contextSummary = setting('summaryEnabled', true) === false ? false : setting('contextSummary', true);

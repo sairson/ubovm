@@ -156,11 +156,6 @@ async function activate(context) {
   });
   const ideBrowserHost = createIdeBrowserHost(vscode);
   context.subscriptions.push({ dispose: () => ideBrowserHost.dispose() });
-  const browserSidebar = require('./host/ui/browser-sidebar.cjs').createBrowserSidebar(vscode, {
-    host: ideBrowserHost,
-    onError: error => output.appendLine('浏览器侧栏：' + String(error))
-  });
-  context.subscriptions.push(browserSidebar, vscode.window.registerWebviewViewProvider('ubovm.browserSidebar', browserSidebar, { webviewOptions: { retainContextWhenHidden: true } }));
   let browserInstallOperation;
   let lastBrowserProgressPost = 0;
   function postBrowserProgress(payload, target) {
@@ -1845,10 +1840,6 @@ async function activate(context) {
     registerCommand('ubovm.openSettings', () => openSettings()),
     registerCommand('ubovm.installBrowser', installBrowser),
     registerCommand('ubovm.openBrowser', url => openIntegratedBrowser(url)),
-    registerCommand('ubovm.openBrowserSidebar', async () => {
-      browserSidebar.requestEnsureOpen();
-      await vscode.commands.executeCommand('workbench.view.extension.ubovm-browser');
-    }),
     registerCommand('ubovm.setupPythonSandbox', async () => {
       const { setupPythonSandbox } = await import(pathToFileURL(path.join(path.dirname(sdkPath ?? sdkCandidates[0]), 'intools', 'terminals', 'python', 'setup.mjs')).href);
       const result = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: '正在初始化 Python 沙箱', cancellable: false }, () => setupPythonSandbox());
