@@ -719,6 +719,10 @@ function Set-FixedConversationCore($Product) {
     $emptyMethod = [regex]::Match($emptySidebar, '(?s)\tprivate initializeUbovmEmptySidebar\(\): void \{.*?\n\t\}').Value
     if (-not $emptyMethod) { throw 'Missing empty sidebar implementation.' }
     $emptyMethod = $emptyMethod.Replace('private ', '').Replace('(): void', '()').Replace('addDisposableListener(', 'U(')
+    # The source patch stays typed so git apply matches paneCompositePart.ts.
+    # Prebuilt injection must stay plain JS.
+    $emptyMethod = $emptyMethod.Replace('(zh: string, en: string)', '(zh, en)').Replace(': Array<[HTMLButtonElement, string, string, string, string]>', '')
+    if ($emptyMethod -match '(?m)(?:\(|,\s*)[A-Za-z_$][\w$]*\s*:\s*[A-Za-z_$]') { throw 'sidebar-empty patch still contains TypeScript parameter types after stripping; update Set-FixedConversationCore.' }
     # Soft last-tab close: keep the empty CTA visible; do not auto-hide the sidebar part.
     $autoHideMethod = $emptyMethod.Replace('fileButton.focus();', 'this.hideActivePaneComposite();').Replace('button.focus();', 'this.hideActivePaneComposite();')
     if ($bundle.Contains($autoHideMethod)) { $bundle = $bundle.Replace($autoHideMethod, $emptyMethod) }
@@ -727,7 +731,9 @@ function Set-FixedConversationCore($Product) {
             $existingEmpty.Value.Contains('ubovm-open-browser') -or
             -not $existingEmpty.Value.Contains('ubovm-empty-sidebar-chooser') -or
             $existingEmpty.Value.Contains('Workspace-scoped state survives') -or
-            -not $existingEmpty.Value.Contains('Empty CTA is session-local')
+            -not $existingEmpty.Value.Contains('Empty CTA is session-local') -or
+            -not $existingEmpty.Value.Contains('applyInterfaceLanguage') -or
+            $existingEmpty.Value.Contains(': string')
         )) {
         $bundle = $bundle.Substring(0, $existingEmpty.Index) + $emptyMethod.TrimStart() + $bundle.Substring($existingEmpty.Index + $existingEmpty.Length)
     }
