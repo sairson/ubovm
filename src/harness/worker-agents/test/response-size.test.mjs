@@ -163,6 +163,28 @@ test('repeated token truncation is bounded and leaves a recoverable checkpoint',
   assert.doesNotThrow(() => restoreWorkerCheckpoint(fixture.saved.at(-1), { intentId: 'intent', goal: 'verify' }));
 });
 
+test('worker retries empty transient network failures within a phase', async () => {
+  const fixture = setup(); let requests = 0;
+  const events = [];
+  const worker = createPiWorker({ model, onEvent: event => events.push(event), streamFn: () => {
+    requests++;
+    if (requests === 1) {
+      const stream = new AssistantMessageEventStream();
+      const message = {
+        role: 'assistant', content: [], stopReason: 'error', errorMessage: 'fetch failed: ECONNRESET',
+        api: model.api, provider: model.provider, model: model.id, timestamp: 1,
+        usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+      };
+      stream.push({ type: 'error', reason: 'error', error: message });
+      return stream;
+    }
+    return response([{ type: 'text', text: fact }]);
+  } });
+  assert.equal(JSON.parse((await worker(fixture.args)).content).outcome, 'blocked');
+  assert.equal(requests, 2);
+  assert.ok(events.some(event => event.type === 'worker_network_retry'));
+});
+
 test('repair after a successful tool retains its result instead of replaying the operation', async () => {
   const fixture = setup('execute'); let requests = 0, writes = 0;
   const worker = createPiWorker({ model,

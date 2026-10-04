@@ -1,10 +1,12 @@
 import { Agent } from '@earendil-works/pi-agent-core';
 import { randomUUID } from 'node:crypto';
 
+import { hasAssistantContent, isRetryableModelFailure, retryBackoffMs, sleepAbortable } from '../../model-retry.mjs';
 import { boundedHistory, interruptedHistory, plain } from './history.mjs';
 export { boundedHistory, plain };
 export const serializable = value => JSON.parse(JSON.stringify(value));
 export const failure = (code, message) => Object.assign(new Error(message), { code });
+const MAX_NETWORK_RETRIES = 2;
 export function observe(callback, event) { try { Promise.resolve(callback?.(structuredClone(event))).catch(() => {}); } catch { /* UI observers never control execution. */ } }
 export function callLimit(value, fallback, name) {
   const limit = value ?? fallback;
@@ -66,6 +68,7 @@ export async function runConversation({ client, options, workerId, signal, promp
   for (const id of internal?.store?.toolCallIds?.(workerId) ?? []) attempted.add(id);
   let calls = 0, toolCalls = 0, fatal, agent, unsubscribe;
   let truncatedResponses = 0;
+  let networkRetries = 0;
   let observedWorkers = '';
   let steeringWake;
   let steeringOpen = false, steeringCount = 0;
@@ -278,6 +281,23 @@ export async function runConversation({ client, options, workerId, signal, promp
     while (true) {
       check();
       const last = agent.state.messages.findLast(message => message.role === 'assistant');
+      if (last?.stopReason === 'error' && isRetryableModelFailure(last) && !hasAssistantContent(last) && networkRetries < MAX_NETWORK_RETRIES) {
+        networkRetries++;
+        observe(onEvent, { type: 'model_network_retry', workerId, attempt: networkRetries, maxAttempts: MAX_NETWORK_RETRIES,
+          errorMessage: last.errorMessage ?? 'Transient model network failure' });
+        const messages = agent.state.messages.slice();
+        if (messages.at(-1) === last) messages.pop();
+        else {
+          const index = messages.lastIndexOf(last);
+          if (index >= 0) messages.splice(index, 1);
+        }
+        agent.state.messages = messages;
+        agent.state.errorMessage = undefined;
+        await sleepAbortable(retryBackoffMs(networkRetries, { baseDelayMs: 400, maxDelayMs: 5000 }), signal);
+        check();
+        await agent.continue();
+        continue;
+      }
       if (!last || ['error', 'aborted'].includes(last.stopReason) || agent.state.errorMessage) throw failure('COLLABORATION_MODEL_FAILED', last?.errorMessage ?? agent.state.errorMessage ?? '模型没有返回有效结果。');
       if (last.stopReason === 'length') {
         await agent.prompt('Your previous response reached the output token limit and is incomplete. Return a concise complete answer preserving verified results and remaining limitations. Completed tools already ran; do not repeat their effects.');

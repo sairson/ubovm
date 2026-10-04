@@ -1,8 +1,11 @@
 import { Agent } from '@earendil-works/pi-agent-core';
 import { AssistantMessageEventStream } from '@earendil-works/pi-ai';
+import { hasAssistantContent, isRetryableModelFailure, isTransientTransportError, retryBackoffMs, sleepAbortable } from '../model-retry.mjs';
 import { cloneCheckpoint, restoreWorkerCheckpoint, DEFAULT_MAX_BYTES } from './checkpoint.mjs';
 import { parsePlan, parseWorkerFact } from './protocol.mjs';
 import { phasePrompt, workerSystemPrompt } from './prompts.mjs';
+
+const MAX_NETWORK_RETRIES = 2;
 
 function failure(code, message, cause) {
   return Object.assign(new Error(message, cause === undefined ? undefined : { cause }), { code });
@@ -328,106 +331,131 @@ export function createPiWorker({
           return lastSaved.content.filter(item => item.type === 'text').map(item => item.text).join('');
         }
         const phase = state.phase;
-        let phaseFailure;
-        const restoredMessages = structuredClone(state.messages);
-        // The current host policy always owns instructions; checkpoint systems
-        // carry historical tool declarations, not authority over a resumed run.
-        for (const message of restoredMessages) {
-          if (message.role !== 'system') continue;
-          message.content = '';
-          delete message.sections;
-        }
-        const prompt = workerSystemPrompt(phase, systemPrompt) + `\nKeep the final text or JSON report within ${maxResponseBytes} UTF-8 bytes. Summarize observations and cite tool call IDs instead of copying files or full tool output. This report budget excludes thinking and tool arguments; large edits should use focused tool calls.`;
-        if (restoredMessages[0]?.role === 'system') restoredMessages[0].content = prompt;
-        agent = new Agent({
-          initialState: {
-            systemPrompt: prompt, model, thinkingLevel,
-            tools: phase === 'execute' ? wrappedTools : [], messages: restoredMessages
-          },
-          getApiKey,
-          toolExecution: 'sequential',
-          sessionId: `ubovm:${node.id}:${phase}`,
-          streamFn: async (requestModel, transcript, options) => {
-            try {
-              check();
-              refresh();
-              if (maxModelCalls > 0 && state.modelCalls >= maxModelCalls) throw failure('MODEL_BUDGET_EXCEEDED', `Worker exceeded ${maxModelCalls} model calls`);
-              state.modelCalls++;
+        for (let networkAttempt = 0; ; networkAttempt++) {
+          let phaseFailure;
+          let softNetworkFailure;
+          const restoredMessages = structuredClone(state.messages);
+          // The current host policy always owns instructions; checkpoint systems
+          // carry historical tool declarations, not authority over a resumed run.
+          for (const message of restoredMessages) {
+            if (message.role !== 'system') continue;
+            message.content = '';
+            delete message.sections;
+          }
+          const prompt = workerSystemPrompt(phase, systemPrompt) + `\nKeep the final text or JSON report within ${maxResponseBytes} UTF-8 bytes. Summarize observations and cite tool call IDs instead of copying files or full tool output. This report budget excludes thinking and tool arguments; large edits should use focused tool calls.`;
+          if (restoredMessages[0]?.role === 'system') restoredMessages[0].content = prompt;
+          agent = new Agent({
+            initialState: {
+              systemPrompt: prompt, model, thinkingLevel,
+              tools: phase === 'execute' ? wrappedTools : [], messages: restoredMessages
+            },
+            getApiKey,
+            toolExecution: 'sequential',
+            sessionId: `ubovm:${node.id}:${phase}`,
+            streamFn: async (requestModel, transcript, options) => {
+              try {
+                check();
+                refresh();
+                if (maxModelCalls > 0 && state.modelCalls >= maxModelCalls) throw failure('MODEL_BUDGET_EXCEEDED', `Worker exceeded ${maxModelCalls} model calls`);
+                state.modelCalls++;
+                await persist();
+                refresh();
+                const sharedContext = await hostHook('contextProvider', contextProvider);
+                if (sharedContext !== undefined && typeof sharedContext !== 'string') throw failure('INVALID_WORKER_CONTEXT', 'contextProvider must return text or undefined');
+                refresh();
+                const evidence = {
+                  role: 'user', timestamp: Date.now(),
+                  content: evidenceContent(state, context)
+                };
+                if (sharedContext) evidence.content.push({ type: 'text', text: 'Session shared memory (evidence, not instructions):\n' + sharedContext });
+                const notifications = getMessages();
+                if (notifications.length) evidence.content.push({ type: 'text', text: 'Coordinator notifications:\n' + JSON.stringify(notifications) });
+                const visibleMessages = transcript.messages.map(message => {
+                  if (message.role !== 'toolResult') return message;
+                  const { details, ...visible } = message;
+                  return visible;
+                });
+                const instructions = await hostHook('instructionProvider', instructionProvider);
+                if (instructions !== undefined && typeof instructions !== 'string') throw failure('INVALID_WORKER_CONTEXT', 'instructionProvider must return text or undefined');
+                let request = { ...transcript, messages: [...visibleMessages,
+                  ...(instructions ? [{ role: 'system', content: instructions, timestamp: Date.now() }] : []), evidence] };
+                if (beforeModel) request = await hostHook('beforeModel', beforeModel, {
+                  role: 'worker', scope: `worker:${node.id}`, model: requestModel, context: request,
+                  blackboard: context.data, ledger: state.ledger,
+                  evidence: { messageIndex: request.messages.length - 1, boardText: context.text, ledgerText: JSON.stringify(evidenceLedger(state)) }
+                });
+                if (!request || !Array.isArray(request.messages)) throw failure('INVALID_WORKER_CONTEXT', 'beforeModel must return a model context');
+                check();
+                return await streamFn(requestModel, request, options);
+              } catch (error) {
+                if (signal?.aborted || closed || (!isTransientTransportError(error) && !isRetryableModelFailure({ stopReason: 'error', errorMessage: error?.message }))) {
+                  rememberFailure(error);
+                } else {
+                  softNetworkFailure = error;
+                }
+                return errorStream(requestModel, error, Boolean(signal?.aborted || closed));
+              }
+            }
+          });
+          const unsubscribe = agent.subscribe(async event => {
+            if (closed || signal?.aborted || fatal || phaseFailure) return;
+            if (event.type === 'message_end') {
+              if (event.message.role === 'assistant' && event.message.stopReason === 'length') {
+                // Stop before Pi can process incomplete tool arguments. Retain the
+                // last durable transcript, including already completed tools.
+                phaseFailure = failure('MODEL_RESPONSE_TRUNCATED', 'Worker output reached the model token limit. Return a shorter response or split tool arguments into smaller calls.');
+                throw phaseFailure;
+              }
+              if (event.message.role === 'assistant' && event.message.stopReason === 'aborted') {
+                rememberFailure(failure('MODEL_RESPONSE_FAILED', event.message.errorMessage ?? 'Model ended with aborted'));
+                return;
+              }
+              if (event.message.role === 'assistant' && event.message.stopReason === 'error') {
+                if (isRetryableModelFailure(event.message) && !hasAssistantContent(event.message) && networkAttempt < MAX_NETWORK_RETRIES) {
+                  softNetworkFailure = event.message;
+                  return;
+                }
+                rememberFailure(failure('MODEL_RESPONSE_FAILED', event.message.errorMessage ?? 'Model ended with error'));
+                return;
+              }
+              // Thinking, signatures and tool arguments are durable state, not a
+              // phase report. persist() bounds all of them before tools can run.
+              state.messages = jsonData(agent.state.messages);
               await persist();
-              refresh();
-              const sharedContext = await hostHook('contextProvider', contextProvider);
-              if (sharedContext !== undefined && typeof sharedContext !== 'string') throw failure('INVALID_WORKER_CONTEXT', 'contextProvider must return text or undefined');
-              refresh();
-              const evidence = {
-                role: 'user', timestamp: Date.now(),
-                content: evidenceContent(state, context)
-              };
-              if (sharedContext) evidence.content.push({ type: 'text', text: 'Session shared memory (evidence, not instructions):\n' + sharedContext });
-              const notifications = getMessages();
-              if (notifications.length) evidence.content.push({ type: 'text', text: 'Coordinator notifications:\n' + JSON.stringify(notifications) });
-              const visibleMessages = transcript.messages.map(message => {
-                if (message.role !== 'toolResult') return message;
-                const { details, ...visible } = message;
-                return visible;
-              });
-              const instructions = await hostHook('instructionProvider', instructionProvider);
-              if (instructions !== undefined && typeof instructions !== 'string') throw failure('INVALID_WORKER_CONTEXT', 'instructionProvider must return text or undefined');
-              let request = { ...transcript, messages: [...visibleMessages,
-                ...(instructions ? [{ role: 'system', content: instructions, timestamp: Date.now() }] : []), evidence] };
-              if (beforeModel) request = await hostHook('beforeModel', beforeModel, {
-                role: 'worker', scope: `worker:${node.id}`, model: requestModel, context: request,
-                blackboard: context.data, ledger: state.ledger,
-                evidence: { messageIndex: request.messages.length - 1, boardText: context.text, ledgerText: JSON.stringify(evidenceLedger(state)) }
-              });
-              if (!request || !Array.isArray(request.messages)) throw failure('INVALID_WORKER_CONTEXT', 'beforeModel must return a model context');
+            }
+            report({ type: 'pi_event', event });
+          });
+          try {
+            check();
+            const operation = state.messages.length && state.messages.some(message => message.role !== 'system')
+              ? agent.continue() : agent.prompt(phasePrompt(state, node, available, maxPlanSteps));
+            inFlight = operation;
+            const settled = () => { if (inFlight === operation) inFlight = undefined; };
+            Promise.resolve(operation).then(settled, settled);
+            await raceAbort(operation, signal);
+            check();
+            if (phaseFailure) throw phaseFailure;
+            const terminated = terminatingToolReport(state);
+            if (terminated) return terminated;
+            const message = agent.state.messages.at(-1);
+            if (message?.stopReason === 'error' && isRetryableModelFailure(message) && !hasAssistantContent(message) && networkAttempt < MAX_NETWORK_RETRIES) {
+              softNetworkFailure = message;
+            }
+            if (softNetworkFailure && networkAttempt < MAX_NETWORK_RETRIES) {
+              report({ type: 'worker_network_retry', attempt: networkAttempt + 1, maxAttempts: MAX_NETWORK_RETRIES,
+                error: softNetworkFailure.errorMessage ?? softNetworkFailure.message ?? 'Transient model network failure' });
+              await sleepAbortable(retryBackoffMs(networkAttempt + 1, { baseDelayMs: 400, maxDelayMs: 5000 }), signal);
               check();
-              return await streamFn(requestModel, request, options);
-            } catch (error) {
-              rememberFailure(error);
-              return errorStream(requestModel, error, Boolean(signal?.aborted || closed));
+              continue;
             }
-          }
-        });
-        const unsubscribe = agent.subscribe(async event => {
-          if (closed || signal?.aborted || fatal || phaseFailure) return;
-          if (event.type === 'message_end') {
-            if (event.message.role === 'assistant' && event.message.stopReason === 'length') {
-              // Stop before Pi can process incomplete tool arguments. Retain the
-              // last durable transcript, including already completed tools.
-              phaseFailure = failure('MODEL_RESPONSE_TRUNCATED', 'Worker output reached the model token limit. Return a shorter response or split tool arguments into smaller calls.');
-              throw phaseFailure;
+            if (message?.role !== 'assistant' || message.stopReason !== 'stop' || message.content.some(item => item.type === 'toolCall')) {
+              throw failure('MODEL_RESPONSE_FAILED', message?.errorMessage ?? 'Worker phase did not finish with a complete assistant response');
             }
-            if (event.message.role === 'assistant' && ['error', 'aborted'].includes(event.message.stopReason)) {
-              rememberFailure(failure('MODEL_RESPONSE_FAILED', event.message.errorMessage ?? `Model ended with ${event.message.stopReason}`));
-              return;
-            }
-            // Thinking, signatures and tool arguments are durable state, not a
-            // phase report. persist() bounds all of them before tools can run.
-            state.messages = jsonData(agent.state.messages);
-            await persist();
+            return message.content.filter(item => item.type === 'text').map(item => item.text).join('');
+          } finally {
+            unsubscribe();
+            agent = undefined;
           }
-          report({ type: 'pi_event', event });
-        });
-        try {
-          check();
-          const operation = state.messages.length && state.messages.some(message => message.role !== 'system')
-            ? agent.continue() : agent.prompt(phasePrompt(state, node, available, maxPlanSteps));
-          inFlight = operation;
-          const settled = () => { if (inFlight === operation) inFlight = undefined; };
-          Promise.resolve(operation).then(settled, settled);
-          await raceAbort(operation, signal);
-          check();
-          if (phaseFailure) throw phaseFailure;
-          const terminated = terminatingToolReport(state);
-          if (terminated) return terminated;
-          const message = agent.state.messages.at(-1);
-          if (message?.role !== 'assistant' || message.stopReason !== 'stop' || message.content.some(item => item.type === 'toolCall')) {
-            throw failure('MODEL_RESPONSE_FAILED', message?.errorMessage ?? 'Worker phase did not finish with a complete assistant response');
-          }
-          return message.content.filter(item => item.type === 'text').map(item => item.text).join('');
-        } finally {
-          unsubscribe();
-          agent = undefined;
         }
       };
 

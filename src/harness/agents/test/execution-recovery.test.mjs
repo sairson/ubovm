@@ -87,6 +87,50 @@ test('provider failures are not mistaken for recoverable truncation', async () =
   assert.equal(calls, 1);
 });
 
+function errorResponse(message) {
+  const stream = new AssistantMessageEventStream();
+  const failure = { role: 'assistant', content: [], stopReason: 'error', errorMessage: message,
+    api: model.api, provider: model.provider, model: model.id, timestamp: 1,
+    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
+  stream.push({ type: 'error', reason: 'error', error: failure });
+  return stream;
+}
+
+test('conversation retries empty transient network failures before failing the turn', async () => {
+  let calls = 0;
+  const events = [];
+  const result = await runConversation({
+    client: { model, streamFn: () => {
+      calls++;
+      if (calls === 1) return errorResponse('fetch failed: socket hang up');
+      return response('Recovered after network blip.', 'stop');
+    } },
+    options: {}, workerId: 'chat', prompt: 'verify', systemPrompt: 'verify', tools: [],
+    load: () => undefined, save: () => {}, audit: () => {},
+    onEvent: event => events.push(event),
+    swarm: { snapshot: () => ({ sessionId: 'chat', workers: [] }), settle: async () => {} },
+  });
+  assert.equal(result.answer, 'Recovered after network blip.');
+  assert.equal(calls, 2);
+  assert.ok(events.some(event => event.type === 'model_network_retry'));
+});
+
+test('reason retries empty transient network failures without consuming a schema repair', async () => {
+  let calls = 0;
+  const events = [];
+  const decision = await createPiReason({
+    model, maxRepairs: 0, onEvent: event => events.push(event),
+    streamFn: () => {
+      calls++;
+      if (calls === 1) return errorResponse('503 service unavailable');
+      return response(JSON.stringify({ intents: [annotatedIntent()] }), 'stop');
+    },
+  })({ context });
+  assert.equal(decision.intents.length, 1);
+  assert.equal(calls, 2);
+  assert.ok(events.some(event => event.type === 'reason_network_retry'));
+});
+
 test('long conversations recover separate truncations and protect the assignment through handoffs', async () => {
   let calls = 0, settled = false;
   const protectedContexts = [];

@@ -1,5 +1,6 @@
 import { createProvider, lazyApi } from '@earendil-works/pi-ai';
 import { builtinModels, getBuiltinModel } from '@earendil-works/pi-ai/providers/all';
+import { withTransientStreamRetry } from './model-retry.mjs';
 
 const APIS = new Set([
   'anthropic-messages', 'openai-completions', 'openai-responses', 'openai-codex-responses',
@@ -121,39 +122,9 @@ function streamDefaults(value = {}) {
     if (key === 'thinkingBudgets') for (const budget of Object.values(item)) positive(budget, 'streamOptions.thinkingBudgets value');
   }
   // Explicit 0 still disables retries; omit means a small transient-network budget.
-  if (!Object.hasOwn(result, 'maxRetries')) result.maxRetries = 2;
-  if (!Object.hasOwn(result, 'maxRetryDelayMs')) result.maxRetryDelayMs = 2000;
+  if (!Object.hasOwn(result, 'maxRetries')) result.maxRetries = 3;
+  if (!Object.hasOwn(result, 'maxRetryDelayMs')) result.maxRetryDelayMs = 5000;
   return result;
-}
-
-function isTransientNetworkError(error) {
-  if (!error || typeof error !== 'object') return false;
-  if (error.name === 'AbortError' || error.code === 'ABORT_ERR' || error.code === 'CANCELLED') return false;
-  const status = Number(error.status || error.statusCode || error.response?.status);
-  if ([408, 425, 429, 500, 502, 503, 504].includes(status)) return true;
-  if (['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'EPIPE', 'EAI_AGAIN', 'ENOTFOUND', 'UND_ERR_SOCKET'].includes(error.code)) return true;
-  return /ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|fetch failed|network error|socket hang up|Failed to fetch/i.test(String(error.message || error));
-}
-
-/** Retry only when the transport fails before any assistant content is observed. */
-async function withPreTokenRetry(transport, model, context, options) {
-  const signal = options?.signal;
-  signal?.throwIfAborted();
-  try {
-    return await transport(model, context, options);
-  } catch (error) {
-    signal?.throwIfAborted();
-    if (!isTransientNetworkError(error)) throw error;
-    await new Promise((resolve, reject) => {
-      const timer = setTimeout(resolve, 250);
-      const abort = () => { clearTimeout(timer); reject(signal.reason instanceof Error ? signal.reason : Object.assign(new Error('Aborted'), { name: 'AbortError', code: 'ABORT_ERR' })); };
-      if (!signal) return;
-      if (signal.aborted) { clearTimeout(timer); abort(); return; }
-      signal.addEventListener('abort', abort, { once: true });
-    });
-    signal?.throwIfAborted();
-    return transport(model, context, options);
-  }
 }
 
 function deepFreeze(value) {
@@ -276,7 +247,7 @@ export function createModelClient(configuration = {}) {
       // Agent resolves getApiKey before calling streamFn. Direct stream consumers
       // receive the same behavior without resolving a rotating key twice.
       if (merged.apiKey === undefined && resolveKey && options.getApiKey !== resolveKey) merged.apiKey = await resolveKey(model.provider);
-      return withPreTokenRetry(transport, model, context, merged);
+      return withTransientStreamRetry(transport, model, context, merged);
     },
     ...(resolveKey ? { getApiKey: resolveKey } : {}),
   };

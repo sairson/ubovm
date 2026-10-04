@@ -1,9 +1,11 @@
 import { Agent } from '@earendil-works/pi-agent-core';
+import { hasAssistantContent, isRetryableModelFailure, isTransientTransportError, retryBackoffMs, sleepAbortable } from '../model-retry.mjs';
 import { parseReasonDecision, validateReasonContext } from './protocol.mjs';
 import { reasonEvidencePrompt, reasonSystemPrompt } from './prompts.mjs';
 
 const failure = (code, message, cause) => Object.assign(new Error(message, cause === undefined ? undefined : { cause }), { code });
 const aborted = signal => Object.assign(failure('ABORT_ERR', 'Reason execution was interrupted.', signal?.reason), { name: 'AbortError' });
+const MAX_NETWORK_RETRIES = 2;
 
 // A provider may annotate parent aliases despite the schema. Discard only this
 // known textual annotation; never interpret it as instructions or repair IDs.
@@ -73,9 +75,10 @@ export function createPiReason({
     const cancel = () => agent?.abort();
     signal?.addEventListener('abort', cancel, { once: true });
     let repair;
+    let networkRetries = 0;
     try {
       report({ type: 'reason_start' });
-      for (let attempt = 0; attempt <= maxRepairs; attempt++) {
+      for (let attempt = 0; attempt <= maxRepairs; ) {
         check();
         agent = new Agent({
           initialState: {
@@ -88,7 +91,9 @@ export function createPiReason({
           streamFn: async (requestModel, transcript, options) => {
             try {
               check();
-              if (++modelCalls > maxRepairs + 1) throw failure('MODEL_BUDGET_EXCEEDED', 'Reason model-call budget exceeded.');
+              // Network retries share this budget so a flaky link cannot exceed the
+              // configured repair ceiling plus a small transient allowance.
+              if (++modelCalls > maxRepairs + 1 + MAX_NETWORK_RETRIES) throw failure('MODEL_BUDGET_EXCEEDED', 'Reason model-call budget exceeded.');
               const request = beforeModel ? await raceAbort(Promise.resolve().then(() => beforeModel({
                 role: 'reason', scope: 'reason', model: requestModel, context: structuredClone(transcript), signal,
                 blackboard: structuredClone(snapshot.data),
@@ -98,7 +103,14 @@ export function createPiReason({
               if (!request || !Array.isArray(request.messages)) throw new TypeError('beforeModel must return a model context');
               return await streamFn(requestModel, request, options);
             } catch (cause) {
-              fatal ??= signal?.aborted || closed ? aborted(signal) : failure('MODEL_REQUEST_FAILED', 'Reason model request failed.', cause);
+              if (signal?.aborted || closed) {
+                fatal ??= aborted(signal);
+                throw fatal;
+              }
+              // Preserve transient transport wording so the outer network-retry
+              // loop can classify and repeat this planning call.
+              if (isTransientTransportError(cause)) throw cause;
+              fatal ??= failure('MODEL_REQUEST_FAILED', 'Reason model request failed.', cause);
               throw fatal;
             }
           }
@@ -126,6 +138,12 @@ export function createPiReason({
           agent.abort();
           agent = undefined;
         }
+        if (message?.stopReason === 'error' && isRetryableModelFailure(message) && !hasAssistantContent(message) && networkRetries < MAX_NETWORK_RETRIES) {
+          networkRetries++;
+          report({ type: 'reason_network_retry', attempt: networkRetries, maxAttempts: MAX_NETWORK_RETRIES, error: message.errorMessage });
+          await sleepAbortable(retryBackoffMs(networkRetries, { baseDelayMs: 400, maxDelayMs: 5000 }), signal);
+          continue;
+        }
         if (!message || ['error', 'aborted'].includes(message.stopReason)) throw failure('MODEL_RESPONSE_FAILED', message?.errorMessage ?? `Reason model ended with ${message?.stopReason ?? 'no response'}.`);
         const source = message.content.filter(part => part.type === 'text').map(part => part.text).join('');
         try {
@@ -140,6 +158,7 @@ export function createPiReason({
           if (!['INVALID_REASON_DECISION', 'MODEL_RESPONSE_TRUNCATED'].includes(error.code) || attempt >= maxRepairs) throw error;
           repair = { source, error: error.message };
           report({ type: 'reason_repair', attempt: attempt + 1, error: error.message });
+          attempt++;
         }
       }
     } finally {
