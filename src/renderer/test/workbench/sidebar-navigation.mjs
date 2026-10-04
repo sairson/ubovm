@@ -97,19 +97,31 @@ try {
       assert(await assist.evaluate(el => { const r = el.getBoundingClientRect(); return el.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)); }), `mode switch must not be covered at height ${height}`);
       assert(await page.locator('.ubovm-sidebar-management').evaluate(el => {
         const style = getComputedStyle(el);
-        return style.overflowY === 'hidden' && el.scrollHeight <= el.clientHeight + 1;
-      }), `management must not scroll at height ${height}`);
-      assert.equal(await page.locator('.ubovm-management-label').first().evaluate(el => getComputedStyle(el).overflow === 'hidden' || el.getBoundingClientRect().width < 2), true, 'management labels stay visually hidden');
+        const nav = el.getBoundingClientRect();
+        const buttons = [...el.querySelectorAll('button')].map(button => button.getBoundingClientRect());
+        const inside = buttons.length === 3 && buttons.every(box => box.left >= nav.left - 0.5 && box.right <= nav.right + 0.5 && box.top >= nav.top - 0.5 && box.bottom <= nav.bottom + 0.5);
+        const even = Math.max(...buttons.map(box => box.width)) - Math.min(...buttons.map(box => box.width)) < 2;
+        return style.overflowY === 'hidden' && el.scrollHeight <= el.clientHeight + 1 && inside && even;
+      }), `management dock must stay even and unscrolled at height ${height}`);
+      assert(await page.locator('.ubovm-management-label').first().evaluate(el => el.getBoundingClientRect().width > 2), 'default width keeps management labels visible');
     }
+    assert(await page.locator('.ubovm-sidebar-management button').evaluateAll(buttons => buttons.every(button => {
+      const icon = button.querySelector('.codicon').getBoundingClientRect();
+      const label = button.querySelector('.ubovm-management-label').getBoundingClientRect();
+      return label.width > 2 && label.right <= button.getBoundingClientRect().right + 1
+        && Math.abs((icon.top + icon.height / 2) - (label.top + label.height / 2)) < 3;
+    })), 'management icons and labels stay aligned');
     await page.evaluate(() => window.updateContext({ 'ubovm.mode': 'assist', 'ubovm.settingsPage': '', 'ubovm.contentReady': true }));
     assert.equal(await page.locator('#sessions').evaluate(el => el.dataset.activeMode), 'assist', 'active mode is published on the pane');
     await page.locator('#sessions').evaluate(el => { el.style.width = '180px'; });
     await page.waitForFunction(() => document.getElementById('sessions')?.classList.contains('ubovm-sessions-narrow'));
     assert.equal(await assist.locator('.ubovm-mode-label').evaluate(el => getComputedStyle(el).overflow === 'hidden' || el.getBoundingClientRect().width < 2), true, 'narrow mode hides mode labels');
     assert(await assist.locator('.codicon-comment').evaluate(el => el.getBoundingClientRect().width > 0), 'narrow mode keeps mode icons');
+    assert(await page.locator('.ubovm-management-label').first().evaluate(el => el.getBoundingClientRect().width < 2), 'narrow pane hides management labels');
+    assert(await page.locator('.ubovm-sidebar-management .codicon').first().evaluate(el => el.getBoundingClientRect().width > 0), 'narrow pane keeps management icons');
     await page.locator('#sessions').evaluate(el => { el.style.width = '280px'; });
     await page.waitForFunction(() => document.getElementById('sessions')?.classList.contains('ubovm-sessions-wide'));
-    assert(await page.locator('.ubovm-management-label').first().evaluate(el => el.getBoundingClientRect().width > 2), 'wide pane reveals management labels');
+    assert(await page.locator('.ubovm-management-label').first().evaluate(el => el.getBoundingClientRect().width > 2), 'wide pane keeps management labels');
     await page.locator('#sessions').evaluate(el => { el.style.width = '230px'; });
     await page.waitForFunction(() => {
       const el = document.getElementById('sessions');
@@ -117,6 +129,10 @@ try {
     });
     await page.evaluate(() => window.updateContext({ 'ubovm.settingsPage': 'mcp' }));
     assert.equal(await page.locator('#sessions').evaluate(el => el.dataset.settingsPage), 'mcp');
+    assert(await page.locator('.ubovm-sidebar-management button[aria-current="page"]').evaluate(el => {
+      const style = getComputedStyle(el);
+      return el.dataset.settingsPage === 'mcp' && style.backgroundColor !== 'rgba(0, 0, 0, 0)' && style.boxShadow !== 'none';
+    }), 'current management page keeps a visible selected surface');
     assert.match(await assist.getAttribute('title') || '', /关闭配置/);
     await page.locator('.sidebar').evaluate(el => { el.style.display = 'none'; });
     await page.locator('.sidebar').evaluate(el => { el.style.display = ''; });
