@@ -163,6 +163,12 @@
         "icon": "$(add)"
       },
       {
+        "command": "ubovm.showMoreSessions",
+        "title": "显示更多会话",
+        "category": "UBOVM",
+        "icon": "$(ellipsis)"
+      },
+      {
         "command": "ubovm.selectConversation",
         "title": "打开会话",
         "category": "UBOVM",

@@ -1857,6 +1857,7 @@ async function activate(context) {
       return openAssistant();
     }),
     registerCommand('ubovm.selectConversation', selectConversation),
+    registerCommand('ubovm.showMoreSessions', (projectId, mode) => sessions.showMoreSessions(projectId, mode)),
     registerCommand('ubovm.deleteConversation', deleteConversation),
     registerCommand('ubovm.searchConversations', searchConversations),
     registerCommand('ubovm.hideSessions', () => vscode.commands.executeCommand('workbench.action.closeAuxiliaryBar')),

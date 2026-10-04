@@ -473,30 +473,43 @@ function createSessions(vscode, context, onDidChange, { isBusy = () => false, cr
     return commit({ ...state, sessions: [{ ...session, placeholder: false }, ...state.sessions.filter(item => item.id !== session.id)] });
   }
 
+  const projectSessionPreview = 5;
+  const shownSessionCounts = new Map();
+  function orderedProjectSessions(projectId, mode) {
+    // Keep click/select from reshuffling rows: order by creation, not last open.
+    return state.sessions.filter(session => session.projectId === projectId && session.mode === mode && !session.placeholder)
+      .sort((left, right) => (right.createdAt || 0) - (left.createdAt || 0) || String(right.id).localeCompare(String(left.id)));
+  }
+  function sessionTreeNode(session) {
+    return { id: session.id, title: session.title, mode: session.mode, projectId: session.projectId, messageCount: session.messages.length, createdAt: session.createdAt, updatedAt: session.updatedAt };
+  }
+  function shownSessionLimit(projectId, mode) {
+    return Math.max(projectSessionPreview, shownSessionCounts.get(projectId + ':' + mode) || projectSessionPreview);
+  }
+  function moreSessions(projectId, mode, remaining) {
+    return { kind: 'more', id: projectId + ':' + mode, projectId, mode, remaining };
+  }
+
   const provider = {
     onDidChangeTreeData: emitter.event,
     getParent(element) {
       if (!element || element.kind === 'project' || !element.projectId) return undefined;
       const project = state.projects.find(item => item.id === element.projectId);
-      return project ? { ...project, kind: 'project' } : undefined;
+      if (!project) return undefined;
+      return { ...project, kind: 'project' };
     },
     getChildren(element) {
       if (element) {
+        if (element.kind === 'more') return [];
         if (element.kind !== 'project') return [];
-        const modeRank = mode => mode === state.activeMode ? 0 : 1;
-        return state.sessions.filter(session => session.projectId === element.id && !session.placeholder)
-          .sort((left, right) => modeRank(left.mode) - modeRank(right.mode) || (right.updatedAt || 0) - (left.updatedAt || 0))
-          .map(session => ({ id: session.id, title: session.title, mode: session.mode, projectId: session.projectId, messageCount: session.messages.length, updatedAt: session.updatedAt }));
+        // Sessions sit directly under the project. Exploration rows appear only in exploration mode.
+        // Render one page at a time so the rest stay out of the tree until the user asks.
+        const ordered = orderedProjectSessions(element.id, state.activeMode);
+        const sessions = ordered.slice(0, shownSessionLimit(element.id, state.activeMode)).map(sessionTreeNode);
+        const remaining = ordered.length - sessions.length;
+        return remaining > 0 ? [...sessions, moreSessions(element.id, state.activeMode, remaining)] : sessions;
       }
-      const currentProjectId = selected().projectId;
-      const projectActivity = id => state.sessions.reduce((latest, session) => session.projectId === id && !session.placeholder
-        ? Math.max(latest, session.updatedAt || 0) : latest, 0);
-      const projects = state.projects.map(project => ({ ...project, kind: 'project' }))
-        .sort((left, right) => {
-          const activeDelta = (right.id === currentProjectId ? 1 : 0) - (left.id === currentProjectId ? 1 : 0);
-          if (activeDelta) return activeDelta;
-          return projectActivity(right.id) - projectActivity(left.id) || String(left.name).localeCompare(String(right.name), 'zh');
-        });
+      const projects = state.projects.map(project => ({ ...project, kind: 'project' }));
       return [...projects,
         ...state.sessions.filter(session => session.mode === state.activeMode && !session.projectId && !session.placeholder).map(snapshot)];
     },
@@ -519,23 +532,32 @@ function createSessions(vscode, context, onDidChange, { isBusy = () => false, cr
         item.command = { command: 'ubovm.openProject', title: '打开项目', arguments: [session.id] };
         return item;
       }
-      const selected = session.mode === state.activeMode && session.id === state.currentIds[state.activeMode];
+      if (session.kind === 'more') {
+        const item = new vscode.TreeItem('更多', vscode.TreeItemCollapsibleState.None);
+        item.id = 'more-' + session.id;
+        item.contextValue = 'ubovm.moreSessions';
+        item.iconPath = new vscode.ThemeIcon('ellipsis');
+        item.description = String(session.remaining || 0);
+        item.tooltip = `再显示 ${Math.min(projectSessionPreview, session.remaining || 0)} 个会话`;
+        item.accessibilityInformation = { label: `更多，还有 ${session.remaining || 0} 个会话` };
+        item.command = { command: 'ubovm.showMoreSessions', title: '显示更多会话', arguments: [session.projectId, session.mode] };
+        return item;
+      }
+      const currentSession = session.mode === state.activeMode && session.id === state.currentIds[state.activeMode];
       const running = isBusy(session.id);
-      const otherMode = session.mode !== state.activeMode;
       // Remember what the tree actually displayed, including an initial read
       // that preceded the first execution notification.
       if (running) runningSessions.add(session.id); else runningSessions.delete(session.id);
       const item = new vscode.TreeItem(session.title, vscode.TreeItemCollapsibleState.None);
       item.id = session.id;
-      item.iconPath = new vscode.ThemeIcon(running ? 'loading~spin' : selected ? 'circle-filled' : session.mode === 'goal' ? 'target' : 'comment');
-      item.contextValue = selected ? 'ubovm.currentConversation' : 'ubovm.conversation';
+      item.iconPath = new vscode.ThemeIcon(running ? 'loading~spin' : currentSession ? 'circle-filled' : session.mode === 'goal' ? 'target' : 'comment');
+      item.contextValue = currentSession ? 'ubovm.currentConversation' : 'ubovm.conversation';
       const modeLabel = session.mode === 'goal' ? '探索' : '协助';
       const modeTitle = modeLabel + '模式';
       const messageCount = session.messageCount ?? session.messages.length;
-      // Active-mode rows show counts; other-mode siblings under a project show the mode tag.
-      item.description = running ? '运行中' : otherMode ? modeLabel : String(messageCount);
-      item.tooltip = `${session.title}\n${selected ? '当前会话 · ' : ''}${running ? '运行中 · ' : ''}${modeTitle} · ${messageCount} 条消息`;
-      item.accessibilityInformation = { label: `${session.title}${selected ? '，当前会话' : ''}${running ? '，运行中' : ''}，${modeTitle}，${messageCount} 条消息` };
+      item.description = running ? '运行中' : String(messageCount);
+      item.tooltip = `${session.title}\n${currentSession ? '当前会话 · ' : ''}${running ? '运行中 · ' : ''}${modeTitle} · ${messageCount} 条消息`;
+      item.accessibilityInformation = { label: `${session.title}${currentSession ? '，当前会话' : ''}${running ? '，运行中' : ''}，${modeTitle}，${messageCount} 条消息` };
       item.command = { command: 'ubovm.selectConversation', title: '打开会话', arguments: [session.id] };
       return item;
     }
@@ -555,6 +577,16 @@ function createSessions(vscode, context, onDidChange, { isBusy = () => false, cr
       // Refresh on transitions only, not on every streamed token. This also
       // updates background sessions without publishing the active chat again.
       emitter.fire();
+    },
+    showMoreSessions(projectId, mode = state.activeMode) {
+      if (disposed || typeof projectId !== 'string' || (mode !== 'assist' && mode !== 'goal')) return 0;
+      const total = orderedProjectSessions(projectId, mode).length;
+      const next = Math.min(total, shownSessionLimit(projectId, mode) + projectSessionPreview);
+      const key = projectId + ':' + mode;
+      if ((shownSessionCounts.get(key) || projectSessionPreview) === next) return next;
+      shownSessionCounts.set(key, next);
+      emitter.fire();
+      return next;
     },
     current,
     summary,
@@ -757,11 +789,9 @@ function createSessions(vscode, context, onDidChange, { isBusy = () => false, cr
           if (sessions.filter(session => session.mode === state.activeMode).length >= MAX_SESSIONS) throw new Error('会话数量已达到上限，请先清理会话。');
           session = { ...newSession([], state.activeMode), placeholder: false, projectId: id, workspace: project.workspace };
           sessions = [session, ...sessions];
-        } else {
-          const openedAt = Date.now();
-          sessions = sessions.map(item => item.id === session.id ? { ...item, updatedAt: openedAt } : item);
-          session = sessions.find(item => item.id === session.id);
         }
+        // Selecting a project or conversation must not rewrite timestamps, or the
+        // sidebar list jumps under the cursor after every click.
         return commit({ ...state, sessions, currentIds: { ...state.currentIds, [state.activeMode]: session.id } });
       });
     },

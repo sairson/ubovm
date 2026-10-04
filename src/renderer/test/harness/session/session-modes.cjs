@@ -112,33 +112,91 @@ test('project tree highlights only the active project and exposes counts across 
   assert.equal(f.store.get(first.id).title, first.title);
 });
 
-test('project children list both modes with compact counts and prefer the active mode', async () => {
+test('project children are the active mode session list with no extra grouping', async () => {
   const f = harness(); await f.store.ready;
   const assist = await f.store.createProject('双模式', 'C:\\dual');
   await f.store.setMode('goal');
   const goal = await f.store.create(undefined, assist.projectId);
   await f.store.setMode('assist');
   const project = f.store.provider.getChildren().find(item => item.id === assist.projectId);
-  const children = f.store.provider.getChildren(project);
-  assert.deepEqual(children.map(item => item.mode), ['assist', 'goal']);
-  assert.equal(f.store.provider.getTreeItem(children[0]).description, '0');
-  assert.equal(f.store.provider.getTreeItem(children[1]).description, '探索');
-  assert.match(f.store.provider.getTreeItem(children[0]).tooltip, /协助模式/);
-  assert.match(f.store.provider.getTreeItem(children[1]).tooltip, /探索模式/);
-  assert.equal(children[0].id, assist.id);
-  assert.equal(children[1].id, goal.id);
-  assert.equal(f.store.provider.getParent(children[1]).id, assist.projectId);
+  const assistSessions = f.store.provider.getChildren(project);
+  assert.deepEqual(assistSessions.map(item => item.id), [assist.id]);
+  assert.equal(f.store.provider.getParent(assistSessions[0]).id, assist.projectId);
+  assert.match(f.store.provider.getTreeItem(assistSessions[0]).tooltip, /协助模式/);
+  await f.store.setMode('goal');
+  const goalSessions = f.store.provider.getChildren(project);
+  assert.deepEqual(goalSessions.map(item => item.id), [goal.id]);
+  assert.equal(f.store.provider.getParent(goalSessions[0]).id, assist.projectId);
+  assert.match(f.store.provider.getTreeItem(goalSessions[0]).tooltip, /探索模式/);
   assert.equal(f.store.provider.getParent(project), undefined);
 });
 
-test('projects surface the active project first then the most recently used', async () => {
+test('a project previews five sessions and renders further pages in place', async () => {
+  const f = harness(); await f.store.ready;
+  const first = await f.store.createProject('长列表', 'C:\\preview');
+  for (let index = 0; index < 11; index++) await f.store.create(undefined, first.projectId);
+  const project = f.store.provider.getChildren().find(item => item.id === first.projectId);
+  const firstPage = f.store.provider.getChildren(project);
+  assert.equal(firstPage.length, 6);
+  assert.equal(firstPage.at(-1).kind, 'more');
+  assert.equal(firstPage.at(-1).remaining, 7);
+  assert.equal(f.store.provider.getChildren(firstPage.at(-1)).length, 0);
+  const more = f.store.provider.getTreeItem(firstPage.at(-1));
+  assert.equal(more.label, '更多');
+  assert.equal(more.collapsibleState, 0);
+  assert.equal(more.description, '7');
+  assert.equal(more.command.command, 'ubovm.showMoreSessions');
+  assert.deepEqual(more.command.arguments, [first.projectId, 'assist']);
+  f.store.showMoreSessions(first.projectId, 'assist');
+  const secondPage = f.store.provider.getChildren(project);
+  assert.equal(secondPage.filter(item => item.kind !== 'more').length, 10);
+  assert.equal(secondPage.at(-1).kind, 'more');
+  assert.equal(secondPage.at(-1).remaining, 2);
+  assert.deepEqual(secondPage.slice(0, 5).map(item => item.id), firstPage.slice(0, 5).map(item => item.id));
+  assert.equal(f.store.provider.getParent(secondPage[5]).id, first.projectId);
+  f.store.showMoreSessions(first.projectId, 'assist');
+  const all = f.store.provider.getChildren(project);
+  assert.equal(all.length, 12);
+  assert.equal(all.some(item => item.kind === 'more'), false);
+  assert.equal(f.store.provider.getParent(all.at(-1)).id, first.projectId);
+});
+
+test('selecting a project session does not reshuffle the sidebar list', async () => {
+  const f = harness(); await f.store.ready;
+  const first = await f.store.createProject('稳定顺序', 'C:\\stable-order');
+  await f.store.create(undefined, first.projectId);
+  await f.store.create(undefined, first.projectId);
+  const project = f.store.provider.getChildren().find(item => item.id === first.projectId);
+  const before = f.store.provider.getChildren(project).map(item => item.id);
+  assert.equal(before.length, 3);
+  await f.store.select(first.id);
+  assert.deepEqual(f.store.provider.getChildren(project).map(item => item.id), before);
+  await f.store.selectProject(first.projectId);
+  assert.deepEqual(f.store.provider.getChildren(project).map(item => item.id), before);
+  await f.store.appendMessage(first.id, { role: 'user', text: '内容更新也不应改顺序' });
+  assert.deepEqual(f.store.provider.getChildren(project).map(item => item.id), before);
+});
+
+test('projects keep creation order when another project session is selected', async () => {
   const f = harness(); await f.store.ready;
   const first = await f.store.createProject('旧项目', 'C:\\old');
-  await new Promise(resolve => setTimeout(resolve, 2));
+  await f.store.create(undefined, first.projectId);
   const second = await f.store.createProject('新项目', 'C:\\new');
-  assert.deepEqual(f.store.provider.getChildren().filter(item => item.kind === 'project').map(item => item.id), [second.projectId, first.projectId]);
+  const projectOrder = () => f.store.provider.getChildren().filter(item => item.kind === 'project').map(item => item.id);
+  const sessionOrder = projectId => {
+    const project = f.store.provider.getChildren().find(item => item.id === projectId);
+    return f.store.provider.getChildren(project).map(item => item.id);
+  };
+  const projects = projectOrder();
+  const firstSessions = sessionOrder(first.projectId);
+  const secondSessions = sessionOrder(second.projectId);
+  assert.deepEqual(projects, [second.projectId, first.projectId]);
+  await f.store.select(first.id);
+  assert.deepEqual(projectOrder(), projects);
+  assert.deepEqual(sessionOrder(first.projectId), firstSessions);
+  assert.deepEqual(sessionOrder(second.projectId), secondSessions);
   await f.store.selectProject(first.projectId);
-  assert.deepEqual(f.store.provider.getChildren().filter(item => item.kind === 'project').map(item => item.id), [first.projectId, second.projectId]);
+  assert.deepEqual(projectOrder(), projects);
 });
 
 test('project deletion confirmation rejects changed membership without losing conversations', async () => {
