@@ -3,7 +3,7 @@ $ProjectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../..'))
 $tokens = $null; $errors = $null
 $ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $ProjectRoot 'build/build.ps1'), [ref]$tokens, [ref]$errors)
 if ($errors.Count) { throw ($errors | Out-String) }
-foreach ($name in @('Replace-CoreSnippet', 'Get-PatchAdditions', 'Update-ManagedKeyboardPolicy', 'Assert-CurrentKeyboardPolicy')) {
+foreach ($name in @('Read-Utf8Lines', 'Replace-CoreSnippet', 'Get-PatchAdditions', 'Update-ManagedKeyboardPolicy', 'Assert-CurrentKeyboardPolicy')) {
     $definition = $ast.Find({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true)
     . ([scriptblock]::Create($definition.Extent.Text))
 }

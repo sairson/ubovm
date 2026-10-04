@@ -4,7 +4,7 @@ $tokens = $null; $errors = $null
 # ParseFile uses the same encoding rules as Windows PowerShell -File.
 $ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $ProjectRoot 'build/build.ps1'), [ref]$tokens, [ref]$errors)
 if ($errors.Count) { throw ($errors | Out-String) }
-foreach ($name in @('Assert-ChildPath', 'Remove-Managed', 'Replace-CoreSnippet', 'Update-ManagedKeyboardPolicy', 'Get-PatchAdditions', 'Set-CoreChecksum', 'Get-WorkbenchStyle', 'Set-StartupHtml', 'Set-FixedConversationCore', 'Set-BackgroundTrayCore')) {
+foreach ($name in @('Read-Utf8Text', 'Read-Utf8Lines', 'Assert-ChildPath', 'Remove-Managed', 'Replace-CoreSnippet', 'Update-ManagedKeyboardPolicy', 'Get-PatchAdditions', 'Set-CoreChecksum', 'Get-WorkbenchStyle', 'Set-StartupHtml', 'Set-FixedConversationCore', 'Set-BackgroundTrayCore')) {
     $definition = $ast.Find({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true)
     . ([scriptblock]::Create($definition.Extent.Text))
 }

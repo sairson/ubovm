@@ -3,10 +3,9 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 # Windows PowerShell 5.1 defaults to the system ANSI code page for BOM-less
 # files. Force UTF-8 so Chinese patch/source injections keep valid JS quotes.
-$Utf8 = New-Object System.Text.UTF8Encoding $false
-function Read-Utf8Text([string]$Path) { [IO.File]::ReadAllText($Path, $Utf8) }
-function Read-Utf8Lines([string]$Path) { [IO.File]::ReadAllLines($Path, $Utf8) }
-function Write-Utf8Text([string]$Path, [string]$Text) { [IO.File]::WriteAllText($Path, $Text, $Utf8) }
+function Read-Utf8Text([string]$Path) { [IO.File]::ReadAllText($Path, [Text.UTF8Encoding]::new($false)) }
+function Read-Utf8Lines([string]$Path) { [IO.File]::ReadAllLines($Path, [Text.UTF8Encoding]::new($false)) }
+function Write-Utf8Text([string]$Path, [string]$Text) { [IO.File]::WriteAllText($Path, $Text, [Text.UTF8Encoding]::new($false)) }
 $ProjectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $OnWindows = [Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT
 $OnMac = -not $OnWindows -and $IsMacOS
