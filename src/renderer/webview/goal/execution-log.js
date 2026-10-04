@@ -1,4 +1,5 @@
 (() => {
+  const tr = value => window.UBOVMi18n?.t(value) ?? value;
   const element = (tag, cls, text = '') => { const n = document.createElement(tag); n.className = cls; n.textContent = text; return n; };
   const timestamp = value => typeof value === 'number' ? value : Date.parse(value);
   const equal = (left, right) => left?.length === right.length && right.every((value, index) => Object.is(value, left[index]));
@@ -8,7 +9,7 @@
     let session = '', latestExecution, start = null, firstId;
     let follow = true, lastTop = 0, total = 0, followFrame = 0;
     const pager = element('div', 'goal-log-pager'); pager.hidden = true;
-    const earlier = element('button', '', '较早日志'), newer = element('button', '', '较新日志'), latest = element('button', '', '最新日志'), range = element('span', '');
+    const earlier = element('button', '', tr('较早日志')), newer = element('button', '', tr('较新日志')), latest = element('button', '', tr('最新日志')), range = element('span', '');
     for (const button of [earlier, newer, latest]) button.type = 'button';
     range.setAttribute('role', 'status'); pager.append(earlier, range, newer, latest); container.before(pager);
     function nearBottom(threshold = 32) {
@@ -99,7 +100,7 @@
       firstId = visibleEntries[0]?.id;
       pager.hidden = total <= pageSize;
       earlier.disabled = offset === 0; newer.disabled = offset + pageSize >= total;
-      range.textContent = `${total ? offset + 1 : 0}–${Math.min(total, offset + pageSize)} / ${total} 条`;
+      range.textContent = window.UBOVMi18n?.t(`${total ? offset + 1 : 0}–${Math.min(total, offset + pageSize)} / ${total} 条`) ?? `${total ? offset + 1 : 0}–${Math.min(total, offset + pageSize)} / ${total} 条`;
       latest.disabled = start === null;
       const kept = new Set(); let previous;
       for (const entry of visibleEntries) {
@@ -113,7 +114,7 @@
         const heading = [entry.kind, entry.label, entry.status, entry.time];
         if (!equal(row.heading, heading)) {
           row.root.dataset.kind = entry.kind; row.root.dataset.logId = entry.id;
-          row.label.textContent = entry.label; row.state.textContent = entry.status === 'created' ? '已派发' : entry.status ? statusText(entry.status) : '';
+          row.label.textContent = window.UBOVMi18n?.t(entry.label) ?? entry.label; row.state.textContent = entry.status === 'created' ? (window.UBOVMi18n?.t('已派发') ?? '已派发') : entry.status ? statusText(entry.status) : '';
           row.root.dataset.status = entry.status || '';
           row.time.textContent = Number.isFinite(entry.time) ? new Date(entry.time).toLocaleTimeString('zh-CN', { hour12: false }) : '—';
           row.time.title = Number.isFinite(entry.time) ? new Date(entry.time).toLocaleString('zh-CN') : '此记录未提供时间';
@@ -126,7 +127,7 @@
           if (entry.worker) {
             const worker = entry.worker, button = element('button', 'goal-log-worker', worker.name || worker.id); button.type = 'button';
             button.addEventListener('click', () => openWorker(worker.id, button));
-            row.body.replaceChildren(button, element('p', '', worker.description || ''), element('small', '', worker.parentId ? '来自上级任务' : ''));
+            row.body.replaceChildren(button, element('p', '', worker.description || ''), element('small', '', worker.parentId ? tr('来自上级任务') : ''));
             const error = typeof worker.error === 'string' ? worker.error : worker.error?.message;
             if (error && entry.id.startsWith('worker-end:')) row.body.append(element('p', 'execution-error', error));
           } else if (entry.part || entry.text) {

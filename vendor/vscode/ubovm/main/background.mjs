@@ -142,8 +142,9 @@ export function installBackgroundMode({ app, Tray, Menu, nativeImage, dialog, ic
     if (sessionEnding) return false;
     if (tray && !tray.isDestroyed()) return true;
     try {
-      const image = nativeImage.createFromPath(icon);
-      if (image.isEmpty()) throw new Error('Missing tray icon');
+      // A preloaded NativeImage avoids handing Windows an absolute icon path.
+      const image = icon && typeof icon.isEmpty === 'function' ? icon : nativeImage.createFromPath(icon);
+      if (!image || image.isEmpty()) throw new Error('Missing tray icon');
       tray = new Tray(image);
       lastStatus = undefined;
       const owner = tray;

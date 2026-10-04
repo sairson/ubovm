@@ -13,7 +13,8 @@
   };
   const sourceText = value => typeof value === 'string' ? value : '';
   const languageName = value => /^[\w.+#-]+/.exec(sourceText(value).trim())?.[0].toLowerCase() || 'text';
-  const setText = (element, text) => { if (element.textContent !== text) element.textContent = text; };
+  const tr = value => window.UBOVMi18n?.t(value) ?? value;
+  const setText = (element, text) => { const next = tr(text); if (element.textContent !== next) element.textContent = next; };
 
   function linkTarget(value) {
     const href = sourceText(value).trim();
@@ -195,9 +196,9 @@
     const language = node('span', 'md-code-language');
     const status = node('span', 'md-code-status'); status.setAttribute('aria-live', 'off');
     const actions = node('span', 'md-code-actions');
-    const toggle = node('button', 'md-code-button', '展开代码'); toggle.type = 'button'; toggle.setAttribute('aria-expanded', 'false');
-    const preview = node('button', 'md-code-button', '预览 HTML'); preview.type = 'button';
-    const copy = node('button', 'md-code-button', '复制代码'); copy.type = 'button';
+    const toggle = node('button', 'md-code-button', tr('展开代码')); toggle.type = 'button'; toggle.setAttribute('aria-expanded', 'false');
+    const preview = node('button', 'md-code-button', tr('预览 HTML')); preview.type = 'button';
+    const copy = node('button', 'md-code-button', tr('复制代码')); copy.type = 'button';
     const pre = node('pre'); const code = node('code'); pre.appendChild(code);
     const entry = { card, language, status, toggle, preview, copy, pre, code, lines: [], text: '', lang: '', highlighted: false };
     toggle.dataset.mdToggle = ''; copy.dataset.mdCopy = ''; preview.dataset.mdCodePreview = '';
@@ -276,9 +277,9 @@
       const card = node('figure', 'md-code-card'); card.dataset.expanded = 'false';
       const toolbar = node('figcaption', 'md-code-toolbar');
       const actions = node('span', 'md-code-actions');
-      const toggle = node('button', 'md-code-button', '展开代码'); toggle.type = 'button'; toggle.dataset.mdToggle = ''; toggle.setAttribute('aria-expanded', 'false'); toggle.hidden = lines.length <= 18;
-      const preview = node('button', 'md-code-button', '预览 HTML'); preview.type = 'button'; preview.dataset.mdCodePreview = ''; preview.hidden = !['html', 'htm', 'xhtml'].includes(language); preview.disabled = typeof view.options.onPreviewHtml !== 'function';
-      const copy = node('button', 'md-code-button', '复制代码'); copy.type = 'button'; copy.dataset.mdCopy = '';
+      const toggle = node('button', 'md-code-button', tr('展开代码')); toggle.type = 'button'; toggle.dataset.mdToggle = ''; toggle.setAttribute('aria-expanded', 'false'); toggle.hidden = lines.length <= 18;
+      const preview = node('button', 'md-code-button', tr('预览 HTML')); preview.type = 'button'; preview.dataset.mdCodePreview = ''; preview.hidden = !['html', 'htm', 'xhtml'].includes(language); preview.disabled = typeof view.options.onPreviewHtml !== 'function';
+      const copy = node('button', 'md-code-button', tr('复制代码')); copy.type = 'button'; copy.dataset.mdCopy = '';
       actions.append(toggle, preview, copy); toolbar.append(node('span', 'md-code-language', language), actions);
       code.replaceChildren();
       // Nested fences inherit the same collapsed-plain / expanded-highlight rule.
@@ -300,7 +301,7 @@
       table.replaceWith(wrap); wrap.appendChild(table);
     }
     if (token.type === 'html' && /<!doctype\s+html\b|<html[\s>]/i.test(token.raw || '')) {
-      const preview = node('button', 'md-html-preview', '预览 HTML'); preview.type = 'button'; preview.dataset.mdHtmlPreview = '';
+      const preview = node('button', 'md-html-preview', tr('预览 HTML')); preview.type = 'button'; preview.dataset.mdHtmlPreview = '';
       preview.disabled = typeof view.options.onPreviewHtml !== 'function';
       fragment.prepend(preview);
     }
@@ -319,7 +320,7 @@
       let large = largeViews.get(element);
       if (!large || large.body.parentNode !== element || large.notice.parentNode !== element) {
         release(element);
-        const notice = node('p', 'md-large-notice', '内容较长，已切换为纯文本显示以保持页面稳定。');
+        const notice = node('p', 'md-large-notice', tr('内容较长，已切换为纯文本显示以保持页面稳定。'));
         const body = node('pre', 'md-large-body', '');
         element.replaceChildren(notice, body);
         element.classList.add('md-content');
@@ -353,7 +354,7 @@
           if (!card) return;
           if (action.hasAttribute('data-md-toggle')) {
             const expanded = card.dataset.expanded !== 'true'; card.dataset.expanded = String(expanded);
-            action.setAttribute('aria-expanded', String(expanded)); setText(action, expanded ? '收起代码' : '展开代码');
+            action.setAttribute('aria-expanded', String(expanded)); setText(action, expanded ? '收起代码' : tr('展开代码'));
             if (expanded) {
               expandCodeCard(card, view);
               if (card._plainCode) {
@@ -375,14 +376,14 @@
             Promise.resolve().then(async () => {
               if (!current()) return;
               if (typeof onCopy !== 'function' || await onCopy(copiedText) === false) throw new Error('复制未完成，请重试');
-              if (current()) { setText(action, '已复制'); action.title = '代码已复制'; }
-            }).catch(error => { if (current()) { setText(action, '复制失败'); action.title = sourceText(error?.message) || '复制失败，请重试'; } })
+              if (current()) { setText(action, '已复制'); action.title = window.UBOVMi18n?.t('代码已复制') ?? '代码已复制'; }
+            }).catch(error => { if (current()) { setText(action, '复制失败'); action.title = sourceText(error?.message) || (window.UBOVMi18n?.t('复制失败，请重试') ?? '复制失败，请重试'); } })
               .finally(() => {
                 if (!current()) return;
                 action.disabled = false;
                 view.resets.set(action, setTimeout(() => {
                   view.resets.delete(action);
-                  if (current()) setText(action, '复制代码');
+                  if (current()) setText(action, tr('复制代码'));
                 }, 1600));
               });
           }

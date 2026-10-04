@@ -171,6 +171,7 @@ index fa8d7aed..f1a1d963 100644
 +				if (activate) { available[next].click(); }
 +				return true;
 +			};
++			const chrome = (zh, en) => this.contextKeyService.getContextKeyValue('ubovm.interfaceLocale') === 'en' ? en : zh;
 +			const update = () => {
 +				if (disposed) { return; }
 +				const mode = this.contextKeyService.getContextKeyValue('ubovm.mode');
@@ -194,7 +195,20 @@ index fa8d7aed..f1a1d963 100644
 +				else { delete container.dataset.activeMode; }
 +				if (typeof page === 'string' && page) { container.dataset.settingsPage = page; }
 +				else { delete container.dataset.settingsPage; }
++				container.ownerDocument.documentElement.dataset.ubovmLocale = this.contextKeyService.getContextKeyValue('ubovm.interfaceLocale') === 'en' ? 'en' : 'zh-CN';
++				bar.setAttribute('aria-label', chrome('工作模式', 'Work mode'));
++				management.setAttribute('aria-label', chrome('管理配置', 'Manage'));
++				heading.textContent = chrome('管理配置', 'Manage');
++				const managementCopy = {
++					mcp: ['MCP', 'MCP'],
++					skills: ['Skills', 'Skills'],
++					settings: [chrome('配置', 'Settings'), chrome('系统配置', 'Settings')]
++				};
 +				for (const button of managementButtons) {
++					const copy = managementCopy[button.dataset.settingsPage || ''];
++					const label = button.querySelector('.ubovm-management-label');
++					if (label && copy) { label.textContent = copy[0]; }
++					if (copy) { button.title = copy[1]; button.setAttribute('aria-label', copy[1]); }
 +					button.disabled = !!pending || !mode || !unlocked;
 +					button.setAttribute('aria-busy', String(pending === 'page:' + button.dataset.settingsPage));
 +					if (button.dataset.settingsPage === page) {
@@ -206,16 +220,19 @@ index fa8d7aed..f1a1d963 100644
 +				bar.classList.toggle('ubovm-settings-navigation', !!page);
 +				for (const button of buttons) {
 +					const selected = button.dataset.mode === mode;
++					const goalMode = button.dataset.mode === 'goal';
++					const modeLabel = button.querySelector('.ubovm-mode-label');
++					if (modeLabel) { modeLabel.textContent = chrome(goalMode ? '探索' : '协助', goalMode ? 'Explore' : 'Assist'); }
 +					button.setAttribute('aria-pressed', String(selected));
 +					button.disabled = !!pending || !mode || !unlocked;
 +					button.setAttribute('aria-disabled', String(button.disabled));
 +					button.setAttribute('aria-busy', String(pending === 'mode:' + button.dataset.mode));
-+					const base = button.dataset.mode === 'goal' ? '探索模式' : '协助模式';
-+					button.title = page ? `${base}（关闭配置后切换）` : base;
++					const base = chrome(goalMode ? '探索模式' : '协助模式', goalMode ? 'Explore mode' : 'Assist mode');
++					button.title = page ? `${base}${chrome('（关闭配置后切换）', ' (switch after closing settings)')}` : base;
 +					button.setAttribute('aria-label', button.title);
 +				}
 +			};
-+			const navigationKeys = new Set(['ubovm.mode', 'ubovm.settingsPage', 'ubovm.contentReady']);
++			const navigationKeys = new Set(['ubovm.mode', 'ubovm.settingsPage', 'ubovm.contentReady', 'ubovm.interfaceLocale']);
 +			this._register(this.contextKeyService.onDidChangeContext(event => {
 +				if (event.affectsSome(navigationKeys)) { update(); }
 +			}));

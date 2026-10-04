@@ -4,9 +4,13 @@
   const labels = { pending: '待执行', queued: '排队中', running: '执行中', waiting: '等待子任务', completed: '已完成', failed: '失败', interrupted: '已停止' };
   const shortLabels = { ...labels, running: '执行', queued: '排队', pending: '排队', waiting: '等待', completed: '完成', interrupted: '停止' };
   const toolLabels = { delivery_workflow: '交付闭环', read_workspace_file: '读取文件', list_workspace_files: '查看目录', run_local_shell_command: '运行本地命令', run_python: '运行 Python 沙箱', manage_python_environment: '管理 Python 依赖', run_linux_ssh_command: '运行命令', upload_sftp: 'SFTP 上传', deploy_remote_service: '部署远程服务', web_search: '搜索网页', fetch_web_content: '读取网页', load_skill: '加载技能', spawn_worker: '分派并行任务', wait_workers: '等待并行任务', list_workers: '检查协作进展', cancel_workers: '中断并行任务', manage_workers: '调度并行任务' };
-  const node = (tag, className, text) => { const element = document.createElement(tag); if (className) element.className = className; if (text) element.textContent = text; return element; };
-  const setText = (element, value) => { if (element.textContent !== value) element.textContent = value; };
-  const setAttribute = (element, name, value) => { value = String(value); if (element.getAttribute(name) !== value) element.setAttribute(name, value); };
+  const t = value => window.UBOVMi18n?.t(value) ?? value;
+  const node = (tag, className, text) => { const element = document.createElement(tag); if (className) element.className = className; if (text) element.textContent = t(text); return element; };
+  const setText = (element, value) => { const text = t(value); if (element.textContent !== text) element.textContent = text; };
+  const setAttribute = (element, name, value) => {
+    value = String(name === 'title' || name === 'aria-label' || name === 'placeholder' ? t(value) : value);
+    if (element.getAttribute(name) !== value) element.setAttribute(name, value);
+  };
   const setHidden = (element, hidden) => { if (element.hidden !== hidden) element.hidden = hidden; };
   function previewText(value) {
     let text = '', space = false;

@@ -20,7 +20,8 @@
     let creating = false;
     let busy = false;
 
-    const setText = (node, value) => { if (node && node.textContent !== value) node.textContent = value; };
+    const t = value => window.UBOVMi18n?.t(value) ?? value;
+    const setText = (node, value) => { if (!node) return; const text = t(value); if (node.textContent !== text) node.textContent = text; };
     const folderName = value => String(value || '').split(/[\\/]/).filter(Boolean).pop() || String(value || '');
     const sanitizeFolder = value => String(value || '').trim().replace(/[<>:"/\\|?*\x00-\x1f]/g, '-').replace(/[. ]+$/, '') || 'project';
     const joinPath = (parent, name) => {
@@ -96,20 +97,20 @@
         if (project.current) {
           const badge = document.createElement('span');
           badge.className = 'project-switcher-badge';
-          badge.textContent = '当前';
+          badge.textContent = t('当前');
           title.append(badge);
         }
         if (project.running) {
           const badge = document.createElement('span');
           badge.className = 'project-switcher-badge running';
-          badge.textContent = `${project.running} 运行中`;
+          badge.textContent = t(project.running + ' 运行中');
           title.append(badge);
         }
         const meta = document.createElement('span');
         meta.className = 'project-switcher-meta';
         const folder = project.folder || folderName(project.workspace);
         const sessions = Number(project.sessionCount) || 0;
-        meta.textContent = `${folder}${sessions ? ` · ${sessions} 个会话` : ''}`;
+        meta.textContent = `${folder}${sessions ? t(' · {0} 个会话', sessions) : ''}`;
         body.append(title, meta);
 
         const actions = document.createElement('span');
@@ -119,7 +120,7 @@
         rename.className = 'project-switcher-action';
         rename.dataset.action = 'rename';
         rename.title = '重命名';
-        rename.setAttribute('aria-label', `重命名 ${project.name}`);
+        rename.setAttribute('aria-label', t('重命名 {0}', project.name));
         rename.innerHTML = '<svg viewBox="0 0 24 24"><path d="M4 20h4L18 10l-4-4L4 16v4Zm11-13 4 4"/></svg>';
         const remove = document.createElement('button');
         remove.type = 'button';
@@ -127,7 +128,7 @@
         remove.dataset.action = 'delete';
         remove.title = project.running ? '有会话运行中，无法删除' : '删除';
         remove.disabled = Boolean(project.running);
-        remove.setAttribute('aria-label', `删除 ${project.name}`);
+        remove.setAttribute('aria-label', t('删除 {0}', project.name));
         remove.innerHTML = '<svg viewBox="0 0 24 24"><path d="M6 7h12m-9 0V5h6v2m-8 3v9h8V10"/></svg>';
         actions.append(rename, remove);
 
@@ -244,7 +245,7 @@
       const sessions = Number(project.sessionCount) || 0;
       const confirmed = await modal?.confirm?.({
         title: '删除项目',
-        message: `删除项目“${project.name}”？`,
+        message: t('删除项目“{0}”？', project.name),
         detail: `将删除 ${sessions} 个会话及其草稿和本地执行记录，包含协助和探索两个模式。\n项目目录：${project.workspace || ''}\n目录中的文件不会被删除。此操作无法撤销。`,
         confirmLabel: '删除项目',
         danger: true

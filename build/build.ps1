@@ -886,9 +886,57 @@ function Set-BackgroundTrayCore {
     }
 }
 
+function Get-ResourceEditor {
+    $cached = Join-Path $ProjectRoot '.cache/installer-tools/node_modules/rcedit/bin/rcedit.exe'
+    $vendored = Join-Path $ProjectRoot 'vendor/vscode/node_modules/rcedit/bin/rcedit.exe'
+    foreach ($candidate in @($vendored, $cached)) {
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate }
+    }
+    return $null
+}
+
+function Set-RuntimeExecutableIcon {
+    if (-not $OnWindows) { return }
+    if (-not (Test-Path -LiteralPath $Executable -PathType Leaf)) { return }
+    $icon = Join-Path $ProjectRoot 'src/renderer/media/app-icon.ico'
+    $editor = Get-ResourceEditor
+    if (-not (Test-Path -LiteralPath $icon -PathType Leaf) -or -not $editor) {
+        Write-Host '[UBOVM] Skipped executable icon; app-icon.ico or rcedit is unavailable.'
+        return
+    }
+    # Stamp a copy first. A running VSCodium.exe cannot be rewritten in place,
+    # but Windows allows the image to be renamed and replaced.
+    $stamped = Join-Path ([IO.Path]::GetTempPath()) ('ubovm-exe-icon-' + [Guid]::NewGuid().ToString('N') + '.exe')
+    Copy-Item -LiteralPath $Executable -Destination $stamped
+    try {
+        Invoke-Checked $editor @($stamped, '--set-icon', $icon)
+        try {
+            Invoke-Checked $editor @($Executable, '--set-icon', $icon)
+            Write-Host "[OK] Product icon applied to $(Split-Path -Leaf $Executable)"
+        } catch {
+            $backup = "$Executable.previous-icon"
+            if (Test-Path -LiteralPath $backup) { Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue }
+            Move-Item -LiteralPath $Executable -Destination $backup
+            try {
+                Move-Item -LiteralPath $stamped -Destination $Executable
+            } catch {
+                if (-not (Test-Path -LiteralPath $Executable) -and (Test-Path -LiteralPath $backup)) {
+                    Move-Item -LiteralPath $backup -Destination $Executable
+                }
+                throw
+            }
+            Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
+            Write-Host "[OK] Replaced $(Split-Path -Leaf $Executable) icon. Restart the IDE to refresh the taskbar."
+        }
+    } finally {
+        if (Test-Path -LiteralPath $stamped) { Remove-Item -LiteralPath $stamped -Force -ErrorAction SilentlyContinue }
+    }
+}
+
 function Sync-Application {
     Sync-Harness (Join-Path $AppRoot 'ubovm')
     Set-ProductBranding $AppRoot
+    Set-RuntimeExecutableIcon
     $productPath = Join-Path $AppRoot 'product.json'
     $basePath = Join-Path $AppRoot 'product.ubovm-base.json'
     if (-not (Test-Path -LiteralPath $basePath)) { Copy-Item -LiteralPath $productPath -Destination $basePath }

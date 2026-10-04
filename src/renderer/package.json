@@ -1,7 +1,7 @@
 {
   "name": "ubovm-core",
-  "displayName": "UBOVM Core",
-  "description": "UBOVM 桌面 IDE 的工作台入口与开发骨架。",
+  "displayName": "%displayName%",
+  "description": "%description%",
   "version": "0.2.0",
   "publisher": "ubovm",
   "private": true,
@@ -35,248 +35,248 @@
     "commands": [
       {
         "command": "ubovm.setupPythonSandbox",
-        "title": "初始化 Python 沙箱",
+        "title": "%command.setupPythonSandbox%",
         "category": "UBOVM"
       },
       {
         "command": "ubovm.expandFileEditor",
-        "title": "占据主空间",
+        "title": "%command.expandFileEditor%",
         "category": "UBOVM",
         "icon": "$(screen-full)",
         "enablement": "!editorPartMaximizedEditorGroup && multipleEditorGroups && activeEditor != mainThreadWebview-ubovm.welcome && activeEditor != mainThreadWebview-ubovm.conversation"
       },
       {
         "command": "ubovm.restoreFileEditor",
-        "title": "恢复侧栏",
+        "title": "%command.restoreFileEditor%",
         "category": "UBOVM",
         "icon": "$(screen-normal)",
         "enablement": "editorPartMaximizedEditorGroup"
       },
       {
         "command": "ubovm.validateCodeChanges",
-        "title": "验证代码修改",
+        "title": "%command.validateCodeChanges%",
         "category": "UBOVM",
         "icon": "$(check-all)"
       },
       {
         "command": "ubovm.attachSelection",
-        "title": "将选中代码添加到 Agent 上下文",
+        "title": "%command.attachSelection%",
         "category": "UBOVM",
         "icon": "$(comment-discussion)",
         "enablement": "editorHasSelection"
       },
       {
         "command": "ubovm.installBrowser",
-        "title": "下载并安装内置浏览器",
+        "title": "%command.installBrowser%",
         "category": "UBOVM",
         "icon": "$(cloud-download)"
       },
       {
         "command": "ubovm.openBrowser",
-        "title": "打开内置浏览器（编辑区）",
+        "title": "%command.openBrowser%",
         "category": "UBOVM",
         "icon": "$(globe)"
       },
       {
         "command": "ubovm.reviewCodeChanges",
         "enablement": "ubovm.mode == assist",
-        "title": "代码更改：查看 diff 与撤销",
+        "title": "%command.reviewCodeChanges%",
         "category": "UBOVM",
         "icon": "$(diff)"
       },
       {
         "command": "ubovm.configureModel",
-        "title": "配置模型与 API 密钥",
+        "title": "%command.configureModel%",
         "category": "UBOVM",
         "icon": "$(settings-gear)"
       },
       {
         "command": "ubovm.runGoal",
-        "title": "开始探索",
+        "title": "%command.runGoal%",
         "category": "UBOVM",
         "icon": "$(play)"
       },
       {
         "command": "ubovm.cancelRun",
-        "title": "停止当前运行",
+        "title": "%command.cancelRun%",
         "category": "UBOVM",
         "icon": "$(debug-stop)"
       },
       {
         "command": "ubovm.resumeRun",
-        "title": "恢复当前运行",
+        "title": "%command.resumeRun%",
         "category": "UBOVM",
         "icon": "$(debug-continue)"
       },
       {
         "command": "ubovm.openWelcome",
-        "title": "主对话",
+        "title": "%command.openWelcome%",
         "category": "UBOVM",
         "icon": "$(home)"
       },
       {
         "command": "ubovm.openTerminal",
-        "title": "切换到 SSH 终端",
+        "title": "%command.openTerminal%",
         "category": "UBOVM",
         "icon": "$(remote)"
       },
       {
         "command": "ubovm.openLocalTerminal",
-        "title": "切换到本地终端",
+        "title": "%command.openLocalTerminal%",
         "category": "UBOVM",
         "icon": "$(terminal)"
       },
       {
         "command": "ubovm.selectTerminal",
-        "title": "选择连接并新建终端",
+        "title": "%command.selectTerminal%",
         "category": "UBOVM",
         "icon": "$(list-selection)"
       },
       {
         "command": "ubovm.openSource",
-        "title": "打开 VS Code 核心源码",
+        "title": "%command.openSource%",
         "category": "UBOVM",
         "icon": "$(code)"
       },
       {
         "command": "ubovm.showRuntimeInfo",
-        "title": "查看运行时信息",
+        "title": "%command.showRuntimeInfo%",
         "category": "UBOVM",
         "icon": "$(info)"
       },
       {
         "command": "ubovm.openAssistant",
-        "title": "聚焦主对话",
+        "title": "%command.openAssistant%",
         "category": "UBOVM",
         "icon": "$(comment-discussion)"
       },
       {
         "command": "ubovm.newChat",
-        "title": "新建对话",
+        "title": "%command.newChat%",
         "category": "UBOVM",
         "icon": "$(add)"
       },
       {
         "command": "ubovm.newGoal",
-        "title": "新建探索",
+        "title": "%command.newGoal%",
         "category": "UBOVM",
         "icon": "$(add)"
       },
       {
         "command": "ubovm.showMoreSessions",
-        "title": "显示更多会话",
+        "title": "%command.showMoreSessions%",
         "category": "UBOVM",
         "icon": "$(ellipsis)"
       },
       {
         "command": "ubovm.selectConversation",
-        "title": "打开会话",
+        "title": "%command.selectConversation%",
         "category": "UBOVM",
         "icon": "$(comment-discussion)"
       },
       {
         "command": "ubovm.deleteConversation",
-        "title": "删除会话",
+        "title": "%command.deleteConversation%",
         "category": "UBOVM",
         "icon": "$(trash)"
       },
       {
         "command": "ubovm.resetLayout",
-        "title": "恢复工作台布局",
+        "title": "%command.resetLayout%",
         "category": "UBOVM",
         "icon": "$(layout)"
       },
       {
         "command": "ubovm.searchConversations",
-        "title": "搜索会话",
+        "title": "%command.searchConversations%",
         "category": "UBOVM",
         "icon": "$(search)"
       },
       {
         "command": "ubovm.hideSessions",
-        "title": "收起会话栏",
+        "title": "%command.hideSessions%",
         "category": "UBOVM",
         "icon": "$(chevron-left)"
       },
       {
         "command": "ubovm.hideFiles",
-        "title": "收起文件栏",
+        "title": "%command.hideFiles%",
         "category": "UBOVM",
         "icon": "$(chevron-right)"
       },
       {
         "command": "ubovm.createFirstFile",
-        "title": "新建第一个文件",
+        "title": "%command.createFirstFile%",
         "category": "UBOVM",
         "icon": "$(new-file)"
       },
       {
         "command": "ubovm.openSettings",
-        "title": "系统配置",
+        "title": "%command.openSettings%",
         "category": "UBOVM",
         "icon": "$(settings-gear)"
       },
       {
         "command": "ubovm.openMcp",
-        "title": "管理 MCP 服务",
+        "title": "%command.openMcp%",
         "category": "UBOVM",
         "icon": "$(plug)"
       },
       {
         "command": "ubovm.openSkills",
-        "title": "管理 Skills",
+        "title": "%command.openSkills%",
         "category": "UBOVM",
         "icon": "$(book)"
       },
       {
         "command": "ubovm.toggleTheme",
-        "title": "切换浅色 / 暗色主题",
+        "title": "%command.toggleTheme%",
         "category": "UBOVM",
         "icon": "$(color-mode)"
       },
       {
         "command": "ubovm.reloadConversation",
-        "title": "重新加载对话页面",
+        "title": "%command.reloadConversation%",
         "category": "UBOVM"
       },
       {
         "command": "ubovm.newProject",
-        "title": "新建项目",
+        "title": "%command.newProject%",
         "category": "UBOVM",
         "icon": "$(new-folder)"
       },
       {
         "command": "ubovm.openProject",
-        "title": "打开项目",
+        "title": "%command.openProject%",
         "category": "UBOVM",
         "icon": "$(folder-opened)"
       },
       {
         "command": "ubovm.manageProjects",
-        "title": "管理与切换项目",
+        "title": "%command.manageProjects%",
         "category": "UBOVM",
         "icon": "$(folder-opened)"
       },
       {
         "command": "ubovm.newProjectConversation",
-        "title": "新建会话",
+        "title": "%command.newProjectConversation%",
         "category": "UBOVM",
         "icon": "$(add)"
       },
       {
         "command": "ubovm.changeProjectWorkspace",
-        "title": "更改项目目录",
+        "title": "%command.changeProjectWorkspace%",
         "category": "UBOVM",
         "icon": "$(folder)"
       },
       {
         "command": "ubovm.renameProject",
-        "title": "重命名项目",
+        "title": "%command.renameProject%",
         "category": "UBOVM"
       },
       {
         "command": "ubovm.deleteProject",
-        "title": "删除项目",
+        "title": "%command.deleteProject%",
         "category": "UBOVM",
         "icon": "$(trash)"
       }
@@ -797,19 +797,19 @@
       "secondarySidebar": [
         {
           "id": "ubovm-sessions",
-          "title": "会话",
+          "title": "%view.sessions%",
           "icon": "media/icon.svg"
         }
       ],
       "activitybar": [
         {
           "id": "ubovm-workers",
-          "title": "Worker 日志",
+          "title": "%view.workerLogs%",
           "icon": "media/icon.svg"
         },
         {
           "id": "ubovm-blackboard",
-          "title": "黑板详情",
+          "title": "%view.blackboard%",
           "icon": "media/icon.svg"
         }
       ]
@@ -819,23 +819,23 @@
         {
           "type": "webview",
           "id": "ubovm.workerLogs",
-          "name": "Worker 日志",
-          "contextualTitle": "Worker 日志"
+          "name": "%view.workerLogs%",
+          "contextualTitle": "%view.workerLogs%"
         }
       ],
       "ubovm-sessions": [
         {
           "id": "ubovm.sessions",
-          "name": "项目与会话",
-          "contextualTitle": "项目与会话"
+          "name": "%view.projects%",
+          "contextualTitle": "%view.projects%"
         }
       ],
       "ubovm-blackboard": [
         {
           "type": "webview",
           "id": "ubovm.blackboardDetails",
-          "name": "黑板详情",
-          "contextualTitle": "黑板详情"
+          "name": "%view.blackboard%",
+          "contextualTitle": "%view.blackboard%"
         }
       ]
     },

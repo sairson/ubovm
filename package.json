@@ -1,6 +1,6 @@
 {
   "name": "ubovm-ide",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "private": true,
   "description": "Desktop IDE skeleton powered by the full VS Code / Code OSS core",
   "type": "module",

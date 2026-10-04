@@ -295,6 +295,29 @@ export abstract class AbstractPaneCompositePart extends CompositePart<PaneCompos
 		const workerButton = makeChoice('ubovm-open-worker', '打开 Worker', '查看协作 Worker 运行日志', () => {
 			void this.openPaneComposite('workbench.view.extension.ubovm-workers', true);
 		});
+		const applyInterfaceLanguage = () => {
+			const english = this.contextKeyService.getContextKeyValue('ubovm.interfaceLocale') === 'en';
+			doc.documentElement.dataset.ubovmLocale = english ? 'en' : 'zh-CN';
+			const text = (zh: string, en: string) => english ? en : zh;
+			hint.textContent = text('文件树与 Worker 同在右侧栏', 'Files and Worker logs share the right sidebar');
+			const copies: Array<[HTMLButtonElement, string, string, string, string]> = [
+				[fileButton, '打开文件树', 'Open files', '浏览与编辑工作区文件', 'Browse and edit workspace files'],
+				[workerButton, '打开 Worker', 'Open Worker', '查看协作 Worker 运行日志', 'View Worker logs']
+			];
+			for (const [button, titleZh, titleEn, detailZh, detailEn] of copies) {
+				const title = text(titleZh, titleEn);
+				const detail = text(detailZh, detailEn);
+				button.setAttribute('aria-label', title + (english ? ', ' : '，') + detail);
+				const label = button.querySelector('.ubovm-empty-sidebar-action-title');
+				const description = button.querySelector('.ubovm-empty-sidebar-action-detail');
+				if (label) { label.textContent = title; }
+				if (description) { description.textContent = detail; }
+			}
+		};
+		applyInterfaceLanguage();
+		this._register(this.contextKeyService.onDidChangeContext(event => {
+			if (event.affectsSome(new Set(['ubovm.interfaceLocale']))) { applyInterfaceLanguage(); }
+		}));
 		const choices = [fileButton, workerButton];
 		this._register(addDisposableListener(actions, 'keydown', event => {
 			const index = choices.indexOf(doc.activeElement);

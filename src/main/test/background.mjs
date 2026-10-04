@@ -25,8 +25,8 @@ function fixture(options = {}) {
   app.quit = () => { app.quitCalled = true; };
   installBackgroundMode({ app, Tray, Menu: { buildFromTemplate: value => value },
     dialog: { async showMessageBox(win, config) { dialogs.push(config); return { response: options.choose ? await options.choose(win, config) : options.choice ?? 1 }; } },
-    nativeImage: { createFromPath: () => ({ isEmpty: () => !!options.missingIcon }) },
-    icon: 'icon.ico', platform: options.platform ?? 'win32', log: { error() {}, warn() {} } });
+    nativeImage: { createFromPath: options.createFromPath ?? (() => ({ isEmpty: () => !!options.missingIcon })) },
+    icon: options.icon ?? 'icon.ico', platform: options.platform ?? 'win32', log: { error() {}, warn() {} } });
   function window({ url = 'vscode-file://vscode-app/workbench.html', throttling = true, loaded = true } = {}) {
     const win = Object.assign(new EventEmitter(), {
       visible: true, minimized: false, destroyed: false,
@@ -173,6 +173,13 @@ test('explicit quit restores windows for prompts, permits shutdown and survives 
   assert.equal(await f.close(win, false), true);
   f.app.emit('before-quit'); assert.equal(win.visible, true);
   f.app.emit('quit'); assert.equal(f.tray.destroyed, true);
+});
+
+test('tray uses a preloaded image and does not read a filesystem path', () => {
+  const image = { isEmpty: () => false };
+  const f = fixture({ icon: image, createFromPath() { throw new Error('filesystem path'); } });
+  f.window();
+  assert.ok(f.tray);
 });
 
 test('session end bypasses choice and missing tray keeps the window reachable', async () => {

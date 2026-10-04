@@ -1,5 +1,6 @@
 (() => {
   'use strict';
+  const tr = value => window.UBOVMi18n?.t(value) ?? value;
   const el = (tag, cls, text) => { const n = document.createElement(tag); n.className = cls; if (text) n.textContent = text; return n; };
   const put = (n, text) => { if (n.textContent !== text) n.textContent = text; };
   let graphSequence = 0;
@@ -7,15 +8,15 @@
   window.createBlackboardGraph = (container, { factText, statusText, actionsContainer, onDetail }) => {
     const graphId = ++graphSequence;
     const controls = el('div', 'graph-controls');
-    controls.setAttribute('role', 'group'); controls.setAttribute('aria-label', '画布缩放');
+    controls.setAttribute('role', 'group'); controls.setAttribute('aria-label', tr('画布缩放'));
     const minus = el('button', '', '−'), zoomLabel = el('span', 'graph-zoom', '100%'), plus = el('button', '', '+'), fit = el('button', 'graph-fit', '⛶');
     minus.type = plus.type = fit.type = 'button';
-    minus.setAttribute('aria-label', '缩小探索图'); plus.setAttribute('aria-label', '放大探索图');
-    fit.setAttribute('aria-label', '适应画布'); fit.title = '重置布局并适应画布';
+    minus.setAttribute('aria-label', tr('缩小探索图')); plus.setAttribute('aria-label', tr('放大探索图'));
+    fit.setAttribute('aria-label', tr('适应画布')); fit.title = tr('重置布局并适应画布');
     controls.append(minus, zoomLabel, plus, fit);
     const navigation = el('div', 'graph-navigation');
     const search = el('input', 'graph-search'); search.type = 'search'; search.placeholder = '搜索事实、意图或关键词'; search.setAttribute('aria-label', '搜索探索图');
-    const next = el('button', '', '下一项'); next.type = 'button';
+    const next = el('button', '', tr('下一项')); next.type = 'button';
     const searchCount = el('span', 'graph-search-count'); searchCount.setAttribute('role', 'status');
     const trace = el('select', 'graph-trace'); trace.setAttribute('aria-label', '探索路径');
     for (const [value, label] of [['all', '全部路径'], ['upstream', '追溯上游证据'], ['downstream', '追踪下游分支']]) {
@@ -29,7 +30,7 @@
     const goalPositionId = Symbol('final-goal');
     const goalBadge = el('button', 'graph-node graph-goal-badge'); goalBadge.type = 'button';
     const goalTitle = el('strong', 'graph-node-title');
-    goalBadge.append(el('span', 'graph-node-state', '最终目标'), goalTitle);
+    goalBadge.append(el('span', 'graph-node-state', tr('最终目标')), goalTitle);
     canvas.append(edges, goalBadge); viewport.append(canvas);
     const detail = el('section', 'graph-detail'); detail.hidden = true; detail.setAttribute('aria-label', '黑板节点详情');
     const workspace = el('div', 'graph-workspace'); workspace.append(viewport, controls, detail);
@@ -384,7 +385,7 @@
       if (session !== nextSession) { session = nextSession; selected = ''; detailOpen = false; manualPositions.clear(); automaticPositions.clear(); drag = null; panGesture = null; viewport.classList.remove('is-panning'); zoom(1); resetPan(); }
       nodes = [...new Map((snapshot?.nodes || []).filter(n => n && typeof n.id === 'string').map(n => [n.id, n.kind === 'root' ? { ...n, goal: snapshot.goal } : n])).values()];
       rootId = snapshot?.rootId || nodes.find(n => n.kind === 'root')?.id;
-      put(goalTitle, snapshot?.goal || '目标尚未设置');
+      put(goalTitle, snapshot?.goal || tr('目标尚未设置'));
       goalBadge.title = snapshot?.goal || '目标尚未设置';
       goalBadge.setAttribute('aria-label', '最终目标：' + goalBadge.title);
         controls.hidden = viewport.hidden = !nodes.length;
@@ -533,8 +534,8 @@
         record.button.dataset.outcome = factOutcome(n);
         record.button.dataset.status = n.status || n.kind; record.button.dataset.kind = n.kind; record.button.title = n.kind === 'frontier' ? '尚未产出事实 · ' + statusText(n.status) : title(n);
         record.button.setAttribute('aria-label', n.kind === 'frontier' ? `尚未产出事实：${allById.get(n.intentId)?.intent?.description || ''}` : state(n) + '：' + title(n));
-        put(record.badge, state(n)); put(record.name, n.kind === 'frontier' ? '?' : n.kind === 'root' ? '起点' : title(n));
-        put(record.info, n.kind === 'root' ? '探索目标 · 非已证实事实' : n.kind === 'intent' ? `${(n.parentIds || []).length} 个来源 · ${n.resultId ? '已产出事实' : '尚无产出事实'}${n.attempts?.length ? ` · ${n.attempts.length} 次执行` : ''}` : factInfo(n));
+        put(record.badge, tr(state(n))); put(record.name, n.kind === 'frontier' ? '?' : n.kind === 'root' ? tr('起点') : title(n));
+        put(record.info, n.kind === 'root' ? tr('探索目标 · 非已证实事实') : n.kind === 'intent' ? `${(n.parentIds || []).length} ${tr('个来源')} · ${n.resultId ? tr('已产出事实') : tr('尚无产出事实')}${n.attempts?.length ? ` · ${n.attempts.length} ${tr('次执行')}` : ''}` : factInfo(n));
         }
       }
       for (const [key, record] of edgeRecords) if (!keptEdges.has(key)) {

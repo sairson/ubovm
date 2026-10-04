@@ -30,7 +30,8 @@
     let validate;
     let busy = false;
 
-    const setText = (node, value) => { if (node && node.textContent !== value) node.textContent = value; };
+    const t = value => window.UBOVMi18n?.t(value) ?? value;
+    const setText = (node, value) => { if (!node) return; const text = t(value); if (node.textContent !== text) node.textContent = text; };
     const showError = text => {
       if (!error) return;
       if (!text) { error.hidden = true; setText(error, ''); return; }
@@ -86,7 +87,7 @@
         setText(label, options.label || '名称');
         input.value = options.value || '';
         input.maxLength = Number.isFinite(options.maxLength) ? options.maxLength : 60;
-        input.placeholder = options.placeholder || '';
+        input.placeholder = t(options.placeholder || '');
         validate = typeof options.validate === 'function' ? options.validate : undefined;
       }
       if (kind === 'search') {

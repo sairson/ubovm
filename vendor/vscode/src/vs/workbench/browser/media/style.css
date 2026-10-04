@@ -946,6 +946,10 @@ html:not(.ubovm-content-slow) .ubovm-sessions-loading .tree-explorer-viewlet-tre
 .monaco-workbench .part.auxiliarybar .title-actions .action-item > .action-label.codicon-new-folder::after { content: '项目'; }
 .monaco-workbench .part.auxiliarybar .title-actions .action-item > .action-label.codicon-add::after { content: '新建'; }
 .monaco-workbench .part.auxiliarybar .title-actions .action-item > .action-label.codicon-search::after { content: '搜索'; }
+html[data-ubovm-locale="en"] .monaco-workbench .part.auxiliarybar .title-actions .action-item > .action-label.codicon-folder-opened::after,
+html[data-ubovm-locale="en"] .monaco-workbench .part.auxiliarybar .title-actions .action-item > .action-label.codicon-new-folder::after { content: 'Project'; }
+html[data-ubovm-locale="en"] .monaco-workbench .part.auxiliarybar .title-actions .action-item > .action-label.codicon-add::after { content: 'New'; }
+html[data-ubovm-locale="en"] .monaco-workbench .part.auxiliarybar .title-actions .action-item > .action-label.codicon-search::after { content: 'Search'; }
 .monaco-workbench .part.auxiliarybar:has(.ubovm-sessions-narrow) .title-actions .action-item > .action-label:is(
   .codicon-folder-opened,
   .codicon-new-folder,
@@ -1005,6 +1009,7 @@ html:not(.ubovm-content-slow) .ubovm-sessions-loading .tree-explorer-viewlet-tre
 
 .monaco-workbench .part.panel .title-actions .action-item > .action-label.codicon-remote::after { content: 'SSH'; }
 .monaco-workbench .part.panel .title-actions .action-item > .action-label.codicon-terminal::after { content: '本地'; }
+html[data-ubovm-locale="en"] .monaco-workbench .part.panel .title-actions .action-item > .action-label.codicon-terminal::after { content: 'Local'; }
 
 .monaco-workbench .part.panel .title-actions .action-item > .action-label:is(.codicon-remote, .codicon-terminal):hover {
   background: var(--vscode-toolbar-hoverBackground);

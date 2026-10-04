@@ -29,8 +29,12 @@ function createSettingsPanel(vscode) {
   window.addEventListener('pagehide', () => { pageSuspended = true; cancelContentReady(); });
   window.addEventListener('pageshow', () => { pageSuspended = false; queueContentReady(); });
   document.addEventListener('visibilitychange', () => { if (document.hidden) cancelContentReady(); else queueContentReady(); });
-  const setText = (node, value) => { if (node.textContent !== value) node.textContent = value; };
-  const setAttribute = (node, name, value) => { if (node.getAttribute(name) !== value) node.setAttribute(name, value); };
+  const t = value => window.UBOVMi18n?.t(value) ?? value;
+  const setText = (node, value) => { if (!node) return; const text = t(value); if (node.textContent !== text) node.textContent = text; };
+  const setAttribute = (node, name, value) => {
+    const next = name === 'title' || name === 'aria-label' || name === 'placeholder' ? t(value) : value;
+    if (node.getAttribute(name) !== next) node.setAttribute(name, next);
+  };
   function validateSnapshot(snapshot, targetPage = page, targetSection = section) {
     const record = value => value && typeof value === 'object' && !Array.isArray(value);
     if (!record(snapshot) || typeof snapshot.revision !== 'string' || !record(snapshot.values) || !record(snapshot.sections) || !record(snapshot.secretState)) {
@@ -196,7 +200,7 @@ function createSettingsPanel(vscode) {
   function finishSSHTest(id, result) {
     const pending = sshTests.get(id); if (!pending) return;
     sshTests.delete(id); clearTimeout(pending.timer);
-    pending.button.disabled = false; pending.button.textContent = '测试连接';
+    pending.button.disabled = false; setText(pending.button, '测试连接');
     // Cached steps are detached but still owned by this panel. Keep their
     // results current; eviction/removal already unregisters pending tests.
     const currentRevision = pending.revision === data?.revision;
@@ -205,7 +209,7 @@ function createSettingsPanel(vscode) {
     unchanged = unchanged && currentRevision;
     if (unchanged) sshTestResults.set(pending.group, { signature: pending.signature, revision: pending.revision }); else sshTestResults.delete(pending.group);
     pending.status.dataset.error = String(unchanged && !result.ok);
-    pending.status.textContent = unchanged ? (result.ok ? result.message || '连接成功。' : window.UBOVMErrors.text(result.failure || result.message)) + (result.ok && Number.isFinite(result.durationMs) ? `（${result.durationMs} ms）` : '') : currentRevision ? '配置已更改，请重新测试连接。' : '已保存配置发生变化，请重新测试连接。';
+    setText(pending.status, unchanged ? (result.ok ? result.message || '连接成功。' : window.UBOVMErrors.text(result.failure || result.message)) + (result.ok && Number.isFinite(result.durationMs) ? `（${result.durationMs} ms）` : '') : currentRevision ? '配置已更改，请重新测试连接。' : '已保存配置发生变化，请重新测试连接。');
   }
   const modelRoles = [['model', '默认模型'], ['reasonModel', '规划模型'], ['workerModel', '任务模型'], ['summaryModel', '摘要模型']];
   const iconTemplates = new Map();
@@ -232,11 +236,11 @@ function createSettingsPanel(vscode) {
     svg.setAttribute('class', 'settings-provider-icon'); svg.setAttribute('aria-hidden', 'true'); svg.setAttribute('focusable', 'false');
     return svg;
   }
-  function element(tag, className, text) { const node = document.createElement(tag); if (className) node.className = className; if (text !== undefined) node.textContent = text; return node; }
+  function element(tag, className, text) { const node = document.createElement(tag); if (className) node.className = className; if (text !== undefined) node.textContent = t(text); return node; }
   function status(text, error = false) {
-    const node = $('settings-status'), value = error ? window.UBOVMErrors.text(text) : text;
+    const node = $('settings-status'), value = error ? window.UBOVMErrors.text(text) : t(text);
     if (node.textContent === value && node.dataset.error === String(error)) return;
-    node.setAttribute('role', error ? 'alert' : 'status'); node.setAttribute('aria-live', error ? 'assertive' : 'polite'); node.textContent = value; node.dataset.error = String(error);
+    node.setAttribute('role', error ? 'alert' : 'status'); node.setAttribute('aria-live', error ? 'assertive' : 'polite'); setText(node, value); node.dataset.error = String(error);
   }
   function busy(value, kind = '') {
     saving = value; operation = value ? kind : ''; dialog.dataset.operation = operation;
@@ -383,7 +387,7 @@ function createSettingsPanel(vscode) {
     }
     control.id = id; control.dataset.setting = spec.key; control.dataset.kind = spec.type;
     if (page === 'initialize' && (section === 'model' && spec.key === 'modelId' || section === 'ssh' && ['host', 'username'].includes(spec.key))) control.required = true;
-    if ('placeholder' in control) control.placeholder = spec.type === 'secret' && secretState?.[spec.key] ? '已保存 · 留空保留，输入新值替换' : spec.placeholder ?? '';
+    if ('placeholder' in control) control.placeholder = t(spec.type === 'secret' && secretState?.[spec.key] ? '已保存 · 留空保留，输入新值替换' : spec.placeholder ?? '');
     control.autocomplete = 'off'; control.spellcheck = false;
     root.append(...(spec.type === 'checkbox' ? [control, label] : [label, control]));
     if (spec.key === 'provider' && !control.classList.contains('settings-provider-select')) {
@@ -443,7 +447,7 @@ function createSettingsPanel(vscode) {
     const refresh = () => {
       const cards = [...root.querySelectorAll('[data-server-card]')];
       const enabled = cards.filter(card => card.querySelector('[data-setting="enabled"]').checked).length;
-      summary.textContent = cards.length + ' 个服务 · ' + enabled + ' 个已启用';
+      setText(summary, cards.length + ' 个服务 · ' + enabled + ' 个已启用');
       list.querySelector('.settings-empty')?.remove();
       if (!cards.length) list.append(element('div', 'settings-empty', '尚未添加服务。连接本地工具或远程 MCP 后，对话就能调用它们。'));
       filter();
@@ -461,7 +465,7 @@ function createSettingsPanel(vscode) {
       const edit = element('button', 'settings-server-edit', expanded ? '收起' : '配置'); edit.type = 'button';
       const grid = element('div', 'settings-profile-grid settings-server-editor'); grid.id = 'mcp-editor-' + (++sequence); grid.hidden = !expanded;
       edit.setAttribute('aria-controls', grid.id); edit.setAttribute('aria-expanded', String(expanded));
-      edit.addEventListener('click', () => { grid.hidden = !grid.hidden; edit.textContent = grid.hidden ? '配置' : '收起'; edit.setAttribute('aria-expanded', String(!grid.hidden)); });
+      edit.addEventListener('click', () => { grid.hidden = !grid.hidden; setText(edit, grid.hidden ? '配置' : '收起'); edit.setAttribute('aria-expanded', String(!grid.hidden)); });
       for (const item of data.mcpFields) grid.append(field(item, item.key === 'transport' && server.transport === 'streamable-http' ? 'streamable_http' : server[item.key], null, 'mcp-' + (++sequence) + '-'));
       const toggle = grid.querySelector('[data-setting="enabled"]').closest('.settings-field');
       header.append(icon, info, toggle, edit); group.append(header);
@@ -473,10 +477,10 @@ function createSettingsPanel(vscode) {
       const transport = grid.querySelector('[data-setting="transport"]');
       const update = () => {
         for (const item of grid.querySelectorAll('[data-setting]')) if (['command', 'args', 'cwd', 'url'].includes(item.dataset.setting)) item.closest('.settings-field').hidden = item.dataset.setting === 'url' ? transport.value === 'stdio' : transport.value !== 'stdio';
-        legend.textContent = grid.querySelector('[data-setting="name"]').value.trim() || '新服务';
+        const serviceName = grid.querySelector('[data-setting="name"]').value.trim(); legend.textContent = serviceName || t('新服务');
         const enabled = group.querySelector('[data-setting="enabled"]').checked;
         group.dataset.enabled = String(enabled);
-        caption.textContent = (enabled ? '已启用' : '已停用') + ' · ' + (transport.value === 'stdio' ? 'STDIO' : transport.value === 'sse' ? 'SSE' : 'HTTP');
+        caption.textContent = t(enabled ? '已启用' : '已停用') + ' · ' + (transport.value === 'stdio' ? 'STDIO' : transport.value === 'sse' ? 'SSE' : 'HTTP');
         toggle.querySelector('input').setAttribute('aria-label', (enabled ? '停用 ' : '启用 ') + legend.textContent);
         edit.setAttribute('aria-label', '配置 ' + legend.textContent);
       };
@@ -510,7 +514,7 @@ function createSettingsPanel(vscode) {
       const query = search.value.trim().toLocaleLowerCase();
       const filtered = items.filter(skill => (skill.name + ' ' + skill.description).toLocaleLowerCase().includes(query));
       offset = Math.min(offset, Math.max(0, Math.ceil(filtered.length / 30) - 1) * 30);
-      summary.textContent = query ? '找到 ' + filtered.length + ' / ' + items.length + ' 个技能' : '已发现 ' + items.length + ' 个技能';
+      setText(summary, query ? '找到 ' + filtered.length + ' / ' + items.length + ' 个技能' : '已发现 ' + items.length + ' 个技能');
       grid.replaceChildren();
       for (const skill of filtered.slice(offset, offset + 30)) {
         const card = element('details', 'settings-skill-card');
@@ -533,7 +537,7 @@ function createSettingsPanel(vscode) {
       }
       if (!filtered.length) grid.append(element('p', 'settings-empty', query ? '没有匹配的技能，请调整搜索条件。' : '尚未发现技能，安装后点击“重新载入”。'));
       pager.hidden = filtered.length <= 30; previous.disabled = offset === 0; next.disabled = offset + 30 >= filtered.length;
-      range.textContent = filtered.length ? (offset + 1) + '–' + Math.min(offset + 30, filtered.length) + ' / ' + filtered.length : '0 个技能';
+      setText(range, filtered.length ? (offset + 1) + '–' + Math.min(offset + 30, filtered.length) + ' / ' + filtered.length : '0 个技能');
     }
     search.addEventListener('input', event => { event.stopPropagation(); offset = 0; renderSkills(); });
     search.addEventListener('change', event => event.stopPropagation());
@@ -558,7 +562,7 @@ function createSettingsPanel(vscode) {
       // A provider switch must not submit a credential typed for a different endpoint.
       const key = fields.querySelector('[data-setting="apiKey"]'); key.value = ''; key.placeholder = '填写该服务商的密钥；留空使用此端点已保存的凭据'; key.disabled = false;
       fields.querySelector('[data-clear-secret="apiKey"]').checked = false;
-      key.closest('.settings-field').querySelector('.settings-secret-help span').textContent = '清除当前端点已保存的凭据';
+      setText(key.closest('.settings-field').querySelector('.settings-secret-help span'), '清除当前端点已保存的凭据');
       fields.querySelector('[data-setting="compat"]').value = '{}';
       fields.querySelector('[data-setting="streamOptions"]').value = '{}';
       markDirty(); status('已填入服务商预设；检查配置后保存。');
@@ -567,7 +571,7 @@ function createSettingsPanel(vscode) {
   function refreshSSHList() {
     const groups = [...fields.querySelectorAll('.settings-ssh-profile')];
     const summary = fields.querySelector('[data-ssh-count]');
-    if (summary) summary.textContent = groups.length + ' 个连接';
+    if (summary) setText(summary, groups.length + ' 个连接');
     for (const group of groups) group.dataset.default = String(group.querySelector('[data-default-ssh]').checked);
     fields.querySelector('.settings-empty')?.remove();
     if (!groups.length) fields.append(element('div', 'settings-empty', '还没有 SSH 连接。点击“添加 SSH 连接”配置第一台主机。'));
@@ -611,14 +615,14 @@ function createSettingsPanel(vscode) {
       sshTestResults.delete(group);
       try {
         const profile = readFields(group); id = 'ssh-test-' + requestScope + '-' + (++sequence);
-        test.disabled = true; test.textContent = '正在测试…'; testStatus.dataset.error = 'false'; testStatus.textContent = '正在验证连接与登录认证（最多 30 秒）…';
+        test.disabled = true; setText(test, '正在测试…'); testStatus.dataset.error = 'false'; setText(testStatus, '正在验证连接与登录认证（最多 30 秒）…');
         const timer = setTimeout(() => finishSSHTest(id, { ok: false, message: '连接测试超时，请重试。' }), 35000);
         sshTests.set(id, { group, button: test, status: testStatus, signature: JSON.stringify(profile), revision: data.revision, timer });
         const failed = () => finishSSHTest(id, { ok: false, message: '连接测试请求发送失败，请重试。' });
         Promise.resolve(vscode.postMessage({ action: 'settingsTestSSH', requestId: id, profile })).then(value => {
           if (value === false) failed();
         }, failed);
-      } catch (error) { if (id) { clearTimeout(sshTests.get(id)?.timer); sshTests.delete(id); } test.disabled = false; test.textContent = '测试连接'; testStatus.dataset.error = 'true'; testStatus.textContent = window.UBOVMErrors.text(error); }
+      } catch (error) { if (id) { clearTimeout(sshTests.get(id)?.timer); sshTests.delete(id); } test.disabled = false; setText(test, '测试连接'); testStatus.dataset.error = 'true'; setText(testStatus, window.UBOVMErrors.text(error)); }
     });
     const duplicate = element('button', '', '复制连接'); duplicate.type = 'button';
     duplicate.addEventListener('click', () => {
@@ -677,12 +681,13 @@ function createSettingsPanel(vscode) {
     const hint = element('p', 'settings-model-hint'); hint.setAttribute('role', 'status');
     const refreshSaveHint = () => {
       const saved = library.find(p => p.id === card.dataset.profileId);
-      hint.textContent = (saved ? `保存将更新“${saved.name}”` : '保存将新增一份配置') + '，应用到' + modelRoles.find(([key]) => key === section)[1] + '。';
+      const roleLabel = t(modelRoles.find(([key]) => key === section)[1]);
+      hint.textContent = saved ? t('保存将更新“{0}”，应用到{1}。', saved.name, roleLabel) : t('保存将新增一份配置，应用到{0}。', roleLabel);
     };
     const previewSelection = () => {
       const selected = library.find(p => p.id === select.value);
       load.disabled = !selected;
-      preview.textContent = selected ? `${data.modelPresets[selected.model.provider]?.label ?? selected.model.provider} · ${selected.model.modelId}\n${selected.model.baseUrl || '使用默认服务地址'}`
+      preview.textContent = selected ? `${data.modelPresets[selected.model.provider]?.label ?? selected.model.provider} · ${selected.model.modelId}\n${selected.model.baseUrl || t('使用默认服务地址')}`
         : library.length ? '先选择，再加载。浏览列表不会修改当前配置。' : '首次使用：填写连接设置并保存，之后可从这里复用。';
     };
     search.addEventListener('input', event => {
@@ -737,7 +742,7 @@ function createSettingsPanel(vscode) {
     const keyRow = common.querySelector('[data-field="apiKey"]');
     keyRow.append(element('p', 'settings-model-hint', '留空保留已存密钥。同一服务商、同一 API 地址共用凭据。'));
     const protocolNote = element('p', 'settings-model-hint'); protocolNote.dataset.sdkProtocol = '';
-    protocolNote.textContent = '选择服务商后会填入预设，确认模型与地址，再填写 API Key。';
+    setText(protocolNote, '选择服务商后会填入预设，确认模型与地址，再填写 API Key。');
     card.append(heading, protocolNote, common, advanced);
     const provider = common.querySelector('[data-setting="provider"]');
     const custom = common.querySelector(`[data-custom-for="${provider.id}"]`);
@@ -754,13 +759,13 @@ function createSettingsPanel(vscode) {
       const next = `${endpointChanged}:${clear}:${entered}`;
       if (next === credentialState) return;
       credentialState = next;
-      const label = clear ? '凭据待清除' : entered ? '新凭据待保存' : endpointChanged ? '端点已更改' : secretState?.apiKey ? '凭据已保存' : '未填写凭据';
+      const label = t(clear ? '凭据待清除' : entered ? '新凭据待保存' : endpointChanged ? '端点已更改' : secretState?.apiKey ? '凭据已保存' : '未填写凭据');
       if (badge.textContent !== label) badge.textContent = label;
       const saved = String(!clear && !endpointChanged && Boolean(secretState?.apiKey));
       if (badge.dataset.saved !== saved) badge.dataset.saved = saved;
-      const placeholder = !endpointChanged && secretState?.apiKey ? '已保存 · 留空保留，输入新值替换' : '填写当前端点的密钥；留空保留该端点已存凭据';
+      const placeholder = t(!endpointChanged && secretState?.apiKey ? '已保存 · 留空保留，输入新值替换' : '填写当前端点的密钥；留空保留该端点已存凭据');
       if (key.placeholder !== placeholder) key.placeholder = placeholder;
-      const help = !endpointChanged && secretState?.apiKey ? '清除已保存的凭据' : '清除当前端点已保存的凭据';
+      const help = t(!endpointChanged && secretState?.apiKey ? '清除已保存的凭据' : '清除当前端点已保存的凭据');
       if (clearLabel.textContent !== help) clearLabel.textContent = help;
     };
     const refreshCredentials = event => {
@@ -785,16 +790,16 @@ function createSettingsPanel(vscode) {
     ]) { const row = element('li'); row.append(element('strong', '', title), element('span', '', text)); steps.append(row); }
     help.append(steps);
     const current = element('p', 'settings-cooperation-current'); current.setAttribute('role', 'status');
-    const describe = model => model?.modelId || '尚未配置模型';
+    const describe = model => model?.modelId || t('尚未配置模型');
     const main = data.values.model, worker = data.values.workerModel;
     const workerModel = worker?.inherit === false ? worker : main;
     const refresh = () => {
       const mode = fields.querySelector('[data-setting="swarmBackendSelection"]')?.value ?? data.values.worker?.swarmBackendSelection ?? 'fixed';
-      current.textContent = `主对话：${describe(main)}\n子任务：${describe(workerModel)}`;
+      current.textContent = `${t('主对话')}：${describe(main)}\n${t('子任务')}：${describe(workerModel)}`;
       const note = mode === 'autonomous'
         ? '自主选择：主对话模型保持不变，子任务可从已配置的角色和配置库里选模型。请先保存要用的模型和密钥。'
         : '固定模式：子任务统一使用任务模型。只想用一个模型时，配置默认模型并保持任务模型继承即可。';
-      explanation.textContent = note + ' 更改保存后，下一轮对话生效。';
+      explanation.textContent = t(note) + t(' 更改保存后，下一轮对话生效。');
     };
     const explanation = element('p', 'settings-model-hint');
     const action = element('button', '', section === 'worker' ? '选择任务模型 →' : '设置并行任务模式 →'); action.type = 'button';
@@ -854,7 +859,7 @@ function createSettingsPanel(vscode) {
       else { fields.replaceChildren(); renderedSection = ''; }
       fields.hidden = !fields.children.length;
       $('settings-skeleton').hidden = true; $('settings-load-error').hidden = false;
-      $('settings-load-error').textContent = '当前步骤显示失败，已保留可用输入。可重新显示当前步骤，或重新载入配置。';
+      setText($('settings-load-error'), '当前步骤显示失败，已保留可用输入。可重新显示当前步骤，或重新载入配置。');
       $('settings-render-retry').hidden = false;
       $('settings-save').disabled = true;
       status('页面渲染失败，请恢复当前步骤后继续。', true);
@@ -1061,7 +1066,7 @@ function createSettingsPanel(vscode) {
       if (requestId !== id) return;
       if (action === 'settingsSave') saveUncertain = true;
       requestId = ''; clearTimeout(requestTimer); busy(false); $('settings-skeleton').hidden = true;
-      if (!data) { $('settings-load-error').hidden = false; $('settings-load-error').textContent = window.UBOVMErrors.text(error) + ' 点击“重新载入”重试。'; }
+      if (!data) { $('settings-load-error').hidden = false; $('settings-load-error').textContent = window.UBOVMErrors.text(error) + t(' 点击“重新载入”重试。'); }
       restoreView(requestView, true); requestView = undefined; status(error, true);
     };
     requestTimer = setTimeout(() => fail('等待配置操作结果超时。输入已保留；请先重新载入确认保存状态，再决定是否重试。'), 30000);
@@ -1151,7 +1156,7 @@ function createSettingsPanel(vscode) {
       clearTimeout(requestTimer);
       pendingOpen = undefined;
       busy(false); $('settings-skeleton').hidden = true; $('settings-load-error').hidden = false;
-      $('settings-load-error').textContent = pending.error + ' 点击“重新载入”重试。'; status(pending.error, true); return;
+      $('settings-load-error').textContent = pending.error + t(' 点击“重新载入”重试。'); status(pending.error, true); return;
     }
     if (!pending.data) return;
     clearTimeout(requestTimer);
@@ -1187,11 +1192,11 @@ function createSettingsPanel(vscode) {
     if (pending.data) { showDialog(); finishOpen(pending); return; }
     renderFailure = undefined; $('settings-render-retry').hidden = true;
     data = undefined; dirty = false; dialog.dataset.page = page;
-    $('settings-title').textContent = page === 'mcp' ? 'MCP 服务' : page === 'skills' ? 'Skills' : '系统配置';
-    $('settings-section-kicker').textContent = sectionKicker();
-    $('settings-section-title').textContent = page === 'initialize' ? '首次初始化' : page === 'settings' ? '系统配置' : page === 'mcp' ? 'MCP 服务' : 'Skills';
+    setText($('settings-title'), page === 'mcp' ? 'MCP 服务' : page === 'skills' ? 'Skills' : '系统配置');
+    setText($('settings-section-kicker'), sectionKicker());
+    setText($('settings-section-title'), page === 'initialize' ? '首次初始化' : page === 'settings' ? '系统配置' : page === 'mcp' ? 'MCP 服务' : 'Skills');
     const loadingText = page === 'skills' ? '正在扫描已安装技能并读取预览…' : page === 'mcp' ? '正在读取 MCP 服务与连接配置…' : '正在读取配置…';
-    $('settings-description').textContent = loadingText; roles.hidden = true; fields.hidden = true;
+    setText($('settings-description'), loadingText); roles.hidden = true; fields.hidden = true;
     $('settings-skeleton').hidden = false; $('settings-load-error').hidden = true;
     clearTimeout(requestTimer);
     requestTimer = setTimeout(() => { if (pending !== pendingOpen) return; pending.error = '配置读取超时，请检查服务状态后重试。'; finishOpen(pending); }, 30000);
@@ -1254,7 +1259,7 @@ function createSettingsPanel(vscode) {
       if (message.ok === false || message.error || !message.data) {
         if (saveResult && message.ok !== false && !message.error) { saveUncertain = true; busy(false); }
         const failure = message.failure || message.error || '未收到有效的配置结果，请重新载入。';
-        if (!data) { $('settings-load-error').hidden = false; $('settings-load-error').textContent = window.UBOVMErrors.text(failure) + ' 点击“重新载入”重试。'; }
+        if (!data) { $('settings-load-error').hidden = false; $('settings-load-error').textContent = window.UBOVMErrors.text(failure) + t(' 点击“重新载入”重试。'); }
         restoreView(requestView, true); requestView = undefined; status(failure, true); return;
       }
       if (saveResult) saveUncertain = true;
@@ -1289,7 +1294,7 @@ function createSettingsPanel(vscode) {
         busy(false); $('settings-skeleton').hidden = true;
         if (!data) {
           fields.hidden = true; $('settings-load-error').hidden = false;
-          $('settings-load-error').textContent = '配置未能载入，请重新载入后重试。';
+          setText($('settings-load-error'), '配置未能载入，请重新载入后重试。');
         }
         restoreView(requestView, true); requestView = undefined;
         showDialog();
@@ -1304,5 +1309,13 @@ function createSettingsPanel(vscode) {
     // Refresh the installer only; never reload or overwrite unsaved form data.
     try { vscode.postMessage({ action: 'settingsBrowserStatus' }); }
     catch { status('无法刷新浏览器安装状态，可稍后点击“检查状态”重试。', true); }
+  });
+  window.addEventListener('ubovm-locale', () => {
+    views.clear();
+    renderedSection = '';
+    renderedFingerprint = '';
+    browserInstallView = '';
+    if (data) render();
+    else window.UBOVMi18n?.apply(dialog);
   });
 }

@@ -4,6 +4,7 @@ const { randomBytes } = require('node:crypto');
 const { readFileSync } = require('node:fs');
 const path = require('node:path');
 const { createLatestDelivery } = require('../agent/latest-delivery.cjs');
+const { interfaceText, currentInterfaceLocale } = require('../../harness/runtime/interface-text.cjs');
 
 let bundle;
 function loadBundle() {
@@ -18,7 +19,22 @@ function loadBundle() {
 function renderSidebar() {
   const nonce = randomBytes(24).toString('base64');
   const { styles, scripts } = loadBundle();
-  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
+  const text = {
+    title: interfaceText('黑板 · 节点详情'),
+    files: interfaceText('返回文件'),
+    emptyTitle: interfaceText('选择一个黑板节点'),
+    emptyBody: interfaceText('在画布中点击事实或意图，在这里查看详情。'),
+    links: interfaceText('关联节点'),
+    switched: interfaceText('节点已切换，操作已取消。'),
+    busy: interfaceText('待处理操作过多，请稍后重试。'),
+    timeout: interfaceText('操作超时，请重试。'),
+    send: interfaceText('操作发送失败，请重试。'),
+    failed: interfaceText('操作失败，请重试。'),
+    format: interfaceText('部分格式加载失败，已显示原文；重新选择节点可重试。')
+  };
+  const copy = JSON.stringify(text).replace(/</g, '\\u003c');
+  const html = value => String(value).replace(/[&<>]/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[char]));
+  return `<!doctype html><html lang="${currentInterfaceLocale() === 'en' ? 'en' : 'zh-CN'}"><head><meta charset="utf-8">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'nonce-${nonce}'; script-src 'nonce-${nonce}';">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <style nonce="${nonce}">
@@ -32,26 +48,27 @@ function renderSidebar() {
   .links{display:grid;gap:7px}.links button{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden;width:100%;min-width:0;text-align:left;white-space:normal;overflow-wrap:anywhere;font-size:.92em;line-height:1.6;padding:8px 10px}#empty{color:var(--vscode-descriptionForeground);padding:28px 0}#empty strong{display:block;color:var(--vscode-foreground);font-weight:500;margin-bottom:8px}[hidden]{display:none!important}
   body{--ink:var(--vscode-foreground,#292a2d);--muted:var(--vscode-descriptionForeground,#666);--border:var(--vscode-widget-border,#ddd);--wash:var(--vscode-textCodeBlock-background,#f1f1f1);--hover:var(--vscode-list-hoverBackground,#eee)}
   .section.md-content{--prose-size:13px;white-space:normal}.section.md-content p{white-space:pre-wrap}section{min-width:0}.md-content .md-code-toolbar{position:static;padding:6px 8px;background:transparent}header>span{min-width:0}header>button{flex-shrink:0}
-  </style></head><body><header><span>黑板 · 节点详情</span><button id="files" type="button">返回文件</button></header>
-  <main><div id="empty"><strong>选择一个黑板节点</strong>在画布中点击事实或意图，在这里查看详情。</div><article id="detail" hidden></article></main>
+  </style></head><body><header><span>${html(text.title)}</span><button id="files" type="button">${html(text.files)}</button></header>
+  <main><div id="empty"><strong>${html(text.emptyTitle)}</strong>${html(text.emptyBody)}</div><article id="detail" hidden></article></main>
   <script nonce="${nonce}">
+  const L=${copy};
   const vscode=acquireVsCodeApi(); let current=null, rendered, heading, meta, sections, linkHeading, links;
   const sectionNodes=new Map(), linkNodes=new Map();
   let sequence=0,navigation=0;const pending=new Map();
   function cancelRequests(){
     ++navigation;
-    for(const entry of pending.values()){clearTimeout(entry.timer);entry.reject(new Error('节点已切换，操作已取消。'));}
+    for(const entry of pending.values()){clearTimeout(entry.timer);entry.reject(new Error(L.switched));}
     pending.clear();
   }
   window.addEventListener('pagehide',cancelRequests);
   function openLink(href){const origin=navigation;return request('openMessageLink',{href}).catch(error=>{if(origin===navigation&&meta)meta.textContent=error.message;});}
   function request(action,payload){return new Promise((resolve,reject)=>{
-    if(pending.size>=32){reject(new Error('待处理操作过多，请稍后重试。'));return;}
-    const requestId='fact-'+(++sequence),timer=setTimeout(()=>{pending.delete(requestId);reject(new Error('操作超时，请重试。'));},10000);
+    if(pending.size>=32){reject(new Error(L.busy));return;}
+    const requestId='fact-'+(++sequence),timer=setTimeout(()=>{pending.delete(requestId);reject(new Error(L.timeout));},10000);
     const entry={resolve,reject,timer};pending.set(requestId,entry);
     // Bridge rejection values are untrusted; consumers always receive a readable Error.
-    const failed=()=>{if(pending.get(requestId)!==entry)return;clearTimeout(timer);pending.delete(requestId);reject(new Error('操作发送失败，请重试。'));};
-    try{Promise.resolve(vscode.postMessage({action,...payload,requestId,sessionId:current?.sessionId})).then(value=>{if(value===false)failed(new Error('操作发送失败，请重试。'));},failed);}catch(error){failed(error);}
+    const failed=()=>{if(pending.get(requestId)!==entry)return;clearTimeout(timer);pending.delete(requestId);reject(new Error(L.send));};
+    try{Promise.resolve(vscode.postMessage({action,...payload,requestId,sessionId:current?.sessionId})).then(value=>{if(value===false)failed(new Error(L.send));},failed);}catch(error){failed(error);}
   });}
   const element=(tag,text,cls='')=>{const node=document.createElement(tag);node.textContent=text;node.className=cls;return node;};
   const put=(node,text)=>{if(node.textContent!==text)node.textContent=text;};
@@ -66,7 +83,7 @@ function renderSidebar() {
   }
   document.getElementById('files').onclick=()=>vscode.postMessage({action:'files'});
   window.addEventListener('message',event=>{
-    if(event.data?.type==='uiResult'){const response=event.data,entry=pending.get(response.requestId);if(entry){clearTimeout(entry.timer);pending.delete(response.requestId);response.ok?entry.resolve():entry.reject(new Error(typeof response.error==='string'?response.error:response.error?.message||'操作失败，请重试。'));}return;}
+    if(event.data?.type==='uiResult'){const response=event.data,entry=pending.get(response.requestId);if(entry){clearTimeout(entry.timer);pending.delete(response.requestId);response.ok?entry.resolve():entry.reject(new Error(typeof response.error==='string'?response.error:response.error?.message||L.failed));}return;}
     if(event.data?.type!=='detail')return;
     const next=event.data.detail, key=JSON.stringify(next);
     if(key===rendered)return;
@@ -76,7 +93,7 @@ function renderSidebar() {
     if(!current){article.replaceChildren();sectionNodes.clear();linkNodes.clear();rendered=key;return;}
     if(changed){
       sectionNodes.clear();linkNodes.clear();
-      heading=element('h1','');meta=element('p','','meta');sections=element('div','');linkHeading=element('h2','关联节点');links=element('div','','links');
+      heading=element('h1','');meta=element('p','','meta');sections=element('div','');linkHeading=element('h2',L.links);links=element('div','','links');
       article.replaceChildren(heading,meta,sections,linkHeading,links);
     }
     put(heading,current.title);put(meta,current.meta||'');let formatFailed=false;
@@ -92,7 +109,7 @@ function renderSidebar() {
       const node=element('button','');node.type='button';node.onclick=()=>vscode.postMessage({action:'select',id:value.id,sessionId:current.sessionId});return {node};
     },(record,value)=>put(record.node,value.label));
     if(changed)window.scrollTo(0,0);
-    if(formatFailed)put(meta,(current.meta?current.meta+' · ':'')+'部分格式加载失败，已显示原文；重新选择节点可重试。');
+    if(formatFailed)put(meta,(current.meta?current.meta+' · ':'')+L.format);
     rendered=formatFailed?undefined:key;
   });vscode.postMessage({action:'ready'});
   </script><script nonce="${nonce}">${scripts}</script></body></html>`;
@@ -160,6 +177,12 @@ function createBlackboardSidebar(vscode, { onSelect, onClose, onAction, onError 
       });
       const disposal = view.onDidDispose(() => { if (view === next) releaseView(); });
       viewSubscriptions = [listener, visibility, disposal];
+      view.title = interfaceText('黑板详情');
+      view.webview.html = renderSidebar();
+    },
+    applyLanguage() {
+      if (!view) return;
+      view.title = interfaceText('黑板详情');
       view.webview.html = renderSidebar();
     },
     setSession(id) {

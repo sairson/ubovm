@@ -12,7 +12,7 @@ const assets = Object.freeze({
     'messages/message-view.css', 'messages/background-tasks.css', 'messages/code-changes.css', 'workers/worker-panel.css', 'goal/blackboard-graph.css', 'preview/html-preview.css', 'motion.css', 'overlays.css', 'ui/modal-dialog.css', 'project/project-switcher.css'
   ]),
   scripts: Object.freeze([
-    'runtime-guard.js', 'errors.js', 'connection-monitor.js', 'state-order.js', 'settings/settings-ui.js', 'delivery/delivery-view.js', 'vendor/marked.umd.js', 'messages/message-markdown.js',
+    'runtime-guard.js', 'i18n-en.js', 'i18n-en-more.js', 'i18n.js', 'errors.js', 'connection-monitor.js', 'state-order.js', 'settings/settings-ui.js', 'delivery/delivery-view.js', 'vendor/marked.umd.js', 'messages/message-markdown.js',
     'messages/timeline-parts.js', 'messages/message-view.js', 'messages/background-tasks.js', 'messages/code-changes.js', 'messages/conversation-outline.js', 'workers/worker-panel.js', 'goal/execution-log.js', 'goal/exploration-model.js', 'goal/blackboard-graph.js', 'preview/html-preview.js', 'ui/modal-dialog.js', 'project/project-switcher.js', 'app.js'
   ])
 });

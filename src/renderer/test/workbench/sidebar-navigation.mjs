@@ -134,6 +134,14 @@ try {
       return el.dataset.settingsPage === 'mcp' && style.backgroundColor !== 'rgba(0, 0, 0, 0)' && style.boxShadow !== 'none';
     }), 'current management page keeps a visible selected surface');
     assert.match(await assist.getAttribute('title') || '', /关闭配置/);
+    assert.equal(await page.locator('.ubovm-sidebar-management button[data-settings-page="settings"] .ubovm-management-label').textContent(), '配置');
+    await page.evaluate(() => window.updateContext({ 'ubovm.interfaceLocale': 'en', 'ubovm.settingsPage': '' }));
+    assert.equal(await assist.locator('.ubovm-mode-label').textContent(), 'Assist');
+    assert.equal(await assist.getAttribute('aria-label'), 'Assist mode');
+    assert.equal(await page.locator('.ubovm-sidebar-management button[data-settings-page="settings"] .ubovm-management-label').textContent(), 'Settings');
+    assert.equal(await page.locator('.ubovm-sidebar-management button[data-settings-page="settings"]').getAttribute('aria-label'), 'Settings');
+    await page.evaluate(() => window.updateContext({ 'ubovm.interfaceLocale': 'zh-CN', 'ubovm.settingsPage': 'settings' }));
+    assert.equal(await assist.getAttribute('aria-label'), '协助模式（关闭配置后切换）');
     await page.locator('.sidebar').evaluate(el => { el.style.display = 'none'; });
     await page.locator('.sidebar').evaluate(el => { el.style.display = ''; });
     assert(await assist.isVisible());

@@ -27,8 +27,10 @@
     mcp: 'm5 8 4-4 11 11-4 4L5 8Zm0 0L2 11l4 4m10 4-3 3M11 6l3-3 7 7-3 3',
     tool: 'm8 5-6 7 6 7m8-14 6 7-6 7M14 3l-4 18',
   };
-  const node = (tag, className, text) => { const value = document.createElement(tag); if (className) value.className = className; if (text !== undefined) value.textContent = text; return value; };
-  const setText = (element, value) => { if (element.textContent !== value) element.textContent = value; };
+  const tr = value => window.UBOVMi18n?.t(value) ?? value;
+  const node = (tag, className, text) => { const value = document.createElement(tag); if (className) value.className = className; if (text !== undefined) value.textContent = tr(text); return value; };
+  const setText = (element, value) => { const text = tr(value); if (element.textContent !== text) element.textContent = text; };
+  const setRaw = (element, value) => { if (element.textContent !== value) element.textContent = value; };
   function duration(view) {
     const start = Number(view.part.startedAt), end = Number(view.part.endedAt);
     if (!Number.isFinite(start) || start <= 0) { setText(view.time, ''); return; }
@@ -159,7 +161,7 @@
     }
     if (search.answer) {
       const answer = node('p', 'tool-search-answer');
-      setText(answer, search.answer);
+      setRaw(answer, search.answer);
       root.append(answer);
     }
     if (search.message && !search.results.length) {
@@ -175,13 +177,13 @@
         link.href = item.url;
         link.rel = 'noopener noreferrer';
         link.target = '_blank';
-        setText(link, item.title);
+        setRaw(link, item.title);
         const host = node('span', 'tool-search-host');
-        setText(host, hostOf(item.url));
+        setRaw(host, hostOf(item.url));
         row.append(link, host);
         if (item.snippet) {
           const snippet = node('p', 'tool-search-snippet');
-          setText(snippet, item.snippet);
+          setRaw(snippet, item.snippet);
           row.append(snippet);
         }
         list.append(row);
@@ -353,7 +355,7 @@
     if (showLive) {
       const tail = part.output.slice(-1200).replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').replace(/\r\n?/g, '\n');
       const lines = tail.trimEnd().split('\n').slice(-2).join('\n').slice(-400);
-      setText(view.live, lines);
+      setRaw(view.live, lines);
     }
     if (view.live.hidden === showLive) view.live.hidden = !showLive;
     if (!showLive && view.live.textContent) view.live.textContent = '';
@@ -369,7 +371,7 @@
     // Large command payloads stay constant while logs grow. Cache only after
     // the write succeeds so a failed DOM update remains retryable.
     if (view.renderedArgs !== args) {
-      setText(view.input, args);
+      setRaw(view.input, args);
       view.renderedArgs = args;
     }
     const waiting = { queued: '正在等待同一会话的前一条命令结束，可单独中断此排队命令。', starting: '正在准备命令执行…', stopping: '正在停止命令并清理进程…' };

@@ -2,6 +2,7 @@
 
 const { randomUUID, createHash } = require('node:crypto');
 const path = require('node:path');
+const { interfaceText: tr } = require('../runtime/interface-text.cjs');
 function workspaceKey(value) {
   const windows = /^[a-z]:[\\/]|^\\\\/i.test(value);
   const normalized = (windows ? path.win32 : path).normalize(value);
@@ -526,21 +527,21 @@ function createSessions(vscode, context, onDidChange, { isBusy = () => false, cr
         const item = new vscode.TreeItem(session.name, active ? vscode.TreeItemCollapsibleState.Expanded : vscode.TreeItemCollapsibleState.Collapsed);
         item.id = 'project-' + session.id; item.contextValue = 'ubovm.project';
         item.iconPath = new vscode.ThemeIcon(active ? 'folder-opened' : 'folder');
-        item.tooltip = `${session.name}\n${session.workspace}\n${assist} 个协助会话 · ${goal} 个探索会话${busy ? `\n${busy} 个会话运行中` : ''}\n点击切换到此项目`;
-        item.description = busy ? `${visible.length} · ${busy} 运行` : `${shortFolder} · ${visible.length}`;
-        item.accessibilityInformation = { label: `${session.name}${active ? '，当前项目' : ''}，${visible.length} 个会话${busy ? `，${busy} 个运行中` : ''}，${session.workspace}` };
-        item.command = { command: 'ubovm.openProject', title: '打开项目', arguments: [session.id] };
+        item.tooltip = `${session.name}\n${session.workspace}\n${tr(`${assist} 个协助会话 · ${goal} 个探索会话`)}${busy ? `\n${tr(`${busy} 个会话运行中`)}` : ''}\n${tr('点击切换到此项目')}`;
+        item.description = busy ? tr(`${visible.length} · ${busy} 运行`) : `${shortFolder} · ${visible.length}`;
+        item.accessibilityInformation = { label: `${session.name}${active ? tr('，当前项目') : ''}${tr(`，${visible.length} 个会话`)}${busy ? tr(`，${busy} 个运行中`) : ''}，${session.workspace}` };
+        item.command = { command: 'ubovm.openProject', title: tr('打开项目'), arguments: [session.id] };
         return item;
       }
       if (session.kind === 'more') {
-        const item = new vscode.TreeItem('更多', vscode.TreeItemCollapsibleState.None);
+        const item = new vscode.TreeItem(tr('更多'), vscode.TreeItemCollapsibleState.None);
         item.id = 'more-' + session.id;
         item.contextValue = 'ubovm.moreSessions';
         item.iconPath = new vscode.ThemeIcon('ellipsis');
         item.description = String(session.remaining || 0);
-        item.tooltip = `再显示 ${Math.min(projectSessionPreview, session.remaining || 0)} 个会话`;
-        item.accessibilityInformation = { label: `更多，还有 ${session.remaining || 0} 个会话` };
-        item.command = { command: 'ubovm.showMoreSessions', title: '显示更多会话', arguments: [session.projectId, session.mode] };
+        item.tooltip = tr(`再显示 ${Math.min(projectSessionPreview, session.remaining || 0)} 个会话`);
+        item.accessibilityInformation = { label: tr(`更多，还有 ${session.remaining || 0} 个会话`) };
+        item.command = { command: 'ubovm.showMoreSessions', title: tr('显示更多会话'), arguments: [session.projectId, session.mode] };
         return item;
       }
       const currentSession = session.mode === state.activeMode && session.id === state.currentIds[state.activeMode];
@@ -552,13 +553,12 @@ function createSessions(vscode, context, onDidChange, { isBusy = () => false, cr
       item.id = session.id;
       item.iconPath = new vscode.ThemeIcon(running ? 'loading~spin' : currentSession ? 'circle-filled' : session.mode === 'goal' ? 'target' : 'comment');
       item.contextValue = currentSession ? 'ubovm.currentConversation' : 'ubovm.conversation';
-      const modeLabel = session.mode === 'goal' ? '探索' : '协助';
-      const modeTitle = modeLabel + '模式';
+      const modeTitle = tr(session.mode === 'goal' ? '探索模式' : '协助模式');
       const messageCount = session.messageCount ?? session.messages.length;
-      item.description = running ? '运行中' : String(messageCount);
-      item.tooltip = `${session.title}\n${currentSession ? '当前会话 · ' : ''}${running ? '运行中 · ' : ''}${modeTitle} · ${messageCount} 条消息`;
-      item.accessibilityInformation = { label: `${session.title}${currentSession ? '，当前会话' : ''}${running ? '，运行中' : ''}，${modeTitle}，${messageCount} 条消息` };
-      item.command = { command: 'ubovm.selectConversation', title: '打开会话', arguments: [session.id] };
+      item.description = running ? tr('运行中') : String(messageCount);
+      item.tooltip = `${session.title}\n${currentSession ? tr('当前会话 · ') : ''}${running ? tr('运行中 · ') : ''}${modeTitle} · ${tr(`${messageCount} 条消息`)}`;
+      item.accessibilityInformation = { label: `${session.title}${currentSession ? tr('，当前会话') : ''}${running ? tr('，运行中') : ''}${tr(session.mode === 'goal' ? '，探索模式' : '，协助模式')}，${tr(`${messageCount} 条消息`)}` };
+      item.command = { command: 'ubovm.selectConversation', title: tr('打开会话'), arguments: [session.id] };
       return item;
     }
   };

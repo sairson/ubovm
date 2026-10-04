@@ -589,6 +589,7 @@ html:not(.ubovm-content-slow) .ubovm-sessions-loading .tree-explorer-viewlet-tre
 
 .monaco-workbench .part.panel .title-actions .action-item > .action-label.codicon-remote::after { content: 'SSH'; }
 .monaco-workbench .part.panel .title-actions .action-item > .action-label.codicon-terminal::after { content: '本地'; }
+html[data-ubovm-locale="en"] .monaco-workbench .part.panel .title-actions .action-item > .action-label.codicon-terminal::after { content: 'Local'; }
 
 .monaco-workbench .part.panel .title-actions .action-item > .action-label:is(.codicon-remote, .codicon-terminal):hover {
   background: var(--vscode-toolbar-hoverBackground);

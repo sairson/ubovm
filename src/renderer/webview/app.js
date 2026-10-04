@@ -1,6 +1,8 @@
 (() => {
   'use strict';
   const vscode = window.UBOVMRuntime?.api ?? acquireVsCodeApi();
+  const t = value => window.UBOVMi18n?.t(value) ?? value;
+  const userTextIds = new Set(['conversation-title', 'goal-objective', 'workspace-name', 'context-label', 'goal-selection-label']);
   let connectionStatus = 'connecting';
   let readyResyncTimer;
   function requestReadyResync() {
@@ -211,13 +213,18 @@
   const statusText = value => statusLabels[value] || value || '尚未执行';
   const phaseText = value => phaseLabels[value] || value || '';
   function setText(element, value) {
-    if (element.textContent !== value) element.textContent = value;
+    if (!element) return;
+    const source = value == null ? '' : String(value);
+    const text = userTextIds.has(element.id) ? source : t(source);
+    if (element.textContent !== text) element.textContent = text;
   }
   function setProperty(element, key, value) {
     if (element[key] !== value) element[key] = value;
   }
   function setAttribute(element, key, value) {
-    if (element.getAttribute(key) !== value) element.setAttribute(key, value);
+    const source = value == null ? '' : String(value);
+    const next = !userTextIds.has(element.id) && (key === 'title' || key === 'aria-label' || key === 'placeholder') ? t(source) : source;
+    if (element.getAttribute(key) !== next) element.setAttribute(key, next);
   }
   function renderSection(key, value, render) {
     const serialized = JSON.stringify(value);
@@ -1011,7 +1018,7 @@
   function renderMode() {
     const goalMode = hostState?.mode === 'goal';
     document.body.dataset.mode = goalMode ? 'goal' : 'assist';
-    document.title = goalMode ? 'UBOVM · 探索工作台' : 'UBOVM · 协助';
+    document.title = t(goalMode ? 'UBOVM · 探索工作台' : 'UBOVM · 协助');
     byId('assist-mode').hidden = goalMode;
     byId('goal-mode').hidden = !goalMode;
     byId('goal-identity').hidden = !goalMode;
@@ -2255,7 +2262,10 @@
           contentReadyRetried = false;
           queueContentReady();
         }
-        if (succeeded) window.UBOVMRuntime?.painted();
+        if (succeeded) {
+          window.UBOVMRuntime?.painted();
+          if (window.UBOVMi18n?.locale === 'en') window.UBOVMi18n.apply(document.body);
+        }
       }
     }
   }
@@ -2393,6 +2403,7 @@
       requestReadyResync();
     }
   });
+  window.addEventListener('ubovm-locale', () => { if (hostState) scheduleRender(); });
   window.addEventListener('ubovm-settings-visibility', event => {
     if (event.detail?.open) cancelVisualFrames();
     document.body.classList.toggle('settings-visible', event.detail?.open === true);
@@ -2469,6 +2480,7 @@
       void handleHostDialog(state);
       return;
     }
+    if (state?.type === 'locale') { window.UBOVMi18n?.applyHostLocale?.(state.locale); return; }
     if (state?.type === 'windowFocused') {
       if (!document.hidden) resumeVisuals();
       return;

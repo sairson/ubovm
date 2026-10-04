@@ -2,15 +2,16 @@
   'use strict';
   const node = (tag, className, text) => {
     const element = document.createElement(tag); element.className = className;
-    if (text !== undefined) element.textContent = text;
+    if (text !== undefined) element.textContent = window.UBOVMi18n?.t(text) ?? text;
     return element;
   };
+  const tr = value => window.UBOVMi18n?.t(value) ?? value;
   const text = (element, value) => { if (element.textContent !== value) element.textContent = value; };
   const attribute = (element, name, value) => { if (element.getAttribute(name) !== value) element.setAttribute(name, value); };
   const property = (element, name, value) => { if (element[name] !== value) element[name] = value; };
   const button = (className, label) => { const element = node('button', className, label); element.type = 'button'; return element; };
   const labels = { running: '运行中', completed: '已完成', interrupted: '已停止', failed: '失败' };
-  const status = task => task.status === 'running' ? ({ queued: '排队中', starting: '准备中', stopping: '正在停止' }[task.executionState] || '运行中') : labels[task.status] || '状态未知';
+  const status = task => tr(task.status === 'running' ? ({ queued: '排队中', starting: '准备中', stopping: '正在停止' }[task.executionState] || '运行中') : labels[task.status] || '状态未知');
   const running = task => task.status === 'running';
   function command(task) {
     try { return JSON.parse(task.args || '{}').command || task.name; } catch { return task.args || task.name; }
@@ -83,8 +84,8 @@
       const task = selectedTask(), origin = sessionId; if (!task || copy.disabled) return;
       const request = ++copyRequest;
       copy.disabled = true;
-      try { if (await actions.onCopy?.(task.output || '') === false) throw new Error(); if (origin === sessionId && selected === task.commandId && request === copyRequest) text(notice, '日志已复制'); }
-      catch { if (origin === sessionId && selected === task.commandId && request === copyRequest) text(notice, '复制失败，请重试'); }
+      try { if (await actions.onCopy?.(task.output || '') === false) throw new Error(); if (origin === sessionId && selected === task.commandId && request === copyRequest) text(notice, tr('日志已复制')); }
+      catch { if (origin === sessionId && selected === task.commandId && request === copyRequest) text(notice, tr('复制失败，请重试')); }
       finally { if (request === copyRequest) copy.disabled = false; }
     });
     stop.addEventListener('click', async () => {
@@ -93,7 +94,7 @@
       stopping.add(task.commandId); renderDetail();
       try { if (await actions.onInterruptCommand(task.commandId) === false) throw new Error(); }
       catch {
-        if (origin === sessionRevision) { stopping.delete(task.commandId); if (selected === task.commandId) text(notice, '停止请求未确认，请重试'); renderDetail(); }
+        if (origin === sessionRevision) { stopping.delete(task.commandId); if (selected === task.commandId) text(notice, tr('停止请求未确认，请重试')); renderDetail(); }
       }
     });
     function renderDetail() {
@@ -108,9 +109,9 @@
         follow.setAttribute('aria-pressed', String(following));
       }
       text(detailTitle, command(task)); attribute(detailTitle, 'title', command(task));
-      text(meta, (disconnected && running(task) ? '连接中断 · 状态待确认' : status(task)) + ' · ' + task.owner + ' · ' + elapsed(task));
+      text(meta, (disconnected && running(task) ? tr('连接中断 · 状态待确认') : status(task)) + ' · ' + task.owner + ' · ' + elapsed(task));
       property(stop, 'hidden', !running(task)); property(stop, 'disabled', disconnected || task.interruptRequested === true || stopping.has(task.commandId));
-      text(stop, task.interruptRequested || stopping.has(task.commandId) ? '正在停止…' : '停止任务');
+      text(stop, tr(task.interruptRequested || stopping.has(task.commandId) ? '正在停止…' : '停止任务'));
       const value = task.output || (running(task) ? '等待命令输出…' : '无文本输出。');
       if (switched || renderedOutput !== value) {
         const top = switched ? reading.get(renderedSelection)?.top ?? 0 : output.scrollTop, previous = renderedOutput || '';
@@ -125,7 +126,7 @@
       if (document.hidden || suspended || element.closest('[hidden]') || document.getElementById('settings-dialog')?.open) return;
       for (const task of tasks) { const row = rows.get(task.commandId); if (row) text(row.time, elapsed(task)); }
       const task = selectedTask();
-      if (task) text(meta, (disconnected && running(task) ? '连接中断 · 状态待确认' : status(task)) + ' · ' + task.owner + ' · ' + elapsed(task));
+      if (task) text(meta, (disconnected && running(task) ? tr('连接中断 · 状态待确认') : status(task)) + ' · ' + task.owner + ' · ' + elapsed(task));
     }
     function syncClock() {
       const needed = expanded && !element.hidden && !document.hidden && !suspended && !document.getElementById('settings-dialog')?.open && tasks.some(running);
@@ -140,7 +141,7 @@
       property(element, 'hidden', !tasks.length);
       const active = tasks.filter(running), failed = tasks.filter(task => task.status === 'failed');
       attribute(element, 'data-status', disconnected && active.length ? 'unknown' : active.length ? 'running' : failed.length ? 'failed' : 'completed');
-      text(count, disconnected && active.length ? '状态待确认' : [active.length ? active.length + ' 运行中' : tasks.length + ' 已结束', failed.length ? failed.length + ' 失败' : ''].filter(Boolean).join(' · '));
+      text(count, disconnected && active.length ? tr('状态待确认') : [active.length ? tr('{0} 运行中', active.length) : tr('{0} 已结束', tasks.length), failed.length ? tr('{0} 失败', failed.length) : ''].filter(Boolean).join(' · '));
       property(clear, 'hidden', !tasks.some(task => !running(task)));
       const lead = active[0] || failed[0] || tasks[0];
       if (!expanded) {

@@ -25,8 +25,13 @@ const { createBlackboardSidebar } = require('./host/ui/blackboard-sidebar.cjs');
 const { createExecutionPublisher } = require('./host/agent/state-publisher.cjs');
 const { createTerminalService } = require('./host/system/terminal-service.cjs');
 const { readTheme, setTheme } = require('./host/system/theme.cjs');
+const { interfaceText, setInterfaceLocale, currentInterfaceLocale } = require('./harness/runtime/interface-text.cjs');
 
 let shutdownHarness = async () => {};
+const uiText = (message, ...args) => interfaceText(message, ...args);
+function interfaceLocale() {
+  return String(vscode.env?.language || '').toLowerCase().startsWith('en') ? 'en' : 'zh-CN';
+}
 
 const UI_REVISION = 11;
 const UI_KEYS = [
@@ -47,7 +52,13 @@ const UI_KEYS = [
 ];
 
 /** @param {import('vscode').ExtensionContext} context */
+function publishInterfaceLocale() {
+  void vscode.commands.executeCommand('setContext', 'ubovm.interfaceLocale', currentInterfaceLocale() === 'en' ? 'en' : 'zh-CN');
+}
+
 async function activate(context) {
+  setInterfaceLocale(context.globalState.get('ubovm.interfaceLocale') === 'en' ? 'en' : 'zh-CN');
+  publishInterfaceLocale();
   let welcome;
   let welcomeReady = false;
   let viewRevision = 0;
@@ -332,13 +343,14 @@ async function activate(context) {
     getTreeItem: entry => {
       if (entry?.kind === 'setting') {
         const current = isCurrentSettingsItem(entry.id);
-        const item = new vscode.TreeItem(entry.label, vscode.TreeItemCollapsibleState.None);
+        const label = uiText(entry.label);
+        const item = new vscode.TreeItem(label, vscode.TreeItemCollapsibleState.None);
         item.id = 'setting-' + entry.id;
         item.contextValue = 'ubovm.setting';
         item.iconPath = new vscode.ThemeIcon(entry.icon);
-        item.tooltip = entry.label + (current ? '（当前）' : '');
-        item.accessibilityInformation = { label: `${entry.label}${current ? '，当前设置' : ''}` };
-        item.command = { command: 'ubovm.selectSettings', title: entry.label, arguments: [entry.id] };
+        item.tooltip = label + (current ? uiText('（当前）') : '');
+        item.accessibilityInformation = { label: `${label}${current ? uiText('，当前设置') : ''}` };
+        item.command = { command: 'ubovm.selectSettings', title: label, arguments: [entry.id] };
         return item;
       }
       return sessions.provider.getTreeItem(entry);
@@ -451,18 +463,18 @@ async function activate(context) {
   }
 
   function publishSidebarChrome(conversation) {
-    const title = conversation.mode === 'goal' ? '探索工作台' : '协助对话';
+    const title = uiText(conversation.mode === 'goal' ? '探索工作台' : '协助对话');
     if (welcome && welcome.title !== title) welcome.title = title;
     if (sessionsView) {
       // Mode lives in the switcher; the pane title stays stable unless settings are open.
-      const sidebarTitle = settingsPage === 'initialize' ? '首次初始化'
-        : settingsPage === 'settings' ? '系统配置'
+      const sidebarTitle = settingsPage === 'initialize' ? uiText('首次初始化')
+        : settingsPage === 'settings' ? uiText('系统配置')
         : settingsPage === 'mcp' ? 'MCP'
         : settingsPage === 'skills' ? 'Skills'
-        : settingsPage ? '扩展管理'
-        : '项目与会话';
+        : settingsPage ? uiText('扩展管理')
+        : uiText('项目与会话');
       const count = conversation.historyCount ?? sessions.summary().historyCount;
-      const description = settingsPage ? '' : (count ? `${count} 条` : '');
+      const description = settingsPage ? '' : (count ? uiText('{0} 条', count) : '');
       if (sessionsView.title !== sidebarTitle) sessionsView.title = sidebarTitle;
       if (sessionsView.description !== description) sessionsView.description = description;
     }
@@ -1315,6 +1327,19 @@ async function activate(context) {
         toggleSessions: 'workbench.action.toggleAuxiliaryBar', toggleFiles: 'workbench.action.toggleSidebarVisibility', manageProjects: 'ubovm.manageProjects' };
       if (Object.hasOwn(commands, message.action)) await vscode.commands.executeCommand(commands[message.action]);
       else if (message.action === 'reloadConversation' && target === welcome) await reloadConversation();
+      else if (message.action === 'restartWindow') await vscode.commands.executeCommand('workbench.action.reloadWindow');
+      else if (message.action === 'setInterfaceLocale') {
+        const next = message.locale === 'en' ? 'en' : 'zh-CN';
+        try { await context.globalState.update('ubovm.interfaceLocale', next); } catch { /* The page still keeps its own language choice. */ }
+        if (message.active !== true || currentInterfaceLocale() === next) return;
+        setInterfaceLocale(next);
+        publishInterfaceLocale();
+        sidebarChanged.fire();
+        try { publishSidebarChrome(sessions.summary()); } catch { /* Chrome is published again with the next snapshot. */ }
+        blackboardSidebar.applyLanguage();
+        workerPanel.applyLanguage();
+        return;
+      }
       else if (message.action === 'setTheme') { await setTheme(vscode, message.theme); }
       else if (message.action === 'blackboardDetail') {
         if (message.sessionId !== sessions.current().id || sessions.current().mode !== 'goal') return;
@@ -1324,6 +1349,7 @@ async function activate(context) {
       else if (message.action === 'ready') {
         const firstReady = !welcomeReady;
         welcomeReady = true;
+        void welcome?.webview?.postMessage?.({ type: 'locale', locale: interfaceLocale() });
         // Coalesce rapid ready storms from visibility + probe reconnect into one snapshot.
         // A chrome lock cannot wait on that debounce or the overlay stays up.
         clearTimeout(readyPublishTimer);

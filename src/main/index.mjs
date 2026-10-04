@@ -3,7 +3,7 @@
 // Bootstrap it before app.ready; do not await app.whenReady() here.
 import { app, Tray, Menu, nativeImage, dialog, powerMonitor } from 'electron';
 import path from 'node:path';
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { configureDataPaths, findLegacyRoot, initializeUserSettings } from './data-paths.mjs';
 import { installBackgroundMode } from './background.mjs';
@@ -26,13 +26,30 @@ process.argv.splice(0, process.argv.length, ...normalizeLaunchArguments(process.
 const configuration = JSON.parse(readFileSync(new URL('../app.json', import.meta.url), 'utf8'));
 initializeUserSettings(dataPaths, configuration.settings);
 installWindowRendering({ app, powerMonitor });
-installBackgroundMode({ app, Tray, Menu, nativeImage, dialog,
-  icon: path.join(app.getAppPath(), 'resources/win32/code.ico') });
+// Resolve the mark from this module. An absolute path breaks Windows icons
+// when the install directory contains spaces.
+function loadPackagedIcon() {
+  // ICO is the Windows taskbar/tray source. PNG is the fallback when a runtime
+  // cannot decode an ICO buffer. Read bytes instead of a filesystem path: this
+  // checkout lives under a directory name that contains spaces.
+  for (const relativePath of [
+    '../../resources/win32/code.ico',
+    '../../extensions/ubovm-core/media/app-icon.ico',
+    '../../extensions/ubovm-core/media/app-icon.png'
+  ]) {
+    try {
+      const image = nativeImage.createFromBuffer(readFileSync(new URL(relativePath, import.meta.url)));
+      if (!image.isEmpty()) return image;
+    } catch { /* packaged layouts keep the mark in one of these relative places */ }
+  }
+  return undefined;
+}
+const windowIcon = loadPackagedIcon();
+installBackgroundMode({ app, Tray, Menu, nativeImage, dialog, icon: windowIcon });
 
 // Apply the product mark to every window, including auxiliary editor windows.
 app.on('browser-window-created', (_event, window) => {
-  const icon = path.join(app.getAppPath(), 'extensions/ubovm-core/media/app-icon.png');
-  if (process.platform !== 'darwin' && existsSync(icon)) window.setIcon(icon);
+  if (process.platform !== 'darwin' && windowIcon) window.setIcon(windowIcon);
 });
 
 process.env.UBOVM_MAIN_ENTRY = 'src/main/index.mjs';

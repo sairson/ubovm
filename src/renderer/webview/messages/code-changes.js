@@ -1,5 +1,6 @@
 (() => {
   const states = new WeakMap();
+  const tr = value => window.UBOVMi18n?.t(value) ?? value;
   const node = (tag, className, text) => { const item = document.createElement(tag); item.className = className; if (text !== undefined) item.textContent = text; return item; };
   window.UBOVMCodeChanges = {
     update(root, summary, options) {
@@ -9,9 +10,9 @@
       const signature = JSON.stringify([summary, options.busy, options.turnId, state.pending, state.error]);
       if (signature === state.signature) return false;
       const files = summary?.files ?? [];
-      root.className = 'code-change-card'; root.setAttribute('aria-label', '本轮文件修改');
+      root.className = 'code-change-card'; root.setAttribute('aria-label', tr('本轮文件修改'));
       const header = node('div', 'code-change-heading');
-      header.append(node('strong', '', files.length ? `本轮修改 ${files.length} 个文件` : '本轮未记录工作区文件修改'));
+      header.append(node('strong', '', tr(files.length ? `本轮修改 ${files.length} 个文件` : '本轮未记录工作区文件修改')));
       const counts = value => `${value.approximate ? '≤ ' : ''}+${value.added} / −${value.removed}`;
       if (files.length) header.append(node('span', 'code-change-counts', counts(summary)));
       const children = [header];
@@ -47,15 +48,15 @@
           open.addEventListener('click', () => run('reviewCodeTurnFile', file.id));
           const badge = file.undone ? '已撤销' : file.state === 'conflict' ? '存在冲突' : file.state !== 'applied' ? '待核对' : file.operation === 'create' ? '新增' : file.operation === 'delete' ? '删除' : '修改';
           if (file.reason) row.title = file.reason;
-          row.append(open, node('span', 'code-change-kind', badge), node('span', 'code-change-counts', counts(file)));
+          row.append(open, node('span', 'code-change-kind', tr(badge)), node('span', 'code-change-counts', counts(file)));
           list.append(row);
         }
         children.push(list);
-        const undo = node('button', 'code-change-undo', state.pending ? '正在处理…' : summary.undone ? '本轮修改已撤销' : '一键撤销本轮全部修改');
+        const undo = node('button', 'code-change-undo', tr(state.pending ? '正在处理…' : summary.undone ? '本轮修改已撤销' : '一键撤销本轮全部修改'));
         undo.type = 'button'; undo.disabled = state.pending || options.busy || summary.undone;
         undo.addEventListener('click', () => run('undoCodeTurn')); children.push(undo);
       }
-      children.push(node('p', 'code-change-scope', '仅包含工作区编码工具记录的文件修改；SSH、终端和外部工具的操作不在此撤销范围内。' + (summary?.approximate ? ' 大规模差异的行数显示上限估算。' : '')));
+      children.push(node('p', 'code-change-scope', tr('仅包含工作区编码工具记录的文件修改；SSH、终端和外部工具的操作不在此撤销范围内。') + (summary?.approximate ? tr(' 大规模差异的行数显示上限估算。') : '')));
       if (state.error) { const error = node('p', 'code-change-error', state.error); error.setAttribute('role', 'alert'); children.push(error); }
       // A failed DOM commit must not make the same snapshot look rendered.
       root.replaceChildren(...children); state.signature = signature; return true;

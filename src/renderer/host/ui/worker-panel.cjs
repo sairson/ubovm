@@ -4,22 +4,25 @@ const { randomBytes } = require('node:crypto');
 const { readFileSync } = require('node:fs');
 const path = require('node:path');
 const { createLatestDelivery } = require('../agent/latest-delivery.cjs');
+const { interfaceText, currentInterfaceLocale } = require('../../harness/runtime/interface-text.cjs');
 
 let bundle;
 function loadBundle() {
   if (bundle) return bundle;
   const read = file => readFileSync(path.join(__dirname, '../../webview', file), 'utf8');
   const styles = ['styles.css', 'theme.css', 'messages/message-markdown.css', 'messages/message-view.css', 'workers/worker-panel.css', 'preview/html-preview.css'].map(read).join('\n');
-  const scripts = ['vendor/marked.umd.js', 'messages/message-markdown.js', 'messages/timeline-parts.js', 'messages/message-view.js', 'workers/worker-panel.js', 'preview/html-preview.js', 'workers/native-panel.js'].map(read).join('\n;\n').replace(/<\/script/gi, '<\\/script');
+  const scripts = ['i18n-en.js', 'i18n-en-more.js', 'i18n.js', 'vendor/marked.umd.js', 'messages/message-markdown.js', 'messages/timeline-parts.js', 'messages/message-view.js', 'workers/worker-panel.js', 'preview/html-preview.js', 'workers/native-panel.js'].map(read).join('\n;\n').replace(/<\/script/gi, '<\\/script');
   return bundle = { styles, scripts };
 }
 
 function renderWorkerPanel() {
   const nonce = randomBytes(24).toString('hex');
-  const { styles, scripts } = loadBundle();
-  return `<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: https:; style-src 'nonce-${nonce}'; script-src 'nonce-${nonce}'; frame-src blob:;"><meta name="viewport" content="width=device-width, initial-scale=1"><style nonce="${nonce}">${styles}
+  const { styles, scripts: source } = loadBundle();
+  const scripts = `try{localStorage.setItem('ubovm.locale',${JSON.stringify(currentInterfaceLocale())})}catch(e){}\n;${source}`;
+  const loading = interfaceText('正在加载 Worker 日志…');
+  return `<!doctype html><html lang="${currentInterfaceLocale() === 'en' ? 'en' : 'zh-CN'}"><head><meta charset="UTF-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: https:; style-src 'nonce-${nonce}'; script-src 'nonce-${nonce}'; frame-src blob:;"><meta name="viewport" content="width=device-width, initial-scale=1"><style nonce="${nonce}">${styles}
   .shell { height:100%; min-width:0; } .worker-panel { position:static; width:100%; height:100%; border:0; box-shadow:none; } .worker-panel-header { padding:4px 12px; } .worker-detail-summary,.worker-detail-content { padding:12px 16px; } #worker-empty { flex:1; min-height:0; display:grid; place-items:center; margin:0; padding:20px; text-align:center; color:var(--muted); } #worker-error { padding:8px 16px; color:var(--vscode-errorForeground); }
-  </style></head><body><div class="shell"><p id="worker-empty" role="status" aria-busy="true">正在加载 Worker 日志…</p><p id="worker-error" role="status" hidden></p></div><script nonce="${nonce}">${scripts}</script></body></html>`;
+  </style></head><body><div class="shell"><p id="worker-empty" role="status" aria-busy="true">${loading}</p><p id="worker-error" role="status" hidden></p></div><script nonce="${nonce}">${scripts}</script></body></html>`;
 }
 
 function createWorkerPanel(vscode, { readState, onAction, onError = () => {}, readyTimeout = 10000 }) {
@@ -148,7 +151,14 @@ function createWorkerPanel(vscode, { readState, onAction, onError = () => {}, re
       });
       const disposal = next.onDidDispose(() => { if (view === next) releaseView(); });
       viewSubscriptions = [listener, visibility, disposal];
+      next.title = interfaceText('Worker 日志');
       next.webview.html = renderWorkerPanel();
+    },
+    applyLanguage() {
+      if (!view) return;
+      view.title = interfaceText('Worker 日志');
+      view.webview.html = renderWorkerPanel();
+      ready = false;
     },
     dispose() {
       if (disposed) return;
