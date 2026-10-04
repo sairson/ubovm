@@ -305,6 +305,33 @@ test('worker can occupy the main space, stream and switch workers, then restore 
   assert.equal(await f.page.locator('#main-content').evaluate(element => element.inert), false);
 });
 
+test('goal page switches dismiss an expanded worker panel so the main workspace becomes visible again', async t => {
+  const f = await fixture(t, 1280);
+  const workers = initialWorkers();
+  const goalState = state(workers, { mode: 'goal', goal: { objective: '检查项目', criteria: [], notes: [] } });
+  goalState.execution.blackboard = { sessionId: 'workers', rootId: 'root', revision: 1, goal: '检查项目', nodes: [{ id: 'root', kind: 'root', parentIds: [] }] };
+  await f.emit(goalState);
+  await f.page.locator('#goal-view-switcher > summary').click();
+  await f.page.locator('#goal-tab-workers').click();
+  await f.page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  await f.page.locator('#goal-workers-list .worker-card').first().click();
+  assert.equal(await f.panel.isVisible(), true);
+  await f.panel.locator('.worker-options-toggle').click();
+  await f.panel.locator('.worker-expand').click();
+  assert.equal(await f.page.locator('#main-content').evaluate(element => element.inert), true);
+  assert.equal(await f.page.locator('#main-content').isVisible(), false);
+  // Opening the page menu dismisses the expanded detail that was covering the main space.
+  await f.page.locator('#goal-view-switcher > summary').click();
+  await f.page.locator('#goal-tab-board').click();
+  await f.page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  assert.equal(await f.panel.isVisible(), false);
+  assert.equal(await f.page.locator('#main-content').evaluate(element => element.inert), false);
+  assert.equal(await f.page.locator('#main-content').isVisible(), true);
+  assert.equal(await f.page.locator('#route-loading').isVisible(), false);
+  assert.equal(await f.page.locator('#goal-board').isVisible(), true);
+  assert.equal(await f.page.locator('#blackboard-nodes [data-node-id="root"]').count(), 1);
+});
+
 const swarmWorkers = () => Array.from({ length: 12 }, (_, i) => ({
   id: `swarm-${i}`, name: `Worker ${i + 1}`, description: ['检查接口和调用链', '实现页面布局与状态', '验证测试和边界条件'][i % 3],
   status: i < 3 ? 'running' : i < 5 ? 'queued' : i === 5 ? 'waiting' : i === 11 ? 'failed' : 'completed',

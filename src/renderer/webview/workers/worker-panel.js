@@ -335,7 +335,9 @@
     }
     return {
       show,
+      dismiss,
       get selected() { return selected; },
+      get open() { return !panel.hidden; },
       update(input) {
         if (sessionId !== input.sessionId) {
           dismiss(false); selected = ''; sessionId = input.sessionId;

@@ -888,6 +888,28 @@ test('hidden panels defer rendering and reopening displays the latest state', as
   await page.locator('#goal-view-switcher > summary').click(); await page.locator('#goal-tab-workers').click(); await paint(page);
   assert.match(await page.locator('#goal-workers-list').textContent(), /Updated worker/);
 });
+test('goal page switches keep the main workspace painted after closing an expanded worker detail', async t => {
+  const page = await pageFor(t, { viewport: { width: 1280, height: 850 }, reducedMotion: 'reduce' });
+  const current = state('goal-view-main', 'goal');
+  current.execution.workers = [{ id: 'w1', name: '检查入口', status: 'running', parts: [{ id: 't1', type: 'text', text: '正在检查', status: 'streaming' }] }];
+  current.execution.blackboard = { sessionId: 'goal-view-main', rootId: 'root', revision: 1, goal: current.goal.objective, nodes: [{ id: 'root', kind: 'root', parentIds: [] }] };
+  await send(page, current);
+  await page.locator('#goal-view-switcher > summary').click(); await page.locator('#goal-tab-workers').click(); await paint(page);
+  await page.locator('#goal-workers-list .worker-card').click();
+  await page.locator('#worker-panel .worker-options-toggle').click();
+  await page.locator('#worker-panel .worker-expand').click();
+  assert.equal(await page.locator('#main-content').isVisible(), false);
+  // Opening the page menu dismisses the expanded worker detail that was covering the main space.
+  await page.locator('#goal-view-switcher > summary').click();
+  await page.waitForFunction(() => document.getElementById('worker-panel').hidden);
+  await page.locator('#goal-tab-board').click(); await paint(page);
+  assert.equal(await page.locator('#worker-panel').evaluate(node => node.hidden), true);
+  assert.equal(await page.locator('#main-content').isVisible(), true);
+  assert.equal(await page.locator('#main-content').evaluate(node => node.inert), false);
+  assert.equal(await page.locator('#route-loading').isVisible(), false);
+  assert.equal(await page.locator('#goal-board').isVisible(), true);
+  assert.equal(await page.locator('#blackboard-nodes [data-node-id="root"]').count(), 1);
+});
 
 test('unchanged execution logs keep headers and worker links intact during streaming', async t => {
   const page = await pageFor(t);
@@ -2116,15 +2138,28 @@ test('goal header substitutes module actions and restores overview controls', as
   const page = await pageFor(t), message = state('module-actions', 'goal');
   await send(page, state('assist-actions'));
   assert.equal(await page.locator('#review-code-changes').isVisible(), true);
+  assert.equal(await page.locator('#open-browser').isVisible(), true);
+  assert.equal(await page.locator('#goal-header-more').isVisible(), false);
   message.execution.blackboard = { sessionId: 'module-actions', rootId: 'root', nodes: [{ id: 'root', kind: 'root', parentIds: [] }] };
   await send(page, message);
   assert.equal(await page.locator('#review-code-changes').isVisible(), false);
+  assert.equal(await page.locator('#open-browser').isVisible(), false);
+  assert.equal(await page.locator('#validate-code-changes').isVisible(), false);
+  assert.equal(await page.locator('#goal-header-more').isVisible(), true);
   assert.equal(await page.locator('#goal-mode').getAttribute('aria-label'), '探索模式');
   assert.match(await page.title(), /探索工作台/);
   const choose = async view => { await page.locator('#goal-view-switcher > summary').click(); await page.locator('#goal-tab-' + view).click(); await paint(page); };
-  assert(await page.locator('#goal-edit').isVisible()); assert(await page.locator('#new-goal').isVisible());
+  const openMore = async () => { if (!await page.locator('#goal-header-more').evaluate(node => node.open)) await page.locator('#goal-header-more > summary').click(); };
+  await openMore();
+  assert(await page.locator('#goal-edit').isVisible());
+  assert(await page.locator('#goal-more-browser').isVisible());
+  assert(await page.locator('#new-create').isVisible());
+  await page.locator('#goal-edit').click();
+  assert(await page.locator('#goal-editor').isVisible());
+  await page.locator('#goal-cancel').click();
   await choose('board');
-  assert.equal(await page.locator('#goal-edit').isVisible(), false); assert.equal(await page.locator('#new-goal').isVisible(), false);
+  await openMore();
+  assert.equal(await page.locator('#goal-edit').isVisible(), false);
   assert.equal(await page.locator('.topbar #goal-board-actions button').count(), 0);
   assert(await page.locator('.graph-workspace .graph-controls').isVisible());
   assert.equal(await page.locator('.graph-direction, .graph-toolbar').count(), 0);
@@ -2140,12 +2175,27 @@ test('goal header substitutes module actions and restores overview controls', as
   await page.locator('#note-new').click(); assert(await page.locator('#goal-note-input').isVisible());
   await page.locator('#note-close').click();
   await send(page, { type: 'executionState', conversationId: 'module-actions', execution: message.execution, busy: false });
-  assert(await page.locator('.topbar #note-new').isVisible()); assert.equal(await page.locator('#new-goal').isVisible(), false);
+  assert(await page.locator('.topbar #note-new').isVisible());
   await choose('overview');
-  assert(await page.locator('#goal-edit').isVisible()); assert(await page.locator('#new-goal').isVisible());
+  await openMore();
+  assert(await page.locator('#goal-edit').isVisible());
   assert.equal(await page.locator('#goal-notes-actions').isVisible(), false);
+  await page.locator('#goal-header-more > summary').click();
+  await page.setViewportSize({ width: 640, height: 760 });
+  await paint(page);
+  assert.equal(await page.evaluate(() => {
+    const items = [...document.querySelector('.topbar').children].filter(el => !el.hidden && getComputedStyle(el).display !== 'none');
+    const boxes = items.map(el => el.getBoundingClientRect()).filter(box => box.width > 0 && box.height > 0);
+    for (let i = 0; i < boxes.length; i++) for (let j = i + 1; j < boxes.length; j++) {
+      const a = boxes[i], b = boxes[j];
+      if (Math.min(a.right, b.right) - Math.max(a.left, b.left) > 1 && Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > 1) return true;
+    }
+    return false;
+  }), false, 'goal topbar controls must not overlap at narrow widths');
   await send(page, state('assist-actions'));
   assert.equal(await page.locator('#review-code-changes').isVisible(), true);
+  assert.equal(await page.locator('#open-browser').isVisible(), true);
+  assert.equal(await page.locator('#goal-header-more').isVisible(), false);
 });
 
 test('opening Worker shows waiting, suppresses rapid clicks and releases controls after acknowledgement', async t => {

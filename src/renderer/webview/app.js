@@ -892,9 +892,12 @@
     byId('goal-identity').hidden = !goalMode;
     byId('goal-header-actions').hidden = !goalMode;
     byId('goal-view-switcher').hidden = !goalMode;
-    if (!goalMode) byId('goal-view-switcher').open = false;
+    byId('goal-header-more').hidden = !goalMode;
+    if (!goalMode) { byId('goal-view-switcher').open = false; byId('goal-header-more').open = false; }
     setText(byId('new-create-chat'), goalMode ? '新建探索' : '新建对话');
     byId('new-create-chat').title = goalMode ? '在当前项目中新建探索' : '在当前项目中新建对话';
+    byId('open-browser').hidden = goalMode;
+    byId('validate-code-changes').hidden = goalMode;
     byId('review-code-changes').hidden = goalMode;
     byId('assist-notes-toggle').hidden = goalMode;
     renderModuleActions();
@@ -937,6 +940,9 @@
     if (goalViewScroll.size > 400) goalViewScroll.delete(goalViewScroll.keys().next().value);
     cancelScroll();
     if (view !== 'notes') closeNoteEditor();
+    // Worker detail can mark #main-content inert or visibility:hidden ("占据主空间").
+    // Close it before the route paint so the newly selected page is actually shown.
+    try { workerPanel.dismiss(false); } catch { /* Panel teardown must not block navigation. */ }
     draftFor().view = view;
     persistDrafts();
     // A route change must synchronize the outer mode and workspace as well as
@@ -1639,15 +1645,22 @@
     if (event.key === 'Enter' && !event.shiftKey && !composingPrompt && !event.isComposing && event.keyCode !== 229) { event.preventDefault(); sendPrompt(); }
   });
   const newCreate = byId('new-create');
+  const goalHeaderMore = byId('goal-header-more');
   const closeNewCreate = () => { newCreate.open = false; };
+  const closeGoalHeaderMore = () => { goalHeaderMore.open = false; };
   newCreate.addEventListener('toggle', () => {
     if (newCreate.open && (hasPending() || navigationPending())) closeNewCreate();
+    if (newCreate.open) closeGoalHeaderMore();
   });
   newCreate.querySelector('summary').addEventListener('click', event => {
     if (hasPending() || navigationPending()) { event.preventDefault(); closeNewCreate(); }
   });
+  goalHeaderMore.addEventListener('toggle', () => {
+    if (goalHeaderMore.open) closeNewCreate();
+  });
   document.addEventListener('pointerdown', event => {
     if (!newCreate.contains(event.target)) closeNewCreate();
+    if (!goalHeaderMore.contains(event.target)) closeGoalHeaderMore();
   });
   newCreate.addEventListener('keydown', event => {
     if (event.key === 'Escape') {
@@ -1656,9 +1669,19 @@
       newCreate.querySelector('summary').focus();
     }
   });
+  goalHeaderMore.addEventListener('keydown', event => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      closeGoalHeaderMore();
+      goalHeaderMore.querySelector('summary').focus();
+    }
+  });
   byId('new-create-chat').addEventListener('click', () => {
     closeNewCreate();
     if (!hasPending()) request('newChat');
+  });
+  goalHeaderMore.querySelector('.goal-header-more-menu').addEventListener('click', event => {
+    if (event.target.closest('button')) closeGoalHeaderMore();
   });
   byId('goal-run').addEventListener('click', () => {
     if (hostState?.goal && !busy && !hasPending('runGoal') && !navigationPending()) request('runGoal');
@@ -1729,6 +1752,10 @@
     byId('goal-view-switcher').open = false;
     byId('goal-view-switcher').querySelector('summary').focus({ preventScroll: true });
   }));
+  byId('goal-view-switcher').addEventListener('toggle', () => {
+    // Expanded worker detail covers the page menu; close it when the user opens navigation.
+    if (byId('goal-view-switcher').open) try { workerPanel.dismiss(false); } catch { /* ignore */ }
+  });
   document.addEventListener('pointerdown', event => {
     if (!byId('goal-view-switcher').contains(event.target)) byId('goal-view-switcher').open = false;
   });
@@ -1763,6 +1790,7 @@
   criteriaInput.addEventListener('input', saveGoalDraft);
   byId('goal-edit').addEventListener('click', () => {
     if (busy) return;
+    closeGoalHeaderMore();
     draftFor().goalEditing = true;
     restoreFields();
     persistDrafts();
@@ -1774,7 +1802,7 @@
     draftFor().goalEditing = false;
     persistDrafts();
     renderGoal();
-    byId('goal-edit').focus();
+    goalHeaderMore.querySelector('summary').focus();
   });
   byId('goal-editor').addEventListener('submit', event => {
     event.preventDefault();
@@ -2353,7 +2381,7 @@
       cleanup(closeNoteEditor);
       cleanup(() => projectSwitcher.close());
       cleanup(() => modalDialog.close());
-      cleanup(() => { byId('new-create').open = false; });
+      cleanup(() => { byId('new-create').open = false; byId('goal-header-more').open = false; });
     }
     hostState = state;
     currentSessionId = sessionId;
