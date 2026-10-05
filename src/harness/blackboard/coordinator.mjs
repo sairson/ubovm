@@ -86,6 +86,13 @@ function positiveInteger(value, name) {
   return value;
 }
 
+function nonnegativeInteger(value, name) {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new TypeError(`${name} must be a nonnegative integer.`);
+  }
+  return value;
+}
+
 function resolveReferences(values, context, label) {
   if (!Array.isArray(values)) throw failure('INVALID_DECISION', `${label} must be an array.`);
   const result = [];
@@ -163,7 +170,8 @@ export class BlackboardCoordinator {
   #completion;
   #listeners = new Set();
 
-  constructor({ blackboard, reason, worker, maxConcurrency = 3, maxRounds = 20 } = {}) {
+  constructor({ blackboard, reason, worker, maxConcurrency = 3, maxRounds = 20,
+    workerTimeoutMs = 0, maxWorkerRetries = 0 } = {}) {
     if (!blackboard || typeof blackboard.snapshot !== 'function') {
       throw new TypeError('blackboard is required.');
     }
@@ -175,6 +183,11 @@ export class BlackboardCoordinator {
     this.worker = worker;
     this.maxConcurrency = positiveInteger(maxConcurrency, 'maxConcurrency');
     this.maxRounds = positiveInteger(maxRounds, 'maxRounds');
+    this.workerTimeoutMs = nonnegativeInteger(workerTimeoutMs, 'workerTimeoutMs');
+    this.maxWorkerRetries = nonnegativeInteger(maxWorkerRetries, 'maxWorkerRetries');
+    if (Number.isSafeInteger(blackboard.openIntents) && this.maxConcurrency > blackboard.openIntents) {
+      throw new TypeError('maxConcurrency cannot exceed the blackboard openIntents limit.');
+    }
   }
 
   /**
@@ -210,7 +223,7 @@ export class BlackboardCoordinator {
       for (const node of pending) {
         if (active.size >= this.maxConcurrency) break;
         if (active.has(node.id)) continue;
-        const operation = this.#execute(node, workerSignal).then(
+        const operation = this.#execute(node, workerSignal, id => { retryIds.push(id); }).then(
           () => settled.push({ id: node.id }),
           error => settled.push({ id: node.id, error })
         ).then(() => { wake?.(); });
@@ -348,16 +361,30 @@ export class BlackboardCoordinator {
     return { complete: true, evidenceIds, summary: decision.summary.trim(), rounds: round, revision: snapshot.revision };
   }
 
-  async #execute(node, signal) {
+  async #execute(node, signal, retry) {
     checkAbort(signal);
     const previous = [...node.attempts].reverse().find((item) => item.checkpoint !== undefined);
     const attempt = await this.blackboard.beginAttempt(node.id);
+    // One attempt owns one signal: coordinator stop propagates through it, and
+    // an optional per-attempt deadline converts a hung worker into a failed
+    // attempt instead of blocking the run's drain forever.
+    const attemptController = new AbortController();
+    const propagate = () => { if (!attemptController.signal.aborted) attemptController.abort(signal.reason); };
+    if (signal.aborted) propagate();
+    else signal.addEventListener('abort', propagate, { once: true });
+    let deadline = null;
+    if (this.workerTimeoutMs > 0) {
+      deadline = setTimeout(() => attemptController.abort(failure('WORKER_TIMEOUT',
+        `Worker attempt exceeded ${this.workerTimeoutMs}ms and was stopped.`)), this.workerTimeoutMs);
+      deadline.unref?.();
+    }
+    const attemptSignal = attemptController.signal;
     let active = true;
     const subscriptions = new Set();
     const checkpointWrites = [];
     let checkpointFailure;
     const requireActive = () => {
-      checkAbort(signal);
+      checkAbort(attemptSignal);
       if (!active) throw failure('ATTEMPT_CLOSED', `Worker attempt ${attempt.id} is no longer active.`);
     };
     let result;
@@ -369,7 +396,7 @@ export class BlackboardCoordinator {
         node: this.blackboard.node(node.id),
         attempt: structuredClone(attempt),
         checkpoint: previous ? structuredClone(previous.checkpoint) : undefined,
-        signal,
+        signal: attemptSignal,
         getMessages: () => this.#completion ? [structuredClone(this.#completion)] : [],
         onMessage: listener => {
           requireActive();
@@ -414,13 +441,13 @@ export class BlackboardCoordinator {
         }
         active = false;
         return returned;
-      }, signal);
+      }, attemptSignal);
       // Freeze the accepted write set before draining it. Late helper calls
       // return handled rejections and cannot race fact writeback.
       active = false;
       await Promise.all(checkpointWrites);
       if (checkpointFailure) throw checkpointFailure;
-      checkAbort(signal);
+      checkAbort(attemptSignal);
       const content = typeof result === 'string' ? result : result?.content;
       if (typeof content !== 'string' || !content.trim()) {
         throw failure('INVALID_WORKER_RESULT', 'Worker must return nonempty fact content.');
@@ -428,14 +455,27 @@ export class BlackboardCoordinator {
     } catch (error) {
       active = false;
       await Promise.allSettled(checkpointWrites);
-      await this.blackboard.failAttempt(node.id, attempt.id, String(error?.message ?? error) || 'Worker failed without an error message.', {
+      // Prefer the attempt-local abort reason (deadline) over the generic
+      // interruptible rejection when only this attempt was stopped.
+      const reason = attemptSignal.aborted && !signal?.aborted && attemptSignal.reason instanceof Error
+        ? attemptSignal.reason : error;
+      await this.blackboard.failAttempt(node.id, attempt.id, String(reason?.message ?? reason) || 'Worker failed without an error message.', {
         interrupted: Boolean(signal?.aborted),
       });
       if (checkpointFailure) throw checkpointFailure;
       if (signal?.aborted) throw abortError(signal);
+      // Transient worker failures earn one in-run requeue per budget slot; the
+      // attempt history stays on the board for Reason to review either way.
+      if (this.maxWorkerRetries > 0 && typeof retry === 'function') {
+        const current = this.blackboard.node(node.id);
+        const terminations = current.attempts.filter(item => ['failed', 'interrupted'].includes(item.status)).length;
+        if (terminations <= this.maxWorkerRetries) retry(node.id);
+      }
       return;
     } finally {
       active = false;
+      if (deadline !== null) clearTimeout(deadline);
+      signal.removeEventListener('abort', propagate);
       for (const listener of subscriptions) this.#listeners.delete(listener);
     }
     try {

@@ -71,3 +71,13 @@ const service = createHarnessService({
   onChange: id => snapshots.schedule(id),
   onMessage: (id, message) => rpc.call('message', [id, message])
 });
+
+// Keep the harness thread alive across stray async failures: one lost listener
+// must not take down every live session it serves. Durable state stays on disk,
+// so the worst case is a session the host restores from its checkpoint.
+process.on('uncaughtException', error => {
+  try { process.stderr.write(`[harness] uncaughtException: ${error instanceof Error ? error.stack : String(error)}\n`); } catch { /* stderr unavailable */ }
+});
+process.on('unhandledRejection', reason => {
+  try { process.stderr.write(`[harness] unhandledRejection: ${reason instanceof Error ? reason.stack : String(reason)}\n`); } catch { /* stderr unavailable */ }
+});

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { AssistantMessageEventStream } from '@earendil-works/pi-ai';
 import { createModelClient } from '../model.mjs';
-import { hasAssistantContent, isRetryableModelFailure, isTransientTransportError } from '../model-retry.mjs';
+import { hasAssistantContent, isRetryableModelFailure, isTransientTransportError, rateLimitDelayMs } from '../model-retry.mjs';
 
 function errorStream(model, message) {
   const stream = new AssistantMessageEventStream();
@@ -55,6 +55,7 @@ test('streamOptions default to a small transient retry budget and honor explicit
   await client.streamFn(client.model, {});
   assert.equal(options.maxRetries, 3);
   assert.equal(options.maxRetryDelayMs, 5000);
+  assert.equal(options.timeoutMs, 900000, 'a default streaming deadline bounds hung connections');
 
   const disabled = createModelClient({
     provider: 'smoke', modelId: 'fixture', api: 'openai-completions', baseUrl: 'https://offline.invalid/v1', apiKey: 'k',
@@ -143,4 +144,30 @@ test('retry classification covers common transport wording', () => {
   assert.equal(isRetryableModelFailure({ stopReason: 'error', errorMessage: 'insufficient_quota' }), false);
   assert.equal(hasAssistantContent({ content: [{ type: 'text', text: 'x' }] }), true);
   assert.equal(hasAssistantContent({ content: [] }), false);
+});
+
+test('rateLimitDelayMs extracts Retry-After from fields, headers, and message text', () => {
+  assert.equal(rateLimitDelayMs(Object.assign(new Error('Too Many Requests'), { status: 429, retryAfter: 2 })), 2000);
+  assert.equal(rateLimitDelayMs(Object.assign(new Error('rate limited'), { status: 429, headers: { 'retry-after': '1.5' } })), 1500);
+  assert.equal(rateLimitDelayMs({ stopReason: 'error', errorMessage: '429 Too Many Requests; retry after 3 seconds' }), 3000);
+  assert.equal(rateLimitDelayMs(Object.assign(new Error('fetch failed'), { code: 'ECONNRESET' })), 0, 'non rate-limit failures carry no delay');
+  assert.equal(rateLimitDelayMs(Object.assign(new Error('server error'), { status: 500 })), 0);
+  assert.equal(rateLimitDelayMs(null), 0);
+});
+
+test('a 429 with Retry-After coordinates concurrent callers of the same model', async () => {
+  const configuration = {
+    provider: 'smoke', modelId: 'cooldown', api: 'openai-completions', baseUrl: 'https://offline.invalid/v1', apiKey: 'k'
+  };
+  const throttled = createModelClient({ ...configuration, streamOptions: { maxRetries: 0 },
+    streamFn: async () => { throw Object.assign(new Error('Too Many Requests'), { status: 429, retryAfter: 0.15 }); } });
+  await assert.rejects(throttled.streamFn(throttled.model, {}), /Too Many Requests/);
+  // The giving-up caller still publishes the provider's cooldown window.
+  let opened = 0;
+  const started = Date.now();
+  const sharing = createModelClient({ ...configuration, streamOptions: { maxRetries: 0 },
+    streamFn: async () => { opened += 1; return 'ok'; } });
+  assert.equal(await sharing.streamFn(sharing.model, {}), 'ok');
+  assert.equal(opened, 1);
+  assert.ok(Date.now() - started >= 100, `second caller honored the cooldown (waited ${Date.now() - started}ms)`);
 });

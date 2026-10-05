@@ -162,12 +162,18 @@ export type WorkerCallback = (input: WorkerInput) => Awaitable<string | WorkerRe
 export interface CoordinatorResult { complete: true; evidenceIds: string[]; summary: string; rounds: number; revision: number }
 export interface RunOptions { resume?: boolean; signal?: AbortSignal }
 export class BlackboardCoordinator {
-  constructor(options: { blackboard: Blackboard; reason: ReasonCallback; worker: WorkerCallback; maxConcurrency?: number; maxRounds?: number });
+  constructor(options: { blackboard: Blackboard; reason: ReasonCallback; worker: WorkerCallback; maxConcurrency?: number; maxRounds?: number;
+    /** Per-attempt deadline in ms; 0 (default) disables the watchdog. */
+    workerTimeoutMs?: number;
+    /** In-run requeues per intent after a failed attempt; 0 (default) keeps failures on the board for Reason. */
+    maxWorkerRetries?: number });
   readonly blackboard: Blackboard;
   readonly reason: ReasonCallback;
   readonly worker: WorkerCallback;
   readonly maxConcurrency: number;
   readonly maxRounds: number;
+  readonly workerTimeoutMs: number;
+  readonly maxWorkerRetries: number;
   run(options?: RunOptions): Promise<CoordinatorResult>;
 }
 
@@ -362,6 +368,10 @@ export interface HarnessOptions {
   onEvent?: (event: HarnessEvent) => unknown;
   maxConcurrency?: number;
   maxRounds?: number;
+  /** Per-worker-attempt watchdog; default 3600000 (1 hour), 0 disables. */
+  workerTimeoutMs?: number;
+  /** Automatic in-run retries of failed attempts; default 1, 0 disables. */
+  maxWorkerRetries?: number;
 }
 /** Construct using createHarness so durable state is loaded before use. */
 export class HarnessSession {

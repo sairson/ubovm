@@ -124,6 +124,9 @@ function streamDefaults(value = {}) {
   // Explicit 0 still disables retries; omit means a small transient-network budget.
   if (!Object.hasOwn(result, 'maxRetries')) result.maxRetries = 3;
   if (!Object.hasOwn(result, 'maxRetryDelayMs')) result.maxRetryDelayMs = 5000;
+  // A generous streaming deadline: each agent turn is one long-lived request,
+  // and without a bound a dead connection can pin a worker slot forever.
+  if (!Object.hasOwn(result, 'timeoutMs')) result.timeoutMs = 900000;
   return result;
 }
 
