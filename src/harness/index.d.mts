@@ -162,7 +162,9 @@ export type WorkerCallback = (input: WorkerInput) => Awaitable<string | WorkerRe
 export interface CoordinatorResult { complete: true; evidenceIds: string[]; summary: string; rounds: number; revision: number }
 export interface RunOptions { resume?: boolean; signal?: AbortSignal }
 export class BlackboardCoordinator {
-  constructor(options: { blackboard: Blackboard; reason: ReasonCallback; worker: WorkerCallback; maxConcurrency?: number; maxRounds?: number;
+  constructor(options: { blackboard: Blackboard; reason: ReasonCallback; worker: WorkerCallback; maxConcurrency?: number;
+    /** Reason review rounds; 0 (default) runs until completion, stall, or abort. */
+    maxRounds?: number;
     /** Per-attempt deadline in ms; 0 (default) disables the watchdog. */
     workerTimeoutMs?: number;
     /** In-run requeues per intent after a failed attempt; 0 (default) keeps failures on the board for Reason. */
@@ -367,6 +369,7 @@ export interface HarnessOptions {
   tools?: RecoverableAgentTool[] | ToolFactory;
   onEvent?: (event: HarnessEvent) => unknown;
   maxConcurrency?: number;
+  /** Reason review rounds; 0 (default) is unlimited until the goal completes. */
   maxRounds?: number;
   /** Per-worker-attempt watchdog; default 3600000 (1 hour), 0 disables. */
   workerTimeoutMs?: number;

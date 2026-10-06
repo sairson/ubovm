@@ -274,7 +274,7 @@ test('settings show SDK defaults without writing them or replacing explicit valu
   assert.equal(snapshot.mcpFields.find(f => f.key === 'transport').type, 'select');
   assert.equal(snapshot.values.reason.maxRepairs, 0); assert.equal(snapshot.values.reason.maxIntents, 5);
   assert.equal(snapshot.values.reason.openIntents, 5); assert.equal(snapshot.values.reason.maxConcurrency, 3);
-  assert.equal(snapshot.values.reason.maxRounds, 20);
+  assert.equal(snapshot.values.reason.maxRounds, 0);
   assert.equal(snapshot.values.reason.thinkingLevel, 'medium');
   assert.equal(snapshot.values.worker.maxModelCalls, 7); assert.equal(snapshot.values.worker.maxResponseBytes, 24576);
   assert.equal(snapshot.values.mcp.connectTimeoutMs, 20000); assert.equal(snapshot.values.skills.maxWorkers, 10000);
@@ -306,6 +306,8 @@ test('exploration depth settings promote to harness options and reject invalid r
   assert.equal(runtime.reason.thinkingLevel, 'medium');
   assert.equal(runtime.reason.maxConcurrency, undefined);
   assert.equal(runtime.reason.maxRounds, undefined);
+  await f.save('reason', { ...snapshot.values.reason, maxRounds: 0 });
+  assert.equal((await f.model.read()).maxRounds, 0);
   await assert.rejects(f.save('reason', { ...snapshot.values.reason, openIntents: 3, maxConcurrency: 5 }), /并行任务数/);
   await assert.rejects(f.save('reason', { ...snapshot.values.reason, openIntents: 3, maxIntents: 5 }), /每轮新增任务/);
 });

@@ -1,7 +1,7 @@
 'use strict';
 
 const modelPresets = require('./model-presets.cjs');
-const defaultValues = { ...modelPresets.openai, inherit: true, enabled: true, thinkingLevel: 'off', maxIntents: 5, openIntents: 5, maxConcurrency: 3, maxRounds: 20, maxRepairs: 1, maxResponseBytes: 32768,
+const defaultValues = { ...modelPresets.openai, inherit: true, enabled: true, thinkingLevel: 'off', maxIntents: 5, openIntents: 5, maxConcurrency: 3, maxRounds: 0, maxRepairs: 1, maxResponseBytes: 32768,
   maxModelCalls: 0, maxToolCalls: 0, maxPlanSteps: 8, maxCheckpointBytes: 16777216, maxToolResultBytes: 262144,
   connectTimeoutMs: 20000, callTimeoutMs: 60000, maxResultBytes: 262144, maxSkills: 160, maxSkillBytes: 262144, maxTotalBytes: 4194304, maxFiles: 256, maxWorkers: 10000,
   known_hosts_file: '' };
@@ -40,7 +40,7 @@ const sections = {
     f('openIntents', '同时进行的任务上限（排队+执行中）', 'number', { min: 1, max: 20 }),
     f('maxIntents', '每轮新增任务上限（不超过同时进行上限）', 'number', { min: 1, max: 20 }),
     f('maxConcurrency', '并行任务数（不超过同时进行上限）', 'number', { min: 1, max: 10 }),
-    f('maxRounds', '规划轮次上限', 'number', { min: 1, max: 100 }),
+    f('maxRounds', '规划轮次上限（0 为不限）', 'number', { min: 0, max: 10000 }),
     f('maxRepairs', '协议修复次数', 'number', { min: 0, max: 4 }),
     f('maxResponseBytes', '响应字节上限', 'number'),
     f('systemPrompt', '自定义系统提示词', 'textarea')

@@ -95,7 +95,8 @@ test('structured tool errors stay failures, allow corrective execution, and cann
       if (calls === 3) return response([{ type: 'text', text: 'Corrected the source and verified it' }]);
       const evidence = transcript.messages.at(-1).content[0].text;
       const ledger = JSON.parse(evidence.split('Host tool evidence ledger:\n')[1]);
-      assert.deepEqual(ledger.map(entry => [entry.arguments.path, entry.isError]), [['missing', true], ['actual-source', false]]);
+      assert.equal(ledger.every(entry => entry.arguments === undefined), true);
+      assert.deepEqual(ledger.map(entry => [entry.toolCallId, entry.isError]), [['failed', true], ['verified', false]]);
       if (calls === 4) return response([{ type: 'text', text: '{"done":true}' }]);
       const source = calls === 5 ? 'failed' : 'verified';
       return response([{ type: 'text', text: JSON.stringify({ outcome: 'confirmed', statement: 'Scoped source verified',
@@ -243,4 +244,47 @@ test('completion notifications reach the next model call without cancelling a ru
   await worker({ ...fixture.args, signal: controller.signal, getMessages: () => notifications });
   assert.equal(controller.signal.aborted, false);
   assert.equal(calls, 4);
+});
+
+test('later worker phases keep the latest board and drop prior step history', async () => {
+  const fixture = setup('plan');
+  const bulky = 'BODY'.repeat(4000);
+  let requests = 0;
+  const texts = messages => messages.flatMap(message => {
+    if (typeof message.content === 'string') return [message.content];
+    return (message.content ?? []).map(part => part.text).filter(Boolean);
+  });
+  const worker = createPiWorker({
+    model,
+    tools: [{ name: 'inspect', description: 'inspect', parameters: { type: 'object', properties: {} },
+      execute: async () => ({ content: [{ type: 'text', text: bulky }] }) }],
+    streamFn: (_model, transcript) => {
+      requests++;
+      const blob = texts(transcript.messages).join('\n');
+      if (requests === 1) return response([{ type: 'text', text: JSON.stringify({ steps: [
+        { description: 'first', doneWhen: 'a' }, { description: 'second', doneWhen: 'b' }
+      ] }) }]);
+      if (requests === 2) return response([{ type: 'toolCall', id: 'inspect-1', name: 'inspect', arguments: {} }], 'toolUse');
+      if (requests === 3) return response([{ type: 'text', text: 'first step done' }]);
+      if (requests === 4) {
+        assert.equal(blob.includes(bulky), false);
+        const assignment = texts(transcript.messages).find(text => text.trim().startsWith('{') && text.includes('"completedSteps"'));
+        const parsed = JSON.parse(assignment);
+        assert.deepEqual(parsed.completedSteps, [{ description: 'first', doneWhen: 'a' }]);
+        const ledger = JSON.parse(blob.split('Host tool evidence ledger:\n')[1]);
+        assert.equal(ledger[0].arguments, undefined);
+        assert.ok(ledger[0].observations[0].includes('[truncated]'));
+        return response([{ type: 'text', text: JSON.stringify({ done: false, steps: [{ description: 'second', doneWhen: 'b' }] }) }]);
+      }
+      if (requests === 5) {
+        assert.equal(blob.includes(bulky), false);
+        assert.equal(blob.includes('first step done'), false);
+        return response([{ type: 'text', text: 'second step done' }]);
+      }
+      if (requests === 6) return response([{ type: 'text', text: '{"done":true}' }]);
+      return response([{ type: 'text', text: fact }]);
+    }
+  });
+  await worker(fixture.args);
+  assert.equal(fixture.saved.at(-1).ledger[0].result.content[0].text, bulky);
 });

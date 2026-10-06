@@ -1,3 +1,5 @@
+import { commentaryBudget, extractedJSONBytes, readJSONObject } from '../json-object.mjs';
+
 const OUTCOMES = new Set(['confirmed', 'negative', 'partial', 'blocked']);
 const MAX_ITEMS = 64;
 const MAX_TEXT = 8192;
@@ -29,6 +31,32 @@ function required(value, label, code, { exact = false } = {}) {
   return exact ? value : value.trim();
 }
 
+function coverageKey(value) {
+  return value.replace(/\s+/gu, ' ').trim().toLowerCase();
+}
+
+function uniqueContainmentMatch(raw, unused) {
+  const fingerprint = coverageKey(raw);
+  if (fingerprint.length < 8) return undefined;
+  const matches = unused.filter((point) => {
+    const key = coverageKey(point);
+    const [shorter, longer] = fingerprint.length <= key.length ? [fingerprint, key] : [key, fingerprint];
+    return longer.includes(shorter) && shorter.length * 5 >= longer.length * 2;
+  });
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
+function bindCoveragePoint(raw, points, used, index, alignByIndex) {
+  const unused = points.filter((point) => !used.has(point));
+  const fingerprint = unused.find((point) => coverageKey(point) === coverageKey(raw));
+  if (fingerprint) return fingerprint;
+  const contained = uniqueContainmentMatch(raw, unused);
+  if (contained) return contained;
+  const positional = points[index];
+  if (alignByIndex && positional && !used.has(positional)) return positional;
+  return undefined;
+}
+
 function list(value, label, code) {
   if (value === undefined) return [];
   if (!Array.isArray(value)) throw invalid(code, `${label} must be an array.`);
@@ -42,19 +70,16 @@ function positiveInteger(value, label, code) {
 
 function parseObject(text, code, maxBytes) {
   if (typeof text !== 'string' || !text.trim()) throw invalid(code, 'The model response must contain a JSON object.');
-  if (maxBytes !== undefined && Buffer.byteLength(text, 'utf8') > maxBytes) {
+  const rawLimit = commentaryBudget(maxBytes);
+  if (rawLimit !== undefined && Buffer.byteLength(text, 'utf8') > rawLimit) {
+    throw invalid(code, `The model response exceeds ${rawLimit} UTF-8 bytes.`);
+  }
+  const decoded = readJSONObject(text);
+  if (!decoded.value) throw invalid(code, 'The model response must be one valid JSON object, without surrounding commentary.');
+  if (maxBytes !== undefined && extractedJSONBytes(decoded.value) > maxBytes) {
     throw invalid(code, `The model response exceeds ${maxBytes} UTF-8 bytes.`);
   }
-  let source = text.trim();
-  // Tolerate one complete code fence, without extracting JSON from commentary.
-  const fence = /^```(?:json)?[ \t]*\r?\n([\s\S]*?)\r?\n```$/iu.exec(source);
-  if (fence) source = fence[1].trim();
-  try {
-    return record(JSON.parse(source), 'The model response', code);
-  } catch (cause) {
-    if (cause?.code === code) throw cause;
-    throw invalid(code, 'The model response must be one valid JSON object, without surrounding commentary.', cause);
-  }
+  return record(decoded.value, 'The model response', code);
 }
 
 /** Validate a bounded plan or the explicit replanning completion decision. */
@@ -151,12 +176,22 @@ export function parseWorkerFact(text, { keyPoints = [], ledger = [], context, ma
   const allowedPoints = new Set(points);
   if (allowedPoints.size !== points.length) throw invalid(code, 'keyPoints cannot contain duplicates.');
   const reported = new Map();
-  for (const [index, item] of list(value.coverage, 'Fact.coverage', code).entries()) {
+  const droppedCoverage = [];
+  const coverageItems = list(value.coverage, 'Fact.coverage', code);
+  const alignByIndex = coverageItems.length === points.length;
+  for (const [index, item] of coverageItems.entries()) {
     const label = `coverage[${index}]`;
     fields(item, ['point', 'status', 'result'], label, code);
-    const point = required(item.point, `${label}.point`, code, { exact: true });
-    if (!allowedPoints.has(point)) throw invalid(code, `${label}.point does not exactly match a required key point.`);
-    if (reported.has(point)) throw invalid(code, `${label}.point duplicates another coverage item.`);
+    const raw = required(item.point, `${label}.point`, code);
+    const point = bindCoveragePoint(raw, points, reported, index, alignByIndex);
+    if (!point) {
+      droppedCoverage.push(raw);
+      continue;
+    }
+    if (reported.has(point)) {
+      droppedCoverage.push(raw);
+      continue;
+    }
     reported.set(point, {
       point,
       status: outcome(item.status, `${label}.status`),
@@ -204,6 +239,9 @@ export function parseWorkerFact(text, { keyPoints = [], ledger = [], context, ma
   const limitations = stringList(value.limitations, 'Fact.limitations');
   if (droppedToolIds.length) {
     limitations.push(`Dropped ${droppedToolIds.length} evidence citation(s) that were not successful host ledger tool calls.`);
+  }
+  if (droppedCoverage.length) {
+    limitations.push(`Dropped ${droppedCoverage.length} coverage item(s) that did not match a required key point.`);
   }
   const fact = {
     version: 1,

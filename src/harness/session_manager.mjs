@@ -333,13 +333,13 @@ export class HarnessSession {
 
 export async function createHarness(options = {}) {
   object(options, 'Harness options');
-  const { directory, onEvent, tools, intools = {}, maxConcurrency = 3, maxRounds = 20,
+  const { directory, onEvent, tools, intools = {}, maxConcurrency = 3, maxRounds = 0,
     workerTimeoutMs = 3600000, maxWorkerRetries = 1 } = options;
   const openIntents = options.openIntents ?? options.reason?.openIntents ?? 5;
   if (onEvent !== undefined && typeof onEvent !== 'function') throw new TypeError('onEvent must be a function');
   if (tools !== undefined && !Array.isArray(tools) && typeof tools !== 'function') throw new TypeError('tools must be an array or factory');
-  for (const [key, value] of Object.entries({ maxConcurrency, maxRounds, openIntents })) if (!Number.isSafeInteger(value) || value < 1) throw new TypeError(`${key} must be a positive integer`);
-  for (const [key, value] of Object.entries({ workerTimeoutMs, maxWorkerRetries })) if (!Number.isSafeInteger(value) || value < 0) throw new TypeError(`${key} must be a nonnegative integer`);
+  for (const [key, value] of Object.entries({ maxConcurrency, openIntents })) if (!Number.isSafeInteger(value) || value < 1) throw new TypeError(`${key} must be a positive integer`);
+  for (const [key, value] of Object.entries({ maxRounds, workerTimeoutMs, maxWorkerRetries })) if (!Number.isSafeInteger(value) || value < 0) throw new TypeError(`${key} must be a nonnegative integer`);
   if (maxConcurrency > openIntents) throw new TypeError('maxConcurrency cannot exceed openIntents');
   if (Number.isSafeInteger(options.reason?.maxIntents) && options.reason.maxIntents > openIntents) {
     throw new TypeError('maxIntents cannot exceed openIntents');

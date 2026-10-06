@@ -122,12 +122,12 @@ function createModelConfiguration(vscode, context) {
     const reason = result.reason;
     const openIntents = Number.isSafeInteger(reason.openIntents) ? reason.openIntents : 5;
     const maxConcurrency = Number.isSafeInteger(reason.maxConcurrency) ? reason.maxConcurrency : 3;
-    const maxRounds = Number.isSafeInteger(reason.maxRounds) ? reason.maxRounds : 20;
+    const maxRounds = Number.isSafeInteger(reason.maxRounds) ? reason.maxRounds : 0;
     const maxIntents = Number.isSafeInteger(reason.maxIntents) ? reason.maxIntents : 5;
     for (const [name, value, min, max] of [
       ['openIntents', openIntents, 1, 20],
       ['maxConcurrency', maxConcurrency, 1, 10],
-      ['maxRounds', maxRounds, 1, 100],
+      ['maxRounds', maxRounds, 0, 10000],
       ['maxIntents', maxIntents, 1, 20]
     ]) {
       if (!Number.isSafeInteger(value) || value < min || value > max) throw new Error(`${name} 必须在 ${min} 至 ${max} 之间。`);

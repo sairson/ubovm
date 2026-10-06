@@ -1,6 +1,7 @@
 import { Agent } from '@earendil-works/pi-agent-core';
 import { hasAssistantContent, isRetryableModelFailure, isTransientTransportError, retryBackoffMs, sleepAbortable } from '../model-retry.mjs';
 import { parseReasonDecision, validateReasonContext } from './protocol.mjs';
+import { commentaryBudget, extractedJSONBytes, readJSONObject } from '../json-object.mjs';
 import { reasonEvidencePrompt, reasonSystemPrompt } from './prompts.mjs';
 
 const failure = (code, message, cause) => Object.assign(new Error(message, cause === undefined ? undefined : { cause }), { code });
@@ -10,11 +11,12 @@ const MAX_NETWORK_RETRIES = 2;
 // A provider may annotate parent aliases despite the schema. Discard only this
 // known textual annotation; never interpret it as instructions or repair IDs.
 function discardParentNotes(source, maxResponseBytes) {
-  if (Buffer.byteLength(source, 'utf8') > maxResponseBytes) return { source, fields: [] };
-  let value;
-  try { value = JSON.parse(source); } catch { return { source, fields: [] }; }
+  const decoded = readJSONObject(source);
+  if (!decoded.value) return { source, fields: [] };
+  if (extractedJSONBytes(decoded.value) > maxResponseBytes) return { source, fields: [] };
+  const value = decoded.value;
   const fields = [];
-  if (value && !Array.isArray(value) && Array.isArray(value.intents)) {
+  if (Array.isArray(value.intents)) {
     for (const [index, item] of value.intents.entries()) {
       if (item && !Array.isArray(item) && typeof item.parentIds_note === 'string' && item.parentIds_note.length <= 2048) {
         delete item.parentIds_note;
@@ -22,7 +24,7 @@ function discardParentNotes(source, maxResponseBytes) {
       }
     }
   }
-  return { source: fields.length ? JSON.stringify(value) : source, fields };
+  return { source: JSON.stringify(value), fields };
 }
 
 function raceAbort(operation, signal) {
@@ -120,8 +122,8 @@ export function createPiReason({
           if (['message_update', 'message_end'].includes(event.type) && event.message.role === 'assistant') {
             const size = (event.message.content ?? []).reduce((sum, part) => sum +
               (part.type === 'text' ? Buffer.byteLength(part.text ?? '', 'utf8') : part.type === 'toolCall' ? Buffer.byteLength(JSON.stringify(part), 'utf8') : 0), 0);
-            if (size > maxResponseBytes) {
-              fatal = failure('RESPONSE_TOO_LARGE', `Reason response exceeds ${maxResponseBytes} UTF-8 bytes.`);
+            if (size > commentaryBudget(maxResponseBytes)) {
+              fatal = failure('RESPONSE_TOO_LARGE', `Reason response exceeds ${commentaryBudget(maxResponseBytes)} UTF-8 bytes.`);
               agent.abort();
               throw fatal;
             }

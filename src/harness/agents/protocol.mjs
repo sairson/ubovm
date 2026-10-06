@@ -1,4 +1,5 @@
 import { fillIntentSlots, intentCapacity } from '../blackboard/intent-capacity.mjs';
+import { commentaryBudget, extractedJSONBytes, readJSONObject } from '../json-object.mjs';
 import { completionEvidenceIssue } from '../blackboard/evidence.mjs';
 
 const ALIAS = /^n[1-9]\d*$/u;
@@ -77,10 +78,12 @@ export function parseReasonDecision(source, { context, maxIntents = 5, maxRespon
   }
   const nodes = validateReasonContext(context);
   if (typeof source !== 'string' || !source.trim()) throw invalid('Reason must return one JSON object.');
-  if (Buffer.byteLength(source, 'utf8') > maxResponseBytes) throw invalid(`Reason response exceeds ${maxResponseBytes} UTF-8 bytes.`);
-  let value;
-  try { value = JSON.parse(source); } catch (cause) { throw invalid('Reason must return one raw JSON object without commentary or code fences.', cause); }
-  record(value, 'Decision');
+  const rawLimit = commentaryBudget(maxResponseBytes);
+  if (Buffer.byteLength(source, 'utf8') > rawLimit) throw invalid(`Reason response exceeds ${rawLimit} UTF-8 bytes.`);
+  const decoded = readJSONObject(source);
+  if (!decoded.value) throw invalid('Reason must return one raw JSON object without commentary or code fences.');
+  if (extractedJSONBytes(decoded.value) > maxResponseBytes) throw invalid(`Reason response exceeds ${maxResponseBytes} UTF-8 bytes.`);
+  const value = record(decoded.value, 'Decision');
   if (value.complete === true) {
     fields(value, ['complete', 'evidenceIds', 'summary'], 'Completion');
     const evidenceIds = [...new Set(refs(value.evidenceIds, 'evidenceIds', nodes, context).map(ref => nodes.get(ref).result || ref))];

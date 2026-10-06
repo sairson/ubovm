@@ -474,7 +474,7 @@ globalThis.UBOVM_I18N_EN = Object.freeze({
   '同时进行的任务上限（排队+执行中）': 'Limit of tasks in progress (queued and running)',
   '每轮新增任务上限（不超过同时进行上限）': 'New tasks per round (not above the in-progress limit)',
   '并行任务数（不超过同时进行上限）': 'Parallel task count (not above the in-progress limit)',
-  '规划轮次上限': 'Planning round limit',
+  '规划轮次上限（0 为不限）': 'Planning round limit (0 is unlimited)',
   '协议修复次数': 'Protocol repair attempts',
   '连接失败时中止运行': 'Stop the run when the connection fails',
   '连接标识': 'Connection id',

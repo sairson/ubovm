@@ -108,7 +108,12 @@ export function phasePrompt(state, node, tools, maxSteps) {
     maxPlanSteps: maxSteps,
     availableTools: tools.map(tool => ({ name: tool.name, description: tool.description })),
     plan: state.plan,
-    completedSteps: state.completed,
-    ...(state.barrierResult ? { ownedWorkResults: state.barrierResult } : {})
+    completedSteps: state.completed.map(item => ({ description: item.step.description, doneWhen: item.step.doneWhen })),
+    ...(state.barrierResult ? { ownedWorkResults: clipText(state.barrierResult, 800) } : {})
   });
+}
+
+function clipText(value, limit) {
+  if (typeof value !== 'string' || value.length <= limit) return value;
+  return `${value.slice(0, limit)} [truncated]`;
 }

@@ -88,3 +88,35 @@ test('optional fact lists still reject invalid types and enforce original limits
   assert.throws(() => parseWorkerFact(JSON.stringify({ outcome: 'confirmed', statement: 'Done', failedChecks: [''] })),
     { code: 'INVALID_FACT' });
 });
+
+test('coverage paraphrases bind to the original key points instead of failing the fact', () => {
+  const points = ['Check login', 'Check logout', 'Check timeout', 'Check refresh', 'Check lockout', 'Check session isolation'];
+  const options = { ledger, keyPoints: points };
+  const normalized = parseWorkerFact(JSON.stringify({
+    outcome: 'confirmed',
+    statement: 'All session checks passed',
+    coverage: [
+      { point: 'check login', status: 'confirmed', result: 'ok' },
+      { point: 'Check logout', status: 'confirmed', result: 'ok' },
+      { point: 'Check timeout window', status: 'confirmed', result: 'ok' },
+      { point: 'Check refresh', status: 'confirmed', result: 'ok' },
+      { point: 'Check lockout', status: 'confirmed', result: 'ok' },
+      { point: '6. sessions stay isolated per user', status: 'confirmed', result: 'ok' }
+    ],
+    evidence: [evidence]
+  }), options);
+  assert.deepEqual(normalized.coverage.map(item => item.point), points);
+  assert.ok(normalized.coverage.every(item => item.status === 'confirmed'));
+  const dropped = parseWorkerFact(JSON.stringify({
+    outcome: 'partial',
+    statement: 'Unrelated extra coverage ignored',
+    coverage: [
+      { point: 'Check login', status: 'confirmed', result: 'ok' },
+      { point: 'unrelated extra check', status: 'confirmed', result: 'ok' },
+      { point: 'another invented check', status: 'confirmed', result: 'ok' }
+    ]
+  }), { keyPoints: ['Check login', 'Check logout'] });
+  assert.equal(dropped.coverage[1].point, 'Check logout');
+  assert.equal(dropped.coverage[1].status, 'partial');
+  assert.match(dropped.limitations.join('\n'), /Dropped 2 coverage item/);
+});

@@ -165,7 +165,7 @@ export class BlackboardCoordinator {
   #completion;
   #listeners = new Set();
 
-  constructor({ blackboard, reason, worker, maxConcurrency = 3, maxRounds = 20,
+  constructor({ blackboard, reason, worker, maxConcurrency = 3, maxRounds = 0,
     workerTimeoutMs = 0, maxWorkerRetries = 0 } = {}) {
     if (!blackboard || typeof blackboard.snapshot !== 'function') {
       throw new TypeError('blackboard is required.');
@@ -177,7 +177,7 @@ export class BlackboardCoordinator {
     this.reason = reason;
     this.worker = worker;
     this.maxConcurrency = positiveInteger(maxConcurrency, 'maxConcurrency');
-    this.maxRounds = positiveInteger(maxRounds, 'maxRounds');
+    this.maxRounds = nonnegativeInteger(maxRounds, 'maxRounds');
     this.workerTimeoutMs = nonnegativeInteger(workerTimeoutMs, 'workerTimeoutMs');
     this.maxWorkerRetries = nonnegativeInteger(maxWorkerRetries, 'maxWorkerRetries');
     if (Number.isSafeInteger(blackboard.openIntents) && this.maxConcurrency > blackboard.openIntents) {
@@ -246,7 +246,7 @@ export class BlackboardCoordinator {
 
       await launch();
       if (active.size) await waitForWorker();
-      for (let round = 1; round <= this.maxRounds;) {
+      for (let round = 1; this.maxRounds === 0 || round <= this.maxRounds;) {
         checkAbort(signal);
         let snapshot = this.blackboard.snapshot();
         const context = buildBlackboardContext(snapshot);
@@ -349,7 +349,9 @@ export class BlackboardCoordinator {
         await launch();
         await waitForWorker();
       }
-      throw failure('MAX_ROUNDS', `Blackboard execution exceeded ${this.maxRounds} Reason rounds.`);
+      throw failure('MAX_ROUNDS', this.maxRounds > 0
+        ? `Blackboard execution exceeded ${this.maxRounds} Reason rounds.`
+        : 'Blackboard execution ended before the goal was completed.');
     } finally {
       controller.abort(failure('COORDINATOR_STOPPED', 'Coordinator stopped; no further work is authorized.'));
       await Promise.all(active.values());
