@@ -37,7 +37,7 @@ function loadBundle() {
   return bundle;
 }
 
-function renderWebview({ version = '', workspaceName = '', nonce = randomBytes(24).toString('base64') } = {}) {
+function renderWebview({ version = '', workspaceName = '', nonce = randomBytes(24).toString('base64'), freshSession = false } = {}) {
   let loaded;
   try { loaded = loadBundle(); }
   catch (error) {
@@ -50,10 +50,11 @@ function renderWebview({ version = '', workspaceName = '', nonce = randomBytes(2
     APP_SCRIPT: scripts.map(source => '<script nonce="' + escapeHtml(nonce) + '">\n' + source + '\n</script>').join('\n'),
     NONCE: escapeHtml(nonce),
     VSCODE_VERSION: escapeHtml(version),
-    WORKSPACE_NAME: escapeHtml(workspaceName)
+    WORKSPACE_NAME: escapeHtml(workspaceName),
+    FRESH_ATTR: freshSession ? ' data-fresh-session="1"' : ''
   };
   // Replace only template tokens, never token-shaped user text or JavaScript.
-  return template.replace(/\{\{(APP_STYLE|APP_SCRIPT|SETTINGS_HTML|PRODUCT_LOGO|NONCE|VSCODE_VERSION|WORKSPACE_NAME)\}\}/g, (_, name) => fragments[name]);
+  return template.replace(/\{\{(APP_STYLE|APP_SCRIPT|SETTINGS_HTML|PRODUCT_LOGO|NONCE|VSCODE_VERSION|WORKSPACE_NAME|FRESH_ATTR)\}\}/g, (_, name) => fragments[name]);
 }
 
 function renderUnavailablePage(nonce) {

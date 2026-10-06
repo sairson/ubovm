@@ -33,9 +33,11 @@ function interfaceLocale() {
   return String(vscode.env?.language || '').toLowerCase().startsWith('en') ? 'en' : 'zh-CN';
 }
 
-const UI_REVISION = 11;
+const UI_REVISION = 14;
 const UI_KEYS = [
   'workbench.colorTheme', 'window.autoDetectColorScheme', 'window.titleBarStyle',
+  'workbench.editor.restoreEditors', 'window.restoreWindows', 'files.hotExit',
+  'terminal.integrated.enablePersistentSessions', 'workbench.startupEditor',
   'window.menuBarVisibility', 'window.enableMenuBarMnemonics', 'window.customMenuBarAltFocus', 'window.commandCenter', 'window.density.editorTabHeight',
   'workbench.browser.showInTitleBar',
   'workbench.experimental.modernUI', 'workbench.experimental.modernUIUppercaseViewHeaders',
@@ -1573,7 +1575,7 @@ async function activate(context) {
     }
   }
 
-  function bindConversation(panel) {
+  function bindConversation(panel, { freshSession = false } = {}) {
     // A late serializer must not replace the live singleton or leave a second
     // CannotClose editor behind after a startup/command race.
     if (welcome && welcome !== panel) { panel.dispose(); return false; }
@@ -1619,7 +1621,7 @@ async function activate(context) {
       // Recover only if an extension/lifecycle operation disposes the webview.
       if (!shuttingDown) scheduleLayout();
     });
-    panel.webview.html = renderWebview({ version: vscode.version, workspaceName: workspaceName() });
+    panel.webview.html = renderWebview({ version: vscode.version, workspaceName: workspaceName(), freshSession });
     return true;
   }
 
@@ -1662,15 +1664,18 @@ async function activate(context) {
         if (welcome) return true;
         const restored = restoredConversation();
         if (!restored) return false;
+        const skipRestore = vscode.workspace.getConfiguration().get('workbench.editor.restoreEditors') === false;
         await focusColumn(restored.group.viewColumn);
         await vscode.commands.executeCommand('workbench.action.openEditorAtIndex', restored.index);
         // Restored webviews resolve lazily. Wait for their registered serializer
-        // instead of creating another panel while restoration is in flight.
-        for (let attempt = 0; !welcome && !shuttingDown && attempt < 100; attempt++) {
+        // instead of creating another CannotClose panel while restoration is in flight.
+        const attempts = skipRestore ? 20 : 100;
+        for (let attempt = 0; !welcome && !shuttingDown && attempt < attempts; attempt++) {
           await new Promise(resolve => setTimeout(resolve, 50));
         }
-        if (!welcome) throw new Error('主对话正在恢复，请稍后重试。');
-        return true;
+        if (welcome) return true;
+        if (skipRestore) return false;
+        throw new Error('主对话正在恢复，请稍后重试。');
       }
       if (await resumeRestored()) {
         scheduleLayout();
@@ -1678,14 +1683,7 @@ async function activate(context) {
         return { viewType: welcome.viewType, reused: true };
       }
       await vscode.commands.executeCommand('workbench.action.focusFirstEditorGroup');
-      if (await resumeRestored()) {
-        scheduleLayout();
-        publishState();
-        return { viewType: welcome.viewType, reused: true };
-      }
-      // The primary group is reserved. Existing files are moved to the fixed
-      // right file area by maintainLayout after the conversation is created.
-      if (await resumeRestored()) {
+      if (welcome) {
         scheduleLayout();
         publishState();
         return { viewType: welcome.viewType, reused: true };
@@ -1839,7 +1837,7 @@ async function activate(context) {
   context.subscriptions.push(
     vscode.window.registerWebviewPanelSerializer('ubovm.welcome', {
       async deserializeWebviewPanel(panel) {
-        if (bindConversation(panel)) scheduleLayout();
+        if (bindConversation(panel, { freshSession: true })) scheduleLayout();
       }
     }),
     registerCommand('ubovm.openWelcome', () => openWelcome()),

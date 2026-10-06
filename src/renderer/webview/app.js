@@ -270,8 +270,10 @@
 
   // Drafts are separate from host-owned data, so repeated state updates never
   // replace an in-progress edit. Each conversation has its own draft fields.
+  // Serialized panels from a previous IDE process must not revive UI state.
   try {
-    const saved = vscode.getState();
+    if (document.body.dataset.freshSession === '1') vscode.setState({});
+    const saved = document.body.dataset.freshSession === '1' ? undefined : vscode.getState();
     if (Number.isFinite(saved?.workerPanelWidth) && saved.workerPanelWidth >= 280 && saved.workerPanelWidth <= 800) workerPanelWidth = saved.workerPanelWidth;
     if (saved && saved.drafts && typeof saved.drafts === 'object') {
       for (const [id, value] of Object.entries(saved.drafts).slice(-100)) {
@@ -300,7 +302,7 @@
     if (!currentSessionId) return true;
     draftFor().touchedAt = Date.now();
     const entries = [...drafts.entries()].filter(([id]) => id).sort((a, b) => a[1].touchedAt - b[1].touchedAt).slice(-100);
-    try { vscode.setState({ ...vscode.getState(), drafts: Object.fromEntries(entries), workerPanelWidth }); return true; }
+    try { vscode.setState({ drafts: Object.fromEntries(entries), workerPanelWidth }); return true; }
     catch { return false; /* Keep the live draft if persistence is temporarily unavailable. */ }
   }
   function scheduleDraftPersistence() {

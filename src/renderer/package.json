@@ -302,7 +302,12 @@
       },
       "terminal.integrated.defaultProfile.windows": "当前系统终端",
       "terminal.integrated.defaultProfile.linux": "当前系统终端",
-      "terminal.integrated.defaultProfile.osx": "当前系统终端"
+      "terminal.integrated.defaultProfile.osx": "当前系统终端",
+      "workbench.editor.restoreEditors": false,
+      "window.restoreWindows": "one",
+      "files.hotExit": "onExit",
+      "terminal.integrated.enablePersistentSessions": false,
+      "workbench.startupEditor": "none"
     },
     "configuration": {
       "title": "UBOVM Agent",

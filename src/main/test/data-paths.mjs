@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { configureDataPaths, findLegacyRoot, initializeUserSettings, normalizeDataArguments, prepareDataPaths, resolveDataPaths } from '../data-paths.mjs';
+import { configureDataPaths, discardRestoredWorkbenchSession, findLegacyRoot, initializeUserSettings, normalizeDataArguments, prepareDataPaths, resolveDataPaths, STARTUP_POLICY_KEYS } from '../data-paths.mjs';
 
 function fixture(t) {
   const temporaryRoot = path.resolve(os.tmpdir());
@@ -22,6 +22,74 @@ test('standalone installation initializes defaults once without replacing user s
   fs.writeFileSync(filename, custom);
   initializeUserSettings(paths, { 'editor.fontSize': 14 });
   assert.equal(fs.readFileSync(filename, 'utf8'), custom);
+});
+
+test('JSONC and BOM settings still receive startup restore policy without dropping comments', t => {
+  const paths = prepareDataPaths({ home: fixture(t) });
+  const filename = path.join(paths.userData, 'User', 'settings.json');
+  const defaults = {
+    'workbench.editor.restoreEditors': false,
+    'window.restoreWindows': 'one',
+    'files.hotExit': 'onExit',
+    'terminal.integrated.enablePersistentSessions': false,
+    'workbench.startupEditor': 'none'
+  };
+  fs.writeFileSync(filename, '// Keep my settings\n{\n  "editor.fontSize": 18,\n  "files.hotExit": "off"\n}\n');
+  initializeUserSettings(paths, defaults);
+  const jsonc = fs.readFileSync(filename, 'utf8');
+  assert.match(jsonc, /\/\/ Keep my settings/);
+  assert.match(jsonc, /"editor.fontSize": 18/);
+  assert.match(jsonc, /"files.hotExit": "onExit"/);
+  assert.match(jsonc, /"workbench.editor.restoreEditors": false/);
+  fs.writeFileSync(filename, '\uFEFF' + JSON.stringify({ 'editor.fontSize': 15, 'files.hotExit': 'off' }));
+  initializeUserSettings(paths, defaults);
+  const saved = JSON.parse(fs.readFileSync(filename, 'utf8').replace(/^\uFEFF/, ''));
+  assert.equal(saved['editor.fontSize'], 15);
+  assert.equal(saved['files.hotExit'], 'onExit');
+  assert.equal(saved['workbench.editor.restoreEditors'], false);
+});
+
+test('plain JSON profiles receive startup restore policy before Code OSS launches', t => {
+  const paths = prepareDataPaths({ home: fixture(t) });
+  const filename = path.join(paths.userData, 'User', 'settings.json');
+  fs.writeFileSync(filename, JSON.stringify({ 'editor.fontSize': 18, 'files.hotExit': 'off' }, null, 2) + '\n');
+  const defaults = {
+    'workbench.editor.restoreEditors': false,
+    'window.restoreWindows': 'one',
+    'files.hotExit': 'onExit',
+    'terminal.integrated.enablePersistentSessions': false,
+    'workbench.startupEditor': 'none',
+    'editor.fontSize': 14
+  };
+  initializeUserSettings(paths, defaults);
+  const saved = JSON.parse(fs.readFileSync(filename, 'utf8'));
+  assert.equal(saved['editor.fontSize'], 18);
+  for (const key of STARTUP_POLICY_KEYS) assert.equal(saved[key], defaults[key]);
+});
+
+test('previous-session editor backups are discarded and links are not followed', t => {
+  const paths = prepareDataPaths({ home: fixture(t) });
+  const backups = path.join(paths.userData, 'Backups');
+  fs.mkdirSync(path.join(backups, 'workspace'), { recursive: true });
+  fs.writeFileSync(path.join(backups, 'workspace', 'file'), 'dirty');
+  discardRestoredWorkbenchSession(paths);
+  assert.equal(fs.existsSync(backups), false);
+  discardRestoredWorkbenchSession(paths);
+  const outside = path.join(paths.userData, 'outside');
+  fs.mkdirSync(outside);
+  fs.writeFileSync(path.join(outside, 'keep'), 'ok');
+  fs.symlinkSync(outside, backups, process.platform === 'win32' ? 'junction' : 'dir');
+  discardRestoredWorkbenchSession(paths);
+  assert.equal(fs.readFileSync(path.join(outside, 'keep'), 'utf8'), 'ok');
+  assert.equal(fs.existsSync(path.join(outside, 'keep')), true);
+  try { assert.equal(fs.lstatSync(backups).isSymbolicLink(), false); }
+  catch (error) { assert.equal(error.code, 'ENOENT'); }
+  fs.mkdirSync(backups);
+  fs.symlinkSync(outside, path.join(backups, 'escape'), process.platform === 'win32' ? 'junction' : 'dir');
+  fs.writeFileSync(path.join(backups, 'file'), 'dirty');
+  discardRestoredWorkbenchSession(paths);
+  assert.equal(fs.readFileSync(path.join(outside, 'keep'), 'utf8'), 'ok');
+  assert.equal(fs.existsSync(backups), false);
 });
 
 test('data profiles are isolated below the user home and reject path escapes', () => {
@@ -129,4 +197,10 @@ test('preparing a standalone profile rejects junctions in managed data directori
     assert.deepEqual(fs.readdirSync(outside), ['sentinel']);
     assert.equal(fs.readFileSync(path.join(outside, 'sentinel'), 'utf8'), 'unchanged');
   }
+});
+
+test('bootstrap discards restored workbench session before Code OSS loads', () => {
+  const bootstrap = fs.readFileSync(new URL('../index.mjs', import.meta.url), 'utf8');
+  assert(bootstrap.indexOf('discardRestoredWorkbenchSession(dataPaths)') < bootstrap.indexOf('await import(pathToFileURL'));
+  assert(bootstrap.indexOf('initializeUserSettings(dataPaths, configuration.settings)') < bootstrap.indexOf('discardRestoredWorkbenchSession(dataPaths)'));
 });

@@ -322,6 +322,10 @@ async function run() {
       assert.equal(configuration.get('workbench.sideBar.location'), 'right');
       assert.equal(configuration.get('workbench.secondarySideBar.defaultVisibility'), 'visible');
       assert.equal(configuration.get('chat.disableAIFeatures'), true);
+      assert.equal(configuration.get('workbench.editor.restoreEditors'), false);
+      assert.equal(configuration.get('window.restoreWindows'), 'one');
+      assert.equal(configuration.get('files.hotExit'), 'onExit');
+      assert.equal(configuration.get('terminal.integrated.enablePersistentSessions'), false);
       const contributions = extension.packageJSON.contributes;
       const container = contributions.viewsContainers?.secondarySidebar?.find(item => item.id === 'ubovm-sessions');
       assert(container, 'Sessions must contribute a native secondary side bar container.');

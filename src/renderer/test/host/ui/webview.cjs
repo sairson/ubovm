@@ -7,7 +7,7 @@ const { renderWebview } = require('../../../host/ui/webview.cjs');
 
 test('assembled page includes all components and a syntactically valid browser entry', () => {
   const html = renderWebview({ version: 'test', workspaceName: 'fixture' });
-  assert.doesNotMatch(html, /\{\{(?:APP_STYLE|APP_SCRIPT|SETTINGS_HTML|NONCE|VSCODE_VERSION|WORKSPACE_NAME)\}\}/);
+  assert.doesNotMatch(html, /\{\{(?:APP_STYLE|APP_SCRIPT|SETTINGS_HTML|NONCE|VSCODE_VERSION|WORKSPACE_NAME|FRESH_ATTR)\}\}/);
   const scripts = [...html.matchAll(/<script\s+nonce="([^"]+)">([\s\S]*?)<\/script>/g)];
   const styles = [...html.matchAll(/<style\s+nonce="([^"]+)">([\s\S]*?)<\/style>/g)];
   assert(scripts.length > 10); assert.equal(styles.length, 1);
@@ -34,6 +34,14 @@ test('workspace labels remain text and cannot expand template tokens or break sc
 test('each rendered webview gets a fresh CSP nonce', () => {
   const nonce = html => /<script\s+nonce="([^"]+)"/.exec(html)[1];
   assert.notEqual(nonce(renderWebview()), nonce(renderWebview()));
+});
+
+test('serialized sessions can discard webview component state without keeping leftover tokens', () => {
+  const normal = renderWebview();
+  const fresh = renderWebview({ freshSession: true });
+  assert.doesNotMatch(normal, /data-fresh-session/);
+  assert.match(fresh, /<body data-loading="true" data-fresh-session="1">/);
+  assert.doesNotMatch(fresh, /\{\{FRESH_ATTR\}\}/);
 });
 
 test('reopening panels reuses asset reads but refreshes workspace labels and CSP', () => {

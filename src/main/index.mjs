@@ -5,7 +5,7 @@ import { app, Tray, Menu, nativeImage, dialog, powerMonitor } from 'electron';
 import path from 'node:path';
 import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
-import { configureDataPaths, findLegacyRoot, initializeUserSettings } from './data-paths.mjs';
+import { configureDataPaths, discardRestoredWorkbenchSession, findLegacyRoot, initializeUserSettings } from './data-paths.mjs';
 import { installBackgroundMode } from './background.mjs';
 import { normalizeLaunchArguments } from './launch-policy.mjs';
 import { installWindowRendering } from './window-rendering.mjs';
@@ -25,6 +25,7 @@ const dataPaths = configureDataPaths({ app, legacyRoot: findLegacyRoot(app.getAp
 process.argv.splice(0, process.argv.length, ...normalizeLaunchArguments(process.argv));
 const configuration = JSON.parse(readFileSync(new URL('../app.json', import.meta.url), 'utf8'));
 initializeUserSettings(dataPaths, configuration.settings);
+discardRestoredWorkbenchSession(dataPaths);
 installWindowRendering({ app, powerMonitor });
 // Resolve the mark from this module. An absolute path breaks Windows icons
 // when the install directory contains spaces.

@@ -23,6 +23,15 @@ function attributes(markup) {
     .map(match => [match[1].toLowerCase(), match[2] ?? match[3]]));
 }
 
+test('product defaults skip restoring editors, unsaved pages and terminal sessions after restart', () => {
+  const settings = configuration.settings;
+  assert.equal(settings['workbench.editor.restoreEditors'], false);
+  assert.equal(settings['window.restoreWindows'], 'one');
+  assert.equal(settings['files.hotExit'], 'onExit');
+  assert.equal(settings['terminal.integrated.enablePersistentSessions'], false);
+  assert.equal(settings['workbench.startupEditor'], 'none');
+});
+
 test('installed product trusts every domain for link protection', () => {
   assert.deepEqual(configuration.product.linkProtectionTrustedDomains, ['*']);
   assert.ok(Array.isArray(product.linkProtectionTrustedDomains) && product.linkProtectionTrustedDomains.includes('*'),

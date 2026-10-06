@@ -210,3 +210,41 @@ test('conversation recovery reloads only the view and ignores a disposed panel',
   await sandbox.reloadConversation();
   assert.equal(panel.webview.html, refreshed, 'a disposed panel is never written after awaiting context');
 });
+
+test('fresh launches skip serialized conversation restore when no restored tab exists', async () => {
+  const source = readFileSync(path.resolve(__dirname, '../../extension.cjs'), 'utf8');
+  const start = source.indexOf('      async function resumeRestored() {');
+  const end = source.indexOf('      if (await resumeRestored()) {', start);
+  assert.ok(start > 0 && end > start);
+  const settings = JSON.parse(readFileSync(path.resolve(__dirname, '../../../../resources/app.json'), 'utf8')).settings;
+  assert.equal(settings['workbench.editor.restoreEditors'], false);
+  const sandbox = {
+    welcome: undefined,
+    shuttingDown: false,
+    vscode: { workspace: { getConfiguration: () => ({ get: key => key === 'workbench.editor.restoreEditors' ? false : undefined }) } },
+    restoredConversation() { return undefined; },
+    focusColumn() { throw new Error('must not wait on a missing restored tab'); }
+  };
+  vm.runInNewContext(source.slice(start, end), sandbox);
+  assert.equal(await sandbox.resumeRestored(), false);
+});
+
+test('a leftover restored conversation is awaited instead of opening a second panel', async () => {
+  const source = readFileSync(path.resolve(__dirname, '../../extension.cjs'), 'utf8');
+  const start = source.indexOf('      async function resumeRestored() {');
+  const end = source.indexOf('      if (await resumeRestored()) {', start);
+  const sandbox = { Promise, welcome: undefined, shuttingDown: false, focused: false, opened: 0, ticks: 0 };
+  sandbox.vscode = {
+    workspace: { getConfiguration: () => ({ get: () => false }) },
+    commands: { executeCommand: async () => { sandbox.opened++; } }
+  };
+  sandbox.restoredConversation = () => ({ group: { viewColumn: 2 }, index: 0 });
+  sandbox.focusColumn = async () => { sandbox.focused = true; };
+  sandbox.setTimeout = fn => { sandbox.ticks++; fn(); return 0; };
+  vm.runInNewContext(source.slice(start, end), sandbox);
+  assert.equal(await sandbox.resumeRestored(), false);
+  assert.equal(sandbox.focused, true);
+  assert.equal(sandbox.opened, 1);
+  assert.equal(sandbox.ticks, 20);
+  assert.match(source, /bindConversation\(panel, \{ freshSession: true \}\)/);
+});
