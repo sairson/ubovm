@@ -50,6 +50,9 @@ test('confidence counts independent attempts, excludes publication evidence and 
   assert.equal(library.list()[0].failures, 1);
   assert.equal(library.list()[0].status, 'needs-review');
   assert.throws(() => assess([record('bad', 'd')]), /Conflicting/);
+  assess([record('later', 'e')]);
+  assert.equal(library.list()[0].failures, 0);
+  assert.equal(library.list()[0].status, 'candidate');
   assert.throws(() => assess([{ ...record('malformed', 'e'), toolCallId: undefined }]), /actual execution/);
 });
 
@@ -128,6 +131,12 @@ test('curated methods cross session boundaries, raw logs stay local, live reader
   const recovered = (await c.tool.execute('recall', { action: 'recall' })).details.lessons[0];
   assert.equal(recovered.failures, 1);
   assert.equal(recovered.id, shared.id);
+  await c.record('call-3');
+  await c.tool.execute('feedback', { action: 'feedback', id: shared.id, outcome: 'success', tool_call_ids: ['call-3'] });
+  const overturned = (await c.tool.execute('recall', { action: 'recall' })).details.lessons[0];
+  assert.equal(overturned.failures, 0);
+  assert.notEqual(overturned.status, 'needs-review');
+  assert.equal((await c.tool.execute('recall', { action: 'recall' })).details.conclusions.find(item => item.tool === 'inspect_source').class, 'recovered');
 });
 
 test('publishing is idempotent and changed procedures create independent versions', async t => {

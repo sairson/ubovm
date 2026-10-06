@@ -1,10 +1,11 @@
 import { abortable } from './cancellation.mjs';
 import { enqueueLearningWork, jobEvidence, learningQueue, recoverLearningJobs } from './queue.mjs';
 import { LearningValidationError, validateReflectionCandidates } from './validation.mjs';
+import { classifyOutcome, prerequisiteFor } from './attribution.mjs';
 
 const recipes = [
   [/timeout|timed out|超时/iu, 'Prior timeout: reduce request scope or check readiness before retrying.'],
-  [/ENOENT|not found|不存在/iu, 'Prior missing resource: verify the current resource path or identifier before use.'],
+  [/ENOENT|not found|不存在|file missing|exists\s*[:=]\s*false/iu, 'Prior missing resource: confirm the path exists, then retry. A missing path is a prerequisite, not a tool defect.'],
   [/permission|denied|forbidden|权限/iu, 'Prior access failure: verify authorized access and prerequisites before retrying.'],
   [/invalid|syntax|schema|参数/iu, 'Prior invalid input: recheck the current tool schema and input format.']
 ];
@@ -32,6 +33,9 @@ export function createBackgroundLearning({ knowledge, store, reflect, reflection
   });
   async function base(job, records) {
     const record = records.at(-1), tool = knowledge.tool(job.workerId);
+    const learningClass = classifyOutcome(record);
+    if (learningClass === 'caller_error' || learningClass === 'probe' || learningClass === 'unknown') return;
+    if ((learningClass === 'env_prereq' || learningClass === 'env_timing') && !record.isError) return;
     const title = `Tool practice: ${record.toolName}`;
     const fields = ((record.learningInputKeys ?? []).filter(name => /^[a-zA-Z_][a-zA-Z0-9_]{0,63}$/u.test(name)).slice(0, 24).sort().join(', ') || '(none)').slice(0, 350);
     const trigger = `Use ${record.toolName} with input fields ${fields}`;
@@ -51,16 +55,12 @@ export function createBackgroundLearning({ knowledge, store, reflect, reflection
         `Provide the input fields observed in prior execution: ${fields}; consult the current schema for requirements.`, ...remedies,
         'Validate the returned result against the task; successful execution alone is not proof of task completion.'
       ] });
-      // Only the identical procedure receives new observations. A repaired
-      // procedure cannot donate its successful outcome to failed old versions.
       for (const lesson of shared.filter(item => JSON.stringify(item.steps) === JSON.stringify(result.details.steps))) {
         await tool.execute('background', { action: 'feedback', id: lesson.id,
           outcome: 'success', tool_call_ids: [record.toolCallId] });
       }
       if (knowledge.libraryAvailable ?? knowledge.inspect().libraryAvailable) await tool.execute('background', { action: 'publish', id: result.details.id });
-    } else {
-      // Without semantic execution attribution, only the latest matching tool
-      // procedure receives the failure; other versions are never graded en masse.
+    } else if (learningClass === 'tool_defect' || record.isError) {
       const latest = shared.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
       if (latest) await tool.execute('background', { action: 'feedback', id: latest.id,
         outcome: 'failure', tool_call_ids: [record.toolCallId] });

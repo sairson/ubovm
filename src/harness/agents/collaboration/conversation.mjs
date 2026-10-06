@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 
 import { hasAssistantContent, isRetryableModelFailure, retryBackoffMs, sleepAbortable } from '../../model-retry.mjs';
 import { boundedHistory, interruptedHistory, plain } from './history.mjs';
+import { evaluateLearningGate, gateRecords } from '../../learning/gate.mjs';
 export { boundedHistory, plain };
 export const serializable = value => JSON.parse(JSON.stringify(value));
 export const failure = (code, message) => Object.assign(new Error(message), { code });
@@ -171,6 +172,10 @@ export async function runConversation({ client, options, workerId, signal, promp
         if (blocked.has(toolCall.id)) return { block: true, reason: `Tool call ID ${toolCall.id} was already attempted. Review prior execution evidence before repeating an operation.` };
         if (maxToolCalls > 0 && ++toolCalls > maxToolCalls) throw stop(failure('COLLABORATION_TOOL_BUDGET', `本轮对话达到 ${maxToolCalls} 次工具调用上限。`));
         runtime?.beforeTool(workerId);
+        const decision = evaluateLearningGate(gateRecords(internal?.store, workerId), {
+          workerId, toolName: toolCall.name, args, shared: internal?.library?.toolConclusions?.()
+        });
+        if (decision) return { block: true, reason: decision.message };
         const evidence = pending.tools.find(item => item.id === toolCall.id);
         if (evidence) {
           delete evidence.args; delete evidence.argsPreview; delete evidence.argsTruncated;

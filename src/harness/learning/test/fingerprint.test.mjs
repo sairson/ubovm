@@ -65,6 +65,9 @@ test('repairs preserve lineage and warnings without transferring credit or recyc
   assert.equal(assess(library, first.id, trial).recorded, false);
   assert.equal(library.list().find(item => item.id === first.id).status, 'needs-review');
   assert.equal(library.list().find(item => item.id === revised.id).successes, 1);
+  assess(library, first.id, record('recovery', 'third'));
+  assert.equal(library.list().find(item => item.id === first.id).failures, 0);
+  assert.notEqual(library.list().find(item => item.id === first.id).status, 'needs-review');
 });
 
 test('local capability assessment cannot be improved by repeating identical observations', async () => {

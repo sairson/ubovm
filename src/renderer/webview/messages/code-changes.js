@@ -2,6 +2,16 @@
   const states = new WeakMap();
   const tr = value => window.UBOVMi18n?.t(value) ?? value;
   const node = (tag, className, text) => { const item = document.createElement(tag); item.className = className; if (text !== undefined) item.textContent = text; return item; };
+  const counts = value => {
+    const wrap = node('span', 'code-change-counts');
+    if (value?.approximate) wrap.append(node('span', 'code-change-approx', '≤ '));
+    wrap.append(
+      node('span', 'code-change-added', `+${value?.added ?? 0}`),
+      node('span', 'code-change-count-sep', ' / '),
+      node('span', 'code-change-removed', `−${value?.removed ?? 0}`)
+    );
+    return wrap;
+  };
   window.UBOVMCodeChanges = {
     update(root, summary, options) {
       let state = states.get(root);
@@ -10,11 +20,12 @@
       const signature = JSON.stringify([summary, options.busy, options.turnId, state.pending, state.error]);
       if (signature === state.signature) return false;
       const files = summary?.files ?? [];
-      root.className = 'code-change-card'; root.setAttribute('aria-label', tr('本轮文件修改'));
+      const empty = files.length === 0;
+      root.className = empty ? 'code-change-card code-change-empty' : 'code-change-card';
+      root.setAttribute('aria-label', tr('本轮文件修改'));
       const header = node('div', 'code-change-heading');
-      header.append(node('strong', '', tr(files.length ? `本轮修改 ${files.length} 个文件` : '本轮未记录工作区文件修改')));
-      const counts = value => `${value.approximate ? '≤ ' : ''}+${value.added} / −${value.removed}`;
-      if (files.length) header.append(node('span', 'code-change-counts', counts(summary)));
+      header.append(node('strong', '', tr(empty ? '本轮未记录工作区文件修改' : `本轮修改 ${files.length} 个文件`)));
+      if (!empty) header.append(counts(summary));
       const children = [header];
       const run = async (action, fileId) => {
         const current = () => root.isConnected && states.get(root) === state;
@@ -39,16 +50,18 @@
           }
         }
       };
-      if (files.length) {
+      if (!empty) {
         const list = node('ul', 'code-change-files');
         for (const file of files) {
           const row = node('li', 'code-change-file');
           const open = node('button', 'code-change-path', file.path); open.type = 'button';
-          open.title = `工作区 ${file.root + 1} · 点击查看本轮修改差异`; open.disabled = state.pending;
+          open.title = `${file.path} · 工作区 ${file.root + 1} · 点击查看本轮修改差异`; open.disabled = state.pending;
           open.addEventListener('click', () => run('reviewCodeTurnFile', file.id));
           const badge = file.undone ? '已撤销' : file.state === 'conflict' ? '存在冲突' : file.state !== 'applied' ? '待核对' : file.operation === 'create' ? '新增' : file.operation === 'delete' ? '删除' : '修改';
+          const kind = node('span', 'code-change-kind', tr(badge));
+          kind.dataset.kind = file.undone ? 'undone' : file.state === 'conflict' ? 'conflict' : file.state !== 'applied' ? 'pending' : file.operation || 'replace';
           if (file.reason) row.title = file.reason;
-          row.append(open, node('span', 'code-change-kind', tr(badge)), node('span', 'code-change-counts', counts(file)));
+          row.append(open, kind, counts(file));
           list.append(row);
         }
         children.push(list);

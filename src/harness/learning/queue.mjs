@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { LearningValidationError } from './validation.mjs';
+import { attributeFailure } from './attribution.mjs';
 
 const excluded = new Set(['learn_capability', 'note', 'todo', 'inspect_harness', 'load_skill', 'read_skills_resource']);
 export const eligibleEvidence = record => record?.status === 'completed' && !excluded.has(record.toolName);
@@ -59,7 +60,7 @@ export function enqueueLearningWork(state, { reflection = false, finalize = fals
   };
   while (queue.cursor < evidence.length) {
     const record = evidence[queue.cursor++];
-    if (!eligibleEvidence(record)) continue;
+    if (!eligibleEvidence(record) || record.probe === true || (record.isError && attributeFailure(record) === 'caller_error')) continue;
     let window = windows.get(record.workerId);
     if (!window) {
       window = { workerId: record.workerId, refs: [], successes: [], unreflected: 0 };

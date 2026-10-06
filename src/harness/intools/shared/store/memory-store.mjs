@@ -111,6 +111,14 @@ export class MemoryStore {
   toolCallIds(workerId) {
     return (this.#state.toolEvidence ?? []).filter(entry => entry.workerId === workerId).map(entry => entry.toolCallId);
   }
+  // Gate checks need the class and request fingerprint, not tool output bodies.
+  learningGateRecords(workerId) {
+    return (this.#state.toolEvidence ?? []).filter(entry => entry.workerId === workerId).map(entry => ({
+      workerId: entry.workerId, toolName: entry.toolName, isError: entry.isError, probe: entry.probe === true,
+      learningClass: entry.learningClass, learningRequestFingerprint: entry.learningRequestFingerprint,
+      ...(entry.learningClass ? {} : { observations: String(entry.observations ?? '').slice(0, 512) })
+    }));
+  }
   // Learning method lookup needs neither historical evidence nor pending model
   // results. Keep those potentially large/private bodies out of this read.
   knowledgeSnapshot() {

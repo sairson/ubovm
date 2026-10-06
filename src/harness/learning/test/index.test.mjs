@@ -87,7 +87,9 @@ test('automatically derives weaknesses, recovery and bounded evidence from tool 
   const { store, knowledge } = await setup();
   await store.commit(state => { state.toolEvidence.push(observation('read-2', true)); });
   let capability = knowledge.inspect().capabilities[0];
-  assert.equal(capability.successRate, 0.5);
+  assert.equal(capability.successRate, 1);
+  assert.equal(capability.prerequisites, 1);
+  assert.equal(capability.failures, 0);
   assert.equal(capability.needsPractice, true);
   assert.equal(capability.lastFailure.toolCallId, 'read-2');
   await store.commit(state => { state.toolEvidence.push(observation('read-3')); });

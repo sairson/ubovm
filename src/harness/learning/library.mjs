@@ -30,7 +30,7 @@ export class LearningLibrary {
         const app = db.prepare('PRAGMA application_id').get().application_id;
         const version = db.prepare('PRAGMA user_version').get().user_version;
         if (app !== APPLICATION_ID && (app !== 0 || version !== 0 || db.prepare("SELECT name FROM sqlite_master WHERE type='table'").get())) throw new Error('File is not a learning library');
-        if (version > 5) throw new Error('Unsupported learning library version');
+        if (version > 6) throw new Error('Unsupported learning library version');
         if (version === 0) {
           db.exec(`CREATE TABLE lessons (id TEXT PRIMARY KEY, payload TEXT NOT NULL, created_at TEXT NOT NULL) STRICT;
             CREATE TABLE feedback (lesson_id TEXT NOT NULL REFERENCES lessons(id), source_id TEXT NOT NULL, outcome TEXT NOT NULL CHECK(outcome IN ('success', 'failure')), PRIMARY KEY(lesson_id, source_id)) STRICT;
@@ -64,6 +64,11 @@ export class LearningLibrary {
             if (!used.has(row.fingerprint)) { validate.run(row.lesson_id, row.source_id); used.add(row.fingerprint); }
           }
         }
+        if (version < 6) {
+          db.exec(`ALTER TABLE feedback ADD COLUMN superseded INTEGER NOT NULL DEFAULT 0 CHECK(superseded IN (0, 1));
+            CREATE TABLE tool_conclusions (tool TEXT PRIMARY KEY, class TEXT NOT NULL, lesson_id TEXT NOT NULL, session_id TEXT NOT NULL, fingerprint TEXT, updated_at TEXT NOT NULL) STRICT;
+            PRAGMA user_version=6;`);
+        }
         db.exec('COMMIT');
       } catch (error) { db.exec('ROLLBACK'); throw error; }
       db.exec('PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;');
@@ -83,8 +88,8 @@ export class LearningLibrary {
     const familyId = title === undefined ? null : methodFamily({ title, trigger });
     return this.#db.prepare(`SELECT l.*, COUNT(DISTINCT CASE WHEN f.outcome='success' AND f.credit_valid=1 THEN f.assessment_id END) AS successes,
       COUNT(DISTINCT CASE WHEN f.outcome='success' AND f.credit_valid=1 THEN f.context_id END) AS independent_sessions,
-      COUNT(DISTINCT CASE WHEN f.outcome='failure' THEN f.assessment_id END) AS failures,
-      (SELECT COUNT(DISTINCT ff.assessment_id) FROM feedback ff JOIN lessons ll ON ll.id=ff.lesson_id WHERE ll.family_id=l.family_id AND ff.outcome='failure') AS family_failures
+      COUNT(DISTINCT CASE WHEN f.outcome='failure' AND f.superseded=0 THEN f.assessment_id END) AS failures,
+      (SELECT COUNT(DISTINCT ff.assessment_id) FROM feedback ff JOIN lessons ll ON ll.id=ff.lesson_id WHERE ll.family_id=l.family_id AND ff.outcome='failure' AND ff.superseded=0) AS family_failures
       FROM lessons l LEFT JOIN feedback f ON f.lesson_id=l.id
       WHERE (? IS NULL OR l.family_id=?)
       GROUP BY l.id ORDER BY l.created_at DESC, l.rowid DESC LIMIT ?`).all(familyId, familyId, this.#maximum).map(row => ({
@@ -94,6 +99,29 @@ export class LearningLibrary {
       needsValidation: Boolean(row.parent_id) && (row.successes < 2 || row.independent_sessions < 2 || row.failures > 0),
       status: row.failures ? 'needs-review' : row.successes >= 2 && row.independent_sessions >= 2 ? 'practiced' : 'candidate', scope: 'library'
     }));
+  }
+  toolConclusions() {
+    this.#open();
+    return this.#db.prepare('SELECT tool, class, lesson_id AS lessonId, session_id AS sessionId, fingerprint, updated_at AS updatedAt FROM tool_conclusions ORDER BY tool').all();
+  }
+  recordToolConclusion({ tool, class: kind, lessonId, sessionId, fingerprint } = {}) {
+    if (typeof tool !== 'string' || !tool.trim() || typeof lessonId !== 'string' || !lessonId ||
+        typeof sessionId !== 'string' || !sessionId) throw new TypeError('Invalid tool conclusion');
+    if (!['tool_defect', 'recovered', 'env_prereq'].includes(kind)) return { recorded: false };
+    const now = new Date().toISOString();
+    return this.#transaction(() => {
+      const previous = this.#db.prepare('SELECT class, fingerprint FROM tool_conclusions WHERE tool=?').get(tool);
+      if (kind === 'recovered') {
+        if (!previous || previous.class !== 'tool_defect') return { recorded: false, superseded: false };
+        this.#db.prepare('UPDATE tool_conclusions SET class=?, lesson_id=?, session_id=?, fingerprint=?, updated_at=? WHERE tool=?')
+          .run(kind, lessonId, sessionId, fingerprint ?? previous.fingerprint ?? null, now, tool);
+        return { recorded: true, superseded: true, previous: previous.class };
+      }
+      if (previous?.class === 'recovered' && previous.fingerprint && previous.fingerprint === fingerprint) return { recorded: false, superseded: false };
+      this.#db.prepare('INSERT INTO tool_conclusions VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(tool) DO UPDATE SET class=excluded.class, lesson_id=excluded.lesson_id, session_id=excluded.session_id, fingerprint=excluded.fingerprint, updated_at=excluded.updated_at')
+        .run(tool, kind, lessonId, sessionId, fingerprint ?? null, now);
+      return { recorded: true, superseded: previous?.class === 'tool_defect' && kind !== 'tool_defect' };
+    });
   }
   registerSource({ filePath, sessionId, reflection = false, enabled = true }) {
     if (typeof filePath !== 'string' || !isAbsolute(filePath) || typeof sessionId !== 'string' || !sessionId.trim() ||
@@ -154,7 +182,7 @@ export class LearningLibrary {
       if (!row) throw new Error('Shared lesson not found');
       const origin = JSON.parse(row.payload).source;
       // Each call can support one assessment per method. Reordered/replayed batches add no confidence.
-      const insert = this.#db.prepare('INSERT OR IGNORE INTO feedback VALUES (?, ?, ?, ?, ?, ?, ?)');
+      const insert = this.#db.prepare('INSERT OR IGNORE INTO feedback VALUES (?, ?, ?, ?, ?, ?, ?, 0)');
       const claim = this.#db.prepare('INSERT OR IGNORE INTO evidence_claims VALUES (?, ?, ?)');
       const globalClaim = this.#db.prepare('INSERT OR IGNORE INTO global_evidence_claims VALUES (?, ?)');
       let recorded = false;
@@ -185,6 +213,12 @@ export class LearningLibrary {
         }
         const assessment = hash([sessionId, workerId, record.attemptId || 'unknown-attempt']);
         recorded = Boolean(insert.run(id, source, outcome, assessment, record.learningFingerprint ?? null, hash(sessionId), Number(outcome === 'success')).changes) || recorded;
+      }
+      if (recorded && outcome === 'success') {
+        const credited = this.#db.prepare("SELECT 1 FROM feedback WHERE lesson_id=? AND outcome='success' AND credit_valid=1 AND source_id IN (" +
+          records.map(() => '?').join(',') + ')').get(id, ...records.map(record => hash([sessionId, workerId, record.toolCallId])));
+        const openFailure = this.#db.prepare("SELECT 1 FROM feedback WHERE lesson_id=? AND outcome='failure' AND superseded=0 AND assessment_id=?").get(id, hash([sessionId, workerId, records[0]?.attemptId || 'unknown-attempt']));
+        if (credited && !openFailure) this.#db.prepare("UPDATE feedback SET superseded=1 WHERE lesson_id=? AND outcome='failure' AND superseded=0").run(id);
       }
       return { id, outcome, recorded };
     });

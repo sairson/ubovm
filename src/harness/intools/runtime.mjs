@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
 import { learningFingerprint, learningRequestFingerprint } from '../learning/fingerprint.mjs';
+import { classifyOutcome } from '../learning/attribution.mjs';
+import { evaluateLearningGate, gateRecords } from '../learning/gate.mjs';
 import { createKnowledge } from '../learning/index.mjs';
 import { LearningLibrary } from '../learning/library.mjs';
 import { createBackgroundLearning } from '../learning/runner.mjs';
@@ -95,9 +97,15 @@ export async function createInternalTools({
     activeCalls.add(operation);
     try { return await operation; } finally { activeCalls.delete(operation); }
   }
-  function managed(tool) {
+  function managed(tool, workerId) {
     return { ...tool, execute(id, args, signal, onUpdate) {
-      return managedOperation(signal, combined => tool.execute(id, args, combined, onUpdate));
+      return managedOperation(signal, combined => {
+        const decision = learning && evaluateLearningGate(gateRecords(store, workerId), {
+          workerId, toolName: tool.name, args, shared: library?.toolConclusions?.()
+        });
+        if (decision) throw Object.assign(new Error(decision.message), { code: decision.code, attribution: decision.attribution });
+        return tool.execute(id, args, combined, onUpdate);
+      });
     } };
   }
   function evidenceProvider({ workerId, toolCallId, sessionId: requestedSession }) {
@@ -121,7 +129,7 @@ export async function createInternalTools({
       workers.set(workerId, { todo, note, delivery, domains, tools: [
         ...shared, ...shells, todo, note, delivery, domains, ...(learning ? [learning.tool(workerId)] : []),
         ...(manager ? createBrowserTools({ manager, sessionId, workerId, target }) : [])
-      ].filter(tool => allowed.has(tool.name)).map(tool => managed(controlledCommand(tool, workerId, onCommand))) });
+      ].filter(tool => allowed.has(tool.name)).map(tool => managed(controlledCommand(tool, workerId, onCommand), workerId)) });
     }
     const worker = workers.get(workerId);
     if (blackboard) await worker.note.recoverPromotions();
@@ -150,10 +158,13 @@ export async function createInternalTools({
       checkLifetime(signal);
       if (entry.status !== 'completed') throw new Error('Only completed tool calls can enter the evidence store');
       const digest = createHash('sha256').update(JSON.stringify(entry)).digest('hex');
+      const learningClass = entry.probe === true ? 'probe' : classifyOutcome(entry);
       const record = {
         sessionId, workerId: node.id, attemptId: attempt.id, toolCallId: entry.toolCallId, toolName: entry.toolName,
         status: 'completed', isError: Boolean(entry.isError), digest, learningFingerprint: learningFingerprint(entry),
         learningRequestFingerprint: learningRequestFingerprint(entry),
+        ...(entry.probe === true ? { probe: true } : {}),
+        ...(learningClass ? { learningClass } : {}),
         observations: preview((entry.result?.content ?? []).filter(item => item.type === 'text').map(item => item.text).join('\n'), 16384),
         learningInputKeys: Object.keys(entry.args ?? {}).filter(key => /^[a-zA-Z_][a-zA-Z0-9_]{0,63}$/u.test(key)).sort().slice(0, 24),
         imageCount: (entry.result?.content ?? []).filter(item => item.type === 'image').length
@@ -177,7 +188,7 @@ export async function createInternalTools({
     event => managedOperation(event?.signal, signal => operation({ ...event, signal }))
   ]));
   return {
-    sessionId, store, browserManager: manager, sshPool: pool, ...hooks,
+    sessionId, store, browserManager: manager, sshPool: pool, library, ...hooks,
     learningStatus: () => background?.status(),
     flushLearning: async () => { await background?.flush(); },
     /** Spread into createPiWorker; tool execution, progress and evidence stay connected. */
