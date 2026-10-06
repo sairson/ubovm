@@ -229,15 +229,26 @@ export async function runCollaboration({ configuration = {}, sessionId, director
         } });
       const tools = [...workspaceTools, ...mcp?.tools ?? [], ...internal ? await internal.tools(binding) : [],
         ...skills ? await skills.tools(binding) : [], ...summary ? await summary.tools(binding) : [], ...extra, runtime.tool, project.tool, evidenceTool(workerId), resultTool(workerId), ...swarmTools];
-      return tools.map(tool => tool.name === 'inspect_harness' ? { ...tool,
+      const guardWrites = tool => ({ ...tool,
+        description: `${tool.description} Parallel workers must receive disjoint spawn_worker writes. Edit only assigned files; WRITE_OWNERSHIP means wait or reassign, not a stale hash.`,
+        execute: async (id, input, signal) => {
+          const targets = tool.name === 'edit_workspace_files'
+            ? (Array.isArray(input?.files) ? input.files.map(file => ({ path: file?.path, root: file?.root })) : [])
+            : [{ path: input?.path, root: input?.root }];
+          swarm.assertCanWrite(workerId, targets);
+          return tool.execute(id, input, signal);
+        } });
+      return tools.map(tool => {
+        const guarded = tool.name === 'edit_workspace_file' || tool.name === 'edit_workspace_files' ? guardWrites(tool) : tool;
+        return guarded.name === 'inspect_harness' ? { ...guarded,
         execute: async (id, input, signal) => {
           if (input?.help === true) return tool.execute(id, input, signal);
           const response = await tool.execute(id, input, signal);
           const value = { ...response.details, contextCache: summary?.cacheStats() ?? null, backendSelection, availableModels };
           return { content: [{ type: 'text', text: JSON.stringify(value) }], details: value };
         }
-      } : tool.name !== 'manage_harness_project' ? tool : { ...tool,
-        description: `${tool.description} ${autonomous ? `Optional modelProfile selects a configured model. Available models: ${JSON.stringify(availableModels)}.` : 'Backend selection is fixed; modelProfile overrides are disabled.'}`,
+      } : guarded.name !== 'manage_harness_project' ? guarded : { ...guarded,
+        description: `${guarded.description} ${autonomous ? `Optional modelProfile selects a configured model. Available models: ${JSON.stringify(availableModels)}.` : 'Backend selection is fixed; modelProfile overrides are disabled.'}`,
         execute: async (id, input, signal) => {
           if (input?.action === 'help') return tool.execute(id, input, signal);
           if (input.action !== 'validate') return tool.execute(id, input, signal);
@@ -254,7 +265,8 @@ export async function runCollaboration({ configuration = {}, sessionId, director
           const value = { valid: profiles.every(profile => profile.valid), profiles,
             guidance: 'Preview uses currently available tools. Worker-specific tool factories are revalidated at dispatch. No profiles were saved and no workers were started.' };
           return { content: [{ type: 'text', text: JSON.stringify(value) }], details: value };
-        } });
+        } };
+      });
     };
     const invoke = async ({ workerId, parentId, task, signal: workerSignal, dependencies = [], profile: profileId, modelProfile }) => {
       const prefix = workerId === sessionId ? '' : `collaboration:worker:${workerId}:`;

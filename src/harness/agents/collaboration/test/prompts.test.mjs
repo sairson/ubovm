@@ -31,6 +31,8 @@ test('assist chat replies stay concise and hide internal machinery', () => {
 });
 
 test('assist prompts tell coordinators to prioritize and interrupt workers', () => {
+  assert.match(chatSystemPrompt, /spawn_worker writes/);
+  assert.match(chatSystemPrompt, /WRITE_OWNERSHIP/);
   assert.match(chatSystemPrompt, /spawn_worker priority 0-9/);
   assert.match(chatSystemPrompt, /preempt=true on spawn/);
   assert.match(chatSystemPrompt, /list_workers.admission/);

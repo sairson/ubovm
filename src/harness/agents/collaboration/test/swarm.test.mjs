@@ -912,3 +912,40 @@ test('prioritize+preempt on a running worker does not interrupt unrelated runner
   } finally { hold.a.resolve(); hold.b.resolve(); await swarm.close(); }
 });
 
+test('parallel workers need disjoint write ownership and cannot edit another writer\'s file', { timeout: 3000 }, async () => {
+  const started = deferred(), hold = deferred();
+  const swarm = createSwarm({ sessionId: 'root', maxConcurrency: 2, runWorker: async () => { started.resolve(); await hold.promise; return 'done'; } });
+  try {
+    const owner = await invoke(swarm, 'spawn_worker', { task: 'edit a', writes: ['./src/a.js', 'src/b.js'] });
+    await started.promise;
+    assert.deepEqual(owner.writes, ['src/a.js', 'src/b.js']);
+    await assert.rejects(invoke(swarm, 'spawn_worker', { task: 'also a', writes: ['src\\a.js'] }), error => error.code === 'WRITE_OWNERSHIP' && /one writer/.test(error.message));
+    const other = await invoke(swarm, 'spawn_worker', { task: 'edit c', writes: ['src/c.js'] });
+    const later = await invoke(swarm, 'spawn_worker', { task: 'then a', writes: ['src/a.js'], depends_on: [owner.worker_id] });
+    assert.equal(later.writes[0], 'src/a.js');
+    swarm.assertCanWrite(owner.worker_id, [{ path: 'src/a.js' }]);
+    assert.throws(() => swarm.assertCanWrite(other.worker_id, [{ path: 'src/a.js' }]), error => error.code === 'WRITE_OWNERSHIP' && error.details.owner === owner.worker_id);
+    assert.throws(() => swarm.assertCanWrite('root', [{ path: 'src/a.js' }]), error => error.details.recovery === 'wait_workers_then_reread');
+    assert.throws(() => swarm.assertCanWrite(owner.worker_id, [{ path: 'src/c.js' }]), error => error.details.owner === other.worker_id);
+    assert.throws(() => swarm.assertCanWrite(owner.worker_id, [{ path: 'src/d.js' }]), error => error.details.recovery === 'assign_writes');
+    await assert.rejects(invoke(swarm, 'spawn_worker', { task: 'outside', writes: ['src/missing.js'] }, owner.worker_id), /assigned files/);
+    const child = await invoke(swarm, 'spawn_worker', { task: 'delegate b', writes: ['src/b.js'] }, owner.worker_id);
+    assert.throws(() => swarm.assertCanWrite(owner.worker_id, [{ path: 'src/b.js' }]), error => error.details.owner === child.worker_id);
+    swarm.assertCanWrite(owner.worker_id, [{ path: 'src/./a.js' }]);
+    assert.throws(() => swarm.assertCanWrite(owner.worker_id, [{ path: 'src/../src/b.js' }]), error => error.details.owner === child.worker_id);
+    assert.throws(() => swarm.assertCanWrite('root', [{ path: 'dir/../src/a.js' }]), error => error.details.owner === owner.worker_id);
+    await assert.rejects(invoke(swarm, 'spawn_worker', { task: 'same canonical', writes: ['src/../src/a.js'] }), error => error.code === 'WRITE_OWNERSHIP');
+  } finally { hold.resolve(); await swarm.close(); }
+});
+
+test('nested workers can receive a subset without the ancestor counting as a second writer', async () => {
+  const hold = deferred();
+  const swarm = createSwarm({ sessionId: 'root', maxDepth: 3, runWorker: () => hold.promise });
+  try {
+    const owner = await invoke(swarm, 'spawn_worker', { task: 'own', writes: ['src/a.js', 'src/b.js'] });
+    const child = await invoke(swarm, 'spawn_worker', { task: 'child', writes: ['src/b.js'] }, owner.worker_id);
+    const grandchild = await invoke(swarm, 'spawn_worker', { task: 'leaf', writes: ['src/./b.js'] }, child.worker_id);
+    assert.deepEqual(grandchild.writes, ['src/b.js']);
+  } finally { hold.resolve(); await swarm.close(); }
+});
+

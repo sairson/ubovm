@@ -8,6 +8,43 @@ import {
 
 const active = new Set(['queued', 'running', 'waiting']);
 const terminal = new Set(['completed', 'failed', 'interrupted']);
+const writeKey = path => process.platform === 'win32' ? path.toLowerCase() : path;
+function normalizeWritePath(value) {
+  if (typeof value !== 'string' || !value.trim() || value.includes('\0')) throw new TypeError('writes entries must be nonempty workspace-relative file paths');
+  const text = value.trim().replaceAll('\\', '/');
+  if (/^[A-Za-z]:/.test(text) || text.startsWith('/')) throw new TypeError(`writes path must stay inside the workspace: ${value}`);
+  const parts = [];
+  for (const part of text.split('/')) {
+    if (!part || part === '.') continue;
+    if (part === '..') {
+      if (!parts.length) throw new TypeError(`writes path must stay inside the workspace: ${value}`);
+      parts.pop();
+      continue;
+    }
+    parts.push(part);
+  }
+  const path = parts.join('/');
+  if (!path || path.length > 1024) throw new TypeError(`writes path must stay inside the workspace: ${value}`);
+  return path;
+}
+function normalizeWrites(value) {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > 32) throw new TypeError('writes must list at most 32 workspace-relative file paths');
+  const paths = [], seen = new Set();
+  for (const item of value) {
+    const text = normalizeWritePath(item), key = writeKey(text);
+    if (seen.has(key)) throw new TypeError(`writes lists the same file more than once: ${text}`);
+    seen.add(key);
+    paths.push(text);
+  }
+  return paths;
+}
+function ownershipError(path, ownerId) {
+  const message = ownerId
+    ? `File ${path} already has writer ${ownerId}. Wait for that worker, then read_workspace_code again. Do not retry the previous hash.`
+    : `No write ownership for ${path}. spawn_worker writes must assign each file to one worker before parallel edits; sequence the same file with depends_on.`;
+  return Object.assign(new Error(message), { code: 'WRITE_OWNERSHIP', details: { reason: 'write_ownership', path, owner: ownerId ?? null, recovery: ownerId ? 'wait_workers_then_reread' : 'assign_writes' } });
+}
 const textLimits = { task: 32768, result: 16384, error: 4096, name: 80, cancelReason: 1024 };
 const priorityLimit = { min: 0, max: 9 };
 const normalizePriority = value => {
@@ -84,6 +121,7 @@ export function createSwarm({ sessionId, maxConcurrency = 3, maxWorkers = 12, ma
       || (saved.profile !== undefined && (typeof saved.profile !== 'string' || saved.profile.length > 80))
       || (saved.modelProfile !== undefined && (typeof saved.modelProfile !== 'string' || !/^[\w.-]{1,86}$/.test(saved.modelProfile)))
       || (saved.dependsOn !== undefined && (!Array.isArray(saved.dependsOn) || saved.dependsOn.length > 8 || saved.dependsOn.some(id => typeof id !== 'string' || !id || id.length > 1024)))
+      || (saved.writes !== undefined && (!Array.isArray(saved.writes) || saved.writes.length > 32 || saved.writes.some(path => typeof path !== 'string' || !path || path.length > 1024)))
       || (saved.priority !== undefined && (!Number.isSafeInteger(saved.priority) || saved.priority < priorityLimit.min || saved.priority > priorityLimit.max))
       || (!active.has(saved.status) && !terminal.has(saved.status))
       || (saved.depth !== undefined && (!Number.isSafeInteger(saved.depth) || saved.depth < 1))
@@ -95,6 +133,7 @@ export function createSwarm({ sessionId, maxConcurrency = 3, maxWorkers = 12, ma
       depth: saved.depth ?? 1, status: saved.status, createdAt: saved.createdAt ?? Date.now() };
     recovered.priority = saved.priority ?? 0;
     if (saved.dependsOn) recovered.dependsOn = [...new Set(saved.dependsOn)];
+    if (saved.writes) recovered.writes = [...saved.writes];
     if (saved.profile !== undefined) recovered.profile = saved.profile;
     if (saved.modelProfile !== undefined) recovered.modelProfile = saved.modelProfile;
     for (const key of ['name', 'result', 'error', 'cancelReason']) {
@@ -339,8 +378,11 @@ export function createSwarm({ sessionId, maxConcurrency = 3, maxWorkers = 12, ma
           if (persistenceError) throw persistenceError;
           worker.controller.signal.throwIfAborted();
           worker.executing = true;
+          const assigned = worker.data.writes?.length
+            ? `${worker.data.task}\n\nAssigned write paths (exclusive; edit only these files): ${worker.data.writes.join(', ')}`
+            : worker.data.task;
           const value = await runWorker({ workerId: worker.data.id, parentId: worker.data.parentId,
-            task: worker.data.task, depth: worker.data.depth, signal: worker.controller.signal, profile: worker.data.profile, modelProfile: worker.data.modelProfile,
+            task: assigned, depth: worker.data.depth, signal: worker.controller.signal, profile: worker.data.profile, modelProfile: worker.data.modelProfile,
             dependencies: (worker.data.dependsOn ?? []).map(id => {
               const data = workers.get(id).data;
               return { worker_id: id, status: data.status, result: (data.result ?? '').slice(0, 4096),
@@ -425,6 +467,81 @@ export function createSwarm({ sessionId, maxConcurrency = 3, maxWorkers = 12, ma
     const signals = [signal, owner(workerId)?.controller.signal, callSignal].filter(Boolean);
     return signals.length ? AbortSignal.any(signals) : undefined;
   }
+  function prerequisiteIds(ids) {
+    const seen = new Set();
+    const visit = id => {
+      if (!id || seen.has(id)) return;
+      seen.add(id);
+      for (const next of workers.get(id)?.data.dependsOn ?? []) visit(next);
+    };
+    for (const id of ids) visit(id);
+    return seen;
+  }
+  function ancestorIds(id) {
+    const seen = new Set();
+    let current = id;
+    while (current && current !== sessionId && !seen.has(current)) {
+      seen.add(current);
+      current = workers.get(current)?.data.parentId;
+    }
+    return seen;
+  }
+  function claimKey(path, root = 0) { return `${root}\0${writeKey(path)}`; }
+  function holdsWrite(worker) {
+    return active.has(worker.data.status) && (worker.data.dependsOn ?? []).every(id => workers.get(id)?.data.status === 'completed');
+  }
+  function assertWriteClaim(writes, dependsOn, parentId) {
+    if (!writes.length) return;
+    const parent = parentId === sessionId ? undefined : workers.get(parentId);
+    if (parent) {
+      const owned = new Set((parent.data.writes ?? []).map(writeKey));
+      const outside = writes.filter(path => !owned.has(writeKey(path)));
+      if (outside.length) throw Object.assign(new Error(`writes must stay inside this worker's assigned files: ${outside.join(', ')}.`), { code: 'WRITE_OWNERSHIP' });
+    }
+    const prerequisites = prerequisiteIds(dependsOn);
+    const ancestors = ancestorIds(parentId);
+    const claimed = new Map();
+    for (const worker of workers.values()) {
+      if (ancestors.has(worker.data.id) || !active.has(worker.data.status) || prerequisites.has(worker.data.id)) continue;
+      for (const path of worker.data.writes ?? []) claimed.set(writeKey(path), worker.data.id);
+    }
+    const overlap = writes.filter(path => claimed.has(writeKey(path)));
+    if (!overlap.length) return;
+    const owners = [...new Set(overlap.map(path => claimed.get(writeKey(path))))];
+    throw Object.assign(new Error(`Each file can have only one writer. ${overlap.join(', ')} already assigned to ${owners.join(', ')}. Use disjoint writes, or depends_on so that worker finishes first.`), { code: 'WRITE_OWNERSHIP' });
+  }
+  function readyOwners() {
+    const owners = new Map();
+    for (const worker of workers.values()) {
+      if (!holdsWrite(worker)) continue;
+      for (const path of worker.data.writes ?? []) {
+        const key = claimKey(path);
+        const current = owners.get(key);
+        if (!current || worker.data.depth > current.data.depth) owners.set(key, worker);
+      }
+    }
+    return owners;
+  }
+  function assertCanWrite(actorId, targets = []) {
+    const owners = readyOwners();
+    const mine = actorId === sessionId ? null : new Set((workers.get(actorId)?.data.writes ?? []).map(writeKey));
+    for (const target of targets) {
+      if (!target || typeof target.path !== 'string' || !target.path.trim()) continue;
+      let path;
+      try { path = normalizeWritePath(target.path); }
+      catch {
+        if (actorId !== sessionId) throw ownershipError(String(target.path).slice(0, 200), null);
+        continue;
+      }
+      const root = Number.isSafeInteger(target.root) && target.root >= 0 ? target.root : 0;
+      const owner = root === 0 ? owners.get(claimKey(path)) : undefined;
+      if (actorId === sessionId) {
+        if (owner) throw ownershipError(path, owner.data.id);
+        continue;
+      }
+      if (root !== 0 || !mine.has(writeKey(path)) || (owner && owner.data.id !== actorId)) throw ownershipError(path, owner?.data.id);
+    }
+  }
   function spawn(workerId, input, callSignal) {
     const task = createWorker(workerId, input, callSignal);
     spawning.add(task);
@@ -442,10 +559,12 @@ export function createSwarm({ sessionId, maxConcurrency = 3, maxWorkers = 12, ma
     if (input.depends_on !== undefined && (!Array.isArray(input.depends_on) || input.depends_on.length > 8)) throw new TypeError('depends_on must contain at most 8 worker IDs');
     if (input.preempt !== undefined && typeof input.preempt !== 'boolean') throw new TypeError('preempt must be a boolean');
     if (input.reason !== undefined && (typeof input.reason !== 'string' || !input.reason.trim() || input.reason.length > 1024)) throw new TypeError('reason must contain 1..1024 characters');
+    const writes = normalizeWrites(input.writes);
     const priority = normalizePriority(input.priority);
     // Only existing descendants can be referenced: no forward edges, cycles,
     // parent waits or access to another worker's sibling branch.
     const dependencies = selectWorkers(workerId, input.depends_on ?? [], 'depend on');
+    assertWriteClaim(writes, dependencies.map(worker => worker.data.id), workerId);
     const depth = (parent?.data.depth ?? 0) + 1;
     if (depth > maxDepth) throw new Error(`Worker nesting is limited to ${maxDepth} levels`);
     if (created >= maxWorkers) throw new Error(`This conversation turn is limited to ${maxWorkers} workers`);
@@ -453,6 +572,7 @@ export function createSwarm({ sessionId, maxConcurrency = 3, maxWorkers = 12, ma
     const data = { id: `${sessionId}/worker-${randomUUID()}`, parentId: workerId, task: input.task.trim(),
       depth, status: 'queued', createdAt: Date.now(), priority, ...(input.name ? { name: input.name } : {}) };
     if (dependencies.length) data.dependsOn = dependencies.map(worker => worker.data.id);
+    if (writes.length) data.writes = writes;
     if (input.profile !== undefined) data.profile = input.profile;
     if (input.modelProfile !== undefined) data.modelProfile = input.modelProfile;
     const worker = { data, controller: new AbortController(), ready: false, slot: false, seq: created };
@@ -532,6 +652,7 @@ export function createSwarm({ sessionId, maxConcurrency = 3, maxWorkers = 12, ma
     const blocked = blockage(worker, ownerId);
     return {
       worker_id: worker.data.id, status: worker.data.status, priority: worker.data.priority ?? 0, admission, preempted,
+      ...(worker.data.writes ? { writes: [...worker.data.writes] } : {}),
       ...(skip ? { skip_preempt: skip } : {}),
       ...(blocked ? { blocked } : {}),
       ...(worker.slot && worker.data.cancelRequestedAt ? { releasing: true } : {}),
@@ -603,6 +724,7 @@ export function createSwarm({ sessionId, maxConcurrency = 3, maxWorkers = 12, ma
           depends_on: Type.Optional(Type.Array(Type.String(), { maxItems: 8 })),
           priority: Type.Optional(Type.Integer({ minimum: priorityLimit.min, maximum: priorityLimit.max })),
           preempt: Type.Optional(Type.Boolean()),
+          writes: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 1024 }), { maxItems: 32, description: 'Workspace-relative files this worker may edit. Parallel workers need disjoint writes. Sequence the same file with depends_on.' })),
           reason: Type.Optional(Type.String({ minLength: 1, maxLength: 1024 })),
           ...flagHelpProperties()
         }, { additionalProperties: false }),
@@ -676,5 +798,5 @@ export function createSwarm({ sessionId, maxConcurrency = 3, maxWorkers = 12, ma
   function aborted() { close().catch(() => {}); }
   signal?.addEventListener('abort', aborted, { once: true });
   if (signal?.aborted) aborted();
-  return { toolsFor, snapshot, settle, close, admission: (id = sessionId) => structuredClone(admissionSnapshot(id)), inspect };
+  return { toolsFor, snapshot, settle, close, admission: (id = sessionId) => structuredClone(admissionSnapshot(id)), inspect, assertCanWrite };
 }

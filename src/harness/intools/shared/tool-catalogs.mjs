@@ -249,12 +249,13 @@ export const HARNESS_PROJECT_CATALOG = {
 };
 
 export const SPAWN_WORKER_CATALOG = {
-  description: 'Default assist path: start a Swarm worker and return worker_id immediately. Optional priority 0–9 (higher starts first when slots are full) and preempt=true to interrupt lower-priority runners. Optional profile + depends_on (≤8). Use wait_workers for results and manage_workers to reorder later. Set help=true for queue/slot rules.',
+  description: 'Default assist path: start a Swarm worker and return worker_id immediately. Optional writes lists the only files that worker may edit; parallel workers need disjoint paths. Optional priority 0–9 (higher starts first when slots are full) and preempt=true to interrupt lower-priority runners. Optional profile + depends_on (≤8). Use wait_workers for results and manage_workers to reorder later. Set help=true for queue/slot rules.',
   tiers: ['core', 'deps'],
   tierBlurbs: { core: 'task + profile + priority', deps: 'depends_on / preempt / concurrency' },
   docs: [
     { action: 'task', tier: 'core', field: 'task', summary: 'Worker assignment text.', params: ['task', 'profile?', 'modelProfile?', 'priority?'] },
-    { action: 'depends_on', tier: 'deps', field: 'depends_on', summary: 'Queue until listed descendants succeed.', params: ['depends_on?'] },
+    { action: 'depends_on', tier: 'deps', field: 'depends_on', summary: 'Queue until listed descendants succeed. Required to edit a file another worker already owns.', params: ['depends_on?'] },
+    { action: 'writes', tier: 'deps', field: 'writes', summary: 'Exclusive workspace-relative files this worker may edit. Disjoint across concurrent workers.', params: ['writes?'] },
     { action: 'preempt', tier: 'deps', field: 'preempt', summary: 'If true, interrupt lower-priority running descendants so this ready worker can start.', params: ['preempt?', 'reason?'] },
   ],
 };
