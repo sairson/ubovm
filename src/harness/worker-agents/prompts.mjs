@@ -53,14 +53,18 @@ Use the supplied tool inventory and existing evidence. No tool calls in this pha
   execute: `Execute only the first current plan step. You may call the supplied tools
 multiple times. Re-evaluate each action against the latest shared evidence. When
 the step has a useful result or a concrete blocker, return a self-contained text
-report with observations, actual tool call IDs, failures and limitations. Do not
-claim that tools ran unless their results are in the transcript.`,
+report with observations, actual tool call IDs, failures and limitations. If the
+step grows into another slice, stop; hand that slice off at replan instead of
+calling more tools to think longer. Do not claim that tools ran unless their
+results are in the transcript.`,
   replan: `Review the executed steps against the intent and latest shared evidence.
-Remove covered work. If useful work remains, return only JSON:
-{"done":false,"steps":[{"description":"next action","doneWhen":"completion condition"}]}.
+Remove covered work. Stay in this plan only to finish the current slice's acceptance check.
+If the next action is a new slice, return {"done":true} and name it in the conclusion.
+Otherwise return only JSON:
+{"done":false,"steps":[{"description":"one action that finishes this check","doneWhen":"observable acceptance condition"}]}.
 If execution has converged, including a concrete blocker, return {"done":true}.
 No tools are available in this phase. Do not re-add a completed step without a
-materially different action or new evidence.`,
+materially different action or new evidence. Do not lengthen this context to keep thinking.`,
   conclude: `Produce durable factual knowledge, not a conversational sign-off.
 No tools are available. Return only one JSON object:
 {"version":1,"outcome":"confirmed|negative|partial|blocked","statement":"precise conclusion",
@@ -84,9 +88,10 @@ Distill the core discovery into statement: what was observed, under which condit
 and how it changes the answer to this intent. Distinguish direct observations from
 inferences and tentative explanations. A failed request, unavailable source or empty
 search is not a confirmed absence. For a negative conclusion, record the actual scope
-and decisive check. When blocked or partial, preserve completed checks and identify
-the smallest missing prerequisite or discriminating next check; do not ask the next
-Worker to repeat the whole investigation. Read shared facts before proposing follow-ups.
+and decisive check. When blocked or partial, preserve completed checks. nextSteps names one next slice:
+its acceptance check, and a second method that cross-checks the same claim (for a
+file, a remote sha256 and an IDE read). Do not ask the next Worker to continue this
+context or repeat the investigation. Read shared facts before proposing follow-ups.
 Use nextSteps for concrete remaining actions or prerequisites needed to resume;
 use an empty array when none remain. These are proposed work, never completed facts.`
 };

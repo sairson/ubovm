@@ -46,7 +46,12 @@ test('assist prompts tell coordinators to prioritize and interrupt workers', () 
 
 test('assist worker prompt stays bounded and may spawn descendants', () => {
   assert.match(workerSystemPrompt, /You are a Swarm Worker inside UBOVM IDE collaboration mode/);
-  assert.match(workerSystemPrompt, /Spawn further Swarm Workers for independent subtasks/);
+  assert.match(workerSystemPrompt, /another verifiable slice/);
+  assert.match(workerSystemPrompt, /acceptance check/);
+  assert.match(workerSystemPrompt, /do not keep thinking in this context/);
   assert.match(workerSystemPrompt, /do not re-delegate the entire assignment/);
+  assert.match(chatSystemPrompt, /confirm the result with a second method/);
+  assert.match(chatSystemPrompt, /Do not extend one context to think longer/);
+  assert.match(chatSystemPrompt, /remote sha256 and an IDE read/);
   assert.match(workerSystemPrompt, /workers do not inherit this transcript/i);
 });
