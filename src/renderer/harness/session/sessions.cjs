@@ -578,6 +578,9 @@ function createSessions(vscode, context, onDidChange, { isBusy = () => false, cr
       // updates background sessions without publishing the active chat again.
       emitter.fire();
     },
+    // Modes with work in flight. A turn keeps running after the user switches
+    // modes, so the workbench mode switcher needs this without a full snapshot.
+    runningModes: () => [...new Set(state.sessions.filter(session => isBusy(session.id)).map(session => session.mode === 'goal' ? 'goal' : 'assist'))],
     showMoreSessions(projectId, mode = state.activeMode) {
       if (disposed || typeof projectId !== 'string' || (mode !== 'assist' && mode !== 'goal')) return 0;
       const total = orderedProjectSessions(projectId, mode).length;

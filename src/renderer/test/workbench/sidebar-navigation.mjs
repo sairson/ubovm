@@ -89,6 +89,20 @@ try {
       assert(commands[0].startsWith(settingsPage ? 'command:ubovm.closeSettings?' : 'command:ubovm.setMode?'));
       assert.deepEqual(JSON.parse(decodeURIComponent(commands[0].split('?')[1])), ['goal']);
     }
+    await page.evaluate(() => window.updateContext({ 'ubovm.mode': 'assist', 'ubovm.settingsPage': '', 'ubovm.contentReady': true, 'ubovm.goalRunning': true }));
+    const dotBox = locator => locator.locator('.ubovm-mode-running').evaluate(el => { const box = el.getBoundingClientRect(); return { display: getComputedStyle(el).display, width: box.width, radius: getComputedStyle(el).borderRadius, animation: getComputedStyle(el).animationName }; });
+    const goalDot = await dotBox(goal);
+    assert.equal(goalDot.display, 'block', 'a mode with a running task marks the switcher');
+    assert.ok(goalDot.width > 2 && goalDot.width <= 8, 'the running marker stays a small dot');
+    assert.equal(goalDot.radius, '50%', 'the running marker is round');
+    assert.equal(goalDot.animation, 'ubovm-mode-pulse', 'the running dot breathes instead of spinning');
+    assert.equal(await assist.locator('.ubovm-mode-running').evaluate(el => getComputedStyle(el).display), 'none', 'idle modes keep the switcher clean');
+    assert.match(await goal.getAttribute('aria-label') || '', /有任务正在运行/);
+    assert.equal(await assist.getAttribute('aria-label'), '协助模式');
+    await page.evaluate(() => window.updateContext({ 'ubovm.assistRunning': true, 'ubovm.goalRunning': false }));
+    assert.equal(await assist.locator('.ubovm-mode-running').evaluate(el => getComputedStyle(el).display), 'block');
+    assert.equal(await goal.locator('.ubovm-mode-running').evaluate(el => getComputedStyle(el).display), 'none');
+    await page.evaluate(() => window.updateContext({ 'ubovm.assistRunning': false }));
     await page.evaluate(() => window.updateContext({ 'ubovm.settingsPage': 'settings' }));
     await assist.click();
     assert((await page.evaluate(() => window.commands.at(-1))).startsWith('command:ubovm.closeSettings?'));

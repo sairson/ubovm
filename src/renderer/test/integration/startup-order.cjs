@@ -46,7 +46,7 @@ test('registers session UI before persistence and restores execution only after 
   let snapshotReads = 0;
   const sessions = {
     ready: storage, current: () => { snapshotReads++; return session; }, summary: () => ({ ...session, historyCount: 1 }), ids: () => ['saved'], goalSummaries: () => [], related: () => [],
-    projects: () => [], projectSessions: () => [],
+    projects: () => [], projectSessions: () => [], runningModes: () => [],
     provider: { onDidChangeTreeData: () => disposable },
   };
   const vscode = {

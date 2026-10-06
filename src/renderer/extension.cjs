@@ -76,6 +76,7 @@ async function activate(context) {
   const settingsNavigation = [['model', '模型', 'settings-gear'], ['ssh', 'SSH 连接', 'remote'], ['web', '浏览器与搜索', 'globe'], ['python', 'Python 执行', 'terminal'], ['summary', '上下文与摘要', 'note'], ['reason', '规划设置', 'list-tree'], ['worker', '任务执行', 'play']];
   const sidebarChanged = new vscode.EventEmitter();
   let publishedMode;
+  let publishedRunningModes = '';
   let folderCheckTimer;
   let folderCheckRevision = 0;
   let explorerReady = false;
@@ -258,6 +259,7 @@ async function activate(context) {
     additionalTools: conversationId => [...coding.tools(conversationId), ...search.tools(conversationId), ...audit.tools(conversationId), ...validation.tools(conversationId), ...require('./harness/session/goal-tools.cjs').goalTools(sessions, conversationId)],
     onChange: id => {
       sessions.refreshRunning(id);
+      publishModeRunning();
       const current = sessions.summary();
       executionPublisher.schedule(sessions.goalSummaries().some(goal => goal.id === id) ? current.id : id);
       const execution = harness?.state(id);
@@ -482,7 +484,21 @@ async function activate(context) {
       publishedMode = conversation.mode;
       void vscode.commands.executeCommand('setContext', 'ubovm.mode', conversation.mode);
     }
+    publishModeRunning();
     blackboardSidebar.setSession(conversation.mode === 'goal' ? conversation.id : '');
+  }
+
+  // A run keeps going after the user switches modes, so the top mode switcher
+  // needs its own signal: publish only on transitions, never per streamed token.
+  function publishModeRunning() {
+    if (shuttingDown) return;
+    const running = sessions.runningModes().join(',');
+    if (running === publishedRunningModes) return;
+    publishedRunningModes = running;
+    for (const mode of ['assist', 'goal']) {
+      void vscode.commands.executeCommand('setContext', 'ubovm.' + mode + 'Running', running.includes(mode))
+        .catch(error => output.appendLine(String(error)));
+    }
   }
 
   function publishState() {

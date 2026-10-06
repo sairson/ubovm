@@ -2,7 +2,7 @@ diff --git a/src/vs/workbench/browser/parts/views/treeView.ts b/src/vs/workbench
 index fa8d7aed..f1a1d963 100644
 --- a/src/vs/workbench/browser/parts/views/treeView.ts
 +++ b/src/vs/workbench/browser/parts/views/treeView.ts
-@@ -129,6 +129,242 @@ export class TreeViewPane extends ViewPane {
+@@ -129,6 +129,249 @@ export class TreeViewPane extends ViewPane {
  
  	protected override renderBody(container: HTMLElement): void {
  		this._container = container;
@@ -81,7 +81,10 @@ index fa8d7aed..f1a1d963 100644
 +				const text = container.ownerDocument.createElement('span');
 +				text.className = 'ubovm-mode-label';
 +				text.textContent = label;
-+				button.append(symbol, text);
++				const running = container.ownerDocument.createElement('span');
++				running.className = 'ubovm-mode-running';
++				running.setAttribute('aria-hidden', 'true');
++				button.append(symbol, text, running);
 +				const select = async () => {
 +					if (disposed || pending || !shellUnlocked() || !this.contextKeyService.getContextKeyValue('ubovm.mode')) { return; }
 +					const settings = !!this.contextKeyService.getContextKeyValue('ubovm.settingsPage');
@@ -227,12 +230,16 @@ index fa8d7aed..f1a1d963 100644
 +					button.disabled = !!pending || !mode || !unlocked;
 +					button.setAttribute('aria-disabled', String(button.disabled));
 +					button.setAttribute('aria-busy', String(pending === 'mode:' + button.dataset.mode));
++					// A turn may still run in the other mode; mark both so the switcher shows work in flight.
++					const modeRunning = this.contextKeyService.getContextKeyValue('ubovm.' + (goalMode ? 'goal' : 'assist') + 'Running') === true;
++					if (modeRunning) { button.dataset.running = 'true'; } else { delete button.dataset.running; }
 +					const base = chrome(goalMode ? '探索模式' : '协助模式', goalMode ? 'Explore mode' : 'Assist mode');
-+					button.title = page ? `${base}${chrome('（关闭配置后切换）', ' (switch after closing settings)')}` : base;
++					button.title = (page ? `${base}${chrome('（关闭配置后切换）', ' (switch after closing settings)')}` : base)
++						+ (modeRunning ? chrome('，有任务正在运行', ', a task is running') : '');
 +					button.setAttribute('aria-label', button.title);
 +				}
 +			};
-+			const navigationKeys = new Set(['ubovm.mode', 'ubovm.settingsPage', 'ubovm.contentReady', 'ubovm.interfaceLocale']);
++			const navigationKeys = new Set(['ubovm.mode', 'ubovm.settingsPage', 'ubovm.contentReady', 'ubovm.interfaceLocale', 'ubovm.assistRunning', 'ubovm.goalRunning']);
 +			this._register(this.contextKeyService.onDidChangeContext(event => {
 +				if (event.affectsSome(navigationKeys)) { update(); }
 +			}));
@@ -262,7 +269,7 @@ index fa8d7aed..f1a1d963 100644
  		super.renderBody(container);
  		this.renderTreeView(container);
  	}
-@@ -138,6 +374,8 @@ export class TreeViewPane extends ViewPane {
+@@ -138,6 +381,8 @@ export class TreeViewPane extends ViewPane {
  	}
  
  	protected override layoutBody(height: number, width: number): void {

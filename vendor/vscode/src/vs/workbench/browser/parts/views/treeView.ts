@@ -204,7 +204,10 @@ export class TreeViewPane extends ViewPane {
 				const text = container.ownerDocument.createElement('span');
 				text.className = 'ubovm-mode-label';
 				text.textContent = label;
-				button.append(symbol, text);
+				const running = container.ownerDocument.createElement('span');
+				running.className = 'ubovm-mode-running';
+				running.setAttribute('aria-hidden', 'true');
+				button.append(symbol, text, running);
 				const select = async () => {
 					if (disposed || pending || !shellUnlocked() || !this.contextKeyService.getContextKeyValue('ubovm.mode')) { return; }
 					const settings = !!this.contextKeyService.getContextKeyValue('ubovm.settingsPage');
@@ -350,12 +353,16 @@ export class TreeViewPane extends ViewPane {
 					button.disabled = !!pending || !mode || !unlocked;
 					button.setAttribute('aria-disabled', String(button.disabled));
 					button.setAttribute('aria-busy', String(pending === 'mode:' + button.dataset.mode));
+					// A turn may still run in the other mode; mark both so the switcher shows work in flight.
+					const modeRunning = this.contextKeyService.getContextKeyValue('ubovm.' + (goalMode ? 'goal' : 'assist') + 'Running') === true;
+					if (modeRunning) { button.dataset.running = 'true'; } else { delete button.dataset.running; }
 					const base = chrome(goalMode ? '探索模式' : '协助模式', goalMode ? 'Explore mode' : 'Assist mode');
-					button.title = page ? `${base}${chrome('（关闭配置后切换）', ' (switch after closing settings)')}` : base;
+					button.title = (page ? `${base}${chrome('（关闭配置后切换）', ' (switch after closing settings)')}` : base)
+						+ (modeRunning ? chrome('，有任务正在运行', ', a task is running') : '');
 					button.setAttribute('aria-label', button.title);
 				}
 			};
-			const navigationKeys = new Set(['ubovm.mode', 'ubovm.settingsPage', 'ubovm.contentReady', 'ubovm.interfaceLocale']);
+			const navigationKeys = new Set(['ubovm.mode', 'ubovm.settingsPage', 'ubovm.contentReady', 'ubovm.interfaceLocale', 'ubovm.assistRunning', 'ubovm.goalRunning']);
 			this._register(this.contextKeyService.onDidChangeContext(event => {
 				if (event.affectsSome(navigationKeys)) { update(); }
 			}));

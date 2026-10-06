@@ -137,6 +137,8 @@ html.ubovm-shell-loading:not(.ubovm-shell-ready):not(.ubovm-content-slow) .monac
 }
 html.ubovm-loading-paused .monaco-workbench:has(.ubovm-sessions-body)::after,
 html.ubovm-loading-paused.ubovm-shell-loading .monaco-workbench::after { animation-play-state: paused !important; }
+/* Hidden pages keep the running dot still; it only breathes while visible. */
+html.ubovm-loading-paused .ubovm-sidebar-modes button .ubovm-mode-running { animation-play-state: paused !important; }
 /* Hide session rows only for cold startup. After shell-ready, keep the sidebar
  * visible through conversation switches so selection/refresh stay interactive. */
 .ubovm-sessions-body > :not(.ubovm-session-loading) { opacity: 1; transition: opacity 140ms cubic-bezier(.22, 1, .36, 1); }
@@ -863,6 +865,28 @@ html[data-ubovm-locale="en"] .monaco-workbench .part.panel .title-actions .actio
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* Running marker: a turn keeps working after the user switches modes, so the
+ * switcher shows which mode still has work in flight. A breathing accent dot
+ * stays out of the label flow — no spinner crowding the 26px switch. */
+.monaco-workbench .ubovm-sidebar-modes button .ubovm-mode-running {
+  display: none;
+  position: absolute;
+  top: 5px;
+  right: 6px;
+  width: 6px;
+  height: 6px;
+  box-sizing: border-box;
+  border-radius: 50%;
+  background: var(--ubovm-nav-accent, var(--vscode-focusBorder, currentColor));
+  animation: ubovm-mode-pulse 1500ms ease-in-out infinite;
+}
+.monaco-workbench .ubovm-sidebar-modes button[data-running="true"] .ubovm-mode-running { display: block; }
+/* A pending switch owns the corner spinner; never paint both markers. */
+.monaco-workbench .ubovm-sidebar-modes button[aria-busy="true"] .ubovm-mode-running { display: none; }
+@keyframes ubovm-mode-pulse {
+  0%, 100% { opacity: .5; transform: scale(.8); box-shadow: 0 0 0 0 color-mix(in srgb, var(--ubovm-nav-accent, var(--vscode-focusBorder, #3d7a55)) 38%, transparent); }
+  50% { opacity: 1; transform: scale(1); box-shadow: 0 0 0 3px transparent; }
+}
 .monaco-workbench .ubovm-sidebar-modes button[aria-pressed="true"] {
   color: var(--vscode-foreground);
   background: var(--vscode-editor-background);
@@ -1302,6 +1326,7 @@ html[data-ubovm-locale="en"] .monaco-workbench .part.panel .title-actions .actio
   .monaco-workbench .part:is(.sidebar, .auxiliarybar) .welcome-view-content { animation: none; }
   .monaco-workbench .ubovm-sidebar-modes button[aria-busy="true"]::after,
   .monaco-workbench .ubovm-sidebar-management button[aria-busy="true"]::after,
+  .monaco-workbench .ubovm-sidebar-modes button .ubovm-mode-running,
   .monaco-workbench .pane-body.integrated-terminal.ubovm-terminal-loading::after,
   .monaco-workbench .part:is(.sidebar, .auxiliarybar, .panel) .monaco-progress-container.infinite .progress-bit { animation: none; }
 }
