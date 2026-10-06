@@ -39,9 +39,12 @@ test('Chinese natural language and site operators retain relevant results and ex
 
 test('search redirect links and tracking duplicates resolve to the best direct result', async () => {
   const direct = 'https://example.com/Guide?q=A';
-  const encoded = 'https://www.bing.com/ck/a?u=a1' + Buffer.from(direct + '&utm_source=bing').toString('base64url');
+  const token = Buffer.from(direct + '&utm_source=bing').toString('base64url');
+  const encoded = 'https://www.bing.com/ck/a?u=a1' + token;
+  const modern = 'https://www.bing.com/ck/a?!&&p=abc&ptn=3&ver=2&hsh=4&fclid=x&u=a1' + token + '&ntb=1';
   const redirect = '//duckduckgo.com/l/?uddg=' + encodeURIComponent(direct + '&utm_source=ddg');
-  const tool = publicTool(`<ol id="b_results"><li class="b_algo"><h2><a href="${encoded}">Node</a></h2></li></ol>`, html([['Node reference', redirect, 'Node reference guide']]));
+  const bing = `<ol id="b_results"><li class="b_algo"><h2><a href="${encoded}">Node</a></h2></li><li class="b_algo"><h2><a href="${modern}">Node</a></h2></li></ol>`;
+  const tool = publicTool(bing, html([['Node reference', redirect, 'Node reference guide']]));
   const result = await tool.execute('s', { query: 'node reference' });
   assert.equal(result.details.returned, 1);
   assert.equal(result.details.results[0].url, direct);
@@ -217,6 +220,31 @@ test('soft ranking keeps provider hits when strict term matching would discard t
   ], 5);
   assert.ok(['soft', 'passthrough'].includes(selected.ranking), selected.ranking);
   assert.equal(selected.results[0].url, 'https://docs.example.com/ref');
+});
+
+test('Bing does not pin a market that replaces the query with unrelated results', async () => {
+  const tool = createWebSearchTool({
+    providerRetryAttempts: 1,
+    fetch: async url => {
+      const parsed = new URL(url);
+      if (!parsed.hostname.includes('bing')) return new Response(html([]));
+      assert.equal(parsed.searchParams.get('mkt'), null);
+      assert.equal(parsed.searchParams.get('setlang'), null);
+      assert.equal(parsed.searchParams.get('q'), '如何配置数据库连接池');
+      return new Response(rss([['数据库连接池配置指南', 'https://docs.example.com/pool', '连接池配置']]));
+    }
+  });
+  const result = await tool.execute('s', { query: '如何配置数据库连接池' });
+  assert.equal(result.details.status, 'ok');
+  assert.equal(result.details.results[0].url, 'https://docs.example.com/pool');
+});
+
+test('DuckDuckGo advertisements are not returned as search results', async () => {
+  const ad = 'https://duckduckgo.com/y.js?ad_domain=example.com&q=node';
+  const tool = publicTool(rss([]), html([['Sponsored node', 'https://duckduckgo.com/l/?uddg=' + encodeURIComponent(ad), 'node']]));
+  const result = await tool.execute('s', { query: 'node' });
+  assert.equal(result.details.returned, 0);
+  assert.ok(!JSON.stringify(result.details.results).includes('y.js'));
 });
 
 test('Bing HTML fallback is used when RSS parsing fails', async () => {

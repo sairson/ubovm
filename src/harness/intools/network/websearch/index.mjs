@@ -49,7 +49,9 @@ function withDomainOperators(query, includeDomains, excludeDomains) {
 
 function isSearchEngineResultPage(host, path) {
   if ((host === 'bing.com' || host.endsWith('.bing.com') || host === 'google.com' || host.endsWith('.google.com')) && path.startsWith('/search')) return true;
-  if ((host === 'duckduckgo.com' || host.endsWith('.duckduckgo.com')) && (path === '/' || path.startsWith('/html') || path.startsWith('/lite'))) return true;
+  if (host === 'duckduckgo.com' || host.endsWith('.duckduckgo.com')) {
+    if (path === '/' || path.startsWith('/html') || path.startsWith('/lite') || path === '/y.js' || path.startsWith('/duckduckgo-help-pages')) return true;
+  }
   return false;
 }
 
@@ -114,7 +116,11 @@ function resultURL(raw) {
     parsed = new URL(url);
   }
   if (parsed.hostname === 'bing.com' || parsed.hostname.endsWith('.bing.com')) {
-    const target = parsed.searchParams.get('u');
+    let target = parsed.searchParams.get('u');
+    if (!target && parsed.pathname.startsWith('/ck/')) {
+      const encoded = /[?&]u=([^&]+)/.exec(url)?.[1];
+      if (encoded) { try { target = decodeURIComponent(encoded); } catch { target = encoded; } }
+    }
     if (parsed.pathname.startsWith('/ck/') && target) {
       url = linkURL(target.startsWith('a1') ? Buffer.from(target.slice(2), 'base64url').toString('utf8') : target);
       if (!url) return '';
@@ -258,8 +264,11 @@ export function createWebSearchTool(options = {}) {
       }
       const publicQuery = withDomainOperators(query, includeDomains, excludeDomains);
       const chinese = /\p{Script=Han}/u.test(query);
-      const headers = { Accept: 'application/rss+xml,text/html,application/xhtml+xml', 'Accept-Language': chinese ? 'zh-CN,zh;q=0.9,en;q=0.6' : 'en-US,en;q=0.8', 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/136.0.0.0 Safari/537.36' };
-      async function fetchProvider(name, buildUrl, parserName = name) {
+      const language = chinese ? 'zh-CN,zh;q=0.9,en;q=0.6' : 'en-US,en;q=0.8';
+      const userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36';
+      const bingHeaders = { Accept: 'application/rss+xml,text/html,application/xhtml+xml', 'Accept-Language': language, 'User-Agent': userAgent };
+      const duckHeaders = { Accept: 'text/html,application/xhtml+xml', 'Accept-Language': language, 'User-Agent': userAgent };
+      async function fetchProvider(name, buildUrl, parserName = name, headers = bingHeaders) {
         try {
           const endpoint = buildUrl();
           const budgetSignal = providerSignal();
@@ -278,8 +287,6 @@ export function createWebSearchTool(options = {}) {
           endpoint.searchParams.set('q', publicQuery);
           endpoint.searchParams.set('count', String(Math.min(50, Math.max(8, limit * 3))));
           endpoint.searchParams.set('format', 'rss');
-          endpoint.searchParams.set('mkt', chinese ? 'zh-CN' : 'en-US');
-          endpoint.searchParams.set('setlang', chinese ? 'zh-Hans' : 'en');
           return endpoint;
         });
         if (rss.status === 'ok') return rss;
@@ -287,8 +294,6 @@ export function createWebSearchTool(options = {}) {
           const endpoint = new URL(bingBase.replace(/\/$/, '') + '/search');
           endpoint.searchParams.set('q', publicQuery);
           endpoint.searchParams.set('count', String(Math.min(50, Math.max(8, limit * 3))));
-          endpoint.searchParams.set('mkt', chinese ? 'zh-CN' : 'en-US');
-          endpoint.searchParams.set('setlang', chinese ? 'zh-Hans' : 'en');
           return endpoint;
         });
         if (html.status === 'ok') {
@@ -310,13 +315,13 @@ export function createWebSearchTool(options = {}) {
           endpoint.searchParams.set('q', publicQuery);
           if (chinese) endpoint.searchParams.set('kl', 'cn-zh');
           return endpoint;
-        }),
+        }, 'duckduckgo', duckHeaders),
         fetchProvider('duckduckgo-lite', () => {
           const endpoint = new URL(duckLiteBase.replace(/\/$/, '') + '/lite/');
           endpoint.searchParams.set('q', publicQuery);
           if (chinese) endpoint.searchParams.set('kl', 'cn-zh');
           return endpoint;
-        }, 'duckduckgo-lite')
+        }, 'duckduckgo-lite', duckHeaders)
       ]);
       signal?.throwIfAborted();
       for (const source of searches) {
