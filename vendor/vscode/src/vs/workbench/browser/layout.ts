@@ -2686,11 +2686,15 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 		this.stateModel.setRuntimeValue(LayoutStateKeys.SIDEBAR_HIDDEN, true);
 		const { width, height } = this._mainContainerDimension;
 		// Repair oversized persisted sidebars before the first grid layout.
-		// Normal saved widths and subsequent manual resizing remain untouched.
+		// The left sessions sidebar also has a hard cap; the primary sidebar only repairs clearly oversized widths.
+		const leftSidebarMax = 420;
 		for (const key of [LayoutStateKeys.SIDEBAR_SIZE, LayoutStateKeys.AUXILIARYBAR_SIZE]) {
 			const savedWidth = this.stateModel.getInitializationValue(key);
-			if (!Number.isFinite(savedWidth) || savedWidth <= 0 || savedWidth > width * 0.4) {
+			const proportionalLimit = width * 0.4;
+			if (!Number.isFinite(savedWidth) || savedWidth <= 0 || savedWidth > proportionalLimit) {
 				this.stateModel.setInitializationValue(key, Math.min(300, width / 4));
+			} else if (key === LayoutStateKeys.AUXILIARYBAR_SIZE && savedWidth > leftSidebarMax) {
+				this.stateModel.setInitializationValue(key, leftSidebarMax);
 			}
 		}
 		const sideBarSize = this.stateModel.getInitializationValue(LayoutStateKeys.SIDEBAR_SIZE);

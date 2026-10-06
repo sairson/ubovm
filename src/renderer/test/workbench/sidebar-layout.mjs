@@ -10,6 +10,7 @@ for (const [width, saved, expected] of [
   [1933, [320, 280], [320, 280]],
   [900, [700, 600], [225, 225]],
   [1933, [NaN, -1], [300, 300]],
+  [1933, [360, 500], [360, 420]],
 ]) {
   const values = [...saved];
   repair.call({ stateModel: {

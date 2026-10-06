@@ -49,9 +49,9 @@ export class AuxiliaryBarPart extends AbstractPaneCompositePart {
 	static readonly placeholdeViewContainersKey = 'workbench.auxiliarybar.placeholderPanels';
 	static readonly viewContainersWorkspaceStateKey = 'workbench.auxiliarybar.viewContainersWorkspaceState';
 
-	// Use the side bar dimensions
+	// Use the side bar dimensions. Sessions stay on the left and cannot cover the editor.
 	override readonly minimumWidth: number = 170;
-	override readonly maximumWidth: number = Number.POSITIVE_INFINITY;
+	override readonly maximumWidth: number = 420;
 	override readonly minimumHeight: number = 0;
 	override readonly maximumHeight: number = Number.POSITIVE_INFINITY;
 
@@ -73,7 +73,7 @@ export class AuxiliaryBarPart extends AbstractPaneCompositePart {
 			return undefined;
 		}
 
-		return Math.max(width, 300);
+		return Math.min(this.maximumWidth, Math.max(width, 300));
 	}
 
 	readonly priority = LayoutPriority.Low;

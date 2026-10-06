@@ -783,9 +783,23 @@ function Set-FixedConversationCore($Product) {
     $bundle = $bundle.Replace('const t=et.document.head.getElementsByClassName("initialShellColors");t[0]?.remove()', '')
     # Keep source and pinned prebuilt startup width recovery identical.
     $sidebarSizeCode = (Get-PatchAdditions (Join-Path $ProjectRoot 'resources/patches/sidebar-size.patch') 'src/vs/workbench/browser/layout.ts').Replace('LayoutStateKeys.', 'Ti.').Replace('width * 0.4', 'this._mainContainerDimension.width * 0.4').Replace('width / 4', 'this._mainContainerDimension.width / 4')
-    if (-not $bundle.Contains('// Repair oversized persisted sidebars')) {
+    $sidebarDescriptor = 'createGridDescriptor(){'
+    $sidebarWidthAnchor = 'const{width:i,height:e}'
+    $sidebarAnchorAt = $bundle.IndexOf($sidebarWidthAnchor)
+    $sidebarStart = if ($sidebarAnchorAt -ge 0) { $bundle.LastIndexOf($sidebarDescriptor, $sidebarAnchorAt) } else { -1 }
+    if ($sidebarStart -ge 0 -and $bundle.Substring($sidebarStart, $sidebarAnchorAt - $sidebarStart).Contains('// Repair oversized persisted sidebars')) {
+        $bundle = $bundle.Substring(0, $sidebarStart + $sidebarDescriptor.Length) + "`n" + $sidebarSizeCode + $bundle.Substring($sidebarAnchorAt)
+    } elseif (-not $bundle.Contains('// Repair oversized persisted sidebars')) {
         $bundle = Replace-CoreSnippet $bundle 'createGridDescriptor(){const{width:i,height:e}' ('createGridDescriptor(){' + "`n" + $sidebarSizeCode + 'const{width:i,height:e}')
     }
+    $auxMaxFrom = 'this.commandService=g,this.minimumWidth=170,this.maximumWidth=Number.POSITIVE_INFINITY'
+    $auxMaxTo = 'this.commandService=g,this.minimumWidth=170,this.maximumWidth=420'
+    if ($bundle.Contains($auxMaxFrom)) { $bundle = Replace-CoreSnippet $bundle $auxMaxFrom $auxMaxTo }
+    elseif (-not $bundle.Contains($auxMaxTo)) { throw 'Unsupported workbench bundle: the left sessions sidebar max-width anchor is missing.' }
+    $auxPreferredFrom = 'static{this.viewContainersWorkspaceStateKey="workbench.auxiliarybar.viewContainersWorkspaceState"}get preferredHeight(){return this.layoutService.mainContainerDimension.height*.4}get preferredWidth(){const e=this.getActivePaneComposite();if(!e)return;const t=e.getOptimalWidth();if(typeof t=="number")return Math.max(t,300)}'
+    $auxPreferredTo = 'static{this.viewContainersWorkspaceStateKey="workbench.auxiliarybar.viewContainersWorkspaceState"}get preferredHeight(){return this.layoutService.mainContainerDimension.height*.4}get preferredWidth(){const e=this.getActivePaneComposite();if(!e)return;const t=e.getOptimalWidth();if(typeof t=="number")return Math.min(420,Math.max(t,300))}'
+    if ($bundle.Contains($auxPreferredFrom)) { $bundle = Replace-CoreSnippet $bundle $auxPreferredFrom $auxPreferredTo }
+    elseif (-not $bundle.Contains($auxPreferredTo)) { throw 'Unsupported workbench bundle: the left sessions sidebar preferred-width anchor is missing.' }
     $bundle = Replace-CoreSnippet $bundle 'return super.openPaneComposite(e??this.getLastActivePaneCompositeId(),t)' 'if(t!==true&&!this.layoutService.isVisible("workbench.parts.panel"))return;return super.openPaneComposite(e??this.getLastActivePaneCompositeId(),t)'
     $bundle = Replace-CoreSnippet $bundle 'createGridDescriptor(){' 'createGridDescriptor(){this.stateModel.setRuntimeValue(Ti.SIDEBAR_HIDDEN,!0);'
     $bundle = Replace-CoreSnippet $bundle 'this.state.initialization.views.containerToRestore.sideBar&&(hs("code/willRestoreViewlet")' 'this.isVisible("workbench.parts.sidebar")&&this.state.initialization.views.containerToRestore.sideBar&&(hs("code/willRestoreViewlet")'

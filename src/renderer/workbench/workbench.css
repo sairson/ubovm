@@ -620,6 +620,7 @@ html[data-ubovm-locale="en"] .monaco-workbench .part.panel .title-actions .actio
 .monaco-workbench .part.auxiliarybar {
   font-family: 'Segoe UI', 'Microsoft YaHei UI', 'Microsoft YaHei', sans-serif;
 }
+.monaco-workbench .part.auxiliarybar { max-width: 420px; }
 
 .monaco-workbench .part.auxiliarybar > .title .title-label h2,
 .monaco-workbench .part.auxiliarybar .pane-header .title {
