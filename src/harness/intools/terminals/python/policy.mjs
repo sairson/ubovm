@@ -125,7 +125,7 @@ export function pythonPolicy({ workspace, outputDirectory, controlDirectory, rea
 
 // Native Windows ACL deny stamping creates missing paths. Submit only existing
 // targets so applying policy does not manufacture .env/.codex/etc. Read-only
-// snapshots already omit secrets and their workspace cannot be written to.
+// runs still grant the live workspace and deny secrets in place.
 export async function omitMissingPythonDenyPaths(policy, platform = process.platform, { signal } = {}) {
   if (platform !== 'win32') return policy;
   const validated = new Map();

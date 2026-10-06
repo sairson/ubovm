@@ -1,4 +1,4 @@
-import { intentCapacity } from '../blackboard/intent-capacity.mjs';
+import { fillIntentSlots, intentCapacity } from '../blackboard/intent-capacity.mjs';
 import { completionEvidenceIssue } from '../blackboard/evidence.mjs';
 
 const ALIAS = /^n[1-9]\d*$/u;
@@ -93,27 +93,37 @@ export function parseReasonDecision(source, { context, maxIntents = 5, maxRespon
     return { wait: true };
   }
   fields(value, ['complete', 'intents'], 'Decision');
-  const capacity = intentCapacity([...nodes.values()], openIntents);
-  if (Array.isArray(value.intents) && value.intents.length > capacity.available) throw invalid(`There are ${capacity.open} open intents (limit ${capacity.limit}); at most ${capacity.available} new intents are allowed. Return {"wait":true} when capacity is full, or completion with valid evidence.`);
   if (value.complete !== undefined && value.complete !== false) throw invalid('complete must be a boolean.');
-  if (!Array.isArray(value.intents) || !value.intents.length || value.intents.length > maxIntents) throw invalid(`An unfinished decision requires 1 to ${maxIntents} intents.`);
+  if (!Array.isArray(value.intents) || !value.intents.length) throw invalid(`An unfinished decision requires 1 to ${maxIntents} intents.`);
+  const capacity = intentCapacity([...nodes.values()], openIntents);
   const seen = new Set([...nodes.values()].filter(node => node.intent)
     .map(node => intentKey(node.intent, [...new Set(node.parents.map(ref => nodes.get(ref)?.result || ref))])));
-  const intents = value.intents.map((item, index) => {
-    const label = `intents[${index}]`;
-    fields(item, ['description', 'parentIds', 'priority', 'keyPoints'], label);
-    const description = text(item.description, `${label}.description`);
-    const parentIds = [...new Set(refs(item.parentIds, `${label}.parentIds`, nodes, context).map(ref => nodes.get(ref).result || ref))];
-    if (parentIds.some(ref => { const node = nodes.get(ref); return !node || node.kind === 'intent' && !node.fact; })) throw invalid('Exploration parents must be recorded facts or the root.');
-    if (!['high', 'medium', 'low'].includes(item.priority)) throw invalid(`${label}.priority must be high, medium or low.`);
-    if (!Array.isArray(item.keyPoints) || !item.keyPoints.length || item.keyPoints.length > 6) throw invalid(`${label}.keyPoints requires 1 to 6 auditable checkpoints.`);
-    const keyPoints = item.keyPoints.map((point, number) => text(point, `${label}.keyPoints[${number}]`, 2048));
-    if (new Set(keyPoints.map(normalize)).size !== keyPoints.length) throw invalid(`${label}.keyPoints contains duplicate coverage.`);
-    const intent = { description, parentIds, priority: item.priority, keyPoints };
-    const key = intentKey(intent, parentIds);
-    if (seen.has(key)) throw invalid(`${label} repeats existing or newly proposed work; propose a materially different evidence gap, or have the host resume the existing intent.`);
-    seen.add(key);
-    return intent;
+  const { admitted, wait, errors } = fillIntentSlots(value.intents, {
+    available: capacity.available,
+    maxIntents,
+    tryPrepare(item, index) {
+      const label = `intents[${index}]`;
+      fields(item, ['description', 'parentIds', 'priority', 'keyPoints'], label);
+      const description = text(item.description, `${label}.description`);
+      const parentIds = [...new Set(refs(item.parentIds, `${label}.parentIds`, nodes, context).map(ref => nodes.get(ref).result || ref))];
+      if (parentIds.some(ref => { const node = nodes.get(ref); return !node || node.kind === 'intent' && !node.fact; })) throw invalid('Exploration parents must be recorded facts or the root.');
+      if (!['high', 'medium', 'low'].includes(item.priority)) throw invalid(`${label}.priority must be high, medium or low.`);
+      if (!Array.isArray(item.keyPoints) || !item.keyPoints.length || item.keyPoints.length > 6) throw invalid(`${label}.keyPoints requires 1 to 6 auditable checkpoints.`);
+      const keyPoints = item.keyPoints.map((point, number) => text(point, `${label}.keyPoints[${number}]`, 2048));
+      if (new Set(keyPoints.map(normalize)).size !== keyPoints.length) throw invalid(`${label}.keyPoints contains duplicate coverage.`);
+      const intent = { description, parentIds, priority: item.priority, keyPoints };
+      const key = intentKey(intent, parentIds);
+      if (seen.has(key)) throw invalid(`${label} repeats existing or newly proposed work; propose a materially different evidence gap, or have the host resume the existing intent.`);
+      seen.add(key);
+      return intent;
+    }
   });
-  return { intents };
+  if (wait) {
+    if (![...nodes.values()].some(node => ['pending', 'running'].includes(node.intent?.status))) {
+      throw invalid(`There are ${capacity.open} open intents (limit ${capacity.limit}); at most ${capacity.available} new intents are allowed. Return {"wait":true} when capacity is full, or completion with valid evidence.`);
+    }
+    return { wait: true };
+  }
+  if (!admitted.length) throw errors[0] ?? invalid(`An unfinished decision requires 1 to ${maxIntents} intents.`);
+  return { intents: admitted };
 }

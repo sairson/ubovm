@@ -76,7 +76,7 @@ function createWorkspaceSearch(vscode, { executable, workspaceFolders = () => vs
     const program = await binary(); signal?.throwIfAborted();
     assertWorkspaceCurrent();
     const found = [], recent = [];
-    let seen = 0, more = false, partial = false;
+    let seen = 0, more = false, partial = false, searchIssue;
     await new Promise((resolve, reject) => {
       const child = spawnProcess(program, args, { cwd: root, shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
       ticket.physical = true;
@@ -138,7 +138,15 @@ function createWorkspaceSearch(vscode, { executable, workspaceFolders = () => vs
       const finish = (error, code) => {
         if (done) return; done = true; clearTimeout(timer); clearTimeout(stopTimer); signal?.removeEventListener('abort', cancel);
         if (error || failure) reject(error ?? failure);
-        else if (!stopped && code !== 0 && code !== 1) reject(new Error(stderr || `搜索失败：${code}`));
+        else if (!stopped && code !== 0 && code !== 1) {
+          const message = (stderr || `搜索失败：${code}`).trim();
+          const invalidRegex = /regex parse error|unclosed group|invalid regex/i.test(message);
+          const unrecognizedType = /unrecognized file type|unknown file type|unrecognized type/i.test(message);
+          if (invalidRegex || unrecognizedType) {
+            searchIssue = { reason: invalidRegex ? 'invalid_regex' : 'unrecognized_type', error: message.slice(0, 500) };
+            resolve();
+          } else reject(new Error(message));
+        }
         else resolve();
       };
       child.on('error', error => { if (!child.pid) release(ticket); finish(error); });
@@ -160,9 +168,23 @@ function createWorkspaceSearch(vscode, { executable, workspaceFolders = () => vs
       if (verifiedPaths.get(requested)) matches.push(item);
     }
     signal?.throwIfAborted(); assertWorkspaceCurrent();
-    return result({ engine: 'ripgrep', root: rootIndex, mode, matches, offset, nextOffset: more ? offset + found.length : null,
-      truncated: more || partial, partial, searched: 'saved workspace files; .gitignore/.ignore and include/exclude globs apply',
-      ...(mode !== 'files' ? { maxFileBytes: 4 * 1024 * 1024 } : {}), ...(partial ? { warning: '搜索达到时间或输出上限，请缩小 include 范围后重试，结果不能证明没有其他匹配。' } : {}) });
+    const payload = {
+      engine: 'ripgrep', root: rootIndex, mode, cannotSearch: Boolean(searchIssue),
+      matches: searchIssue ? [] : matches, offset,
+      nextOffset: searchIssue ? null : more ? offset + found.length : null,
+      truncated: Boolean(!searchIssue && (more || partial)), partial: Boolean(!searchIssue && partial),
+      searched: 'saved workspace files; .gitignore/.ignore and include/exclude globs apply',
+      ...(mode !== 'files' ? { maxFileBytes: 4 * 1024 * 1024 } : {})
+    };
+    if (searchIssue) {
+      Object.assign(payload, {
+        reason: searchIssue.reason, error: searchIssue.error,
+        guidance: 'Search did not run. Fix the regex or language type; empty matches here do not mean the pattern is absent from the workspace.'
+      });
+      return { ...result(payload), isError: true };
+    }
+    if (partial) payload.warning = '搜索达到时间或输出上限，请缩小 include 范围后重试，结果不能证明没有其他匹配。';
+    return result(payload);
   }
   async function search(input, signal, sessionId) {
     signal?.throwIfAborted();
@@ -174,7 +196,7 @@ function createWorkspaceSearch(vscode, { executable, workspaceFolders = () => vs
     try { return await performSearch(input, signal, sessionId, ticket); }
     finally { if (!ticket.physical) release(ticket); }
   }
-  return { tools: sessionId => [{ name: 'search_workspace', recovery: 'retry-read-only', label: '搜索项目代码', description: 'Read-only ripgrep (rg) code search. mode=text returns matching lines, nearby context and up to 200 match ranges per line; files lists paths by glob; matchingFiles is rg -l (paths containing a pattern); count returns per-file occurrence counts and matchedLines. Supply query OR patterns (OR semantics, at most 20). Literal by default; regex=true enables Rust regex, wholeWord restricts words, caseSensitive defaults false. types filters rg language types such as js, ts, py, rust. Respects .gitignore/.ignore; mandatory .git/dependency/cache exclusions cannot be overridden; never follows links. Lines/UTF-16 columns are one-based, endColumn exclusive. Ranges refer to full lines even when displayed text is truncated. Use nextOffset for pagination (lines for text, files otherwise); counts cover returned files only. Partial results are not exhaustive. Unsaved buffers are not searched.',
+  return { tools: sessionId => [{ name: 'search_workspace', recovery: 'retry-read-only', label: '搜索项目代码', description: 'Read-only ripgrep (rg) code search. mode=text returns matching lines, nearby context and up to 200 match ranges per line; files lists paths by glob; matchingFiles is rg -l (paths containing a pattern); count returns per-file occurrence counts and matchedLines. Supply query OR patterns (OR semantics, at most 20). Literal by default; regex=true enables Rust regex, wholeWord restricts words, caseSensitive defaults false. types filters rg language types such as js, ts, py, rust. Respects .gitignore/.ignore; mandatory .git/dependency/cache exclusions cannot be overridden; never follows links. Lines/UTF-16 columns are one-based, endColumn exclusive. Ranges refer to full lines even when displayed text is truncated. Use nextOffset for pagination (lines for text, files otherwise); counts cover returned files only. Partial results are not exhaustive. Unsaved buffers are not searched. Empty matches with cannotSearch=false means no hits in searchable files; cannotSearch=true means the engine could not search (invalid regex or type).',
     parameters: { type: 'object', properties: { root: { type: 'integer', minimum: 0 }, mode: { type: 'string', enum: ['files', 'text', 'matchingFiles', 'count'] }, query: { type: 'string', minLength: 1, maxLength: 2000 }, patterns: { type: 'array', minItems: 1, maxItems: 20, items: { type: 'string', minLength: 1, maxLength: 2000 } }, types: { type: 'array', maxItems: 20, items: { type: 'string', pattern: '^[a-zA-Z0-9][a-zA-Z0-9_-]{0,39}$' } }, regex: { type: 'boolean' }, wholeWord: { type: 'boolean' }, contextLines: { type: 'integer', minimum: 0, maximum: 10 }, caseSensitive: { type: 'boolean' }, include: { type: 'array', items: { type: 'string' } }, exclude: { type: 'array', items: { type: 'string' } }, offset: { type: 'integer', minimum: 0, maximum: 10000 }, limit: { type: 'integer', minimum: 1, maximum: 200 } }, additionalProperties: false },
     execute: (_id, input, signal) => search(input, signal, sessionId) }] };
 }

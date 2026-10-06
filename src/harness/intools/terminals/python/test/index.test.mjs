@@ -155,7 +155,7 @@ test('real sandbox executes Python, denies project writes and .env reads, and ca
   await writeFile(join(workspace, 'script.py'), "import sys\nprint('existing-script',sys.argv[1])");
   const tool = createPythonTool({ cwd: workspace });
   const result = await tool.execute('real', { reason: 'Sandbox integration test', code:
-    "import os,json,sys\nif sys.platform=='win32':\n assert not any(os.path.lexists(p) for p in ['.env','.codex','.agents','.git','.ubovm-python'])\nprint('sandbox-python-中文')\nfor p in ['.env']:\n try:\n  open(p).read()\n except (PermissionError,FileNotFoundError):\n  print('read-blocked')\n else:\n  raise AssertionError('secret readable')\ntry:\n open('forbidden.txt','w').write('bad')\nexcept PermissionError:\n print('write-blocked')\nelse:\n raise AssertionError('project writable')\nopen(os.path.join(os.environ['UBOVM_PYTHON_OUTPUT'],'result.txt'),'w').write('ok')" });
+    "import os,json,sys\nprint('sandbox-python-中文')\nfor p in ['.env']:\n try:\n  open(p).read()\n except (PermissionError,FileNotFoundError):\n  print('read-blocked')\n else:\n  raise AssertionError('secret readable')\ntry:\n open('forbidden.txt','w').write('bad')\nexcept PermissionError:\n print('write-blocked')\nelse:\n raise AssertionError('project writable')\nopen(os.path.join(os.environ['UBOVM_PYTHON_OUTPUT'],'result.txt'),'w').write('ok')" });
   assert.match(result.content[0].text, /read-blocked/); assert.match(result.content[0].text, /write-blocked/);
   assert.equal(await readFile(join(result.details.output_directory, 'result.txt'), 'utf8'), 'ok');
   const script = await tool.execute('script', { script: 'script.py', arguments: ['中文'], reason: 'Existing script test' });

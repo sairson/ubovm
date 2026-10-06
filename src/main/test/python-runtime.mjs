@@ -35,7 +35,6 @@ test('packaged Python executes without a system Python on PATH', {
     assert.equal(result.details.python, join(app, 'runtime/python/python.exe'));
     assert.equal(result.details.cleanup_confirmed, true);
     assert.match(result.content[0].text, /packaged-python-ok/);
-    assert(result.details.input_snapshot);
   } finally {
     if (originalPath === undefined) delete process.env.PATH; else process.env.PATH = originalPath;
   }

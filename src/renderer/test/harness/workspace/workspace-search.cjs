@@ -139,7 +139,11 @@ test('rg modes distinguish filename listing, matching files, matching lines and 
   assert.equal((await f.search({ mode: 'files', include: ['*.ts'] })).matches.length, 3);
   assert.equal((await f.search({ query: 'target' })).matches.length, 3);
   assert.equal(files.engine, 'ripgrep');
-  for (const mode of ['count', 'matchingFiles', 'text']) assert.deepEqual((await f.search({ mode, query: 'absent' })).matches, []);
+  for (const mode of ['count', 'matchingFiles', 'text']) {
+    const absent = await f.search({ mode, query: 'absent' });
+    assert.deepEqual(absent.matches, []);
+    assert.equal(absent.cannotSearch, false);
+  }
 });
 
 test('rg multiple patterns, type filters, regex and all UTF-16 match ranges work together', async t => {
@@ -172,8 +176,15 @@ test('rg mandatory directory exclusions survive broad globs and errors are surfa
   await f.write('code.ts', 'target'); await f.write('.ignore', 'ignored.ts\n'); await f.write('ignored.ts', 'target');
   assert.deepEqual((await f.search({ query: 'target', include: ['**/*'], exclude: ['ignored.ts'] })).matches.map(item => item.path), ['code.ts']);
   assert.deepEqual((await f.search({ mode: 'matchingFiles', query: 'target' })).matches, [{ path: 'code.ts' }]);
-  await assert.rejects(f.search({ query: '[', regex: true }), /regex|parse|error/i);
-  await assert.rejects(f.search({ query: 'target', types: ['not-a-real-language'] }), /type|recognized/i);
+  const invalidRegex = await f.tool.execute('test', { query: '[', regex: true });
+  assert.equal(invalidRegex.isError, true);
+  assert.equal(invalidRegex.details.cannotSearch, true);
+  assert.equal(invalidRegex.details.reason, 'invalid_regex');
+  assert.deepEqual(invalidRegex.details.matches, []);
+  const invalidType = await f.tool.execute('test', { query: 'target', types: ['not-a-real-language'] });
+  assert.equal(invalidType.isError, true);
+  assert.equal(invalidType.details.cannotSearch, true);
+  assert.equal(invalidType.details.reason, 'unrecognized_type');
   for (const input of [{ patterns: [] }, { query: 'a', patterns: ['b'] }, { query: 'a', types: ['--help'] }, { query: 'a', regex: 'false' }]) await assert.rejects(f.search(input));
   await assert.rejects(f.search({ mode: 'count', query: 'target' }, AbortSignal.abort()));
 });

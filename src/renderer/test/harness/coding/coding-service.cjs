@@ -604,3 +604,12 @@ test('editing one file avoids scanning sibling snapshots; listing still detects 
     assert.equal(siblingReads, 1);
   } finally { fs.open = original; }
 });
+
+test('missing code files return exists:false without throwing', async t => {
+  const f = await fixture(t);
+  const missing = await f.call('read_workspace_code', { path: 'never.js' });
+  assert.equal(missing.exists, false);
+  assert.equal(missing.content, null);
+  assert.equal(missing.hash, null);
+  assert.match(missing.guidance, /not a tool failure/);
+});

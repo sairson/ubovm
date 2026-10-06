@@ -66,8 +66,7 @@ function execute(request, signal, onUpdate, runner, started, { stopGraceMs = 100
       const details = { cwd: request.cwd, output_directory: status ? status.outputDirectory ?? null : outputDirectory,
         sandbox: 'anthropic-sandbox-runtime', python: request.executable, script: request.script, reason: request.reason,
         exit_code: status?.exitCode ?? null, phase: status?.phase ?? phase, duration_ms: Math.round(performance.now() - started),
-        output_bytes: output.bytes, output_truncated: output.truncated, forced_termination: forced, cleanup_confirmed: cleanupConfirmed && !forced && Boolean(status?.cleanupConfirmed),
-        ...(status?.snapshot ? { input_snapshot: status.snapshot } : {}) };
+        output_bytes: output.bytes, output_truncated: output.truncated, forced_termination: forced, cleanup_confirmed: cleanupConfirmed && !forced && Boolean(status?.cleanupConfirmed) };
       if (error) {
         const errorCode = error.code ?? (signal.aborted ? 'PYTHON_CANCELLED' : 'PYTHON_RUNNER_ERROR');
         const message = `[${errorCode}] ${error.message}${text ? `\n${text}` : ''}${details.output_directory ? `\noutput_directory: ${details.output_directory}` : ''}`;

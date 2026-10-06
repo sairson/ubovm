@@ -11,7 +11,7 @@ export function reasonSystemPrompt({ goal, maxIntents, nodes = [], systemPrompt 
 ${CTF_CONTEXT}
 ${SECURITY_SURFACE_CONTEXT}
 The fixed, host-authorized goal is ${JSON.stringify(goal)}.
-Hard open-intent limit: ${capacity.limit}. Open means pending plus running, not only running Workers. This snapshot has ${capacity.open} open intents; you may propose at most ${Math.min(maxIntents, capacity.available)} new intents. A full open-intent set permits zero new intents; each free slot permits one. Completed, failed and interrupted intents do not occupy slots. When no slots remain, return {"wait":true}, or complete only with valid goal evidence. Never exceed capacity, split a response to bypass it, or create duplicate work. The configured per-response maxIntents is an additional upper bound, never permission to exceed the open-intent limit.
+Hard open-intent limit: ${capacity.limit}. Open means pending plus running, not only running Workers. This snapshot has ${capacity.open} open intents; you may propose at most ${Math.min(maxIntents, capacity.available)} new intents. A full open-intent set permits zero new intents; each free slot permits one. Completed, failed and interrupted intents do not occupy slots. When no slots remain, return {"wait":true}, or complete only with valid goal evidence. Surplus intents are admitted, not rejected: the host fills remaining slots with the highest-priority valid intents, skips invalid or duplicate items, and treats a full board as wait. Do not split a response to bypass capacity or create duplicate work. The configured per-response maxIntents is an additional upper bound, never permission to exceed the open-intent limit.
 ${DEPLOYMENT_VERIFICATION_POLICY}
 ${DELIVERY_WORKFLOW_POLICY}
 ${RETRIEVAL_POLICY}

@@ -152,7 +152,20 @@ export async function runCollaboration({ configuration = {}, sessionId, director
         const allowed = ownerId === sessionId ? typeof input.worker_id === 'string' && input.worker_id.startsWith(`${sessionId}/worker-`)
           : parent === ownerId || workers.find(worker => worker.id === ownerId)?.dependsOn?.includes(input.worker_id);
         if (!allowed || input.worker_id === ownerId) throw new Error('Worker results are limited to descendants and explicit dependencies');
-        if (target && target.status !== 'completed') throw new Error('Worker has not completed successfully');
+        if (target && ['queued', 'running', 'waiting'].includes(target.status)) {
+          const value = {
+            worker_id: input.worker_id,
+            status: target.status,
+            available: false,
+            guidance: 'This worker is still in progress and has not failed. Call wait_workers until it reaches a terminal status, then read_worker_result again.'
+          };
+          return { content: [{ type: 'text', text: JSON.stringify(value) }], details: value };
+        }
+        if (target && target.status !== 'completed') {
+          throw new Error(target.error
+            ? `Worker ${target.status}: ${target.error}. Use read_worker_evidence before repeating work.`
+            : `Worker ${target.status}. Use read_worker_evidence before repeating work.`);
+        }
         const saved = load(`collaboration:worker:${input.worker_id}:result`);
         const complete = saved?.version === 1 && typeof saved.text === 'string';
         const text = complete ? saved.text : target?.result;

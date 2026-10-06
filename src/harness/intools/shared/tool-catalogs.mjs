@@ -182,14 +182,14 @@ export const DEPLOY_CATALOG = {
 };
 
 export const RUN_PYTHON_CATALOG = {
-  description: 'Run sandboxed CPython (code XOR script) with reason. Writes go to UBOVM_PYTHON_OUTPUT unless workspace writes enabled. Set help=true for argv/cwd/timeout and Windows copy limits. Use manage_python_environment for deps.',
+  description: 'Run sandboxed CPython (code XOR script) with reason. The sandbox cwd is this workspace and can read it (secrets still denied). Writes go to UBOVM_PYTHON_OUTPUT unless workspace writes enabled. Set help=true for argv/cwd/timeout. Use manage_python_environment for deps.',
   tiers: ['core', 'io', 'limits'],
   tierBlurbs: { core: 'code|script + reason', io: 'arguments, cwd, output_directory', limits: 'sandbox/network/size caps' },
   docs: [
     { action: 'code', tier: 'core', field: 'code', summary: 'Inline Python source (≤256 KiB).', params: ['code|script', 'reason'] },
     { action: 'script', tier: 'core', field: 'script', summary: 'Existing .py inside workspace.', params: ['code|script', 'reason'] },
     { action: 'arguments', tier: 'io', field: 'arguments', summary: 'sys.argv[1:].', params: ['arguments?', 'cwd?', 'timeout_seconds?'] },
-    { action: 'limits', tier: 'limits', summary: 'Host-configured network/interpreter; do not bypass via shell/skills. Windows read-only copy caps apply when writes disabled.', params: [] },
+    { action: 'limits', tier: 'limits', summary: 'Host-configured network/interpreter; do not bypass via shell/skills. Workspace files are readable at their real paths; secrets remain denied.', params: [] },
   ],
 };
 
@@ -214,7 +214,7 @@ export const SKILL_SCRIPT_CATALOG = {
 };
 
 export const WORKSPACE_LIST_CATALOG = {
-  description: 'List one workspace directory (≤500 entries/page). Follow nextOffset. Read-only. Set help=true for paging fields.',
+  description: 'List one workspace directory (≤500 entries/page). Follow nextOffset. Missing paths return exists:false without a tool error. Read-only. Set help=true for paging fields.',
   tiers: ['core', 'page'],
   tierBlurbs: { core: 'root + path', page: 'offset/limit/nextOffset' },
   docs: [
@@ -224,7 +224,7 @@ export const WORKSPACE_LIST_CATALOG = {
 };
 
 export const WORKSPACE_READ_CATALOG = {
-  description: 'Read UTF-8 workspace file by 1-based lines (≤400 lines / 128 KiB / first 4 MiB). Follow nextLine. Set help=true for truncation flags.',
+  description: 'Read UTF-8 workspace file by 1-based lines (≤400 lines / 128 KiB / first 4 MiB). Follow nextLine. Missing files return exists:false without a tool error. Set help=true for truncation flags.',
   tiers: ['core', 'page'],
   tierBlurbs: { core: 'path + root', page: 'startLine/lineCount/nextLine/truncation' },
   docs: [
@@ -308,7 +308,7 @@ export const INSPECT_HARNESS_CATALOG = {
 };
 
 export const READ_WORKER_RESULT_CATALOG = {
-  description: 'Page a completed worker result (follow nextOffset). Set help=true for truncation semantics.',
+  description: 'Page a completed worker result (follow nextOffset). In-progress workers return a status hint, not a tool error. Set help=true for truncation semantics.',
   tiers: ['core'],
   tierBlurbs: { core: 'worker_id + paging' },
   docs: [

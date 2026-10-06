@@ -1,7 +1,7 @@
 import { buildBlackboardContext } from './context.mjs';
 import { normalizeKeyPoints } from './blackboard.mjs';
 import { workerEvidence, completionEvidenceIssue } from './evidence.mjs';
-import { assertIntentCapacity, intentCapacity } from './intent-capacity.mjs';
+import { fillIntentSlots, intentCapacity } from './intent-capacity.mjs';
 
 // All coordinators in this process share the lease. An isolated worker runtime
 // may be concurrent with another worker, but a board has only one scheduler.
@@ -122,46 +122,41 @@ function intentKey(intent, parentIds) {
   ]);
 }
 
-function prepareIntents(proposals, snapshot, context) {
-  const byId = new Map(snapshot.nodes.map(node => [node.id, node]));
+function prepareIntent(intent, snapshot, context, seen, byId) {
   const canonicalParents = ids => [...new Set(ids.map(id => byId.get(id)?.resultId || id))];
-  const seen = new Set(snapshot.nodes.filter((node) => node.intent)
-    .map((node) => intentKey(node.intent, canonicalParents(node.parentIds))));
-  return proposals.map((intent) => {
-    if (!intent || typeof intent !== 'object' || Array.isArray(intent)) {
-      throw failure('INVALID_DECISION', 'Each intent must be an object.');
-    }
-    if (Object.hasOwn(intent, 'hint')) {
-      throw failure('INVALID_DECISION', 'Reason cannot write authenticated human hints.');
-    }
-    if (typeof intent.description !== 'string' || !intent.description.trim()) {
-      throw failure('INVALID_DECISION', 'Each intent requires a nonempty description.');
-    }
-    let parentIds = intent.parentIds === undefined
-      ? [snapshot.rootId] : resolveReferences(intent.parentIds, context, 'parentIds');
-    parentIds = canonicalParents(parentIds);
-    if (parentIds.some(id => { const node = byId.get(id); return node.kind === 'intent' && !node.fact; })) {
-      throw failure('INVALID_DECISION', 'New exploration must cite recorded facts or the root, not unfinished intents.');
-    }
-    if (parentIds.length === 0) throw failure('INVALID_DECISION', 'Each intent requires at least one parent.');
-    const priority = intent.priority === undefined ? 'medium' : intent.priority;
-    if (typeof priority !== 'string' || !['high', 'medium', 'low'].includes(priority.trim().toLowerCase())) {
-      throw failure('INVALID_DECISION', 'Intent priority must be high, medium, or low.');
-    }
-    let keyPoints;
-    try {
-      keyPoints = normalizeKeyPoints(intent.keyPoints);
-    } catch (cause) {
-      throw failure('INVALID_DECISION', `Invalid intent keyPoints: ${cause.message}`, cause);
-    }
-    const prepared = { description: intent.description.trim(), parentIds, priority: priority.trim().toLowerCase(), keyPoints };
-    const key = intentKey(prepared, parentIds);
-    if (seen.has(key)) {
-      throw failure('INVALID_DECISION', 'The proposed intent duplicates the same description, key points, and parent evidence. Resume failed work explicitly.');
-    }
-    seen.add(key);
-    return prepared;
-  });
+  if (!intent || typeof intent !== 'object' || Array.isArray(intent)) {
+    throw failure('INVALID_DECISION', 'Each intent must be an object.');
+  }
+  if (Object.hasOwn(intent, 'hint')) {
+    throw failure('INVALID_DECISION', 'Reason cannot write authenticated human hints.');
+  }
+  if (typeof intent.description !== 'string' || !intent.description.trim()) {
+    throw failure('INVALID_DECISION', 'Each intent requires a nonempty description.');
+  }
+  let parentIds = intent.parentIds === undefined
+    ? [snapshot.rootId] : resolveReferences(intent.parentIds, context, 'parentIds');
+  parentIds = canonicalParents(parentIds);
+  if (parentIds.some(id => { const node = byId.get(id); return node.kind === 'intent' && !node.fact; })) {
+    throw failure('INVALID_DECISION', 'New exploration must cite recorded facts or the root, not unfinished intents.');
+  }
+  if (parentIds.length === 0) throw failure('INVALID_DECISION', 'Each intent requires at least one parent.');
+  const priority = intent.priority === undefined ? 'medium' : intent.priority;
+  if (typeof priority !== 'string' || !['high', 'medium', 'low'].includes(priority.trim().toLowerCase())) {
+    throw failure('INVALID_DECISION', 'Intent priority must be high, medium, or low.');
+  }
+  let keyPoints;
+  try {
+    keyPoints = normalizeKeyPoints(intent.keyPoints);
+  } catch (cause) {
+    throw failure('INVALID_DECISION', `Invalid intent keyPoints: ${cause.message}`, cause);
+  }
+  const prepared = { description: intent.description.trim(), parentIds, priority: priority.trim().toLowerCase(), keyPoints };
+  const key = intentKey(prepared, parentIds);
+  if (seen.has(key)) {
+    throw failure('INVALID_DECISION', 'The proposed intent duplicates the same description, key points, and parent evidence. Resume failed work explicitly.');
+  }
+  seen.add(key);
+  return prepared;
 }
 
 /** Provider-neutral Reason -> parallel Workers -> durable Blackboard loop. */
@@ -317,13 +312,39 @@ export class BlackboardCoordinator {
         if (!Array.isArray(decision.intents)) {
           throw failure('INVALID_DECISION', 'An unfinished decision must contain an intents array.');
         }
-        if (decision.intents.length === 0) {
+        const capacity = intentCapacity(snapshot.nodes, this.blackboard.openIntents);
+        const byId = new Map(snapshot.nodes.map(node => [node.id, node]));
+        const canonicalParents = ids => [...new Set(ids.map(id => byId.get(id)?.resultId || id))];
+        const seen = new Set(snapshot.nodes.filter(node => node.intent)
+          .map(node => intentKey(node.intent, canonicalParents(node.parentIds))));
+        const { admitted, wait, errors } = fillIntentSlots(decision.intents, {
+          available: capacity.available,
+          tryPrepare: item => prepareIntent(item, snapshot, context, seen, byId)
+        });
+        if (wait) {
+          reviewedState = stateKey;
+          await launch();
+          if (!active.size) throw failure('STALLED', 'No remaining workers to wait for.');
+          await waitForWorker();
+          continue;
+        }
+        if (admitted.length === 0) {
+          if (errors[0]) throw errors[0];
           throw failure('STALLED', 'Reason supplied no new intents and no executable pending work remains.');
         }
-        assertIntentCapacity(snapshot.nodes, decision.intents.length, this.blackboard.openIntents);
-        const intents = prepareIntents(decision.intents, snapshot, context);
-        try { await this.blackboard.createIntents(intents, { expectedRevision: snapshot.revision }); }
-        catch (error) { if (error.code === 'STALE_DECISION') continue; throw error; }
+        try { await this.blackboard.createIntents(admitted, { expectedRevision: snapshot.revision }); }
+        catch (error) {
+          if (error.code === 'STALE_DECISION') continue;
+          if (error.code === 'OPEN_INTENT_LIMIT') {
+            reviewedState = stateKey;
+            await launch();
+            if (active.size) {
+              await waitForWorker();
+              continue;
+            }
+          }
+          throw error;
+        }
         checkAbort(signal);
         await launch();
         await waitForWorker();

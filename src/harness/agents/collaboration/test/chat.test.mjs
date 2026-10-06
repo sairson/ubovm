@@ -448,6 +448,38 @@ test('workers page durable dependency results beyond summaries and root can read
   assert.equal(await runCollaboration({ ...options, text: 'Read saved result' }), 'Restored result');
 });
 
+test('read_worker_result reports an in-progress worker without marking the tool failed', async t => {
+  const started = Promise.withResolvers();
+  const finish = Promise.withResolvers();
+  const options = await fixture(t, (model, request) => {
+    if (childRequest(request)) {
+      started.resolve();
+      return finish.promise.then(() => respond(model, 'child done'));
+    }
+    const spawned = toolResults(request, 'spawn_worker');
+    if (!spawned.length) return respond(model, [toolCall('slow', 'spawn_worker', { task: 'slow-child' })]);
+    const worker_id = JSON.parse(plain(spawned[0])).worker_id;
+    const pages = toolResults(request, 'read_worker_result');
+    if (!pages.length) return started.promise.then(() => respond(model, [toolCall('peek', 'read_worker_result', { worker_id })]));
+    assert.equal(pages[0].isError, false);
+    const peek = JSON.parse(plain(pages[0]));
+    assert.equal(peek.available, false);
+    assert.equal(['queued', 'running', 'waiting'].includes(peek.status), true);
+    assert.match(peek.guidance, /wait_workers/);
+    assert.match(peek.guidance, /has not failed/);
+    if (!toolResults(request, 'wait_workers').length) {
+      finish.resolve();
+      return respond(model, [toolCall('wait', 'wait_workers')]);
+    }
+    return respond(model, 'Integrated');
+  });
+  try {
+    assert.equal(await runCollaboration({ ...options, text: 'Peek while running' }), 'Integrated');
+  } finally {
+    finish.resolve();
+  }
+});
+
 test('durable notes publish before tool completion and survive immediate cancellation', async t => {
   let recovering = false;
   const options = await fixture(t, model => recovering ? respond(model, 'Restored')

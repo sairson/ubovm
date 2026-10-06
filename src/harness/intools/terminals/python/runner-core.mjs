@@ -2,27 +2,31 @@ import { mkdtemp, writeFile, rm, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import * as runtime from '@anthropic-ai/sandbox-runtime';
 import { runLocalProcess } from '../../shared/process/local-process.mjs';
 import { contained } from '../../shared/common.mjs';
 import { pythonPolicy, pythonCommand, privatePythonPaths, workspacePrivatePythonPaths, omitMissingPythonDenyPaths, pythonAllowsAnyHost } from './policy.mjs';
 import { validatePythonPaths, preparePythonOutput, removeEmptyPythonOutput } from './files.mjs';
 import { acquirePythonLease } from './lease.mjs';
 import { grantPythonHelper, assertPythonAclCleanup } from './readiness.mjs';
-import { snapshotPythonWorkspace } from './workspace.mjs';
 
-const runtimePaths = [fileURLToPath(new URL('../../../', import.meta.url)), process.execPath,
-  dirname(dirname(dirname(dirname(fileURLToPath(import.meta.resolve('@anthropic-ai/sandbox-runtime'))))))];
+const harnessRoot = fileURLToPath(new URL('../../../', import.meta.url));
 const failure = (code, message) => Object.assign(new Error(message), { code });
+async function defaultSandboxBackend() {
+  return import('@anthropic-ai/sandbox-runtime');
+}
+function defaultProtectedRuntimePaths() {
+  return [harnessRoot, process.execPath,
+    dirname(dirname(dirname(dirname(fileURLToPath(import.meta.resolve('@anthropic-ai/sandbox-runtime'))))))];
+}
 
 // Dependencies are injectable only in this internal module for lifecycle tests.
 // The registered AI tool never accepts a backend or an isolation override.
 export async function executePythonRequest(request, signal, observer = () => {}, dependencies = {}) {
-  const { backend = runtime, run = runLocalProcess, lease = acquirePythonLease, platform = process.platform,
-    protectedRuntimePaths = runtimePaths } = dependencies;
+  const { backend = await defaultSandboxBackend(), run = runLocalProcess, lease = acquirePythonLease, platform = process.platform,
+    protectedRuntimePaths = defaultProtectedRuntimePaths() } = dependencies;
   const manager = backend.SandboxManager;
   let release, controlDirectory, tempRoot, result, error, initialized = false, prepared = false, cleanupConfirmed = true;
-  let phase = 'queued', failedPhase, sandboxUserSid, srtWin, executionExitCode = null, outputPathChanged = false, snapshot;
+  let phase = 'queued', failedPhase, sandboxUserSid, srtWin, executionExitCode = null, outputPathChanged = false;
   const notify = message => {
     // A disconnected IPC channel or a failed progress observer must never skip
     // the finally block's ACL reset, temporary-file removal, or lease release.
@@ -49,11 +53,10 @@ export async function executePythonRequest(request, signal, observer = () => {},
     setPhase('preparing'); await preparePythonOutput(request); prepared = true;
     notify({ type: 'prepared', outputDirectory: request.outputDirectory });
     tempRoot = await realpath(tmpdir()); controlDirectory = await mkdtemp(join(tempRoot, 'ubovm-python-control-'));
+    // Windows grants the sandbox account read on the live workspace. A private
+    // copy would hide original paths, omit most of a large tree, and fail the
+    // copy budget — Python then cannot open the files the rest of the IDE sees.
     let executionRequest = request;
-    if (platform === 'win32' && !request.allowWorkspaceWrite) {
-      const preparedInputs = await snapshotPythonWorkspace(request, controlDirectory, signal);
-      executionRequest = preparedInputs.request; snapshot = preparedInputs.metadata;
-    }
     if (request.code !== undefined) {
       // A real entrypoint lets Python register __main__, resolve tracebacks,
       // and re-import guarded code in multiprocessing spawn children. Keep
@@ -120,5 +123,5 @@ export async function executePythonRequest(request, signal, observer = () => {},
   }
   return { ...(error ? { error: String(error.message).slice(0, 8192), errorCode: error.code ?? 'PYTHON_EXECUTION_FAILED' } : {}),
     exitCode: executionExitCode,
-    outputDirectory: prepared && !outputPathChanged ? request.outputDirectory : null, cleanupConfirmed, phase: failedPhase ?? 'cleanup', ...(snapshot ? { snapshot } : {}) };
+    outputDirectory: prepared && !outputPathChanged ? request.outputDirectory : null, cleanupConfirmed, phase: failedPhase ?? 'cleanup' };
 }

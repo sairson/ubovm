@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { writeSnapshot } from './persistence.mjs';
-import { assertIntentCapacity, MAX_OPEN_INTENTS, normalizeOpenIntents } from './intent-capacity.mjs';
+import { assertIntentCapacity, MAX_OPEN_INTENTS, normalizeOpenIntents, takeOpenIntentSlots } from './intent-capacity.mjs';
 
 const clone = value => structuredClone(value);
 const now = () => new Date().toISOString();
@@ -307,8 +307,8 @@ export class Blackboard {
     const copied = clone(specs);
     return this.#commit('blackboard.intents.created', state => {
       if (!Array.isArray(copied)) throw new TypeError('intents must be an array');
-      assertIntentCapacity(state.nodes, copied.length, this.#openIntents);
-      return copied.map(spec => makeNode(state, spec, 'intent'));
+      const accepted = copied.slice(0, takeOpenIntentSlots(state.nodes, copied.length, this.#openIntents));
+      return accepted.map(spec => makeNode(state, spec, 'intent'));
     }, expectedRevision);
   }
 

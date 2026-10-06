@@ -105,7 +105,7 @@ export async function runConversation({ client, options, workerId, signal, promp
     const admission = occupancy?.admission ?? (typeof swarm.admission === 'function' ? swarm.admission(workerId) : undefined);
     return selected.length || omittedWorkerCount ? JSON.stringify({ workers: selected, omittedWorkerCount, omittedInterruptedWorkerCount,
       ...(admission ? { admission } : {}),
-      guidance: 'Truncated summaries are incomplete. Read completed results with read_worker_result; inspect full task/status via list_workers and interrupted effects via read_worker_evidence. blocked.reason and admission.next/preemptable/releasing explain occupancy; preempt or interrupt instead of repeating the same wait. Do not repeat work to recover omitted text.',
+      guidance: 'Truncated summaries are incomplete. Read completed results with read_worker_result; an in-progress worker returns a wait hint, not a tool error. Inspect full task/status via list_workers and interrupted effects via read_worker_evidence. blocked.reason and admission.next/preemptable/releasing explain occupancy; preempt or interrupt instead of repeating the same wait. Do not repeat work to recover omitted text.',
       ...(omittedInterruptedWorkerCount ? { warning: 'Earlier interrupted workers are omitted from this context and remain in the audit. Their effects may be unknown. Do not infer they never ran or repeat effects based on missing evidence.' } : {}) }) : '[]';
   };
   const check = () => { signal?.throwIfAborted(); if (fatal) throw fatal; };
