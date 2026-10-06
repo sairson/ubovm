@@ -1304,14 +1304,15 @@
     return content;
   }
   let blackboardGraph, goalExecutionLog;
-  function renderBlackboard(snapshot) {
+  function renderBlackboard(snapshot, completion) {
     const nodes = Array.isArray(snapshot?.nodes) ? snapshot.nodes : [];
-    renderSection('blackboard', [snapshot?.sessionId, snapshot?.revision, snapshot?.rootId, snapshot?.goal, nodes], () => {
+    const evidenceIds = completion?.complete === true && Array.isArray(completion.evidenceIds) ? completion.evidenceIds : [];
+    renderSection('blackboard', [snapshot?.sessionId, snapshot?.revision, snapshot?.rootId, snapshot?.goal, nodes, evidenceIds], () => {
       byId('blackboard-empty').hidden = nodes.length > 0;
       byId('blackboard-nodes').hidden = nodes.length === 0;
       blackboardGraph ??= window.createBlackboardGraph(byId('blackboard-nodes'), { factText, statusText, actionsContainer: byId('goal-board-actions'),
         onDetail: hostState?.nativeBlackboardSidebar ? (detail, reveal) => vscode.postMessage({ action: 'blackboardDetail', sessionId: currentSessionId, detail, reveal }) : undefined });
-      blackboardGraph.update(snapshot);
+      blackboardGraph.update(evidenceIds.length && snapshot ? { ...snapshot, completionEvidenceIds: evidenceIds } : snapshot);
       byId('blackboard-revision').textContent = Number.isInteger(snapshot?.revision) ? '修订 ' + snapshot.revision : '等待执行';
     });
   }
@@ -1406,6 +1407,7 @@
       setText(byId('goal-output-empty'), busy ? '正在启动，执行日志将在事件产生后显示。' : '执行后，规划、任务派发和工具调用会按顺序显示在这里。');
       setText(byId('goal-output-title'), '思考与调度日志');
       setText(byId('goal-output-status'), label + ' · ' + count + ' 条记录');
+      setAttribute(byId('goal-output-status'), 'data-phase', status);
       // Empty-state / flex height changes after update; re-align follow once layout settles.
       if (count) goalExecutionLog.alignFollow?.();
     }
@@ -1415,7 +1417,7 @@
       renderActivities(byId('assist-activities'), remainingActivities);
       setProperty(byId('assist-execution'), 'hidden', !remainingActivities.length && !error);
     } else setProperty(byId('assist-execution'), 'hidden', true);
-    if (goalMode && selected === 'board') renderBlackboard(execution.blackboard);
+    if (goalMode && selected === 'board') renderBlackboard(execution.blackboard, execution.result);
     if (selected === 'notes') renderAgentNotes(execution.memory);
   }
   function renderGoal() {

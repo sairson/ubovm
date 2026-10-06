@@ -47,12 +47,18 @@
         if (start !== null && start >= Math.max(0, total - pageSize)) start = null;
       }
       lastTop = container.scrollTop;
+      markFollow();
     }, { passive: true });
+    function markFollow() {
+      const value = follow && start === null ? 'true' : 'false';
+      if (container.dataset.following !== value) container.dataset.following = value;
+    }
     function reset() {
       cancelFollowFrame();
       for (const row of rows.values()) window.UBOVMMessage.release?.(row.body);
       rows.clear(); container.replaceChildren(); latestExecution = undefined; firstId = undefined; start = null; session = '';
       follow = true; lastTop = 0; total = 0; pager.hidden = true;
+      markFollow();
     }
     function page(offset) {
       follow = false;
@@ -61,6 +67,7 @@
       update(session, latestExecution);
       container.scrollTop = 0;
       lastTop = container.scrollTop;
+      markFollow();
     }
     earlier.addEventListener('click', () => page(-pageSize)); newer.addEventListener('click', () => page(pageSize));
     function showLatest() {
@@ -78,7 +85,7 @@
       window.UBOVMTimeline.eachToolPart({ execution }, part => { if (part.type === 'tool' && part.name) toolNames.add(part.name); });
       for (const part of inline) if (part.source !== 'worker' && ['text', 'thinking', 'tool', 'summary'].includes(part.type)) entries.push({
         id: 'part:' + part.id, time: timestamp(part.startedAt), kind: part.type, part,
-        label: part.type === 'thinking' ? '规划 · 思考' : part.type === 'tool' ? '规划 · 工具调用' : part.type === 'summary' ? '上下文摘要' : part.source === 'reason' ? '规划 · 结论' : '规划 · 输出', status: part.status
+        label: part.type === 'thinking' ? '思考' : part.type === 'tool' ? '工具' : part.type === 'summary' ? '上下文摘要' : part.source === 'reason' ? '结论' : '输出', status: part.status
       });
       for (const worker of execution.workers || []) {
         entries.push({ id: 'worker:' + worker.id, time: timestamp(worker.createdAt ?? worker.startedAt), kind: 'worker', label: '分派任务', worker, status: 'created' });
@@ -87,7 +94,7 @@
       for (const [index, activity] of (execution.activities || []).entries()) {
         if (activity.label === 'skill.loaded' && activity.status === 'completed') continue;
         if (toolNames.has(activity.label)) continue;
-        entries.push({ id: 'activity:' + (activity.key || index), time: timestamp(activity.timestamp), kind: 'activity', label: activity.label === 'Reason' ? '规划 · 调度' : window.UBOVMTimeline.displayActivityLabel(activity.label), status: activity.status });
+        entries.push({ id: 'activity:' + (activity.key || index), time: timestamp(activity.timestamp), kind: 'activity', label: activity.label === 'Reason' ? '调度' : window.UBOVMTimeline.displayActivityLabel(activity.label), status: activity.status });
       }
       if (!parts.some(part => part.type === 'text') && execution.streamText) entries.push({ id: 'stream', kind: 'text', label: '规划 · 输出', text: execution.streamText });
       if (execution.status === 'completed' && execution.result?.summary) entries.push({ id: 'result', kind: 'result', label: '执行总结', text: execution.result.summary, status: 'completed' });
@@ -126,6 +133,8 @@
         if (!equal(row.key, key)) {
           if (entry.worker) {
             const worker = entry.worker, button = element('button', 'goal-log-worker', worker.name || worker.id); button.type = 'button';
+            button.title = tr('查看任务执行记录');
+            button.setAttribute('aria-label', tr('查看任务执行记录') + '：' + (worker.name || worker.id));
             button.addEventListener('click', () => openWorker(worker.id, button));
             row.body.replaceChildren(button, element('p', '', worker.description || ''), element('small', '', worker.parentId ? tr('来自上级任务') : ''));
             const error = typeof worker.error === 'string' ? worker.error : worker.error?.message;
@@ -145,6 +154,7 @@
       for (const [id, row] of rows) if (!kept.has(id)) { window.UBOVMMessage.release?.(row.body); row.root.remove(); rows.delete(id); }
       // Stick to the newest content while following; growth alone must not pin an older page.
       if (follow && start === null) scheduleFollow();
+      markFollow();
       return entries.length;
     }
     return { update, reset, showLatest, alignFollow: scheduleFollow, dispose() { cancelFollowFrame(); reset(); pager.remove(); } };

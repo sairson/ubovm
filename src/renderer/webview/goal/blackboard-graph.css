@@ -83,6 +83,8 @@
 .graph-node[aria-pressed="true"] { border-color: var(--graph-accent); background: color-mix(in srgb, var(--graph-accent) 5%, var(--canvas)); box-shadow: 0 0 0 3px color-mix(in srgb, var(--graph-accent) 12%, transparent); }
 .graph-node[data-kind="root"][aria-pressed="true"] { background: var(--graph-accent); }
 .graph-edges path, .graph-edges path[data-status="completed"] { stroke: var(--graph-line); stroke-opacity: 1; }
+.graph-edges path[data-kind="achieves"] { stroke: var(--graph-accent); stroke-width: 1.6; }
+.graph-node.graph-goal-badge[data-achieved="true"] { border-color: var(--graph-accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--graph-accent) 14%, transparent); }
 .graph-edges path[data-status="running"] { stroke: var(--graph-accent); }
 .graph-edges path[data-status="failed"] { stroke: var(--graph-error); stroke-opacity: .8; }
 .graph-edges path[data-status="interrupted"] { stroke: var(--graph-line); }

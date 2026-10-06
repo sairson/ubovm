@@ -316,6 +316,66 @@ test('final goal displays the objective and supports dragging, refresh and layou
   } finally { await browser.close(); }
 });
 
+test('completed evidence points to the final goal node', async () => {
+  const browser = await chromium.launch({ headless: true, executablePath: process.env.UBOVM_STYLE_EDGE || 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe' });
+  try {
+    const page = await browser.newPage({ viewport: { width: 1000, height: 900 } });
+    await page.setContent('<div id="board"></div>');
+    for (const file of ['styles.css', 'theme.css', 'goal/blackboard-graph.css']) await page.addStyleTag({ path: 'src/renderer/webview/' + file });
+    for (const name of ['exploration-model', 'blackboard-graph']) await page.addScriptTag({ path: `src/renderer/webview/goal/${name}.js` });
+    const board = {
+      sessionId: 'done', rootId: 'root', goal: '交付可使用的最终产品',
+      nodes: [
+        { id: 'root', kind: 'root', parentIds: [] },
+        { id: 'proof', kind: 'fact', parentIds: ['root'], fact: { content: '验收已通过' } },
+        { id: 'intent-1', kind: 'intent', parentIds: ['proof'], intent: { description: '核对交付', status: 'completed' }, fact: { content: '交付物已经可以运行' } }
+      ]
+    };
+    await page.evaluate(snapshot => {
+      window.graph = window.createBlackboardGraph(document.querySelector('#board'), { factText: value => value || '', statusText: value => value });
+      window.graph.update(snapshot);
+    }, board);
+    assert.equal(await page.locator('.graph-edges path[data-kind="achieves"]').count(), 0);
+    assert.equal(await page.locator('.graph-goal-badge').getAttribute('data-achieved'), 'false');
+    await page.evaluate(snapshot => window.graph.update({ ...snapshot, completionEvidenceIds: ['proof', 'intent-1', 'missing'] }), board);
+    const links = page.locator('.graph-edge-hit[data-target="final-goal"]');
+    assert.deepEqual(await links.evaluateAll(nodes => nodes.map(node => node.dataset.source).sort()), ['proof', 'result:intent-1']);
+    assert.equal(await page.locator('.graph-goal-badge').getAttribute('data-achieved'), 'true');
+    assert.match(await page.locator('.graph-edge-label[data-kind="achieves"]').first().textContent(), /达成目标/);
+    const attached = await links.evaluateAll(paths => {
+      const canvas = document.querySelector('.graph-canvas').getBoundingClientRect();
+      const box = node => { const r = node.getBoundingClientRect(); return { x: r.x - canvas.x, y: r.y - canvas.y, width: r.width, height: r.height }; };
+      const goal = box(document.querySelector('.graph-goal-badge'));
+      return paths.map(path => {
+        const source = box(document.querySelector('[data-node-id="' + path.dataset.source + '"]'));
+        const start = path.getPointAtLength(0), end = path.getPointAtLength(path.getTotalLength());
+        const onBox = (p, r) => p.x >= r.x - 1 && p.x <= r.x + r.width + 1 && p.y >= r.y - 1 && p.y <= r.y + r.height + 1
+          && Math.min(Math.abs(p.x - r.x), Math.abs(p.y - r.y), Math.abs(p.x - r.x - r.width), Math.abs(p.y - r.y - r.height)) < 1.5;
+        return onBox(start, source) && onBox(end, goal);
+      });
+    });
+    assert.deepEqual(attached, [true, true]);
+    const goal = page.locator('.graph-goal-badge');
+    const before = await goal.boundingBox();
+    await page.mouse.move(before.x + 40, before.y + 30);
+    await page.mouse.down(); await page.mouse.move(before.x + 140, before.y + 80, { steps: 6 }); await page.mouse.up();
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(resolve)));
+    const moved = await links.evaluateAll(paths => {
+      const canvas = document.querySelector('.graph-canvas').getBoundingClientRect();
+      const goal = document.querySelector('.graph-goal-badge').getBoundingClientRect();
+      return paths.every(path => {
+        const end = path.getPointAtLength(path.getTotalLength());
+        const x = end.x + canvas.x, y = end.y + canvas.y;
+        return x >= goal.x - 1 && x <= goal.right + 1 && y >= goal.y - 1 && y <= goal.bottom + 1;
+      });
+    });
+    assert.equal(moved, true);
+    await page.evaluate(snapshot => window.graph.update(snapshot), board);
+    assert.equal(await page.locator('.graph-edges path[data-kind="achieves"]').count(), 0);
+    assert.equal(await page.locator('.graph-goal-badge').getAttribute('data-achieved'), 'false');
+  } finally { await browser.close(); }
+});
+
 // Exercise the graph payload and the actual sidebar page together.
 test('fact sidebar separates structured evidence and shows plain facts only once', async t => {
   const { renderSidebar } = await import('../../../host/ui/blackboard-sidebar.cjs');

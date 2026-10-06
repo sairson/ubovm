@@ -28,6 +28,7 @@
     const canvas = el('div', 'graph-canvas');
     const edges = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); edges.classList.add('graph-edges'); edges.setAttribute('aria-label', '探索意图连线');
     const goalPositionId = Symbol('final-goal');
+    const GOAL_TARGET = 'final-goal';
     const goalBadge = el('button', 'graph-node graph-goal-badge'); goalBadge.type = 'button';
     const goalTitle = el('strong', 'graph-node-title');
     goalBadge.append(el('span', 'graph-node-state', tr('最终目标')), goalTitle);
@@ -182,9 +183,10 @@
       const byId = new Map((projectedSnapshot?.graphNodes || []).map(n => [n.id, n]));
       for (const cached of edgeRecords.values()) {
         const source = cached.line.dataset.source, target = cached.line.dataset.target;
-        if (source !== nodeId && target !== nodeId) continue;
-        const from = positions.get(source), to = positions.get(target);
-        const parent = byId.get(source), child = byId.get(target);
+        const dragged = nodeId === goalPositionId ? GOAL_TARGET : nodeId;
+        if (source !== dragged && target !== dragged) continue;
+        const from = positions.get(source), to = positions.get(target === GOAL_TARGET ? GOAL_TARGET : target);
+        const parent = byId.get(source), child = target === GOAL_TARGET ? { kind: 'goal' } : byId.get(target);
         if (!from || !to || !parent || !child) continue;
         const parentHeight = parent.kind === 'root' ? 48 : NODE_HEIGHT;
         const parentWidth = parent.kind === 'root' ? 88 : NODE_WIDTH;
@@ -217,6 +219,7 @@
       positions.set(id, p);
       if (id === goalPositionId) {
         goalBadge.style.left = p.x + 'px'; goalBadge.style.top = p.y + 'px';
+        positions.set(GOAL_TARGET, p);
       } else {
         const record = records.get(id);
         if (record) { record.button.style.left = p.x + 'px'; record.button.style.top = p.y + 'px'; }
@@ -451,7 +454,25 @@
         if (!incoming.has(edge.target)) incoming.set(edge.target, []);
         incoming.get(edge.target).push(edge);
       }
-      for (const n of graphNodes) {
+      const evidenceIds = Array.isArray(snapshot.completionEvidenceIds) ? snapshot.completionEvidenceIds.filter(id => typeof id === 'string') : [];
+      const achievementSources = [];
+      for (const id of evidenceIds) {
+        if (byId.has(id) && byId.get(id).kind === 'fact') achievementSources.push(id);
+        else {
+          const produced = graphNodes.find(node => node.kind === 'fact' && (node.producerId === id || node.sourceId === id));
+          if (produced) achievementSources.push(produced.id);
+        }
+      }
+      const achieved = [...new Set(achievementSources)].filter(id => byId.has(id) && id !== GOAL_TARGET);
+      goalBadge.dataset.achieved = achieved.length ? 'true' : 'false';
+      const drawable = [...graphNodes];
+      if (achieved.length && !byId.has(GOAL_TARGET)) {
+        positions.set(GOAL_TARGET, goalPosition);
+        byId.set(GOAL_TARGET, { id: GOAL_TARGET, kind: 'goal' });
+        incoming.set(GOAL_TARGET, achieved.map(source => ({ source, target: GOAL_TARGET, status: 'completed', description: '达成目标', goal: true })));
+        drawable.push(byId.get(GOAL_TARGET));
+      }
+      for (const n of drawable) {
         const p = positions.get(n.id);
         for (const edge of incoming.get(n.id) || []) {
           const parent = edge.source;
@@ -460,7 +481,7 @@
           const cached = edgeRecords.get(key); keptEdges.add(key);
           const line = cached?.line || document.createElementNS('http://www.w3.org/2000/svg', 'path');
           line.dataset.source = parent; line.dataset.target = n.id;
-          line.dataset.kind = edge.intentId ? 'explores' : 'derives'; line.dataset.status = edge.status || '';
+          line.dataset.kind = edge.goal ? 'achieves' : edge.intentId ? 'explores' : 'derives'; line.dataset.status = edge.status || '';
           if (edge.intentId) line.dataset.intentId = edge.intentId;
           const parentHeight = byId.get(parent).kind === 'root' ? 48 : NODE_HEIGHT;
           const parentWidth = byId.get(parent).kind === 'root' ? 88 : NODE_WIDTH;
@@ -481,7 +502,7 @@
           line.setAttribute('d', `${route} M${x2 - 6 * Math.cos(angle - .5)},${y2 - 6 * Math.sin(angle - .5)} L${x2},${y2} L${x2 - 6 * Math.cos(angle + .5)},${y2 - 6 * Math.sin(angle + .5)}`);
           const label = cached?.label || document.createElementNS('http://www.w3.org/2000/svg', 'text');
           label.classList.add('graph-edge-label'); label.dataset.source = parent; label.dataset.target = n.id; label.dataset.status = edge.status || '';
-          const edgeTitle = edge.intentId ? `${edge.description} · ${statusText(edge.status)}` : '提供依据';
+          const edgeTitle = edge.goal ? tr('达成目标') : edge.intentId ? `${edge.description} · ${statusText(edge.status)}` : '提供依据';
           const tooltip = cached?.tooltip || document.createElementNS('http://www.w3.org/2000/svg', 'title'); put(tooltip, edgeTitle); if (!cached) line.append(tooltip);
           const definitions = cached?.definitions || document.createElementNS('http://www.w3.org/2000/svg', 'defs');
           const track = cached?.track || document.createElementNS('http://www.w3.org/2000/svg', 'path');
@@ -499,10 +520,10 @@
           textPath.setAttribute('href', '#' + track.id); textPath.setAttribute('startOffset', '50%');
           put(textPath, edgeTitle.length > 26 ? edgeTitle.slice(0, 25) + '…' : edgeTitle);
           if (!cached) label.append(textPath);
-          const selectionId = edge.intentId || n.id;
+          const selectionId = edge.goal ? edge.source : edge.intentId || n.id;
           const hit = cached?.hit || document.createElementNS('http://www.w3.org/2000/svg', 'path');
           hit.classList.add('graph-edge-hit'); hit.setAttribute('d', route);
-          hit.dataset.source = parent; hit.dataset.target = n.id;
+          hit.dataset.source = parent; hit.dataset.target = n.id; hit.dataset.kind = line.dataset.kind; label.dataset.kind = line.dataset.kind;
           hit.style.strokeWidth = String(14 / scale);
           hit.setAttribute('aria-hidden', 'true');
           label.dataset.selectionId = line.dataset.selectionId = hit.dataset.selectionId = selectionId;
@@ -521,6 +542,7 @@
           if (!cached) edgeRecords.set(key, { definitions, hit, line, label, track, tooltip, textPath });
           paths.push(definitions, hit, line, label);
         }
+        if (n.kind === 'goal') continue;
         let record = records.get(n.id);
         const fresh = !record;
         if (!record) {
