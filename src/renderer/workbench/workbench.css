@@ -223,6 +223,174 @@ html:not(.ubovm-content-slow) .ubovm-sessions-loading .tree-explorer-viewlet-tre
  */
 .monaco-workbench .part.editor :is(.editor-actions, .title > .title-actions):has(.codicon-screen-full, .codicon-screen-normal, .codicon-open-preview, .codicon-preview, .codicon-file-code) { display: flex !important; }
 .monaco-workbench .part.editor :is(.editor-actions, .title > .title-actions) .action-item:not(:has(.codicon-screen-full, .codicon-screen-normal, .codicon-open-preview, .codicon-preview, .codicon-file-code)) { display: none !important; }
+
+/* File and browser editors share this title strip. Keep native tab hit targets
+ * and close actions; restyle the chrome so it matches the sidebar chips. */
+.monaco-workbench .part.editor > .content .editor-group-container > .title.tabs {
+  --editor-group-tab-height: 24px !important;
+  --ubovm-editor-tab-radius: 3px;
+  --ubovm-editor-tab-inactive: color-mix(in srgb, var(--vscode-foreground) 62%, transparent);
+  --ubovm-editor-tab-chip: color-mix(in srgb, var(--vscode-foreground) 10%, transparent);
+  --ubovm-editor-tab-chip-idle: color-mix(in srgb, var(--vscode-foreground) 4%, transparent);
+  --ubovm-editor-tab-chip-hover: color-mix(in srgb, var(--vscode-foreground) 7%, transparent);
+  --ubovm-editor-tab-accent: var(--vscode-focusBorder, #3d7a55);
+  padding: 0 6px;
+  box-sizing: border-box;
+  background: color-mix(in srgb, var(--vscode-foreground) 4%, var(--vscode-editor-background)) !important;
+  border-bottom: 1px solid color-mix(in srgb, var(--vscode-foreground) 10%, transparent);
+  cursor: default;
+}
+.monaco-workbench.vs-dark .part.editor > .content .editor-group-container > .title.tabs {
+  --ubovm-editor-tab-inactive: color-mix(in srgb, var(--vscode-foreground) 72%, transparent);
+  --ubovm-editor-tab-chip: color-mix(in srgb, var(--vscode-foreground) 14%, transparent);
+  --ubovm-editor-tab-chip-idle: color-mix(in srgb, var(--vscode-foreground) 6%, transparent);
+  --ubovm-editor-tab-chip-hover: color-mix(in srgb, var(--vscode-foreground) 10%, transparent);
+  --ubovm-editor-tab-accent: var(--vscode-focusBorder, #a3c0ae);
+  background: color-mix(in srgb, var(--vscode-foreground) 6%, var(--vscode-editor-background)) !important;
+  border-bottom-color: color-mix(in srgb, var(--vscode-foreground) 14%, transparent);
+}
+.monaco-workbench .part.editor > .content .editor-group-container > .title > .tabs-and-actions-container {
+  --tabs-border-bottom-color: transparent !important;
+  align-items: center;
+}
+.monaco-workbench .part.editor > .content .editor-group-container > .title > .tabs-and-actions-container.tabs-border-bottom::after {
+  display: none;
+}
+.monaco-workbench.modern-ui-tabs .part.editor .tabs-and-actions-container:not(.wrapping) .tabs-container,
+.monaco-workbench.modern-ui-tabs .part.editor .tabs-and-actions-container:not(.wrapping) .tabs-container > .tab,
+.monaco-workbench .part.editor .tabs-and-actions-container:not(.wrapping) .tabs-container,
+.monaco-workbench .part.editor .tabs-and-actions-container:not(.wrapping) .tabs-container > .tab {
+  min-height: 32px !important;
+}
+.monaco-workbench.modern-ui-tabs .part.editor .tabs-container > .tab,
+.monaco-workbench .part.editor .tabs-container > .tab {
+  align-items: center;
+  background: transparent !important;
+  border: none !important;
+  border-block: 4px solid transparent !important;
+  border-inline: 1px solid transparent !important;
+  border-radius: var(--ubovm-editor-tab-radius) !important;
+  box-shadow: none !important;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+  padding-left: 8px !important;
+  padding-right: 22px !important;
+  --tab-border-top-color: transparent !important;
+  color: var(--ubovm-editor-tab-inactive) !important;
+  font-family: 'Segoe UI', 'Microsoft YaHei UI', 'Microsoft YaHei', sans-serif;
+}
+.monaco-workbench .part.editor .tabs-container > .tab.close-action-off:not(.sticky-compact),
+.monaco-workbench .part.editor .tabs-container > .tab.sticky-compact {
+  padding-right: 8px !important;
+}
+.monaco-workbench .part.editor .tabs-container > .tab.active,
+.monaco-workbench .part.editor .tabs-container > .tab.selected {
+  color: var(--vscode-foreground) !important;
+}
+.monaco-workbench .part.editor .tabs-container > .tab > .tab-border-bottom-container,
+.monaco-workbench .part.editor .tabs-container > .tab > .tab-border-top-container {
+  display: none !important;
+}
+.monaco-workbench.modern-ui-tabs:not(:is(.hc-black, .hc-light)) .part.editor > .content .editor-group-container .tabs-container > .tab > .tab-fill,
+.monaco-workbench .part.editor > .content .editor-group-container .tabs-container > .tab > .tab-fill {
+  inset: 3px 2px !important;
+  border: none !important;
+  border-radius: var(--ubovm-editor-tab-radius) !important;
+  background: var(--ubovm-editor-tab-chip-idle) !important;
+  box-shadow: none !important;
+}
+.monaco-workbench.modern-ui-tabs:not(:is(.hc-black, .hc-light)) .part.editor > .content .editor-group-container .tabs-container > .tab:hover:not(.active):not(.selected) > .tab-fill,
+.monaco-workbench .part.editor > .content .editor-group-container .tabs-container > .tab:hover:not(.active):not(.selected) > .tab-fill {
+  background: var(--ubovm-editor-tab-chip-hover) !important;
+}
+.monaco-workbench.modern-ui-tabs:not(:is(.hc-black, .hc-light)) .part.editor > .content .editor-group-container.active .tabs-container > .tab:is(.active, .selected) > .tab-fill,
+.monaco-workbench.modern-ui-tabs:not(:is(.hc-black, .hc-light)) .part.editor > .content .editor-group-container:not(.active) .tabs-container > .tab:is(.active, .selected) > .tab-fill,
+.monaco-workbench .part.editor > .content .editor-group-container .tabs-container > .tab:is(.active, .selected) > .tab-fill {
+  background: var(--ubovm-editor-tab-chip) !important;
+  box-shadow: inset 0 -2px 0 var(--ubovm-editor-tab-accent) !important;
+}
+.monaco-workbench .part.editor .tabs-container > .tab .monaco-icon-label::before,
+.monaco-workbench .part.editor .tabs-container > .tab .monaco-icon-label-iconpath {
+  height: 16px !important;
+  width: 16px;
+  padding-right: 5px;
+  align-self: center;
+  flex-shrink: 0;
+  opacity: .88;
+}
+.monaco-workbench .part.editor .tabs-container > .tab:is(.active, .selected) .monaco-icon-label::before,
+.monaco-workbench .part.editor .tabs-container > .tab:is(.active, .selected) .monaco-icon-label-iconpath {
+  opacity: 1;
+}
+.monaco-workbench .part.editor .tabs-container > .tab .tab-label,
+.monaco-workbench .part.editor .tabs-container > .tab .tab-label a,
+.monaco-workbench .part.editor .tabs-container > .tab .label-name {
+  font-size: 12px !important;
+  font-weight: 500 !important;
+  letter-spacing: 0;
+  line-height: 18px !important;
+  color: inherit !important;
+}
+.monaco-workbench.modern-ui-tabs .part.editor > .content .editor-group-container.active > .title .tabs-container > .tab.active .tab-label:not(.monaco-decoration-itemColor) a,
+.monaco-workbench.modern-ui-tabs .part.editor > .content .editor-group-container.active > .title .tabs-container > .tab.active > .tab-actions .action-label {
+  color: var(--vscode-foreground) !important;
+}
+.monaco-workbench.modern-ui-tabs .part.editor > .content .editor-group-container.active > .title .tabs-container > .tab:not(.active):not(.selected) .tab-label:not(.monaco-decoration-itemColor) a {
+  color: var(--ubovm-editor-tab-inactive) !important;
+}
+.monaco-workbench .part.editor .tabs-container > .tab:is(.active, .selected) .tab-label a,
+.monaco-workbench .part.editor .tabs-container > .tab:is(.active, .selected) .label-name {
+  font-weight: 600 !important;
+}
+.monaco-workbench.modern-ui-tabs .part.editor .tabs-container > .tab > .tab-actions,
+.monaco-workbench .part.editor .tabs-container > .tab > .tab-actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent !important;
+  box-shadow: none !important;
+  border: none !important;
+  margin: 0 1px 0 2px;
+  width: 18px;
+  pointer-events: auto;
+}
+.monaco-workbench .part.editor .tabs-container > .tab > .tab-actions .actions-container {
+  display: flex;
+  align-items: center;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.monaco-workbench.modern-ui-tabs .part.editor .tabs-container > .tab > .tab-actions::before,
+.monaco-workbench .part.editor .tabs-container > .tab > .tab-actions::before {
+  content: none !important;
+  display: none !important;
+}
+.monaco-workbench .part.editor .tabs-container > .tab > .tab-actions .action-label {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 2px;
+  opacity: 0;
+  color: inherit;
+}
+.monaco-workbench.modern-ui-tabs .part.editor > .content .editor-group-container > .title .tabs-container > .tab:is(.active, .selected, :hover, :focus-within, .dirty) > .tab-actions .action-label,
+.monaco-workbench .part.editor .tabs-container > .tab:is(.active, .selected, :hover, :focus-within, .dirty) > .tab-actions .action-label {
+  opacity: .82 !important;
+}
+.monaco-workbench .part.editor .tabs-container > .tab > .tab-actions .action-label:hover {
+  opacity: 1 !important;
+  background: color-mix(in srgb, var(--vscode-foreground) 14%, transparent);
+}
+.monaco-workbench .part.editor .tabs-container > .tab > .tab-actions .action-label:active {
+  transform: scale(.94);
+}
+@media (prefers-reduced-motion: reduce) {
+  .monaco-workbench .part.editor .tabs-container > .tab > .tab-actions .action-label:active { transform: none; }
+}
+
 /* Right sidebar tabs: light title-bar pills (no segmented track).
  * Must out-specify `.modern-ui-tabs` (border-radius:0 + indicator fill)
  * so checked/inactive stay the same geometry. Avoid a bordered track —
@@ -498,8 +666,8 @@ html:not(.ubovm-content-slow) .ubovm-sessions-loading .tree-explorer-viewlet-tre
 }
 
 /* More, account and manage entries must not leak back through another toolbar.
- * Scope to workbench toolbar actions: do not suppress context-view overlays,
- * editor context menus, notifications, text selection or webview controls.
+ * Scope to workbench chrome: do not suppress the Integrated Browser navbar,
+ * context-view overlays, editor context menus, notifications or webviews.
  */
 .monaco-workbench .part .monaco-toolbar .action-item:has(
   .codicon-toolbar-more,
@@ -508,6 +676,13 @@ html:not(.ubovm-content-slow) .ubovm-sessions-loading .tree-explorer-viewlet-tre
   .codicon-gear
 ) {
   display: none !important;
+}
+.monaco-workbench .browser-root .monaco-toolbar .action-item:has(
+  .codicon-toolbar-more,
+  .codicon-settings-gear,
+  .codicon-gear
+) {
+  display: flex !important;
 }
 
 /* The left pane stays dedicated to sessions; right-side views have tabs. */
@@ -1345,3 +1520,193 @@ html[data-ubovm-locale="en"] .monaco-workbench .part.panel .title-actions .actio
 .monaco-workbench .ubovm-sessions-body:has(.ubovm-settings-navigation) .ubovm-session-tree .monaco-list-row[aria-label$="，当前设置"] :is(.custom-view-tree-node-item-icon, .label-description) {
   color: var(--vscode-list-activeSelectionForeground);
 }
+
+/* Integrated Browser: address bar and empty state should feel like a browser
+ * chrome, not a cramped editor widget. Keep the native layout; only restyle. */
+.monaco-workbench .browser-root {
+  --ubovm-browser-accent: var(--vscode-focusBorder, #3d7a55);
+  font-family: 'Segoe UI', 'Microsoft YaHei UI', 'Microsoft YaHei', sans-serif;
+}
+.monaco-workbench.vs .browser-root { --ubovm-browser-accent: var(--vscode-focusBorder, #3d7a55); }
+.monaco-workbench.vs-dark .browser-root { --ubovm-browser-accent: var(--vscode-focusBorder, #a3c0ae); }
+
+.monaco-workbench .browser-navbar {
+  padding: 8px 10px !important;
+  gap: 6px !important;
+  border-bottom: 1px solid color-mix(in srgb, var(--vscode-foreground) 8%, transparent);
+  background: color-mix(in srgb, var(--vscode-foreground) 3%, var(--vscode-editor-background)) !important;
+}
+.monaco-workbench.vs-dark .browser-navbar {
+  background: color-mix(in srgb, var(--vscode-foreground) 5%, var(--vscode-editor-background)) !important;
+  border-bottom-color: color-mix(in srgb, var(--vscode-foreground) 12%, transparent);
+}
+
+.monaco-workbench .browser-nav-toolbar .actions-container,
+.monaco-workbench .browser-actions-toolbar .actions-container {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.monaco-workbench .browser-nav-toolbar .action-item .action-label,
+.monaco-workbench .browser-actions-toolbar .action-item .action-label {
+  display: flex !important;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 3px;
+  box-sizing: border-box;
+  opacity: .88;
+  transition: background-color 120ms ease-out, color 120ms ease-out, opacity 120ms ease-out;
+}
+.monaco-workbench .browser-nav-toolbar .action-item .action-label:hover,
+.monaco-workbench .browser-actions-toolbar .action-item .action-label:hover {
+  background: color-mix(in srgb, var(--vscode-foreground) 8%, transparent) !important;
+  opacity: 1;
+}
+.monaco-workbench .browser-nav-toolbar .action-item .action-label:active,
+.monaco-workbench .browser-actions-toolbar .action-item .action-label:active {
+  transform: scale(.96);
+}
+.monaco-workbench .browser-nav-toolbar .action-item.disabled .action-label,
+.monaco-workbench .browser-actions-toolbar .action-item.disabled .action-label {
+  opacity: .38;
+}
+
+.monaco-workbench .browser-url-container {
+  min-height: 32px;
+  align-items: center !important;
+  border-radius: 4px !important;
+  border-color: color-mix(in srgb, var(--vscode-foreground) 14%, transparent) !important;
+  background: var(--vscode-input-background) !important;
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--vscode-foreground) 5%, transparent);
+  transition: border-color 140ms ease-out, box-shadow 140ms ease-out;
+}
+.monaco-workbench .browser-url-container:hover {
+  border-color: color-mix(in srgb, var(--vscode-foreground) 24%, transparent) !important;
+}
+.monaco-workbench .browser-url-container:has(.browser-url-display:focus) {
+  border-color: var(--ubovm-browser-accent) !important;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--ubovm-browser-accent) 55%, transparent);
+}
+.monaco-workbench .browser-url-display {
+  padding: 6px 10px 6px 8px !important;
+  font-size: 13px !important;
+  line-height: 20px !important;
+  letter-spacing: 0;
+}
+.monaco-workbench .browser-url-display:empty::before {
+  font-weight: 400;
+}
+
+.monaco-workbench .browser-site-info-indicator {
+  width: 24px !important;
+  height: 24px !important;
+  border-radius: 3px !important;
+}
+.monaco-workbench .browser-favorite-indicator,
+.monaco-workbench .browser-share-toggle {
+  min-height: 24px;
+  border-radius: 3px !important;
+}
+.monaco-workbench .browser-share-toggle.checked {
+  background: color-mix(in srgb, var(--ubovm-browser-accent) 18%, transparent) !important;
+  color: var(--vscode-foreground) !important;
+}
+.monaco-workbench .browser-share-toggle.checked:hover {
+  background: color-mix(in srgb, var(--ubovm-browser-accent) 26%, transparent) !important;
+}
+
+.monaco-workbench .browser-container::before {
+  background: var(--vscode-widget-border, transparent) !important;
+  animation: none !important;
+}
+.monaco-workbench .browser-container.shared::before {
+  background: var(--ubovm-browser-accent) !important;
+  opacity: .85;
+  top: -2px !important;
+  left: -2px !important;
+  right: -2px !important;
+  bottom: -2px !important;
+}
+
+.monaco-workbench .browser-welcome-content {
+  max-width: 360px;
+  padding: 24px 16px !important;
+  animation: ubovm-empty-enter 180ms ease-out;
+}
+.monaco-workbench .browser-welcome-icon {
+  display: grid;
+  place-items: center;
+  box-sizing: border-box;
+  width: 52px;
+  height: 52px;
+  min-height: 52px !important;
+  margin: 0 auto 18px;
+  border: 1px solid var(--vscode-widget-border, color-mix(in srgb, var(--vscode-foreground) 12%, transparent));
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--vscode-foreground) 4%, var(--vscode-editor-background));
+}
+.monaco-workbench .browser-welcome-icon .codicon {
+  font-size: 24px !important;
+  margin: 0 !important;
+  color: var(--ubovm-browser-accent) !important;
+}
+.monaco-workbench .browser-welcome-title {
+  font-size: 16px !important;
+  font-weight: 600 !important;
+  letter-spacing: .01em;
+  margin-top: 0 !important;
+  padding: 0 !important;
+}
+.monaco-workbench .browser-welcome-subtitle {
+  font-size: 13px !important;
+  line-height: 1.55 !important;
+  max-width: 320px !important;
+  margin-top: 8px !important;
+  padding: 0 !important;
+}
+
+.monaco-workbench .browser-error-container {
+  padding: 48px 32px !important;
+  align-items: center !important;
+}
+.monaco-workbench .browser-error-content {
+  padding: 20px 22px;
+  border: 1px solid var(--vscode-widget-border, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--vscode-foreground) 3%, var(--vscode-editor-background));
+}
+.monaco-workbench .browser-overlay-paused-message {
+  padding: 18px 28px !important;
+  border-radius: 6px !important;
+  box-shadow: var(--ubovm-popup-shadow) !important;
+}
+
+.monaco-workbench .browser-emulation-toolbar {
+  padding: 6px 10px !important;
+  gap: 10px !important;
+  border-bottom: 1px solid color-mix(in srgb, var(--vscode-foreground) 8%, transparent);
+}
+.monaco-workbench .browser-find-widget-wrapper .simple-find-part {
+  padding: 6px 10px 6px 12px !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .monaco-workbench .browser-nav-toolbar .action-item .action-label,
+  .monaco-workbench .browser-actions-toolbar .action-item .action-label,
+  .monaco-workbench .browser-url-container,
+  .monaco-workbench .browser-welcome-content {
+    transition: none;
+    animation: none;
+  }
+  .monaco-workbench .browser-nav-toolbar .action-item .action-label:active,
+  .monaco-workbench .browser-actions-toolbar .action-item .action-label:active {
+    transform: none;
+  }
+}
+
