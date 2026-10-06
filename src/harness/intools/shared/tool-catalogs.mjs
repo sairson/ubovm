@@ -107,7 +107,7 @@ export const WEB_SEARCH_CATALOG = {
     { action: 'include_domains', tier: 'filters', field: 'include_domains', summary: '≤10 hosts; merges with site:.', params: ['include_domains?'] },
     { action: 'exclude_domains', tier: 'filters', field: 'exclude_domains', summary: '≤10 hosts; merges with -site:.', params: ['exclude_domains?'] },
     { action: 'include_answer', tier: 'filters', field: 'include_answer', summary: 'Request short Tavily answer when available.', params: ['include_answer?'] },
-    { action: 'providers', tier: 'providers', summary: 'Tavily first when configured; else Bing/DDG merge. no_results ≠ absence; unavailable ⇒ configure Tavily or simplify.', params: [] },
+    { action: 'providers', tier: 'providers', summary: 'Tavily first when configured; else Bing. no_results ≠ absence; unavailable ⇒ configure Tavily or simplify.', params: [] },
   ],
 };
 

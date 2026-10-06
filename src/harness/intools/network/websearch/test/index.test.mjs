@@ -4,27 +4,24 @@ import { createWebSearchTool } from '../index.mjs';
 
 const rss = items => '<rss><channel>' + items.map(([title, url, snippet = '']) => `<item><title>${title}</title><link>${url.replaceAll('&', '&amp;')}</link><description>${snippet}</description></item>`).join('') + '</channel></rss>';
 const html = items => items.length ? items.map(([title, url, snippet = '']) => `<div class="result"><a class="result__a" href="${url.replaceAll('&', '&amp;')}">${title}</a><div class="result__snippet">${snippet}</div></div>`).join('') : '<div class="no-results">No results</div>';
-const publicTool = (bing, duck, options = {}) => createWebSearchTool({ providerRetryAttempts: 1, fetch: async url => new Response(new URL(url).hostname.includes('bing') ? bing : duck), ...options });
+const publicTool = (bing, options = {}) => createWebSearchTool({ providerRetryAttempts: 1, fetch: async () => new Response(bing), ...options });
 
-test('keyless searches start public sources concurrently and merge complementary results', async () => {
+test('keyless search uses Bing and returns relevant results', async () => {
   const started = [];
-  let release;
-  const barrier = new Promise(resolve => { release = resolve; });
-  const tool = publicTool('', '', { fetch: async url => {
-    const host = new URL(url).hostname;
-    started.push(host.includes('bing') ? 'bing' : host.includes('lite') ? 'lite' : 'duck');
-    if (started.length === 3) release();
-    await barrier;
-    if (host.includes('bing')) return new Response(rss([['Node guide', 'https://nodejs.org/guide']]));
-    if (host.includes('lite')) return new Response('<a class="result-link" href="https://nodejs.org/lite">Node lite</a>');
-    return new Response(html([['Node reference', 'https://nodejs.org/reference']]));
+  const tool = publicTool('', { fetch: async url => {
+    started.push(new URL(url).hostname);
+    return new Response(rss([
+      ['Node guide', 'https://nodejs.org/guide'],
+      ['Node reference', 'https://nodejs.org/reference']
+    ]));
   } });
   const result = await tool.execute('s', { query: 'node', limit: 3 });
-  assert.equal(started.length, 3);
-  assert.match(result.details.provider, /bing/);
-  assert.ok(result.details.returned >= 2);
-  assert.equal(result.details.providers.length, 3);
-  assert.ok(result.details.providers.every(p => p.status === 'ok'));
+  assert.equal(started.length, 1);
+  assert.ok(started[0].includes('bing'));
+  assert.equal(result.details.provider, 'bing');
+  assert.equal(result.details.returned, 2);
+  assert.equal(result.details.providers.length, 1);
+  assert.equal(result.details.providers[0].status, 'ok');
 });
 
 test('Chinese natural language and site operators retain relevant results and exclude wrong hosts', async () => {
@@ -32,7 +29,7 @@ test('Chinese natural language and site operators retain relevant results and ex
     ['数据库连接池配置指南', 'https://docs.example.com/pool'],
     ['数据库连接池配置指南', 'https://example.com.evil.org/pool'],
     ['数据库连接池配置指南', 'https://old.example.com/pool'],
-  ]), html([]));
+  ]));
   const result = await tool.execute('s', { query: '如何配置数据库连接池 site:example.com -site:old.example.com' });
   assert.deepEqual(result.details.results.map(r => r.url), ['https://docs.example.com/pool']);
 });
@@ -42,9 +39,8 @@ test('search redirect links and tracking duplicates resolve to the best direct r
   const token = Buffer.from(direct + '&utm_source=bing').toString('base64url');
   const encoded = 'https://www.bing.com/ck/a?u=a1' + token;
   const modern = 'https://www.bing.com/ck/a?!&&p=abc&ptn=3&ver=2&hsh=4&fclid=x&u=a1' + token + '&ntb=1';
-  const redirect = '//duckduckgo.com/l/?uddg=' + encodeURIComponent(direct + '&utm_source=ddg');
-  const bing = `<ol id="b_results"><li class="b_algo"><h2><a href="${encoded}">Node</a></h2></li><li class="b_algo"><h2><a href="${modern}">Node</a></h2></li></ol>`;
-  const tool = publicTool(bing, html([['Node reference', redirect, 'Node reference guide']]));
+  const bing = `<ol id="b_results"><li class="b_algo"><h2><a href="${encoded}">Node reference</a></h2><p>Node reference guide</p></li><li class="b_algo"><h2><a href="${modern}">Node</a></h2></li></ol>`;
+  const tool = publicTool(bing);
   const result = await tool.execute('s', { query: 'node reference' });
   assert.equal(result.details.returned, 1);
   assert.equal(result.details.results[0].url, direct);
@@ -52,79 +48,69 @@ test('search redirect links and tracking duplicates resolve to the best direct r
 });
 
 test('challenge and unrecognized pages are unavailable, not evidence of absent information', async () => {
-  const result = await publicTool('<html><h1>Service temporarily unavailable</h1></html>', '<form id="challenge-form">Verify</form>', {
-    fetch: async url => {
-      const host = new URL(url).hostname;
-      if (host.includes('bing')) return new Response('<html><h1>Service temporarily unavailable</h1></html>');
-      if (host.includes('lite')) return new Response('<form id="challenge-form">Verify</form>');
-      return new Response('<form id="challenge-form">Verify</form>');
-    }
-  }).execute('s', { query: 'node' });
+  const result = await publicTool('<html><h1>Service temporarily unavailable</h1></html>').execute('s', { query: 'node' });
   assert.equal(result.details.status, 'unavailable');
-  assert.equal(result.details.providers.length, 3);
-  assert.ok(result.details.providers.every(p => p.status === 'unavailable'));
+  assert.equal(result.details.providers.length, 1);
+  assert.equal(result.details.providers[0].status, 'unavailable');
   assert.match(result.details.fallback_reason, /human verification|unrecognized|unavailable/i);
   assert.match(result.details.message, /Tavily|browser/i);
-  const empty = await publicTool(rss([]), html([]), {
-    fetch: async url => new Response(new URL(url).hostname.includes('bing') ? rss([]) : html([]))
-  }).execute('s', { query: 'node' });
+  const empty = await publicTool(rss([])).execute('s', { query: 'node' });
   assert.equal(empty.details.status, 'no_results');
 });
 
-test('one failed source does not discard another source and exact advisory IDs stay mandatory', async () => {
-  const result = await publicTool('<html>Error</html>', html([
-    ['CVE-2026-12345 details', 'https://example.com/a'],
-    ['CVE-2026-99999 details', 'https://example.com/b'],
-  ])).execute('s', { query: 'CVE-2026-12345' });
-  assert.equal(result.details.provider, 'duckduckgo');
+test('exact advisory IDs stay mandatory', async () => {
+  const page = '<ol id="b_results"><li class="b_algo"><h2><a href="https://example.com/a">CVE-2026-12345 details</a></h2></li><li class="b_algo"><h2><a href="https://example.com/b">CVE-2026-99999 details</a></h2></li></ol>';
+  const result = await publicTool(page).execute('s', { query: 'CVE-2026-12345' });
+  assert.equal(result.details.provider, 'bing');
   assert.equal(result.details.returned, 1);
-  assert.equal(result.details.providers[0].status, 'unavailable');
+  assert.equal(result.details.results[0].url, 'https://example.com/a');
 });
 
-test('DuckDuckGo lite results and site-only queries remain usable', async () => {
-  const tool = publicTool(rss([]), '<table><tr><td><a class="result-link" href="https://example.com/a">Reference</a></td></tr><tr><td class="result-snippet">Usage</td></tr></table>');
+test('site-only queries remain usable', async () => {
+  const tool = publicTool(rss([['Reference', 'https://example.com/a', 'Usage']]));
   const result = await tool.execute('s', { query: 'site:example.com' });
   assert.equal(result.details.returned, 1);
   assert.equal(result.details.results[0].snippet, 'Usage');
 });
 
-test('provider time budget includes retries and preserves faster source results', async () => {
+test('provider time budget includes retries', async () => {
   let calls = 0;
-  const tool = publicTool('', '', { timeoutMs: 60, retryBackoffMs: 100, providerRetryAttempts: 3, fetch: async url => {
-    if (new URL(url).hostname.includes('bing')) { calls++; return new Response('', { status: 503 }); }
-    return new Response(html([['Node guide', 'https://example.com/guide']]));
+  const tool = publicTool('', { timeoutMs: 60, retryBackoffMs: 100, providerRetryAttempts: 3, fetch: async () => {
+    calls++;
+    return new Response('', { status: 503 });
   } });
   // AbortSignal.timeout is unref'ed; keep the isolated test process alive.
   const keepAlive = setInterval(() => {}, 1000);
   try {
     const result = await tool.execute('s', { query: 'node' });
     assert.ok(calls >= 1 && calls <= 2, String(calls));
-    assert.match(result.details.provider, /duckduckgo/);
+    assert.equal(result.details.status, 'unavailable');
     assert.equal(result.details.providers[0].status, 'unavailable');
   } finally { clearInterval(keepAlive); }
 });
 
-test('cancellation propagates to concurrent providers instead of becoming no_results', async () => {
+test('cancellation propagates to the Bing request instead of becoming no_results', async () => {
   const controller = new AbortController(), signals = [];
-  const tool = publicTool('', '', { fetch: async (_url, init) => {
+  const tool = publicTool('', { fetch: async (_url, init) => {
     signals.push(init.signal);
-    if (signals.length === 3) controller.abort(new Error('user stopped'));
+    controller.abort(new Error('user stopped'));
     return new Promise(() => {});
   } });
   await assert.rejects(tool.execute('s', { query: 'node' }, controller.signal), /user stopped/);
-  assert.equal(signals.length, 3);
-  assert.ok(signals.every(signal => signal.aborted));
+  assert.equal(signals.length, 1);
+  assert.ok(signals[0].aborted);
 });
 
 test('Tavily disabled avoids authenticated requests and Tavily failure respects fallback configuration', async () => {
   let calls = 0;
-  const tool = publicTool(rss([['Node guide', 'https://example.com/guide']]), html([]), { apiKey: 'secret', tavily: { enabled: false }, fetch: async (url, init) => {
+  const tool = publicTool(rss([['Node guide', 'https://example.com/guide']]), { apiKey: 'secret', tavily: { enabled: false }, fetch: async (url, init) => {
     calls++; assert.equal(init.headers.Authorization, undefined);
     assert.ok(!url.includes('tavily'));
-    return new Response(new URL(url).hostname.includes('bing') ? rss([['Node guide', 'https://example.com/guide']]) : html([]));
+    assert.ok(new URL(url).hostname.includes('bing'));
+    return new Response(rss([['Node guide', 'https://example.com/guide']]));
   } });
   assert.equal((await tool.execute('s', { query: 'node' })).details.status, 'ok');
-  assert.equal(calls, 3);
+  assert.equal(calls, 1);
   const failed = createWebSearchTool({ apiKey: 'secret', fallbackToPublicProviders: false, fetch: async () => { throw Error('bad secret'); } });
   const result = await failed.execute('s', { query: 'node' });
   assert.equal(result.details.status, 'unavailable');
@@ -191,12 +177,10 @@ test('per-call Tavily filters override settings and merge site operators into do
 
 test('public fallback applies include/exclude domains via site operators', async () => {
   let query;
-  const tool = publicTool(rss([['Allowed', 'https://docs.example.com/a', 'guide']]), html([]), {
+  const tool = publicTool(rss([['Allowed', 'https://docs.example.com/a', 'guide']]), {
     fetch: async url => {
       query = new URL(url).searchParams.get('q');
-      return new Response(new URL(url).hostname.includes('bing')
-        ? rss([['Allowed', 'https://docs.example.com/a', 'guide'], ['Blocked', 'https://evil.example.org/a', 'guide']])
-        : html([]));
+      return new Response(rss([['Allowed', 'https://docs.example.com/a', 'guide'], ['Blocked', 'https://evil.example.org/a', 'guide']]));
     }
   });
   const result = await tool.execute('s', { query: 'guide', include_domains: ['docs.example.com'], exclude_domains: ['evil.example.org'] });
@@ -237,14 +221,6 @@ test('Bing does not pin a market that replaces the query with unrelated results'
   const result = await tool.execute('s', { query: '如何配置数据库连接池' });
   assert.equal(result.details.status, 'ok');
   assert.equal(result.details.results[0].url, 'https://docs.example.com/pool');
-});
-
-test('DuckDuckGo advertisements are not returned as search results', async () => {
-  const ad = 'https://duckduckgo.com/y.js?ad_domain=example.com&q=node';
-  const tool = publicTool(rss([]), html([['Sponsored node', 'https://duckduckgo.com/l/?uddg=' + encodeURIComponent(ad), 'node']]));
-  const result = await tool.execute('s', { query: 'node' });
-  assert.equal(result.details.returned, 0);
-  assert.ok(!JSON.stringify(result.details.results).includes('y.js'));
 });
 
 test('Bing HTML fallback is used when RSS parsing fails', async () => {

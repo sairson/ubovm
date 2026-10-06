@@ -48,11 +48,7 @@ function withDomainOperators(query, includeDomains, excludeDomains) {
 }
 
 function isSearchEngineResultPage(host, path) {
-  if ((host === 'bing.com' || host.endsWith('.bing.com') || host === 'google.com' || host.endsWith('.google.com')) && path.startsWith('/search')) return true;
-  if (host === 'duckduckgo.com' || host.endsWith('.duckduckgo.com')) {
-    if (path === '/' || path.startsWith('/html') || path.startsWith('/lite') || path === '/y.js' || path.startsWith('/duckduckgo-help-pages')) return true;
-  }
-  return false;
+  return (host === 'bing.com' || host.endsWith('.bing.com') || host === 'google.com' || host.endsWith('.google.com')) && path.startsWith('/search');
 }
 
 export function rankResults(query, candidates, limit, { requireTerms = true } = {}) {
@@ -110,11 +106,6 @@ function resultURL(raw) {
   let url = linkURL(raw);
   if (!url) return '';
   let parsed = new URL(url);
-  if ((parsed.hostname === 'duckduckgo.com' || parsed.hostname.endsWith('.duckduckgo.com')) && parsed.searchParams.has('uddg')) {
-    url = linkURL(parsed.searchParams.get('uddg'));
-    if (!url) return '';
-    parsed = new URL(url);
-  }
   if (parsed.hostname === 'bing.com' || parsed.hostname.endsWith('.bing.com')) {
     let target = parsed.searchParams.get('u');
     if (!target && parsed.pathname.startsWith('/ck/')) {
@@ -130,29 +121,17 @@ function resultURL(raw) {
   for (const key of [...parsed.searchParams.keys()]) if (/^(utm_.+|fbclid|gclid|msclkid)$/i.test(key)) parsed.searchParams.delete(key);
   return parsed.href;
 }
-function publicCandidates(text, provider) {
-  if (!text.trim().startsWith('<')) throw new Error(`${provider} returned an invalid HTML/XML response format`);
-  const rss = provider === 'bing' && /<rss(?:\s|>)/i.test(text);
+function publicCandidates(text) {
+  if (!text.trim().startsWith('<')) throw new Error('bing returned an invalid HTML/XML response format');
+  const rss = /<rss(?:\s|>)/i.test(text);
   const $ = load(text, { xmlMode: rss });
-  if ($('#challenge-form, #anomaly-modal, .anomaly-modal, #b_captcha, iframe[src*="captcha"]').length || /verify you are human|unusual traffic|bots use duckduckgo/i.test($('title, h1, h2, .anomaly-modal__title').text())) throw new Error(`${provider} requires human verification`);
+  if ($('#b_captcha, iframe[src*="captcha"]').length || /verify you are human|unusual traffic/i.test($('title, h1, h2').text())) throw new Error('bing requires human verification');
   if (rss) {
     if (!$('rss > channel').length) throw new Error('bing returned malformed RSS');
     return $('channel > item').toArray().map((item) => ({ title: $(item).find('title').first().text(), url: $(item).find('link').first().text(), snippet: $(item).find('description').first().text() }));
   }
-  if (provider === 'bing' && !$('#b_results, li.b_algo, .b_no').length) throw new Error('bing returned an unrecognized search page');
-  if (provider === 'bing') return $('li.b_algo').toArray().map((item) => ({ title: $(item).find('h2 a').first().text(), url: $(item).find('h2 a').first().attr('href'), snippet: $(item).find('p,.b_caption').first().text() }));
-  if (provider === 'duckduckgo-lite') {
-    if (!$('a.result-link, .result-link, .no-results').length && !$('form').length) throw new Error('duckduckgo lite returned an unrecognized search page');
-    const links = $('a.result-link, a[rel="nofollow"].result-link').toArray();
-    if (links.length) return links.map(item => ({ title: $(item).text(), url: linkURL($(item).attr('href'), 'https://lite.duckduckgo.com'), snippet: $(item).closest('tr').nextAll('tr').first().find('.result-snippet, td').text() }));
-  }
-  if (!$('.result, .no-results, .no-results__message, .result-link').length) throw new Error('duckduckgo returned an unrecognized search page');
-  if ($('.result-link').length) return $('.result-link').toArray().map(item => ({ title: $(item).text(), url: linkURL($(item).attr('href'), 'https://duckduckgo.com'), snippet: $(item).closest('tr').nextAll('tr').first().find('.result-snippet').text() }));
-  return $('.result').toArray().map((item) => {
-    let url = $(item).find('a.result__a').first().attr('href');
-    try { const parsed = new URL(url, 'https://duckduckgo.com'); url = parsed.searchParams.get('uddg') || parsed.href; } catch { url = ''; }
-    return { title: $(item).find('a.result__a').first().text(), url, snippet: $(item).find('.result__snippet').first().text() };
-  });
+  if (!$('#b_results, li.b_algo, .b_no').length) throw new Error('bing returned an unrecognized search page');
+  return $('li.b_algo').toArray().map((item) => ({ title: $(item).find('h2 a').first().text(), url: $(item).find('h2 a').first().attr('href'), snippet: $(item).find('p,.b_caption').first().text() }));
 }
 function output(query, provider, results, fallback, reason, answer, filters, ranking) {
   const unavailable = provider === 'none';
@@ -167,7 +146,7 @@ function output(query, provider, results, fallback, reason, answer, filters, ran
 }
 
 export function createWebSearchTool(options = {}) {
-  knownKeys(options, ['fetch', 'timeoutMs', 'maxResponseBytes', 'maxRedirects', 'apiKey', 'baseURL', 'tavily', 'bingBaseURL', 'duckDuckGoBaseURL', 'duckDuckGoLiteBaseURL', 'fallbackToPublicProviders', 'providerRetryAttempts', 'retryBackoffMs'], 'web search options');
+  knownKeys(options, ['fetch', 'timeoutMs', 'maxResponseBytes', 'maxRedirects', 'apiKey', 'baseURL', 'tavily', 'bingBaseURL', 'fallbackToPublicProviders', 'providerRetryAttempts', 'retryBackoffMs'], 'web search options');
   validateHTTPOptions(options);
   const tavily = { ...(options.tavily ?? {}) };
   knownKeys(tavily, ['enabled', 'apiKey', 'baseURL', 'projectID', 'searchDepth', 'topic', 'includeAnswer'], 'Tavily options');
@@ -184,8 +163,6 @@ export function createWebSearchTool(options = {}) {
   const attempts = integer(options.providerRetryAttempts, 3, 1, 5, 'providerRetryAttempts');
   const backoffMs = integer(options.retryBackoffMs, 300, 0, 5000, 'retryBackoffMs');
   const bingBase = httpURL(options.bingBaseURL ?? 'https://www.bing.com').href;
-  const duckBase = httpURL(options.duckDuckGoBaseURL ?? 'https://html.duckduckgo.com').href;
-  const duckLiteBase = httpURL(options.duckDuckGoLiteBaseURL ?? 'https://lite.duckduckgo.com').href;
   return withProgressiveDisclosure({
     name: 'web_search', label: 'Search the public web',
     description: WEB_SEARCH_CATALOG.description,
@@ -267,13 +244,12 @@ export function createWebSearchTool(options = {}) {
       const language = chinese ? 'zh-CN,zh;q=0.9,en;q=0.6' : 'en-US,en;q=0.8';
       const userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36';
       const bingHeaders = { Accept: 'application/rss+xml,text/html,application/xhtml+xml', 'Accept-Language': language, 'User-Agent': userAgent };
-      const duckHeaders = { Accept: 'text/html,application/xhtml+xml', 'Accept-Language': language, 'User-Agent': userAgent };
-      async function fetchProvider(name, buildUrl, parserName = name, headers = bingHeaders) {
+      async function fetchProvider(name, buildUrl) {
         try {
           const endpoint = buildUrl();
           const budgetSignal = providerSignal();
-          const response = await retry(() => requestBytes(endpoint, { ...network, signal: budgetSignal, headers }), { attempts, backoffMs, signal: budgetSignal });
-          const candidates = publicCandidates(response.body.toString('utf8'), parserName);
+          const response = await retry(() => requestBytes(endpoint, { ...network, signal: budgetSignal, headers: bingHeaders }), { attempts, backoffMs, signal: budgetSignal });
+          const candidates = publicCandidates(response.body.toString('utf8'));
           const selected = selectResults(rankingQuery, candidates, limit);
           return { provider: name, status: selected.results.length ? 'ok' : 'no_results', results: selected.results, candidates, ranking: selected.ranking };
         } catch (error) {
@@ -308,30 +284,12 @@ export function createWebSearchTool(options = {}) {
           error: [rss.error, html.error].filter(Boolean).join('; ') || undefined
         };
       }
-      const searches = await Promise.all([
-        bingSearch(),
-        fetchProvider('duckduckgo', () => {
-          const endpoint = new URL(duckBase.replace(/\/$/, '') + '/html/');
-          endpoint.searchParams.set('q', publicQuery);
-          if (chinese) endpoint.searchParams.set('kl', 'cn-zh');
-          return endpoint;
-        }, 'duckduckgo', duckHeaders),
-        fetchProvider('duckduckgo-lite', () => {
-          const endpoint = new URL(duckLiteBase.replace(/\/$/, '') + '/lite/');
-          endpoint.searchParams.set('q', publicQuery);
-          if (chinese) endpoint.searchParams.set('kl', 'cn-zh');
-          return endpoint;
-        }, 'duckduckgo-lite', duckHeaders)
-      ]);
+      const source = await bingSearch();
       signal?.throwIfAborted();
-      for (const source of searches) {
-        providers.push({ provider: source.provider, status: source.status, returned: source.results.length, ...(source.error ? { error: source.error } : {}) });
-        if (source.status !== 'ok') reasons.push(`${source.provider}: ${source.error || 'no query-relevant results'}`);
-      }
-      const merged = selectResults(rankingQuery, searches.flatMap(source => source.candidates?.length ? source.candidates : source.results), limit);
-      const usable = searches.filter(source => source.status === 'ok');
-      const provider = usable.map(source => source.provider).join('+') || searches.find(source => source.status === 'no_results')?.provider || 'none';
-      return jsonResult({ ...output(query, provider, merged.results, tavily.enabled || searches.some(source => source.status !== 'ok'), reasons.join('; '), '', filters, merged.ranking), providers });
+      providers.push({ provider: source.provider, status: source.status, returned: source.results.length, ...(source.error ? { error: source.error } : {}) });
+      if (source.status !== 'ok') reasons.push(`bing: ${source.error || 'no query-relevant results'}`);
+      const provider = source.status === 'unavailable' ? 'none' : 'bing';
+      return jsonResult({ ...output(query, provider, source.results, tavily.enabled || source.status !== 'ok', reasons.join('; '), '', filters, source.ranking), providers });
     },
   }, { ...WEB_SEARCH_CATALOG, mode: 'flag' });
 }

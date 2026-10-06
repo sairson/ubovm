@@ -971,13 +971,12 @@ export function createNoteTool(options: {
 
 export interface HTTPToolOptions { fetch?: typeof fetch; timeoutMs?: number; maxResponseBytes?: number; maxRedirects?: number }
 export interface WebSearchOptions extends HTTPToolOptions {
-  /** Per-provider budget including retries/backoff; public providers run concurrently. Default: 15000 ms. */
+  /** Per-provider budget including retries/backoff. Default: 15000 ms. */
   timeoutMs?: number;
   apiKey?: string;
   baseURL?: string;
   tavily?: { enabled?: boolean; apiKey?: string; baseURL?: string; projectID?: string; searchDepth?: 'basic' | 'advanced' | 'fast' | 'ultra-fast'; topic?: 'general' | 'news' | 'finance'; includeAnswer?: boolean };
   bingBaseURL?: string;
-  duckDuckGoBaseURL?: string;
   fallbackToPublicProviders?: boolean;
   providerRetryAttempts?: number;
   retryBackoffMs?: number;
