@@ -97,9 +97,19 @@ function createModelConfiguration(vscode, context) {
       return { connected: true, configured: true, label: `${model.backend ?? 'pi'} · ${model.modelId} · 已配置`, provider: model.provider, backend: model.backend ?? 'pi' };
     } catch (error) { return { connected: false, configured: false, label: '配置模型', error: error.message }; }
   }
+  function assertHttpSecret(key, label = 'API Key') {
+    if (key === undefined || key === null || key === '') return;
+    if (typeof key !== 'string') throw new Error(`${label} 必须是字符串。`);
+    for (let index = 0; index < key.length; index++) {
+      if (key.charCodeAt(index) > 255) {
+        throw new Error(`${label} 含有非英文字符（例如中文），无法用于 HTTP 请求头。请打开模型设置，清空并重新粘贴纯英文/数字密钥后保存。`);
+      }
+    }
+  }
   async function credentialModel(value) {
     const model = modelConfig(value);
     const key = await context.secrets.get(keyFor(model));
+    assertHttpSecret(key);
     return { ...model, ...(key ? { apiKey: key } : {}) };
   }
   async function read() {
@@ -165,6 +175,7 @@ function createModelConfiguration(vscode, context) {
     const { apiKey, ...raw } = input;
     const model = modelConfig(raw);
     if (apiKey !== undefined && typeof apiKey !== 'string') throw new Error('API Key 必须是字符串。');
+    if (apiKey !== undefined && apiKey.trim()) assertHttpSecret(apiKey.trim());
     return state.run(async () => {
       await updateConfiguration(vscode, context, new Map([['model', model]]), new Map(apiKey === undefined ? [] : [[keyFor(model), apiKey.trim() || undefined]]));
       return status();

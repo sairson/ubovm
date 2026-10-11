@@ -101,8 +101,14 @@ test('Pi provider selection retains endpoint identity and typing avoids redundan
   } finally { await browser.close(); }
 });
 
-test('cooperation guidance connects model roles and Swarm mode without losing unsaved changes', async () => {
-  const service = createSettingsConfiguration({ workspace: { getConfiguration: () => ({ inspect: () => ({}) }) } }, { secrets: { get: async () => undefined } });
+test('cooperation guidance stays on the model page with role assignment and Swarm mode', async () => {
+  const values = { model: { provider: 'custom', modelId: 'daily', api: 'openai-completions', baseUrl: 'https://daily.example/v1' }, modelProfiles: [
+    { id: 'daily', name: '日常', model: { provider: 'custom', modelId: 'daily', api: 'openai-completions', baseUrl: 'https://daily.example/v1' } }
+  ] };
+  const vault = new Map();
+  const service = createSettingsConfiguration({ ConfigurationTarget: { Global: 1 }, workspace: { getConfiguration: () => ({
+    inspect: key => ({ globalValue: values[key] }), update: async (key, value) => { values[key] = value; }
+  }) } }, { secrets: { get: async key => vault.get(key), store: async (key, value) => vault.set(key, value), delete: async key => vault.delete(key) } });
   const browser = await chromium.launch({ channel: 'msedge', headless: true });
   try {
     const page = await browser.newPage({ viewport: { width: 600, height: 900 } });
@@ -114,26 +120,26 @@ test('cooperation guidance connects model roles and Swarm mode without losing un
     const guide = page.locator('[data-cooperation-guide]');
     await guide.waitFor();
     assert.equal(await page.locator('#settings-section-kicker').textContent(), '系统设置');
-    assert.equal(await page.locator('.settings-capability-overview h4').textContent(), '当前能力');
+    assert.equal(await page.locator('.settings-capability-fold summary').textContent(), '当前能力总览');
+    await page.locator('.settings-capability-fold summary').click();
     assert.match(await page.locator('.settings-capability-list').textContent(), /对话/);
     assert.match(await guide.textContent(), /配置库保存可重复使用的模型连接/);
-    await page.getByRole('button', { name: '设置并行任务模式 →', exact: true }).click();
+    assert.equal(await page.locator('#settings-model-roles').isVisible(), false);
     await page.locator('[data-setting="swarmBackendSelection"]').selectOption('autonomous');
-    assert.match(await guide.textContent(), /自主选择：主对话模型保持不变/);
-    await page.getByRole('button', { name: '选择任务模型 →', exact: true }).click();
-    assert.equal(await page.locator('#settings-discard').isVisible(), true);
-    await page.locator('#settings-keep').click();
-    assert.equal(await page.locator('[data-setting="swarmBackendSelection"]').inputValue(), 'autonomous');
+    await page.locator('#settings-assign-workerModel').selectOption('daily');
     await page.locator('#settings-save').click();
     const request = await page.evaluate(() => window.sent.findLast(message => message.action === 'settingsSave'));
-    assert.equal(request.section, 'worker');
-    assert.equal(request.value.swarmBackendSelection, 'autonomous');
-    await page.evaluate(({ request, data }) => window.postMessage({ type: 'settingsResult', requestId: request.requestId, ok: true, saved: true, data }, '*'), { request, data: await service.snapshot({ includeSkills: false }) });
-    await page.getByRole('button', { name: '选择任务模型 →', exact: true }).click();
-    await page.locator('[data-setting="inherit"]').uncheck();
-    await page.locator('[data-setting="inherit"]').check();
-    assert.equal(await guide.isVisible(), true);
-    assert.equal(await page.locator('.settings-model-connection').isVisible(), false);
+    assert.equal(request.section, 'model');
+    assert.equal(request.value.assignments.swarmBackendSelection, 'autonomous');
+    assert.equal(request.value.assignments.workerModel, 'daily');
+    await page.evaluate(({ request, data }) => window.postMessage({ type: 'settingsResult', requestId: request.requestId, ok: true, saved: true, data }, '*'), {
+      request, data: await service.save(request.section, request.value, request.revision)
+    });
+    await page.waitForFunction(() => !document.querySelector('#settings-save').disabled);
+    assert.equal(await page.locator('[data-setting="swarmBackendSelection"]').inputValue(), 'autonomous');
+    assert.equal(values.worker.swarmBackendSelection, 'autonomous');
+    assert.equal(values.worker.model.modelId, 'daily');
+    assert.equal(await page.locator('.settings-model-connection').isVisible(), true);
     assert.equal(await page.locator('#settings-fields').evaluate(node => node.scrollWidth <= node.clientWidth), true);
     assert.deepEqual(errors, []);
     await page.screenshot({ path: '.cache/settings-cooperation.png', fullPage: true });
@@ -164,8 +170,9 @@ test('Python settings are reachable and submit interpreter and permissions witho
   } finally { await browser.close(); }
 });
 
-test('model library loads roles, saves copies and SSH duplication omits credentials', async () => {
+test('model library selects into the editor, assigns roles, tests connection, and SSH duplication omits credentials', async () => {
   const values = { model: { provider: 'custom', modelId: 'daily', api: 'openai-completions', baseUrl: 'https://daily.example/v1' }, modelProfiles: [
+    { id: 'daily', name: '日常', model: { provider: 'custom', modelId: 'daily', api: 'openai-completions', baseUrl: 'https://daily.example/v1' } },
     { id: 'code', name: '代码', model: { provider: 'custom', modelId: 'coder', api: 'openai-completions', baseUrl: 'https://code.example/v1' } }
   ], intools: { ssh: { defaultId: 'dev', profiles: [{ id: 'dev', host: 'dev.example', username: 'dev' }] } } };
   const vault = new Map();
@@ -182,16 +189,22 @@ test('model library loads roles, saves copies and SSH duplication omits credenti
     const send = message => page.evaluate(message => window.postMessage(message, '*'), message);
     await send({ type: 'openSettings', data: await service.snapshot() });
     assert.equal(await page.locator('[data-setting="backend"]').count(), 0);
+    assert.equal(await page.locator('#settings-model-roles').isVisible(), false);
+    await page.evaluate(() => { document.querySelector('#settings-form').scrollTop = 220; });
+    const libraryScroll = await page.locator('#settings-form').evaluate(form => form.scrollTop);
+    await page.getByRole('button', { name: '新建', exact: true }).click();
+    assert.equal(await page.locator('#settings-form').evaluate(form => form.scrollTop), libraryScroll, '新建 must not jump the form scroll to the top');
+    assert.equal(await page.locator('[data-setting="modelId"]').inputValue(), '');
+    await page.locator('#settings-model-profile').selectOption('daily');
+    await page.locator('#settings-discard-confirm').click();
+    assert.equal(await page.locator('#settings-form').evaluate(form => form.scrollTop), libraryScroll, 'Selecting a library profile must keep the form scroll');
+    assert.equal(await page.locator('[data-setting="modelId"]').inputValue(), 'daily');
     await page.locator('[data-setting="modelId"]').fill('unsaved-draft');
-    await page.getByRole('searchbox', { name: '搜索已保存模型' }).fill('missing');
-    assert.equal(await page.getByRole('button', { name: '加载到当前角色' }).isDisabled(), true);
     await page.getByRole('searchbox', { name: '搜索已保存模型' }).fill('coder');
     await page.locator('#settings-model-profile').selectOption('code');
-    assert.notEqual(await page.locator('[data-setting="modelId"]').inputValue(), 'coder', 'browsing does not overwrite the editor');
-    assert.match(await page.locator('.settings-model-preview').textContent(), /code.example/);
-    await page.getByRole('button', { name: '加载到当前角色' }).click();
     await page.locator('#settings-discard-confirm').click();
     assert.equal(await page.locator('[data-setting="modelId"]').inputValue(), 'coder');
+    assert.match(await page.locator('.settings-model-preview').textContent(), /code.example/);
     const save = async () => {
       await page.locator('#settings-save').click();
       const request = await page.evaluate(() => window.sent.findLast(m => m.action === 'settingsSave'));
@@ -200,31 +213,38 @@ test('model library loads roles, saves copies and SSH duplication omits credenti
       await page.waitForFunction(() => !document.querySelector('#settings-save').disabled);
       return request;
     };
+    await page.locator('#settings-assign-model').selectOption('code');
     await save(); assert.equal(values.model.modelId, 'coder');
     await page.getByRole('button', { name: '另存为新配置', exact: true }).click();
     assert.match(await page.locator('.settings-model-editing').textContent(), /保存将新增一份配置/);
     await page.locator('#settings-model-profile-name').fill('代码副本');
-    await save(); assert.equal(values.modelProfiles.length, 2);
-    await save(); assert.equal(values.modelProfiles.length, 2);
-    await page.locator('#settings-tab-workerModel').click();
-    await page.locator('[data-setting="inherit"]').uncheck();
-    // Discard the inheritance toggle when choosing a saved model.
-    await page.locator('#settings-model-profile').selectOption('code');
-    await page.getByRole('button', { name: '加载到当前角色' }).click();
-    await page.locator('#settings-discard-confirm').click();
+    await save(); assert.equal(values.modelProfiles.length, 3);
+    await save(); assert.equal(values.modelProfiles.length, 3);
+    await page.locator('#settings-assign-workerModel').selectOption('code');
     await save(); assert.equal(values.worker.model.modelId, 'coder');
-    await page.getByRole('button', { name: '删除已保存配置', exact: true }).click();
+    await page.getByRole('button', { name: '测试连接', exact: true }).click();
+    const testRequest = await page.evaluate(() => window.sent.findLast(m => m.action === 'settingsTestModel'));
+    assert.equal(testRequest.model.modelId, 'coder');
+    await send({ type: 'settingsModelTestResult', requestId: testRequest.requestId, ok: true, durationMs: 42, message: '连接成功，服务地址与凭据可用。' });
+    await page.waitForFunction(() => document.querySelector('.settings-model-test-status')?.textContent.includes('连接成功'));
+    assert.match(await page.locator('.settings-model-test-status').textContent(), /42 ms/);
+    await page.getByRole('button', { name: '测试连接', exact: true }).click();
+    const failRequest = await page.evaluate(() => window.sent.findLast(m => m.action === 'settingsTestModel'));
+    await send({ type: 'settingsModelTestResult', requestId: failRequest.requestId, ok: false, message: '认证失败，请检查 API Key 是否正确且适用于该服务地址。' });
+    await page.waitForFunction(() => document.querySelector('.settings-model-test-status')?.dataset.error === 'true');
+    await page.locator('#settings-model-profile').selectOption('code');
+    await page.getByRole('button', { name: '删除', exact: true }).click();
     const deletion = await page.evaluate(() => window.sent.findLast(m => m.action === 'settingsSave'));
     assert.equal(deletion.value.deleteProfileId, 'code');
     await send({ type: 'settingsResult', requestId: deletion.requestId, ok: true, saved: true,
       data: await service.save(deletion.section, deletion.value, deletion.revision) });
     await page.waitForFunction(() => !document.querySelector('#settings-save').disabled);
-    assert.equal(values.modelProfiles.length, 1);
+    assert.equal(values.modelProfiles.length, 2);
     assert.equal(values.worker.model.modelId, 'coder');
     await page.locator('.settings-model-library').scrollIntoViewIfNeeded();
     await page.screenshot({ path: '.cache/model-library-wide.png' });
     await page.setViewportSize({ width: 360, height: 800 });
-    assert.equal(await page.locator('.settings-model-library').evaluate(n => n.scrollWidth <= n.clientWidth), true);
+    assert.equal(await page.locator('.settings-model-workspace').evaluate(n => n.scrollWidth <= n.clientWidth), true);
     await page.locator('.settings-model-library').scrollIntoViewIfNeeded();
     await page.screenshot({ path: '.cache/model-library-narrow.png' });
     await send({ type: 'settingsSection', section: 'ssh' });
@@ -234,13 +254,13 @@ test('model library loads roles, saves copies and SSH duplication omits credenti
     assert.equal(await page.locator('.settings-profile').nth(1).locator('[data-setting="password"]').inputValue(), '');
     const request = await save(); assert.equal(request.value.profiles.length, 2);
     assert.equal(values.intools.ssh.profiles.length, 2);
-    await send({ type: 'settingsSection', section: 'worker' });
+    await send({ type: 'settingsSection', section: 'model' });
     assert.equal(await page.locator('[data-setting="swarmBackendSelection"]').inputValue(), 'fixed');
     await page.locator('[data-setting="swarmBackendSelection"]').selectOption('autonomous');
     await save();
     assert.equal(values.worker.swarmBackendSelection, 'autonomous');
     await send({ type: 'settingsSection', section: 'reason' });
-    await send({ type: 'settingsSection', section: 'worker' });
+    await send({ type: 'settingsSection', section: 'model' });
     assert.equal(await page.locator('[data-setting="swarmBackendSelection"]').inputValue(), 'autonomous');
     await page.locator('[data-setting="swarmBackendSelection"]').selectOption('fixed');
     await save();
@@ -399,7 +419,7 @@ test('SSH connection tests use drafts, display outcomes and reject stale results
   } finally { await browser.close(); }
 });
 
-test('model roles retain focus, guard edits, save independently, and show provider icons', async () => {
+test('model library-first page assigns roles, shows provider icons, and stays within the viewport', async () => {
   const values = {}, vault = new Map();
   const configuration = { inspect: key => ({ globalValue: values[key], defaultValue: manifest.contributes.configuration.properties['ubovm.' + key]?.default }), update: async (key, value) => { values[key] = structuredClone(value); } };
   const service = createSettingsConfiguration({ workspace: { getConfiguration: () => configuration }, ConfigurationTarget: { Global: 1 } }, { secrets: { get: async key => vault.get(key), store: async (key, value) => vault.set(key, value), delete: async key => vault.delete(key) } });
@@ -418,40 +438,32 @@ test('model roles retain focus, guard edits, save independently, and show provid
       await page.route('**/*', route => route.fulfill({ contentType: 'text/html', body: html }));
       await page.goto('http://settings.test/');
       await page.evaluate(data => window.postMessage({ type: 'openSettings', data }, '*'), await service.snapshot());
-      const tab = key => page.locator('#settings-tab-' + key);
-      await tab('model').waitFor();
+      await page.locator('.settings-model-workspace').waitFor();
+      assert.equal(await page.locator('#settings-model-roles').isVisible(), false);
       assert.equal(await page.locator('.settings-provider-select option svg').count(), 11);
       assert.equal(await page.locator('selectedcontent svg').count(), 1);
       await page.locator('#setting-provider').click();
       await page.locator('#setting-provider option[value="anthropic"]').click();
       assert.equal(await page.locator('#setting-provider').inputValue(), 'anthropic');
       assert.equal(await page.locator('#setting-api').inputValue(), 'anthropic-messages');
-      await tab('model').click(); assert.equal(await page.locator('#settings-discard').isVisible(), false);
-      await tab('reasonModel').click(); await page.locator('#settings-keep').click();
-      assert.equal(await tab('model').getAttribute('aria-selected'), 'true');
-      assert.equal(await page.locator('#setting-provider').inputValue(), 'anthropic');
-      await tab('reasonModel').click(); await page.locator('#settings-discard-confirm').click();
-      assert.equal(await tab('reasonModel').evaluate(e => e === document.activeElement), true);
-      assert.equal(await page.locator('.settings-inherit-note').isVisible(), true);
-      assert.equal(await page.locator('#setting-provider').isVisible(), false);
-      await tab('reasonModel').press('ArrowRight');
-      assert.equal(await tab('workerModel').getAttribute('aria-selected'), 'true');
-      assert.equal(await tab('workerModel').evaluate(e => e === document.activeElement), true);
-      await page.locator('#setting-inherit').uncheck();
-      await page.locator('#setting-provider').selectOption('deepseek');
       await page.locator('#setting-modelId').fill('worker-ui-' + width);
+      await page.locator('#settings-model-profile-name').fill('任务模型 ' + width);
+      await page.locator('#settings-assign-workerModel').selectOption({ index: 0 });
+      // Creating the first profile also becomes the default assignment when saving.
+      await page.locator('#settings-save').click();
+      await page.waitForFunction(() => document.querySelector('#settings-status').textContent.startsWith('已保存'));
+      assert.equal(values.model.modelId, 'worker-ui-' + width);
+      assert.equal(values.modelProfiles.length, 1);
+      assert.equal(values.worker?.model, undefined);
+      await page.locator('#settings-assign-workerModel').selectOption(values.modelProfiles[0].id);
       await page.locator('#settings-save').click();
       await page.waitForFunction(() => document.querySelector('#settings-status').textContent.startsWith('已保存'));
       assert.equal(values.worker.model.modelId, 'worker-ui-' + width);
-      assert.equal(values.model, undefined);
-      await tab('summaryModel').click(); await tab('summaryModel').press('Home');
-      assert.equal(await page.locator('#setting-provider').inputValue(), 'openai');
-      assert.equal(await tab('model').evaluate(e => e === document.activeElement), true);
-      for (const key of ['model', 'reasonModel', 'workerModel', 'summaryModel']) await tab(key).click({ trial: true });
       assert(await page.evaluate(() => document.querySelector('#settings-form').scrollWidth <= document.querySelector('#settings-form').clientWidth + 1));
       if (width === 600) await page.screenshot({ path: fileURLToPath(new URL('../../../../../.cache/settings-model-roles.png', import.meta.url)) });
       assert.deepEqual(errors, []);
-      // Reset the role so each viewport exercises inheritance from fresh state.
+      delete values.model;
+      delete values.modelProfiles;
       delete values.worker;
       await page.close();
     }
@@ -602,13 +614,14 @@ test('settings loading follows requests, reuses unchanged forms, and preserves e
     assert.equal(await page.locator('#settings-skeleton').isVisible(), false);
     assert.equal(await page.locator('#settings-save').isDisabled(), false);
 
-    await page.locator('.settings-advanced summary').click();
+    await page.locator('.settings-model-connection .settings-advanced summary').click();
     await page.evaluate(() => { window.modelControl = document.querySelector('#setting-modelId'); document.querySelector('#settings-form').scrollTop = 170; });
     const scroll = await page.locator('#settings-form').evaluate(form => form.scrollTop);
-    await page.evaluate(() => document.querySelector('#settings-tab-reasonModel').click());
-    await page.evaluate(() => document.querySelector('#settings-tab-model').click());
-    assert.equal(await page.evaluate(() => document.querySelector('#setting-modelId') === window.modelControl), true, 'Returning to an unchanged tab should reuse its controls.');
-    assert.equal(await page.locator('.settings-advanced').evaluate(details => details.open), true);
+    await send({ type: 'settingsSection', section: 'ssh' });
+    await page.locator('#settings-add-ssh').waitFor();
+    await send({ type: 'settingsSection', section: 'model' });
+    assert.equal(await page.evaluate(() => document.querySelector('#setting-modelId') === window.modelControl), true, 'Returning to an unchanged model page should reuse its controls.');
+    assert.equal(await page.locator('.settings-model-connection .settings-advanced').evaluate(details => details.open), true);
     assert.equal(await page.locator('#settings-form').evaluate(form => form.scrollTop), scroll);
     await page.locator('#settings-reload').click();
     const reload = await lastRequest();

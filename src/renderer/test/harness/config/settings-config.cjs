@@ -503,6 +503,17 @@ test('malformed pi model fields are rejected before any credential or settings m
   assert.deepEqual((await f.model.read()).model.input, ['text', 'image']);
 });
 
+test('non-Latin-1 API keys are rejected on save and when loading credentials', async () => {
+  const f = fixture();
+  await assert.rejects(f.save('model', { ...base.model, apiKey: 'sk-模型密钥' }), /非英文字符/);
+  assert.equal(f.vault.size, 0);
+  await assert.rejects(f.model.configure({ ...base.model, apiKey: '含中文' }), /非英文字符/);
+  assert.equal(f.vault.size, 0);
+  // A key already in the vault must fail at credential load, not at fetch Headers.
+  f.vault.set(keyFor(base.model), '已存中文密钥');
+  await assert.rejects(f.model.read(), /非英文字符/);
+});
+
 test('assistance approval defaults on and its switch round trips independently of execution budgets', async () => {
   const f = fixture();
   assert.equal((await f.service.snapshot()).values.worker.requireToolApproval, true);

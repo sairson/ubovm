@@ -32,6 +32,17 @@ function string(value, name) {
   return value;
 }
 
+/** fetch Headers only accept ByteString values (code units 0–255). */
+function byteString(value, name) {
+  string(value, name);
+  for (let index = 0; index < value.length; index++) {
+    if (value.charCodeAt(index) > 255) {
+      throw new TypeError(`${name} must be Latin-1 compatible; HTTP headers cannot contain characters such as Chinese`);
+    }
+  }
+  return value;
+}
+
 function positive(value, name, allowZero = false) {
   if (!Number.isSafeInteger(value) || value < (allowZero ? 0 : 1)) throw new TypeError(`${name} must be a ${allowZero ? 'nonnegative' : 'positive'} integer`);
 }
@@ -59,6 +70,7 @@ function headers(value, name) {
         (item !== null && (typeof item !== 'string' || /[\r\n\0]/u.test(item)))) {
       throw new TypeError(`${name} must contain valid HTTP header names and string or null values`);
     }
+    if (typeof item === 'string') byteString(item, `${name}.${key}`);
     result[key.toLowerCase()] = item;
   }
   return result;
@@ -163,7 +175,7 @@ export function createModelClient(configuration = {}) {
       modelId: legacyBackend === 'claude' ? configuration.modelId?.replace(/\[1m\]$/i, '') : configuration.modelId };
   }
   const { apiKey, getApiKey, streamFn } = configuration;
-  if (apiKey !== undefined) string(apiKey, 'apiKey');
+  if (apiKey !== undefined) byteString(apiKey, 'apiKey');
   if (getApiKey !== undefined && typeof getApiKey !== 'function') throw new TypeError('getApiKey must be a function');
   if (streamFn !== undefined && typeof streamFn !== 'function') throw new TypeError('streamFn must be a function');
   if (apiKey !== undefined && getApiKey !== undefined) throw new TypeError('Use apiKey or getApiKey, not both');
@@ -230,7 +242,7 @@ export function createModelClient(configuration = {}) {
   const resolveKey = apiKey === undefined && getApiKey === undefined ? undefined : async provider => {
     if (provider !== model.provider) throw new TypeError('Model client cannot resolve credentials for another provider');
     const key = getApiKey ? await getApiKey(provider) : apiKey;
-    if (key !== undefined) string(key, 'getApiKey result');
+    if (key !== undefined) byteString(key, 'getApiKey result');
     return key;
   };
   const client = {

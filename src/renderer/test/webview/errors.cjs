@@ -34,6 +34,12 @@ test('common failures provide actionable localized messages and retain codes', (
   assert.equal(normalize({ status: 401 }).code, 'AUTHENTICATION_FAILED');
   assert.equal(normalize({ cause: { code: 'ENOTFOUND' } }).code, 'ENOTFOUND');
   assert.equal(normalize({ name: 'AbortError' }).cancelled, true);
+  const bytestring = normalize(new TypeError('Cannot convert argument to a ByteString because the character at index 7 has a value of 27169 which is greater than 255.'));
+  assert.equal(bytestring.code, 'INVALID_API_KEY');
+  assert.match(bytestring.message, /非英文字符/);
+  assert.match(bytestring.hint, /模型设置/);
+  const latin1 = normalize(new TypeError('apiKey must be Latin-1 compatible; HTTP headers cannot contain characters such as Chinese'));
+  assert.equal(latin1.code, 'INVALID_API_KEY');
 });
 
 test('agent runtime disconnect codes explain resume instead of generic failure', () => {

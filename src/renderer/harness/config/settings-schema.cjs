@@ -21,7 +21,7 @@ const sections = {
     f('defaultTimeoutSeconds', '默认超时（秒）', 'number', { default: 120, max: 3600 }),
     f('maxTimeoutSeconds', '超时上限（秒）', 'number', { default: 600, max: 3600 }),
     f('maxOutputBytes', '输出字节上限', 'number', { default: 1048576, min: 1024, max: 10485760 })] },
-  model: { title: '模型连接', description: '先连上默认模型就能开始对话。需要分工时，再为规划、任务和摘要指定模型。', fields: modelFields },
+  model: { title: '模型连接', description: '先维护我的模型（可测试连接），再为默认、规划、任务和摘要分配使用。', fields: modelFields },
   reasonModel: { title: '规划模型', description: '规划与分析使用的模型；打开继承时跟随默认模型。', fields: [f('inherit', '继承默认模型', 'checkbox'), ...modelFields] },
   workerModel: { title: '任务模型', description: '执行任务使用的模型；打开继承时跟随默认模型。', fields: [f('inherit', '继承默认模型', 'checkbox'), ...modelFields] },
   summaryModel: { title: '摘要模型', description: '压缩长对话使用的模型；打开继承时跟随规划模型。', fields: [f('inherit', '继承规划模型', 'checkbox'), ...modelFields] },
@@ -60,5 +60,5 @@ const mcpFields = [f('name', '服务名称'), f('transport', '传输协议', 'se
 sections.worker.fields.unshift(f('swarmBackendSelection', '并行任务模型选择', 'select', {
   default: 'fixed', options: ['fixed', 'autonomous'], labels: { fixed: '固定任务模型', autonomous: '从配置库自主选择模型' }
 }));
-sections.worker.description += ' 复杂请求会拆成多个并行任务：固定模式统一用任务模型，自主选择则允许子任务使用已配置的模型。';
+sections.worker.description += ' 并行任务模型选择在「模型连接 → 角色使用」中配置：固定模式统一用任务模型，自主选择则允许子任务使用已配置的模型。';
 module.exports = { sections, sshFields, mcpFields, modelPresets, tools };

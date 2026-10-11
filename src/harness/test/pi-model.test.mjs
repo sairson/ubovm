@@ -171,3 +171,20 @@ test('a 429 with Retry-After coordinates concurrent callers of the same model', 
   assert.equal(opened, 1);
   assert.ok(Date.now() - started >= 100, `second caller honored the cooldown (waited ${Date.now() - started}ms)`);
 });
+
+test('non-Latin-1 apiKey and header values are rejected before fetch Headers', () => {
+  assert.throws(
+    () => createModelClient({
+      provider: 'smoke', modelId: 'fixture', api: 'openai-completions',
+      baseUrl: 'https://offline.invalid/v1', apiKey: 'Bearer模'
+    }),
+    /Latin-1 compatible/
+  );
+  assert.throws(
+    () => createModelClient({
+      provider: 'smoke', modelId: 'fixture', api: 'openai-completions',
+      baseUrl: 'https://offline.invalid/v1', apiKey: 'ok', headers: { 'X-Custom': '中文' }
+    }),
+    /Latin-1 compatible/
+  );
+});

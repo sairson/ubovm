@@ -210,32 +210,100 @@ function createSettingsConfiguration(vscode, context) {
     const intools = object(old.intools);
     if (Object.hasOwn(modelSections, section)) {
       if (!plain(input)) throw new Error('配置内容必须是对象。');
-      const { profile: savedProfile, deleteProfileId, backend, ...fields } = input;
+      const { profile: savedProfile, deleteProfileId, backend, assignments, ...fields } = input;
       if (deleteProfileId !== undefined) {
         if (typeof deleteProfileId !== 'string' || !old.modelProfiles?.some(p => p.id === deleteProfileId)) throw new Error('模型配置不存在。');
-        if (Object.keys(fields).length || savedProfile !== undefined || backend !== undefined) throw new Error('删除模型配置不能同时修改模型。');
+        if (Object.keys(fields).length || savedProfile !== undefined || backend !== undefined || assignments !== undefined) throw new Error('删除模型配置不能同时修改模型。');
         changes.set('modelProfiles', old.modelProfiles.filter(p => p.id !== deleteProfileId));
         await updateConfiguration(vscode, context, changes, secrets);
         return snapshot({ includeSkills: section === 'skills' });
       }
-      const value = validateFields(fields, sections[section].fields), setting = modelSections[section];
-      const { apiKey, inherit, ...data } = value;
-      if (inherit && section !== 'model') { const role = object(old[setting]); delete role.model; changes.set(setting, old[setting] === false ? false : role); }
-      else {
-        const model = modelConfig({ ...data, ...(backend === undefined ? {} : { backend }) }); rejectSecrets(model);
+      const modelEqual = (left, right) => {
+        if (!left || !right) return false;
+        return ['provider', 'modelId', 'api', 'baseUrl'].every(key => String(left[key] ?? '') === String(right[key] ?? ''));
+      };
+      const writeModel = (model, apiKey) => {
+        rejectSecrets(model);
         if (model.input && !model.input.length) throw new Error('请至少选择一种模型输入类型。');
         for (const key of ['compat', 'streamOptions']) if (model[key] !== undefined && !plain(model[key])) throw new Error(`${key} 必须是 JSON 对象。`);
-        if (apiKey !== undefined) secrets.set(keyFor(model), apiKey === null ? undefined : apiKey.trim() || undefined);
-        changes.set(setting, section === 'model' ? model : { ...object(old[setting]), model });
-        if (savedProfile !== undefined) {
-          if (!plain(savedProfile) || typeof savedProfile.id !== 'string' || !/^[\w.-]{1,80}$/.test(savedProfile.id)
-            || typeof savedProfile.name !== 'string' || !savedProfile.name.trim() || savedProfile.name.trim().length > 80) throw new Error('模型配置需要有效标识和 1–80 字名称。');
-          const library = clone(old.modelProfiles ?? []);
-          const index = library.findIndex(p => p.id === savedProfile.id);
-          const entry = { id: savedProfile.id, name: savedProfile.name.trim(), model };
-          if (index < 0) library.push(entry); else library[index] = entry;
-          if (library.length > 30) throw new Error('最多保存 30 个模型配置。');
-          changes.set('modelProfiles', library);
+        if (apiKey !== undefined && apiKey !== null) {
+          if (typeof apiKey !== 'string') throw new Error('API Key 必须是字符串。');
+          const trimmed = apiKey.trim();
+          if (trimmed) {
+            for (let index = 0; index < trimmed.length; index++) {
+              if (trimmed.charCodeAt(index) > 255) {
+                throw new Error('API Key 含有非英文字符（例如中文），无法用于 HTTP 请求头。请粘贴纯英文/数字密钥后保存。');
+              }
+            }
+          }
+          secrets.set(keyFor(model), trimmed || undefined);
+        } else if (apiKey === null) {
+          secrets.set(keyFor(model), undefined);
+        }
+      };
+      const upsertProfile = (savedProfile, model) => {
+        if (savedProfile === undefined) return undefined;
+        if (!plain(savedProfile) || typeof savedProfile.id !== 'string' || !/^[\w.-]{1,80}$/.test(savedProfile.id)
+          || typeof savedProfile.name !== 'string' || !savedProfile.name.trim() || savedProfile.name.trim().length > 80) throw new Error('模型配置需要有效标识和 1–80 字名称。');
+        const library = clone(changes.has('modelProfiles') ? changes.get('modelProfiles') : (old.modelProfiles ?? []));
+        const index = library.findIndex(p => p.id === savedProfile.id);
+        const previous = index >= 0 ? library[index].model : undefined;
+        const entry = { id: savedProfile.id, name: savedProfile.name.trim(), model };
+        if (index < 0) library.push(entry); else library[index] = entry;
+        if (library.length > 30) throw new Error('最多保存 30 个模型配置。');
+        changes.set('modelProfiles', library);
+        return previous;
+      };
+      const syncBoundRoles = (previous, model) => {
+        if (!previous || modelEqual(previous, model)) return;
+        if (modelEqual(object(old.model), previous)) changes.set('model', model);
+        for (const role of ['reason', 'worker', 'contextSummary']) {
+          const current = object(changes.has(role) ? changes.get(role) : old[role]);
+          if (!modelEqual(current.model, previous)) continue;
+          changes.set(role, { ...current, model });
+        }
+      };
+      if (assignments !== undefined) {
+        if (section !== 'model' || !plain(assignments)) throw new Error('角色分配只能在默认模型页提交。');
+        const value = validateFields(fields, sections.model.fields);
+        const { apiKey, inherit, ...data } = value;
+        if (inherit) throw new Error('默认模型不能继承。');
+        const model = modelConfig({ ...data, ...(backend === undefined ? {} : { backend }) });
+        writeModel(model, apiKey);
+        upsertProfile(savedProfile, model);
+        const library = changes.get('modelProfiles') ?? clone(old.modelProfiles ?? []);
+        const pick = id => {
+          if (savedProfile && id === savedProfile.id) return model;
+          const entry = library.find(item => item.id === id);
+          if (!entry) throw new Error('角色指定的模型配置不存在。');
+          return modelConfig(entry.model);
+        };
+        if (typeof assignments.model !== 'string' || !assignments.model) throw new Error('请为默认模型选择一份配置。');
+        changes.set('model', pick(assignments.model));
+        for (const [roleKey, setting] of [['reasonModel', 'reason'], ['workerModel', 'worker'], ['summaryModel', 'contextSummary']]) {
+          if (!Object.hasOwn(assignments, roleKey) || assignments[roleKey] === undefined) continue;
+          const choice = assignments[roleKey];
+          if (choice === null || choice === '') {
+            const role = object(old[setting]); delete role.model;
+            changes.set(setting, old[setting] === false ? false : role);
+          } else if (typeof choice === 'string') {
+            changes.set(setting, { ...object(old[setting]), model: pick(choice) });
+          } else throw new Error('角色模型分配无效。');
+        }
+        if (assignments.swarmBackendSelection !== undefined) {
+          if (!['fixed', 'autonomous'].includes(assignments.swarmBackendSelection)) throw new Error('并行任务模型选择模式无效。');
+          changes.set('worker', { ...object(changes.has('worker') ? changes.get('worker') : old.worker), swarmBackendSelection: assignments.swarmBackendSelection });
+        }
+      } else {
+        const value = validateFields(fields, sections[section].fields), setting = modelSections[section];
+        const { apiKey, inherit, ...data } = value;
+        if (inherit && section !== 'model') { const role = object(old[setting]); delete role.model; changes.set(setting, old[setting] === false ? false : role); }
+        else {
+          const model = modelConfig({ ...data, ...(backend === undefined ? {} : { backend }) });
+          writeModel(model, apiKey);
+          changes.set(setting, section === 'model' ? model : { ...object(old[setting]), model });
+          const previous = upsertProfile(savedProfile, model);
+          if (previous) syncBoundRoles(previous, model);
         }
       }
     } else if (section === 'ssh') {

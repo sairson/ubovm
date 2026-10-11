@@ -29,7 +29,7 @@ function createSettingsPanel(vscode) {
   window.addEventListener('pagehide', () => { pageSuspended = true; cancelContentReady(); });
   window.addEventListener('pageshow', () => { pageSuspended = false; queueContentReady(); });
   document.addEventListener('visibilitychange', () => { if (document.hidden) cancelContentReady(); else queueContentReady(); });
-  const t = value => window.UBOVMi18n?.t(value) ?? value;
+  const t = (value, ...args) => window.UBOVMi18n?.t(value, ...args) ?? (args.length ? String(value).replace(/\{(\d+)\}/g, (match, index) => args[index] == null ? match : String(args[index])) : value);
   const setText = (node, value) => { if (!node) return; const text = t(value); if (node.textContent !== text) node.textContent = text; };
   const setAttribute = (node, name, value) => {
     const next = name === 'title' || name === 'aria-label' || name === 'placeholder' ? t(value) : value;
@@ -54,7 +54,11 @@ function createSettingsPanel(vscode) {
   }
   function acceptSnapshot(snapshot) {
     const previousRevision = data?.revision;
+    const previousFingerprints = data ? fingerprints.get(data) : undefined;
     data = validateSnapshot(snapshot);
+    if (previousRevision === data.revision && previousFingerprints && !fingerprints.get(data)) {
+      fingerprints.set(data, previousFingerprints);
+    }
     if (previousRevision !== data.revision) invalidateSSHVerification();
     saveUncertain = false;
     if (data.browserInstallation) {
@@ -211,7 +215,26 @@ function createSettingsPanel(vscode) {
     pending.status.dataset.error = String(unchanged && !result.ok);
     setText(pending.status, unchanged ? (result.ok ? result.message || '连接成功。' : window.UBOVMErrors.text(result.failure || result.message)) + (result.ok && Number.isFinite(result.durationMs) ? `（${result.durationMs} ms）` : '') : currentRevision ? '配置已更改，请重新测试连接。' : '已保存配置发生变化，请重新测试连接。');
   }
+  const modelTests = new Map();
+  const modelTestResults = new WeakMap();
+  function finishModelTest(id, result) {
+    const pending = modelTests.get(id); if (!pending) return;
+    modelTests.delete(id); clearTimeout(pending.timer);
+    pending.button.disabled = false; setText(pending.button, '测试连接');
+    const currentRevision = pending.revision === data?.revision;
+    let unchanged = false;
+    try { unchanged = JSON.stringify(readFields(pending.card)) === pending.signature; } catch {}
+    unchanged = unchanged && currentRevision;
+    if (unchanged) modelTestResults.set(pending.card, { signature: pending.signature, revision: pending.revision }); else modelTestResults.delete(pending.card);
+    pending.status.dataset.error = String(unchanged && !result.ok);
+    setText(pending.status, unchanged ? (result.ok ? result.message || '连接成功。' : window.UBOVMErrors.text(result.failure || result.message)) + (result.ok && Number.isFinite(result.durationMs) ? `（${result.durationMs} ms）` : '') : currentRevision ? '配置已更改，请重新测试连接。' : '已保存配置发生变化，请重新测试连接。');
+  }
   const modelRoles = [['model', '默认模型'], ['reasonModel', '规划模型'], ['workerModel', '任务模型'], ['summaryModel', '摘要模型']];
+  const modelEqual = (left, right) => left && right && ['provider', 'modelId', 'api', 'baseUrl'].every(key => String(left[key] ?? '') === String(right[key] ?? ''));
+  function matchingProfileId(roleValue, library) {
+    if (!roleValue || roleValue.inherit) return '';
+    return library.find(profile => modelEqual(profile.model, roleValue))?.id ?? '';
+  }
   const iconTemplates = new Map();
   function providerIcon(key) {
     const markup = UBOVM_PROVIDER_ICONS[key];
@@ -265,6 +288,7 @@ function createSettingsPanel(vscode) {
   }
   function releaseViewResources(expired) {
     for (const [id, pending] of sshTests) if (expired.nodes.some(node => node.contains(pending.group))) finishSSHTest(id, { ok: false, message: '' });
+    for (const [id, pending] of modelTests) if (expired.nodes.some(node => node.contains(pending.card))) finishModelTest(id, { ok: false, message: '' });
   }
   function cacheView(key, view) {
     evictView(key);
@@ -300,6 +324,7 @@ function createSettingsPanel(vscode) {
       status(error, true); return;
     }
     for (const id of sshTests.keys()) finishSSHTest(id, { ok: false, message: '' });
+    for (const id of modelTests.keys()) finishModelTest(id, { ok: false, message: '' });
     clearTimeout(requestTimer);
     renderFailure = undefined; $('settings-render-retry').hidden = true;
     dialog.close(); data = undefined; pendingOpen = undefined; initialStepPending = false; requestId = ''; requestView = undefined;
@@ -658,68 +683,86 @@ function createSettingsPanel(vscode) {
   }
   function savedModelProfile(value) {
     const library = data.modelProfiles ?? [];
-    const matches = p => Object.keys(p.model).every(key => JSON.stringify(p.model[key]) === JSON.stringify(value[key]));
-    return library.find(p => p.id === selectedModels.get(section) && matches(p)) ?? library.find(matches);
+    const matches = p => modelEqual(p.model, value) && Object.keys(p.model).every(key => JSON.stringify(p.model[key]) === JSON.stringify(value[key]));
+    return library.find(p => p.id === selectedModels.get('model') && matches(p)) ?? library.find(matches) ?? library.find(p => modelEqual(p.model, value));
+  }
+  function openLibraryProfile(profile, { dirtyAfter = false } = {}) {
+    guard(() => {
+      // Rebuilding the editor must keep the form scroll; otherwise library
+      // actions (select / 新建) jump the right-hand pane back to the top.
+      const view = viewState();
+      invalidateView();
+      dirty = false;
+      selectedModels.set('model', profile?.id || '');
+      render(view, profile || { id: '', name: '', model: { ...data.values.model, inherit: undefined }, secretState: {} });
+      if (dirtyAfter) { dirty = true; refreshInitialization(); }
+    });
   }
   function modelLibrary(value, draft) {
     const library = data.modelProfiles ?? [];
-    const matched = draft ?? savedModelProfile(value);
+    const matched = draft?.id !== undefined ? (draft.id ? library.find(p => p.id === draft.id) || draft : draft) : savedModelProfile(value);
     const card = element('section', 'settings-model-library');
+    card.setAttribute('aria-label', '我的模型');
     const heading = element('div', 'settings-model-heading');
-    heading.append(element('h4', '', '已保存的模型'), element('span', 'settings-model-count', library.length + ' 个配置'));
-    const search = element('input'); search.type = 'search'; search.placeholder = '搜索配置、服务商或模型'; search.setAttribute('aria-label', '搜索已保存模型');
+    heading.append(element('h4', '', '我的模型'), element('span', 'settings-model-count', library.length + ' 个配置'));
+    const search = element('input', 'settings-library-search'); search.type = 'search'; search.placeholder = '搜索配置、服务商或模型'; search.setAttribute('aria-label', '搜索已保存模型');
     const preview = element('p', 'settings-model-preview'); preview.setAttribute('role', 'status');
-    const load = element('button', '', '加载到当前角色'); load.type = 'button';
-    const label = element('label', '', '已保存的模型配置'), select = element('select'); select.id = 'settings-model-profile'; label.htmlFor = select.id;
-    select.size = 3;
-    select.append(new Option('选择一份配置以查看详情', ''));
+    const label = element('label', '', '配置库'), select = element('select'); select.id = 'settings-model-profile'; label.htmlFor = select.id;
+    select.size = 4; select.setAttribute('aria-label', '我的模型列表');
+    select.append(new Option(library.length ? '选择一份配置以编辑' : '暂无配置，可新建', ''));
     for (const profile of library) select.append(new Option(profile.name + ' · ' + profile.model.modelId, profile.id));
-    select.value = matched?.id ?? '';
+    select.value = matched?.id || '';
     const nameLabel = element('label', '', '配置名称'), name = element('input'); name.id = 'settings-model-profile-name'; nameLabel.htmlFor = name.id;
     name.type = 'text'; name.maxLength = 80; name.placeholder = '例如：日常对话、代码模型'; name.value = matched?.name ?? '';
+    name.addEventListener('input', () => { markDirty(); status('有未保存的更改。'); });
     card.dataset.profileId = matched?.id ?? '';
+    selectedModels.set('model', card.dataset.profileId);
     const hint = element('p', 'settings-model-hint'); hint.setAttribute('role', 'status');
     const refreshSaveHint = () => {
       const saved = library.find(p => p.id === card.dataset.profileId);
-      const roleLabel = t(modelRoles.find(([key]) => key === section)[1]);
-      hint.textContent = saved ? t('保存将更新“{0}”，应用到{1}。', saved.name, roleLabel) : t('保存将新增一份配置，应用到{0}。', roleLabel);
+      hint.textContent = saved ? t('保存将更新配置库中的“{0}”，并同步已绑定该配置的角色。', saved.name) : t('保存将新增一份配置到配置库，并可分配给下方角色。');
     };
     const previewSelection = () => {
       const selected = library.find(p => p.id === select.value);
-      load.disabled = !selected;
       preview.textContent = selected ? `${data.modelPresets[selected.model.provider]?.label ?? selected.model.provider} · ${selected.model.modelId}\n${selected.model.baseUrl || t('使用默认服务地址')}`
-        : library.length ? '先选择，再加载。浏览列表不会修改当前配置。' : '首次使用：填写连接设置并保存，之后可从这里复用。';
+        : library.length ? '点击列表项即可编辑连接参数。' : '首次使用：填写右侧连接设置并保存，之后可从这里复用。';
     };
     search.addEventListener('input', event => {
       event.stopPropagation();
       const query = search.value.trim().toLocaleLowerCase(), previous = select.value;
       const found = library.filter(p => [p.name, p.model.backend ?? 'pi', p.model.provider, p.model.modelId].join(' ').toLocaleLowerCase().includes(query));
-      select.replaceChildren(new Option(found.length ? '选择一份配置以查看详情' : '没有匹配的配置', ''), ...found.map(p => new Option(p.name + ' · ' + p.model.modelId, p.id)));
+      select.replaceChildren(new Option(found.length ? '选择一份配置以编辑' : '没有匹配的配置', ''), ...found.map(p => new Option(p.name + ' · ' + p.model.modelId, p.id)));
       select.value = found.some(p => p.id === previous) ? previous : '';
       previewSelection();
     });
     search.addEventListener('change', event => event.stopPropagation());
     select.addEventListener('input', event => event.stopPropagation());
     select.addEventListener('change', event => {
-      event.stopPropagation(); previewSelection();
-    });
-    load.addEventListener('click', () => {
+      event.stopPropagation();
       const next = library.find(p => p.id === select.value);
-      if (!next) return;
-      guard(() => { invalidateView(); dirty = false; render(undefined, next); dirty = true; });
+      if (!next) { previewSelection(); return; }
+      if (next.id === card.dataset.profileId && !dirty) { previewSelection(); return; }
+      openLibraryProfile(next);
     });
     const actions = element('div', 'settings-model-actions');
+    const create = element('button', '', '新建'); create.type = 'button';
+    create.addEventListener('click', () => openLibraryProfile({ id: '', name: '', model: { provider: 'openai', modelId: '', api: 'openai-completions', baseUrl: '' }, secretState: {} }, { dirtyAfter: true }));
     const add = element('button', '', '另存为新配置'); add.type = 'button';
-    add.addEventListener('click', () => { card.dataset.profileId = ''; name.value = name.value ? (name.value.slice(0, 77) + ' 副本') : ''; remove.disabled = true; dirty = true; refreshSaveHint(); status('正在编辑副本，保存后新增配置。'); name.focus(); });
-    const remove = element('button', 'settings-model-remove', '删除已保存配置'); remove.type = 'button'; remove.disabled = !library.some(p => p.id === card.dataset.profileId);
+    add.addEventListener('click', () => {
+      card.dataset.profileId = ''; selectedModels.set('model', ''); select.value = '';
+      name.value = name.value ? (name.value.slice(0, 77) + ' 副本') : '';
+      remove.disabled = true; dirty = true; refreshSaveHint(); previewSelection();
+      status('正在编辑副本，保存后新增配置。'); name.focus({ preventScroll: true });
+    });
+    const remove = element('button', 'settings-model-remove', '删除'); remove.type = 'button'; remove.disabled = !library.some(p => p.id === card.dataset.profileId);
     remove.title = '从配置库移除，角色当前使用的模型仍会保留';
     remove.addEventListener('click', () => guard(() => {
-      if (request('settingsSave', { section, value: { deleteProfileId: card.dataset.profileId }, revision: data.revision })) status('正在删除配置…');
+      if (request('settingsSave', { section: 'model', value: { deleteProfileId: card.dataset.profileId }, revision: data.revision })) status('正在删除配置…');
     }));
-    actions.append(add, remove);
+    actions.append(create, add, remove);
     const controls = element('div', 'settings-model-library-fields');
     const choice = element('div'), naming = element('div'); choice.className = 'settings-model-browser'; naming.className = 'settings-model-editing';
-    choice.append(label, search, select, preview, load); naming.append(element('span', 'settings-model-editing-title', '当前编辑'), nameLabel, name, hint, actions); controls.append(choice, naming);
+    choice.append(label, search, select, preview); naming.append(element('span', 'settings-model-editing-title', '当前编辑'), nameLabel, name, hint, actions); controls.append(choice, naming);
     previewSelection(); refreshSaveHint();
     card.append(heading, controls);
     return card;
@@ -743,7 +786,33 @@ function createSettingsPanel(vscode) {
     keyRow.append(element('p', 'settings-model-hint', '留空保留已存密钥。同一服务商、同一 API 地址共用凭据。'));
     const protocolNote = element('p', 'settings-model-hint'); protocolNote.dataset.sdkProtocol = '';
     setText(protocolNote, '选择服务商后会填入预设，确认模型与地址，再填写 API Key。');
-    card.append(heading, protocolNote, common, advanced);
+    const testRow = element('div', 'settings-model-test');
+    const test = element('button', '', '测试连接'); test.type = 'button';
+    const testStatus = element('p', 'settings-model-hint settings-model-test-status'); testStatus.setAttribute('role', 'status');
+    testRow.append(test, testStatus);
+    const cached = modelTestResults.get(card);
+    if (cached) setText(testStatus, '上次测试通过。修改参数后请重新测试。');
+    test.addEventListener('click', () => {
+      let id = '';
+      try {
+        const draft = readFields(card);
+        const signature = JSON.stringify(draft);
+        for (const [pendingId, pending] of modelTests) if (pending.card === card) { clearTimeout(pending.timer); modelTests.delete(pendingId); }
+        id = 'model-test-' + requestScope + '-' + (++sequence);
+        test.disabled = true; setText(test, '测试中…'); testStatus.dataset.error = 'false'; setText(testStatus, '正在测试模型连接…');
+        modelTestResults.delete(card);
+        const timer = setTimeout(() => finishModelTest(id, { ok: false, message: '连接测试超时，请重试。' }), 35000);
+        modelTests.set(id, { card, button: test, status: testStatus, signature, revision: data.revision, timer });
+        const failed = () => finishModelTest(id, { ok: false, message: '连接测试请求发送失败，请重试。' });
+        Promise.resolve(vscode.postMessage({ action: 'settingsTestModel', requestId: id, model: draft })).then(value => {
+          if (value === false) failed();
+        }, failed);
+      } catch (error) {
+        if (id) { clearTimeout(modelTests.get(id)?.timer); modelTests.delete(id); }
+        test.disabled = false; setText(test, '测试连接'); testStatus.dataset.error = 'true'; setText(testStatus, window.UBOVMErrors.text(error));
+      }
+    });
+    card.append(heading, protocolNote, common, advanced, testRow);
     const provider = common.querySelector('[data-setting="provider"]');
     const custom = common.querySelector(`[data-custom-for="${provider.id}"]`);
     const baseUrl = common.querySelector('[data-setting="baseUrl"]');
@@ -769,12 +838,77 @@ function createSettingsPanel(vscode) {
       if (clearLabel.textContent !== help) clearLabel.textContent = help;
     };
     const refreshCredentials = event => {
-      // Ordinary typing changes the secret, not its UI state. Avoid consulting
-      // the styled provider select or writing DOM again until emptiness changes.
       if (event.target === key && Boolean(key.value.trim()) === keyPresent) return;
       if ([provider, custom, baseUrl, key, clearKey].includes(event.target)) refresh();
     };
-    card.addEventListener('input', refreshCredentials); card.addEventListener('change', refreshCredentials); refresh();
+    const invalidateTest = () => {
+      const signature = modelTestResults.get(card)?.signature;
+      if (!signature) return;
+      try {
+        if (JSON.stringify(readFields(card)) === signature) return;
+      } catch { /* fall through */ }
+      modelTestResults.delete(card);
+      testStatus.dataset.error = 'false';
+      setText(testStatus, '配置已更改，请重新测试连接。');
+    };
+    card.addEventListener('input', event => { refreshCredentials(event); invalidateTest(); });
+    card.addEventListener('change', event => { refreshCredentials(event); invalidateTest(); });
+    refresh();
+    return card;
+  }
+  function modelRoleAssignment() {
+    const library = data.modelProfiles ?? [];
+    const card = element('section', 'settings-model-assignments');
+    card.setAttribute('aria-label', '角色使用');
+    card.append(element('h4', '', '角色使用'));
+    card.append(element('p', 'settings-model-hint', '从配置库选择各角色使用的模型；规划与任务可继承默认，摘要可继承规划。'));
+    const rows = element('div', 'settings-model-assignment-rows');
+    const optionsFor = (includeInherit, inheritLabel) => {
+      const list = [];
+      if (includeInherit) list.push(new Option(inheritLabel, ''));
+      for (const profile of library) list.push(new Option(profile.name + ' · ' + profile.model.modelId, profile.id));
+      return list;
+    };
+    const addRole = (key, label, { inheritLabel } = {}) => {
+      const row = element('div', 'settings-model-assignment-row');
+      row.dataset.role = key;
+      const title = element('label', '', label);
+      const select = element('select');
+      select.id = 'settings-assign-' + key;
+      select.dataset.setting = 'assignment:' + key;
+      title.htmlFor = select.id;
+      select.append(...optionsFor(Boolean(inheritLabel), inheritLabel || ''));
+      const current = key === 'model' ? data.values.model : data.values[key];
+      const matched = matchingProfileId(current, library);
+      if (!matched && current && !current.inherit && current.modelId) {
+        select.append(new Option(t('当前连接（未在配置库）'), '__current__'));
+        select.value = '__current__';
+      } else {
+        select.value = matched;
+        if (key === 'model' && !select.value && library[0]) select.value = library[0].id;
+      }
+      row.append(title, select);
+      if (key === 'workerModel') {
+        const swarm = element('div', 'settings-model-assignment-swarm');
+        const swarmLabel = element('label', '', '并行任务模型选择');
+        const swarmSelect = element('select');
+        swarmSelect.id = 'settings-assign-swarm';
+        swarmSelect.dataset.setting = 'swarmBackendSelection';
+        swarmLabel.htmlFor = swarmSelect.id;
+        for (const [value, text] of [['fixed', '固定任务模型'], ['autonomous', '从配置库自主选择模型']]) {
+          swarmSelect.append(new Option(t(text), value));
+        }
+        swarmSelect.value = data.values.worker?.swarmBackendSelection ?? 'fixed';
+        swarm.append(swarmLabel, swarmSelect);
+        row.append(swarm);
+      }
+      rows.append(row);
+    };
+    addRole('model', '默认模型');
+    addRole('reasonModel', '规划模型', { inheritLabel: '继承默认模型' });
+    addRole('workerModel', '任务模型', { inheritLabel: '继承默认模型' });
+    addRole('summaryModel', '摘要模型', { inheritLabel: '继承规划模型' });
+    card.append(rows);
     return card;
   }
   function collaborationGuide() {
@@ -788,24 +922,10 @@ function createSettingsPanel(vscode) {
       ['角色', '默认模型用于对话，规划模型用于拆步骤，任务模型用于子任务，摘要模型用于压缩上下文。继承时无需重复配置。'],
       ['协作', '复杂请求会拆成多个并行任务。固定模式共用任务模型，自主选择模式可选用配置库中的模型。'],
     ]) { const row = element('li'); row.append(element('strong', '', title), element('span', '', text)); steps.append(row); }
-    help.append(steps);
-    const current = element('p', 'settings-cooperation-current'); current.setAttribute('role', 'status');
-    const describe = model => model?.modelId || t('尚未配置模型');
-    const main = data.values.model, worker = data.values.workerModel;
-    const workerModel = worker?.inherit === false ? worker : main;
-    const refresh = () => {
-      const mode = fields.querySelector('[data-setting="swarmBackendSelection"]')?.value ?? data.values.worker?.swarmBackendSelection ?? 'fixed';
-      current.textContent = `${t('主对话')}：${describe(main)}\n${t('子任务')}：${describe(workerModel)}`;
-      const note = mode === 'autonomous'
-        ? '自主选择：主对话模型保持不变，子任务可从已配置的角色和配置库里选模型。请先保存要用的模型和密钥。'
-        : '固定模式：子任务统一使用任务模型。只想用一个模型时，配置默认模型并保持任务模型继承即可。';
-      explanation.textContent = t(note) + t(' 更改保存后，下一轮对话生效。');
-    };
-    const explanation = element('p', 'settings-model-hint');
-    const action = element('button', '', section === 'worker' ? '选择任务模型 →' : '设置并行任务模式 →'); action.type = 'button';
-    action.addEventListener('click', () => switchTo(section === 'worker' ? 'workerModel' : 'worker', true));
-    help.append(explanation); card.append(current, help, action);
-    card.refresh = refresh; refresh(); return card;
+    const explanation = element('p', 'settings-model-hint', '在下方「角色使用」中分配模型，并设置并行任务模式。更改保存后，下一轮对话生效。');
+    help.append(steps, explanation);
+    card.append(help);
+    return card;
   }
   function capabilityOverview() {
     const sshProfiles = data.values.ssh?.profiles ?? [];
@@ -874,8 +994,8 @@ function createSettingsPanel(vscode) {
     const fingerprintKey = page + ':' + section;
     let fingerprint = modelDraft ? undefined : keys.get(fingerprintKey);
     if (fingerprint === undefined) {
-      fingerprint = JSON.stringify([page, spec, value, data.secretState[section], [data.values.model, data.values.workerModel, data.values.worker?.swarmBackendSelection], section === 'ssh' ? data.sshFields : section === 'mcp' ? data.mcpFields : null,
-        modelRoles.some(([key]) => key === section) ? [data.modelPresets, data.values.model, section === 'summaryModel' ? data.values.reasonModel : null, data.modelProfiles, modelDraft?.id] : null,         section === 'skills' ? data.skillsCatalog : null, page === 'settings' && section === 'model' ? [data.values.ssh?.profiles, data.values.web, data.values.mcp?.servers, data.secretState.web, data.browserInstallation?.state] : null]);
+      fingerprint = JSON.stringify([page, spec, value, data.secretState[section], [data.values.model, data.values.reasonModel, data.values.workerModel, data.values.summaryModel, data.values.worker?.swarmBackendSelection], section === 'ssh' ? data.sshFields : section === 'mcp' ? data.mcpFields : null,
+        section === 'model' || modelRoles.some(([key]) => key === section) ? [data.modelPresets, data.modelProfiles, modelDraft?.id] : null, section === 'skills' ? data.skillsCatalog : null, page === 'settings' && section === 'model' ? [data.values.ssh?.profiles, data.values.web, data.values.mcp?.servers, data.secretState.web, data.browserInstallation?.state] : null]);
       if (!modelDraft) keys.set(fingerprintKey, fingerprint);
     }
     const unchanged = renderedSection === section && renderedFingerprint === fingerprint;
@@ -887,18 +1007,20 @@ function createSettingsPanel(vscode) {
     $('settings-skeleton').hidden = true; $('settings-load-error').hidden = true; fields.hidden = false;
     setText($('settings-title'), page === 'initialize' ? '首次初始化' : page === 'mcp' ? 'MCP 服务' : page === 'skills' ? 'Skills' : '系统配置');
     setText($('settings-section-kicker'), sectionKicker());
-    const isModel = modelRoles.some(([key]) => key === section);
+    const libraryFirst = page === 'settings' && section === 'model';
+    const isModel = section === 'model' || modelRoles.some(([key]) => key === section);
     setText($('settings-section-title'), isModel ? data.sections.model.title : section === 'web' ? '浏览器与搜索' : spec.title);
     const description = page === 'initialize' && section === 'ssh' ? '填写主机、用户名和认证信息。可先测试连接，再保存为默认远程环境。'
       : page === 'initialize' && section === 'web' ? '浏览器与网络搜索均可选。不配也能完成初始化，之后随时可补。'
+      : libraryFirst ? '先维护我的模型（可测试连接），再为默认、规划、任务和摘要分配使用。'
       : spec.description;
     setText($('settings-description'), description);
     publishNavigation();
-    roles.hidden = !isModel;
+    roles.hidden = true;
     refreshInitialization();
     for (const button of roles.children) { const selected = button.dataset.role === section; button.setAttribute('aria-selected', String(selected)); button.tabIndex = selected ? 0 : -1; }
-    fields.setAttribute('role', isModel && page !== 'initialize' ? 'tabpanel' : 'group');
-    fields.setAttribute('aria-labelledby', isModel && page !== 'initialize' ? 'settings-tab-' + section : 'settings-section-title');
+    fields.setAttribute('role', 'group');
+    fields.setAttribute('aria-labelledby', 'settings-section-title');
     if (unchanged || cached?.fingerprint === fingerprint) {
       if (!unchanged) { fields.replaceChildren(...cached.nodes); views.delete(section); }
       renderedSection = section; renderedFingerprint = fingerprint;
@@ -910,10 +1032,15 @@ function createSettingsPanel(vscode) {
     evictView(section);
     fields.replaceChildren();
     renderedSection = section; renderedFingerprint = '';
-    if (isModel) {
+    if (libraryFirst) {
+      const workspace = element('div', 'settings-model-workspace');
+      workspace.append(modelLibrary(value, modelDraft), modelConnection(data.sections.model, value, modelSecretState));
+      fields.append(workspace, modelRoleAssignment());
+    } else if (isModel && page === 'initialize') {
+      /* initialize keeps a single default-model connection form */
+    } else if (isModel) {
       const inheritField = spec.fields.find(entry => entry.key === 'inherit');
       if (inheritField) { const row = field(inheritField, value.inherit); row.classList.add('settings-model-inherit'); fields.append(row); }
-      if (page !== 'initialize') fields.append(modelLibrary(value, modelDraft));
     }
     if (section === 'skills') fields.append(skillLibrary());
     if (section === 'web') {
@@ -1018,9 +1145,9 @@ function createSettingsPanel(vscode) {
       }
       fields.append(card);
       card.addEventListener('input', refresh); card.addEventListener('change', refresh); refresh();
-    } else if (isModel) {
+    } else if (isModel && !libraryFirst) {
       fields.append(modelConnection(spec, value, modelSecretState));
-    } else {
+    } else if (!libraryFirst) {
       const advancedKeys = modelRoles.some(([key]) => key === section) ? ['contextWindow', 'maxTokens', 'reasoning', 'input', 'compat', 'streamOptions']
         : page === 'skills' ? spec.fields.map(field => field.key)
         : page === 'mcp' ? ['credentials', 'connectTimeoutMs', 'callTimeoutMs', 'maxResultBytes']
@@ -1029,7 +1156,10 @@ function createSettingsPanel(vscode) {
         : section === 'worker' ? ['maxModelCalls', 'maxToolCalls', 'maxPlanSteps', 'maxResponseBytes', 'maxCheckpointBytes', 'maxToolResultBytes', 'systemPrompt'] : [];
       const advanced = element('details', 'settings-advanced'); advanced.append(element('summary', '', page === 'skills' ? '加载限制' : page === 'mcp' ? '凭据与高级选项' : section === 'reason' || section === 'worker' ? '预算与提示词' : '高级选项'));
       const body = element('div', 'settings-advanced-fields'); advanced.append(body);
-      for (const entry of spec.fields) (advancedKeys.includes(entry.key) ? body : fields).append(field(entry, value[entry.key], modelSecretState));
+      for (const entry of spec.fields) {
+        if (entry.key === 'swarmBackendSelection') continue;
+        (advancedKeys.includes(entry.key) ? body : fields).append(field(entry, value[entry.key], modelSecretState));
+      }
       if (body.children.length) fields.append(advanced);
     }
     bindProviderPresets();
@@ -1043,11 +1173,12 @@ function createSettingsPanel(vscode) {
       const update = () => { for (const row of fields.children) if (!row.contains(inherit) && !row.hasAttribute('data-cooperation-guide') && !row.hasAttribute('data-capability-overview')) row.hidden = row === note ? !inherit.checked : inherit.checked; };
       inherit.addEventListener('change', update); update();
     }
-    if (page !== 'initialize' && (isModel || section === 'worker')) {
-      const guide = collaborationGuide(); fields.prepend(guide);
-      fields.querySelector('[data-setting="swarmBackendSelection"]')?.addEventListener('change', guide.refresh);
+    if (libraryFirst) {
+      const overview = capabilityOverview();
+      const overviewDetails = element('details', 'settings-model-help settings-capability-fold');
+      overviewDetails.append(element('summary', '', '当前能力总览'), overview);
+      fields.prepend(collaborationGuide(), overviewDetails);
     }
-    if (page === 'settings' && section === 'model') fields.prepend(capabilityOverview());
     restoreView(preserve, Boolean(preserve));
     status(readyStatus());
     renderedFingerprint = fingerprint;
@@ -1115,13 +1246,37 @@ function createSettingsPanel(vscode) {
         const groups = [...fields.querySelectorAll('.settings-profile')];
         const profiles = groups.map(readFields);
         value = { profiles, defaultId: profiles[groups.findIndex(group => group.querySelector('[data-default-ssh]').checked)]?.id ?? '' };
-      } else value = fields.querySelector('[data-setting="inherit"]')?.checked ? { inherit: true } : readFields(fields);
-      if (modelRoles.some(([key]) => key === section) && !value.inherit) {
+      } else if (page === 'settings' && section === 'model') {
+        const connection = fields.querySelector('.settings-model-connection');
         const library = fields.querySelector('.settings-model-library');
-        const saved = page === 'initialize' ? savedModelProfile(data.values[section] ?? {}) : undefined;
-        value.profile = { id: (library?.dataset.profileId ?? saved?.id) || 'model-' + Date.now().toString(36) + '-' + (++sequence),
-          name: (library ? $('settings-model-profile-name').value.trim() : saved?.name) || value.modelId };
-        selectedModels.set(section, value.profile.id);
+        value = readFields(connection || fields);
+        const profileId = (library?.dataset.profileId) || 'model-' + Date.now().toString(36) + '-' + (++sequence);
+        value.profile = { id: profileId, name: ($('settings-model-profile-name')?.value.trim() || value.modelId) };
+        selectedModels.set('model', profileId);
+        const assign = key => {
+          const select = fields.querySelector(`[data-setting="assignment:${key}"]`);
+          if (!select) return key === 'model' ? profileId : null;
+          if (select.value === '__current__') return undefined;
+          return select.value || null;
+        };
+        const assignments = {
+          model: assign('model') || profileId,
+          reasonModel: assign('reasonModel'),
+          workerModel: assign('workerModel'),
+          summaryModel: assign('summaryModel'),
+          swarmBackendSelection: fields.querySelector('[data-setting="swarmBackendSelection"]')?.value || 'fixed',
+        };
+        if (assignments.model === undefined) assignments.model = profileId;
+        value.assignments = assignments;
+      } else {
+        value = fields.querySelector('[data-setting="inherit"]')?.checked ? { inherit: true } : readFields(fields);
+        if (modelRoles.some(([key]) => key === section) && !value.inherit) {
+          const library = fields.querySelector('.settings-model-library');
+          const saved = page === 'initialize' ? savedModelProfile(data.values[section] ?? {}) : undefined;
+          value.profile = { id: (library?.dataset.profileId ?? saved?.id) || 'model-' + Date.now().toString(36) + '-' + (++sequence),
+            name: (library ? $('settings-model-profile-name').value.trim() : saved?.name) || value.modelId };
+          selectedModels.set(section, value.profile.id);
+        }
       }
       if (request('settingsSave', { section, value, revision: data.revision })) status('正在保存…');
     } catch (error) { status(error.message, true); }
@@ -1229,6 +1384,7 @@ function createSettingsPanel(vscode) {
       return;
     }
     if (message?.type === 'settingsSSHTestResult') { finishSSHTest(message.requestId, message); return; }
+    if (message?.type === 'settingsModelTestResult') { finishModelTest(message.requestId, message); return; }
     if (message?.type === 'settingsLoading') {
       if (saving && operation !== 'open') { status('正在处理配置，请完成后重试。'); return; }
       const pending = pendingOpen = { requestId: message.requestId, page: message.page, section: message.section, started: false };

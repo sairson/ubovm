@@ -52,6 +52,11 @@
     else if (/AGENT_HEARTBEAT_TIMEOUT|AGENT_THREAD_EXIT/i.test(match)) { category = code || (/AGENT_HEARTBEAT_TIMEOUT/i.test(match) ? 'AGENT_HEARTBEAT_TIMEOUT' : 'AGENT_THREAD_EXIT'); message = tr('Agent 后端连接已中断。'); hint = tr('运行中的任务已停止；若出现“继续执行”，可从检查点恢复，请勿重复提交。'); }
     else if (/SERVICE_CLOSED/i.test(match)) { category = 'SERVICE_CLOSED'; message = tr('Agent 服务已关闭。'); hint = tr('请重新打开面板或重启应用后再试。'); }
     else if (/RPC_BUSY/i.test(match)) { category = 'RPC_BUSY'; message = tr('Agent 正在处理其他请求。'); hint = tr('请稍候再试，或先停止当前执行。'); }
+    else if (/ByteString|greater than 255|Latin-1 compatible|ISO-8859-1|HTTP headers cannot contain/i.test(match)) {
+      category = 'INVALID_API_KEY';
+      message = tr('API Key 含有非英文字符，无法用于请求。');
+      hint = tr('请打开模型设置，清空并重新粘贴纯英文/数字密钥后保存。');
+    }
     else if (status === 401 || /unauthorized|invalid.api.key|authentication failed|all configured authentication methods failed/i.test(match)) { category = 'AUTHENTICATION_FAILED'; message = tr('身份验证失败。'); hint = tr('请检查对应服务的密钥或登录凭据。'); }
     else if (status === 403 || /forbidden|EACCES|EPERM|permission denied/i.test(match)) { category = 'PERMISSION_DENIED'; message = tr('没有执行此操作的权限。'); hint = tr('请检查文件权限或服务账号的访问权限。'); }
     else if (status === 429 || /rate.limit|quota.exceeded|insufficient.quota/i.test(match)) { category = 'RATE_LIMITED'; message = tr('服务请求受限或额度不足。'); hint = tr('请稍后重试，并检查服务额度。'); }

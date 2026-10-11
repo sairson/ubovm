@@ -13,6 +13,8 @@ const { createDefaultWorkspace, ensureDefaultWorkspace } = require('./harness/wo
 const { createModelConfiguration } = require('./harness/config/model-config.cjs');
 const { createSettingsConfiguration, readSSHConfiguration, resolveSSHTestProfile, readSSHStatus, sshConfigurationStatus } = require('./harness/config/settings-config.cjs');
 const { createSSHConnectionTest } = require('./host/system/ssh-connection-test.cjs');
+const { createModelConnectionTest } = require('./host/system/model-connection-test.cjs');
+const { keyFor: modelKeyFor, modelConfig: parseModelConfig } = require('./harness/config/model-config.cjs');
 const { createHarnessService } = require('./host/agent/agent-service.cjs');
 const { createWorkspaceSearch } = require('./harness/workspace/workspace-search.cjs');
 const { createWorkspaceAudit } = require('./harness/workspace/workspace-audit.cjs');
@@ -217,6 +219,10 @@ async function activate(context) {
   }
   const sshConnectionTest = createSSHConnectionTest({ loadSSH: () => import(pathToFileURL(path.join(path.dirname(sdkPath ?? sdkCandidates[0]), 'intools', 'terminals', 'ssh-terminal', 'commands.mjs')).href) });
   context.subscriptions.push(sshConnectionTest);
+  const modelConnectionTest = createModelConnectionTest({
+    loadModelClient: () => import(pathToFileURL(path.join(path.dirname(sdkPath ?? sdkCandidates[0]), 'index.mjs')).href)
+  });
+  context.subscriptions.push(modelConnectionTest);
   const terminalService = createTerminalService(vscode, {
     readConfiguration: () => readSSHConfiguration(vscode, context),
     loadSSH: () => import(pathToFileURL(path.join(path.dirname(sdkPath ?? sdkCandidates[0]), 'intools', 'terminals', 'ssh-terminal', 'commands.mjs')).href),
@@ -1318,6 +1324,26 @@ async function activate(context) {
           await target?.webview.postMessage({ type: 'settingsSSHTestResult', requestId, ...result });
         } catch (error) {
           await target?.webview.postMessage({ type: 'settingsSSHTestResult', requestId, ok: false, message: errorText(error), failure: normalizeError(error, message.action) });
+        }
+      })().catch(() => {});
+      return;
+    }
+    if (message.action === 'settingsTestModel' && requestId) {
+      const target = welcome;
+      void (async () => {
+        try {
+          const draft = { ...(message.model || {}) };
+          const model = parseModelConfig(draft);
+          let apiKey = typeof draft.apiKey === 'string' ? draft.apiKey.trim() : '';
+          // Password managers sometimes fill the secret box with non-Latin1 text.
+          // HTTP Authorization headers cannot carry those characters; prefer the
+          // saved key instead of failing the probe with a ByteString error.
+          if (apiKey && [...apiKey].some(char => char.charCodeAt(0) > 255)) apiKey = '';
+          if (!apiKey) apiKey = await context.secrets.get(modelKeyFor(model)) || '';
+          const result = await modelConnectionTest.test({ ...model, apiKey });
+          await target?.webview.postMessage({ type: 'settingsModelTestResult', requestId, ...result });
+        } catch (error) {
+          await target?.webview.postMessage({ type: 'settingsModelTestResult', requestId, ok: false, message: errorText(error), failure: normalizeError(error, message.action) });
         }
       })().catch(() => {});
       return;
