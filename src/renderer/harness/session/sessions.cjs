@@ -47,7 +47,7 @@ const MAX_EVIDENCE_TOOL_CALL_ID = 128;
 const STORAGE_VERSION = 3;
 const MAX_SESSION_MESSAGE_BYTES = 2 << 20;
 const MAX_ALL_MESSAGE_BYTES = 12 << 20;
-const { cleanTimelineParts, formatToolValue, redactDisplayObject } = require('../../host/agent/agent-backend.cjs').backendModule('projection.cjs');
+const { cleanTimelineParts, formatToolValue, redactDisplayObject, sanitizeUsage } = require('../../host/agent/agent-backend.cjs').backendModule('projection.cjs');
 const { normalizeEvidenceLists: normalizeSharedEvidenceLists, formatAssistSourceEvidenceSeed } = require('../../host/agent/agent-backend.cjs').harnessModule('assist-evidence.cjs');
 
 function requireMode(mode) {
@@ -209,8 +209,10 @@ function cleanMessages(value) {
       const marker = '\n\n[回复超出显示上限；完整输出保存在本地执行记录中。]';
       const parts = message.role === 'assistant' ? cleanTimelineParts(message.parts) : [];
       const text = message.role === 'assistant' ? formatToolValue(message.text, Number.MAX_SAFE_INTEGER).text : message.text;
+      const usage = message.role === 'assistant' ? sanitizeUsage(message.usage) : undefined;
       return { role: message.role, ...(typeof message.id === 'string' && message.id.length > 0 && message.id.length <= 200 ? { id: message.id } : {}), text: message.role === 'assistant' && text.length > limit
         ? text.slice(0, limit - marker.length) + marker : text.slice(0, limit), ...(parts.length ? { parts } : {}),
+        ...(usage ? { usage } : {}),
         ...(message.role === 'user' && ['sending', 'accepted', 'uncertain'].includes(message.steeringStatus) ? { steeringStatus: message.steeringStatus } : {}) };
     });
   // Array JSON adds brackets and one comma between each serialized message.

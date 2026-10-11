@@ -147,4 +147,50 @@ function interruptExecution(state, error, now = Date.now()) {
     })) };
 }
 
-module.exports = { cleanTimelineParts, formatToolValue, redactDisplayObject, interruptExecution, workerDisplayText, reasonConclusion, STREAMING_TOOLS };
+/** Bounded nonnegative model usage for UI/history; never provider billing secrets. */
+function sanitizeUsage(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const usage = {};
+  for (const key of ['input', 'output', 'cacheRead', 'cacheWrite', 'totalTokens']) {
+    if (!Number.isFinite(value[key]) || value[key] < 0) continue;
+    usage[key] = Math.min(Number.MAX_SAFE_INTEGER, Math.floor(value[key]));
+  }
+  if (!Object.keys(usage).length) return undefined;
+  if (value.cost && typeof value.cost === 'object' && !Array.isArray(value.cost)) {
+    const cost = {};
+    for (const key of ['input', 'output', 'cacheRead', 'cacheWrite', 'total']) {
+      if (Number.isFinite(value.cost[key]) && value.cost[key] >= 0) cost[key] = value.cost[key];
+    }
+    if (Object.keys(cost).length) usage.cost = cost;
+  }
+  return usage;
+}
+
+/** Stable fingerprint for value equality without object-identity churn. */
+function usageSignature(value) {
+  const usage = sanitizeUsage(value);
+  if (!usage) return '';
+  const tokens = [usage.input || 0, usage.output || 0, usage.cacheRead || 0, usage.cacheWrite || 0, usage.totalTokens || 0];
+  const cost = usage.cost?.total || 0;
+  // An all-zero report carries nothing to show; keep it out of the UI.
+  if (!tokens.some(Boolean) && !cost) return '';
+  return [...tokens, cost].join('|');
+}
+
+function accumulateUsage(current, next) {
+  const addition = sanitizeUsage(next);
+  if (!addition) return current;
+  const base = current ? { ...current, ...(current.cost ? { cost: { ...current.cost } } : {}) } : { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 };
+  for (const key of ['input', 'output', 'cacheRead', 'cacheWrite', 'totalTokens']) {
+    if (addition[key] !== undefined) base[key] = (base[key] || 0) + addition[key];
+  }
+  if (addition.cost) {
+    base.cost ??= { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
+    for (const key of ['input', 'output', 'cacheRead', 'cacheWrite', 'total']) {
+      if (addition.cost[key] !== undefined) base.cost[key] = (base.cost[key] || 0) + addition.cost[key];
+    }
+  }
+  return base;
+}
+
+module.exports = { cleanTimelineParts, formatToolValue, redactDisplayObject, interruptExecution, workerDisplayText, reasonConclusion, sanitizeUsage, usageSignature, accumulateUsage, STREAMING_TOOLS };

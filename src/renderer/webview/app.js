@@ -847,8 +847,9 @@
         if (entry.role === 'assistant' && typeof entry.messageId === 'string' && entry.messageId.startsWith('assist:')) {
           entry.changes = document.createElement('section');
           entry.article.appendChild(entry.changes);
-          window.UBOVMCodeChanges.update(entry.changes, hostState?.codeChanges?.[entry.messageId.slice(7)], {
-            turnId: entry.messageId.slice(7), busy, onAction: (action, payload) => new Promise((resolve, reject) => {
+          const turnId = entry.messageId.slice(7);
+          window.UBOVMCodeChanges.update(entry.changes, hostState?.codeChanges?.[turnId], {
+            turnId, busy, usage: item.usage, onAction: (action, payload) => new Promise((resolve, reject) => {
               if (!entry.changes.isConnected || view.sessionId !== currentSessionId) { reject(new Error('会话已切换，请返回原会话操作。')); return; }
               if (!request(action, payload, resolve, reject)) reject(new Error('操作未发送，请稍后重试。'));
             })
@@ -974,8 +975,10 @@
       changed = true;
     }
     // Turn snapshots are supplied by the host, never inferred from model prose.
-    const updateChanges = (root, turnId) => window.UBOVMCodeChanges.update(root, hostState?.codeChanges?.[turnId], {
-      turnId, busy, onAction: (action, payload) => new Promise((resolve, reject) => {
+    const usageSig = window.UBOVMCodeChanges?.usageSignature?.(execution.usage) || '';
+    const turnUsage = (turnId, messageUsage) => messageUsage ?? (execution.runId === turnId ? execution.usage : undefined);
+    const updateChanges = (root, turnId, messageUsage) => window.UBOVMCodeChanges.update(root, hostState?.codeChanges?.[turnId], {
+      turnId, busy, usage: turnUsage(turnId, messageUsage), onAction: (action, payload) => new Promise((resolve, reject) => {
         if (!root.isConnected || view.sessionId !== currentSessionId) { reject(new Error('会话已切换，请返回原会话操作。')); return; }
         if (!request(action, payload, resolve, reject)) reject(new Error('操作未发送，请稍后重试。'));
       })
@@ -983,17 +986,34 @@
     // Execution-only snapshots retain host-owned history and file summaries.
     // Avoid serializing every completed turn's file list for each new token.
     // Busy changes still refresh undo availability; failed renders never cache.
-    if (historyChanged || view.busy !== busy || view.codeChanges !== hostState?.codeChanges) {
-      const historyOffset = view.historyStart || 0;
+    // Usage object identity churns on every publish; compare a stable fingerprint
+    // and refresh only the live turn when that alone changes.
+    const historyOffset = view.historyStart || 0;
+    const refreshAllCards = historyChanged || view.busy !== busy || view.codeChanges !== hostState?.codeChanges;
+    const usageOnly = !refreshAllCards && view.usageSignature !== usageSig;
+    if (refreshAllCards) {
       for (const [index, entry] of view.entries.entries()) {
-        const id = entry.messageId || safeMessages[historyOffset + index]?.id;
+        const message = safeMessages[historyOffset + index];
+        const id = entry.messageId || message?.id;
         if (entry.role !== 'assistant' || !id?.startsWith('assist:')) continue;
         if (!entry.changes) { entry.changes = document.createElement('section'); entry.article.appendChild(entry.changes); changed = true; }
-        changed = updateChanges(entry.changes, id.slice(7)) || changed;
+        changed = updateChanges(entry.changes, id.slice(7), message?.usage) || changed;
       }
       view.codeChanges = hostState?.codeChanges;
+      view.usageSignature = usageSig;
+    } else if (usageOnly && execution.runId) {
+      const liveId = 'assist:' + execution.runId;
+      let liveIndex = -1;
+      for (let index = 0; index < view.entries.length; index++) {
+        const id = view.entries[index].messageId || safeMessages[historyOffset + index]?.id;
+        if (id === liveId) { liveIndex = index; break; }
+      }
+      if (liveIndex >= 0 && view.entries[liveIndex].changes) {
+        changed = updateChanges(view.entries[liveIndex].changes, execution.runId, safeMessages[historyOffset + liveIndex]?.usage) || changed;
+      } else if (view.changeSummary) changed = updateChanges(view.changeSummary, execution.runId) || changed;
+      view.usageSignature = usageSig;
     }
-    const unfinishedChanges = !busy && execution.runId && hostState?.codeChanges?.[execution.runId]
+    const unfinishedChanges = !busy && execution.runId && (hostState?.codeChanges?.[execution.runId] || usageSig)
       && !safeMessages.some(item => item.id === 'assist:' + execution.runId);
     if (unfinishedChanges) {
       if (!view.changeSummary) { view.changeSummary = document.createElement('section'); container.appendChild(view.changeSummary); changed = true; }

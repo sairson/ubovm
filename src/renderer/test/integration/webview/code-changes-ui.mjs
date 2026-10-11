@@ -105,7 +105,8 @@ test('turn cards show counts, send scoped file and undo actions, and preserve hi
     };
     const state = {
       type: 'state', mode: 'assist', conversation: { id: 'session', title: '修改文件' },
-      messages: [{ role: 'user', id: 'u1', text: '修改项目' }, { role: 'assistant', id: 'assist:round', text: '已完成修改。' }],
+      messages: [{ role: 'user', id: 'u1', text: '修改项目' }, { role: 'assistant', id: 'assist:round', text: '已完成修改。',
+        usage: { input: 1200, output: 345, cacheRead: 0, cacheWrite: 0, totalTokens: 1545, cost: { total: 0.0123 } } }],
       context: { workspace: 'test', workspaceConfigured: true }, provider: { configured: true },
       busy: false, execution: { status: 'completed', busy: false, runId: 'round', parts: [], workers: [] },
       codeChanges: { round: { revision: 'r1', added: 4, removed: 2, undone: false, files: [
@@ -117,6 +118,7 @@ test('turn cards show counts, send scoped file and undo actions, and preserve hi
     const card = page.locator('#messages .code-change-card');
     assert.match(await card.textContent(), /本轮修改 2 个文件/);
     assert.match(await card.textContent(), /\+4 \/ −2/);
+    assert.match(await card.textContent(), /本轮 Token 消耗：输入 1,200 · 输出 345 · 共 1,545 · 约 \$0\.0123/);
     assert.equal(await card.locator('img').count(), 0);
     assert.equal(await card.evaluate(node => node.scrollWidth <= node.clientWidth), true);
     await page.screenshot({ path: '.cache/code-changes-review.png', fullPage: true });
@@ -144,6 +146,16 @@ test('turn cards show counts, send scoped file and undo actions, and preserve hi
     await send(state);
     assert.equal(await page.locator('.code-change-card').count(), 2);
     assert.match(await page.locator('.code-change-card').last().textContent(), /未记录/);
+    state.messages.push({
+      role: 'assistant', id: 'assist:tokens', text: '只消耗了 token。',
+      usage: { input: 80, output: 20, totalTokens: 100 }
+    });
+    await send(state);
+    const tokenOnly = page.locator('.code-change-card').last();
+    assert.match(await tokenOnly.textContent(), /本轮未修改工作区文件/);
+    assert.match(await tokenOnly.textContent(), /本轮 Token 消耗：输入 80 · 输出 20 · 共 100/);
+    assert.equal(await tokenOnly.getByRole('button').count(), 0);
+    assert.equal(await tokenOnly.locator('.code-change-scope').count(), 0);
     state.messages = [state.messages[0]];
     state.execution = { status: 'failed', busy: false, runId: 'round', parts: [], workers: [], canResume: true };
     state.codeChanges.round.undone = false;

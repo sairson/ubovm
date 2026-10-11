@@ -4,6 +4,15 @@
 }
 .code-change-heading { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 12px; }
 .code-change-heading > strong { font-size: 13px; font-weight: 600; letter-spacing: .01em; }
+.code-change-usage {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 0; margin: 6px 0 0;
+  color: var(--muted); font-size: 11px; line-height: 1.55;
+  font-variant-numeric: tabular-nums; overflow-wrap: anywhere;
+}
+.code-change-usage-label { color: var(--ink); font-weight: 600; letter-spacing: .01em; }
+.code-change-usage-metrics {
+  font-weight: 600; letter-spacing: .01em;
+}
 .code-change-files {
   display: grid; grid-template-columns: minmax(0, 1fr) max-content max-content;
   list-style: none; margin: 8px 0 10px; padding: 0;

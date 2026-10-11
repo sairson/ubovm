@@ -4,7 +4,7 @@ const { createHash, randomUUID } = require('node:crypto');
 const { access, mkdir, open, readFile, rename, unlink, rm } = require('node:fs/promises');
 const { dirname, join, resolve } = require('node:path');
 const { pathToFileURL } = require('node:url');
-const { cleanTimelineParts, formatToolValue, redactDisplayObject, workerDisplayText, reasonConclusion, STREAMING_TOOLS } = require('./projection.cjs');
+const { cleanTimelineParts, formatToolValue, redactDisplayObject, workerDisplayText, reasonConclusion, sanitizeUsage, accumulateUsage, STREAMING_TOOLS } = require('./projection.cjs');
 const { createLatestWrite } = require('./latest-write.cjs');
 const { workerRecord, WORKER_RECORD_LIMIT, WORKER_RECORD_COUNT } = require('./worker-record.cjs');
 const { formatAssistSourceEvidenceSeed } = require('../../assist-evidence.cjs');
@@ -529,6 +529,12 @@ function createHarnessService({ sdkPath, storageDirectory, workspaceRoots = [], 
         if (ended || delta?.type === 'thinking_end' && delta.contentIndex === index || Number.isInteger(delta?.contentIndex) && delta.contentIndex > index && ['text_start', 'toolcall_start', 'thinking_start'].includes(delta.type)) { part.status = interrupted ? 'interrupted' : 'completed'; part.endedAt = Math.max(part.startedAt, timestamp); }
       }
       entry.parts = cleanTimelineParts(entry.parts);
+      // Final assistant/worker replies carry provider usage. Sum every ended
+      // message in this turn so the footer reflects the whole collaboration.
+      if (ended) {
+        entry.usage = accumulateUsage(entry.usage, event.message.usage);
+        entry.usageView = sanitizeUsage(entry.usage);
+      }
       if (entry.mode === 'goal' && (ended || delta?.type === 'thinking_end' || withheld)) void saveTimeline(entry, 'running').catch(() => {});
     }
     if (['tool_execution_start', 'tool_execution_update', 'tool_execution_end'].includes(event.type)) {
@@ -825,8 +831,10 @@ function createHarnessService({ sdkPath, storageDirectory, workspaceRoots = [], 
   async function preserveAssistHistory(entry) {
     if (entry.assistDelivered || !entry.parts.length && !entry.streamText) return;
     const parts = cleanTimelineParts(entry.parts);
-    const message = entry.assistMessage ?? { id: `assist:${entry.timelineRun}`, role: 'assistant',
+    const usage = entry.usageView ?? sanitizeUsage(entry.usage) ?? sanitizeUsage(entry.assistMessage?.usage);
+    const base = entry.assistMessage ?? { id: `assist:${entry.timelineRun}`, role: 'assistant',
       text: parts.filter(part => part.type === 'text').map(part => part.text ?? '').join('\n\n') || entry.streamText || (entry.status === 'interrupted' ? '执行已中断，已有记录已保留。' : '执行失败，已有记录已保留。'), parts };
+    const message = usage ? { ...base, usage } : base;
     const record = { version: 1, sessionId: entry.sessionId, status: entry.status, message, delivered: false };
     entry.assistHistory = record;
     await deliverAssistHistory(entry);
@@ -841,12 +849,15 @@ function createHarnessService({ sdkPath, storageDirectory, workspaceRoots = [], 
     const entry = sessions.get(id);
     if (!entry) return idle();
     flushAssistantText(entry);
+    const usage = entry.usageView ?? sanitizeUsage(entry.usage);
+    if (usage && entry.usageView !== usage) entry.usageView = usage;
     // Redaction already creates a detached object at every level. Cloning its
     // result again doubles the allocation for each streamed UI publication.
     return redactDisplayObject({ status: entry.status, busy: entry.busy, phase: entry.phase, workers: projectWorkers(entry).map(worker => ({ ...worker, parts: worker.parts?.map(part => entry.residentParts?.get(part.commandId) ?? part) })), activities: entry.activities, workerViewError: entry.workerViewError,
       blackboard: entry.blackboard, memory: entry.memory, error: entry.error, result: entry.result, parts: [...entry.parts.map(part => entry.residentParts?.get(part.commandId) ?? part), ...[...(entry.residentParts?.values() ?? [])].filter(part => !entry.parts.some(current => current.commandId === part.commandId))],
       streamText: entry.streamText, canResume: entry.canResume, middleware: entry.middleware,
-      runId: entry.timelineRun, canSteer: entry.mode === 'assist' && entry.busy && Boolean(entry.steer) && !entry.controller?.signal.aborted });
+      runId: entry.timelineRun, ...(usage ? { usage } : {}),
+      canSteer: entry.mode === 'assist' && entry.busy && Boolean(entry.steer) && !entry.controller?.signal.aborted });
   }
   function requestFacts(entry, input) {
     const initial = entry.goal?.initialFacts?.trim();
@@ -1024,7 +1035,8 @@ function createHarnessService({ sdkPath, storageDirectory, workspaceRoots = [], 
       entry.controller.signal.throwIfAborted();
       if (answer !== undefined) {
         finishParts(entry, answer, `answer:${entry.timelineRun}`);
-        entry.assistMessage = { id: `assist:${entry.timelineRun}`, role: 'assistant', text: answer, parts: cleanTimelineParts(entry.parts) };
+        const usage = entry.usageView ?? sanitizeUsage(entry.usage);
+        entry.assistMessage = { id: `assist:${entry.timelineRun}`, role: 'assistant', text: answer, parts: cleanTimelineParts(entry.parts), ...(usage ? { usage } : {}) };
         await onMessage?.(entry.id, entry.assistMessage); entry.assistDelivered = true;
       }
       entry.status = 'completed'; entry.error = null; entry.canResume = false; entry.streamText = ''; entry.phase = null;
@@ -1090,7 +1102,7 @@ function createHarnessService({ sdkPath, storageDirectory, workspaceRoots = [], 
     entry.eventError = undefined;
     if (!reserved) entry.controller = new AbortController(); entry.activities = [];
     const deliveryOnly = resume && entry.result?.complete && (entry.deliveryPending || entry.request?.status === 'applied');
-    if (!deliveryOnly) { entry.parts = entry.parts.filter(part => part.background && entry.commands?.has(part.commandId)); entry.pendingAssistantText = undefined; entry.messageTracks = new Map(); entry.timelineRun = randomUUID(); entry.textMessageSequence = 0; entry.textMessageId = undefined; entry.textPartIds = []; entry.lastAssistantText = undefined; }
+    if (!deliveryOnly) { entry.parts = entry.parts.filter(part => part.background && entry.commands?.has(part.commandId)); entry.pendingAssistantText = undefined; entry.messageTracks = new Map(); entry.timelineRun = randomUUID(); entry.textMessageSequence = 0; entry.textMessageId = undefined; entry.textPartIds = []; entry.lastAssistantText = undefined; entry.usage = undefined; entry.usageView = undefined; }
     else entry.timelineRun ??= randomUUID();
     if (entry.mode === 'goal' && !deliveryOnly) void saveTimeline(entry, 'running').catch(() => {});
     if (!resume) {
