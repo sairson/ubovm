@@ -2,6 +2,8 @@ import { Agent } from '@earendil-works/pi-agent-core';
 import { randomUUID } from 'node:crypto';
 
 import { hasAssistantContent, isRetryableModelFailure, retryBackoffMs, sleepAbortable } from '../../model-retry.mjs';
+import { applyExecutionModes } from '../../intools/shared/tool-modes.mjs';
+import { applyToolRuntime, createParallelGate } from '../../intools/shared/tool-runtime.mjs';
 import { boundedHistory, interruptedHistory, plain } from './history.mjs';
 import { evaluateLearningGate, gateRecords } from '../../learning/gate.mjs';
 export { boundedHistory, plain };
@@ -62,10 +64,12 @@ function awaitApproval(request, details) {
 }
 
 /** The same conversational tool loop runs the chat owner and each spawned worker. */
-export async function runConversation({ client, options, workerId, signal, prompt, systemPrompt, history = [], omitted = false,
+export async function runConversation({ client, options, workerId, signal, prompt, images = [], systemPrompt, history = [], omitted = false,
   historyGap, tools, internal, skills, mcp, summary, load, save, audit, onEvent, swarm, historyLimits, getWorkerEvidence, requestToolApproval, runtime, registerSteering }) {
+  if (!Array.isArray(images)) throw new TypeError('images must be an array');
   const maxModelCalls = callBudget(options.maxModelCalls, 'maxModelCalls');
   const maxToolCalls = callBudget(options.maxToolCalls, 'maxToolCalls');
+  const maxParallelReadTools = callLimit(options.maxParallelReadTools, 4, 'maxParallelReadTools');
   const previous = load('pending-turn');
   const pending = { version: 1, status: 'running', tools: previous?.status === 'running' ? structuredClone(previous.tools ?? []) : [], omittedTools: previous?.status === 'running' ? previous.omittedTools ?? 0 : 0 };
   boundSettledEvidence(pending);
@@ -73,6 +77,13 @@ export async function runConversation({ client, options, workerId, signal, promp
   const binding = { node: { id: workerId }, workerId, attempt: { id: randomUUID() }, signal };
   const names = tools.map(tool => tool.name);
   if (new Set(names).size !== names.length) throw failure('DUPLICATE_TOOL', 'Duplicate collaboration tool name');
+  // Read-only tools run concurrently up to a shared gate; Pi Agent falls back
+  // to the whole batch's source order as soon as one tool is sequential. That
+  // makes the read/write barrier a property of the classification, not of a
+  // second scheduler. Tool timeouts stay per-call and never abort the turn.
+  const agentTools = applyToolRuntime(applyExecutionModes(tools), {
+    gate: createParallelGate(maxParallelReadTools)
+  });
   const blocked = new Set(), requested = new Map();
   // Keep compact identities for the entire run, even after older settled
   // evidence leaves the prompt window. Other workers have separate ID scopes.
@@ -149,8 +160,8 @@ export async function runConversation({ client, options, workerId, signal, promp
   try {
     check();
     agent = new Agent({
-      initialState: { model: client.model, thinkingLevel: options.thinkingLevel ?? 'off', systemPrompt: instructions, tools, messages: history },
-      getApiKey: client.getApiKey, toolExecution: 'sequential', steeringMode: 'all', sessionId: `ubovm:collaboration:${workerId}`,
+      initialState: { model: client.model, thinkingLevel: options.thinkingLevel ?? 'off', systemPrompt: instructions, tools: agentTools, messages: history },
+      getApiKey: client.getApiKey, toolExecution: 'parallel', steeringMode: 'all', sessionId: `ubovm:collaboration:${workerId}`,
       streamFn: async (model, request, streamOptions) => {
         check();
         if (maxModelCalls > 0 && ++calls > maxModelCalls) throw stop(failure('COLLABORATION_MODEL_BUDGET', `本轮对话达到 ${maxModelCalls} 次模型调用上限。`));
@@ -315,7 +326,7 @@ export async function runConversation({ client, options, workerId, signal, promp
         steeringWake?.abort(new Error('New user steering'));
       } finally { if (!accepted) steeringCount--; }
     });
-    await agent.prompt(prompt);
+    await agent.prompt(prompt, images);
     // Do not let a natural-language final abandon descendants. Return unseen
     // results to the owner, including those finishing after its last request.
     while (true) {

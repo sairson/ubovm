@@ -266,10 +266,14 @@ test('terminal SSH configuration reads local settings and vault without requirin
   assert.equal(legacy.profiles[0].password, 'terminal-secret');
 });
 
-test('settings show SDK defaults without writing them or replacing explicit values', async () => {
+test('settings show DeepSeek defaults without writing them or replacing explicit values', async () => {
   const f = fixture({ model: {}, reason: { maxRepairs: 0 }, worker: { maxModelCalls: 7 }, contextSummary: { triggerTokens: 20000, targetTokens: 10000 }, intools: { allowedTools: [], browser: false } });
   const before = structuredClone(f.values), snapshot = await f.service.snapshot();
-  assert.equal(snapshot.values.model.provider, 'openai'); assert.equal(snapshot.values.model.modelId, 'gpt-4.1');
+  assert.equal(snapshot.values.model.provider, 'deepseek'); assert.equal(snapshot.values.model.modelId, 'deepseek-flash');
+  assert.equal(snapshot.values.model.baseUrl, 'https://api.deepseek.com');
+  assert.deepEqual(snapshot.values.model.models, ['deepseek-flash', 'deepseek-v4-pro']);
+  assert.equal(snapshot.values.model.thinkingLevels, undefined, 'preset metadata stays out of saved values');
+  assert.deepEqual(snapshot.modelPresets.deepseek.thinkingLevels['deepseek-flash'], ['off', 'low', 'high', 'max']);
   assert.equal(snapshot.sections.model.fields.find(f => f.key === 'provider').type, 'select');
   assert.equal(snapshot.mcpFields.find(f => f.key === 'transport').type, 'select');
   assert.equal(snapshot.values.reason.maxRepairs, 0); assert.equal(snapshot.values.reason.maxIntents, 5);
@@ -312,12 +316,39 @@ test('exploration depth settings promote to harness options and reject invalid r
   await assert.rejects(f.save('reason', { ...snapshot.values.reason, openIntents: 3, maxIntents: 5 }), /每轮新增任务/);
 });
 
+test('clearing the optional model list keeps only the default model', async () => {
+  const f = fixture({ model: { provider: 'deepseek', modelId: 'deepseek-flash', api: 'openai-completions', baseUrl: 'https://api.deepseek.com' }, reason: {}, worker: {} });
+  const snapshot = await f.service.snapshot();
+  assert.deepEqual(snapshot.values.model.models, ['deepseek-flash', 'deepseek-v4-pro']);
+  await f.save('model', { ...snapshot.values.model, models: [] });
+  assert.deepEqual(f.values.model.models, ['deepseek-flash']);
+  assert.deepEqual((await f.service.snapshot()).values.model.models, ['deepseek-flash']);
+  assert.deepEqual((await f.model.read()).model.models, ['deepseek-flash']);
+});
+
+test('DeepSeek planning defaults to a supported thinking level while explicit values survive', async () => {
+  const model = { provider: 'deepseek', modelId: 'deepseek-flash', api: 'openai-completions', baseUrl: 'https://api.deepseek.com' };
+  const flash = fixture({ model: structuredClone(model), reason: {} });
+  assert.equal((await flash.model.read()).reason.thinkingLevel, 'high');
+  const pro = fixture({ model: { ...model, modelId: 'deepseek-v4-pro' }, reason: {} });
+  assert.equal((await pro.model.read()).reason.thinkingLevel, 'high');
+  const explicit = fixture({ model: structuredClone(model), reason: { thinkingLevel: 'low' } });
+  assert.equal((await explicit.model.read()).reason.thinkingLevel, 'low');
+  const custom = fixture({ model: base.model, reason: {} });
+  assert.equal((await custom.model.read()).reason.thinkingLevel, 'medium');
+  // Direct saves (not only the pre-filtered form) store the level the API will
+  // actually use instead of persisting an unsupported DeepSeek level.
+  const reason = (await flash.service.snapshot()).values.reason;
+  await flash.save('reason', { ...reason, thinkingLevel: 'medium' });
+  assert.equal((await flash.model.read()).reason.thinkingLevel, 'high');
+});
+
 test('custom providers remain editable and preset model defaults save as valid configuration', async () => {
   const f = fixture({ model: { ...base.model, provider: 'company-gateway' } });
   const snapshot = await f.service.snapshot(); assert.equal(snapshot.values.model.provider, 'company-gateway');
   await f.save('model', snapshot.values.model); assert.equal((await f.model.read()).model.provider, 'company-gateway');
   const fresh = fixture({ model: {} }); const initial = await fresh.service.snapshot();
-  await fresh.save('model', initial.values.model); assert.equal((await fresh.model.read()).model.modelId, 'gpt-4.1');
+  await fresh.save('model', initial.values.model); assert.equal((await fresh.model.read()).model.modelId, 'deepseek-flash');
   assert.equal(fresh.vault.size, 0);
 });
 

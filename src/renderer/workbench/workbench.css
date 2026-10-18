@@ -410,6 +410,15 @@ html:not(.ubovm-content-slow) .ubovm-sessions-loading .tree-explorer-viewlet-tre
 .monaco-workbench .part.sidebar > .title.has-composite-bar {
   border-bottom: 1px solid color-mix(in srgb, var(--vscode-sideBar-border, var(--vscode-panel-border, var(--vscode-foreground))) 12%, transparent);
 }
+/* The file tree is the sidebar's resting view. With only its tab open, drop the
+ * redundant tab strip (keep the title actions) so the tree is no longer competing
+ * with a tab bar. Explorer stays pinned and has no close affordance; opening
+ * Search/Worker/Blackboard brings the strip back. */
+.monaco-workbench .part.sidebar > .title.has-composite-bar:has(
+  .composite-bar-container .composite-bar .monaco-action-bar .actions-container > .action-item:only-child[data-ubovm-composite-id="workbench.view.explorer"]
+) > .composite-bar-container {
+  display: none;
+}
 .monaco-workbench.modern-ui-tabs .part.sidebar.pane-composite-part > .title.has-composite-bar > .composite-bar-container,
 .monaco-workbench .part.sidebar.pane-composite-part > .title.has-composite-bar > .composite-bar-container {
   width: auto;
@@ -1532,35 +1541,41 @@ html[data-ubovm-locale="en"] .monaco-workbench .part.panel .title-actions .actio
   color: var(--vscode-list-activeSelectionForeground);
 }
 
-/* Integrated Browser: address bar and empty state should feel like a browser
- * chrome, not a cramped editor widget. Keep the native layout; only restyle. */
+/* Integrated Browser: match the DeepSeek Harness sidebar-browser chrome.
+ * DSH keeps a 38px toolbar, 28px tools and address field, a hairline border
+ * and a single blue focus ring. The native layout stays; only the surface is
+ * restyled. */
 .monaco-workbench .browser-root {
-  --ubovm-browser-accent: var(--vscode-focusBorder, #3d7a55);
+  --ubovm-browser-accent: #4176e6;
   font-family: 'Segoe UI', 'Microsoft YaHei UI', 'Microsoft YaHei', sans-serif;
+  background: var(--vscode-editor-background);
 }
-.monaco-workbench.vs .browser-root { --ubovm-browser-accent: var(--vscode-focusBorder, #3d7a55); }
-.monaco-workbench.vs-dark .browser-root { --ubovm-browser-accent: var(--vscode-focusBorder, #a3c0ae); }
+.monaco-workbench.vs .browser-root { --ubovm-browser-accent: #4176e6; }
+.monaco-workbench.vs-dark .browser-root { --ubovm-browser-accent: #7aaaff; }
 
 .monaco-workbench .browser-navbar {
-  padding: 8px 10px !important;
-  gap: 6px !important;
-  border-bottom: 1px solid color-mix(in srgb, var(--vscode-foreground) 8%, transparent);
-  background: color-mix(in srgb, var(--vscode-foreground) 3%, var(--vscode-editor-background)) !important;
+  box-sizing: border-box;
+  height: 38px;
+  min-height: 38px;
+  padding: 5px 6px !important;
+  gap: 4px !important;
+  border-bottom: 0.5px solid color-mix(in srgb, var(--vscode-foreground) 10%, transparent);
+  background: var(--vscode-editor-background) !important;
 }
 .monaco-workbench.vs-dark .browser-navbar {
-  background: color-mix(in srgb, var(--vscode-foreground) 5%, var(--vscode-editor-background)) !important;
-  border-bottom-color: color-mix(in srgb, var(--vscode-foreground) 12%, transparent);
+  border-bottom-color: color-mix(in srgb, var(--vscode-foreground) 14%, transparent);
 }
 
 .monaco-workbench .browser-nav-toolbar .actions-container,
 .monaco-workbench .browser-actions-toolbar .actions-container {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: 4px;
   margin: 0;
   padding: 0;
   list-style: none;
 }
+.monaco-workbench .browser-actions-toolbar { margin-right: 0; }
 .monaco-workbench .browser-nav-toolbar .action-item .action-label,
 .monaco-workbench .browser-actions-toolbar .action-item .action-label {
   display: flex !important;
@@ -1569,38 +1584,48 @@ html[data-ubovm-locale="en"] .monaco-workbench .part.panel .title-actions .actio
   width: 28px;
   height: 28px;
   padding: 0;
-  /* DeepSeek Harness browser chrome: 28px controls on the 8px radius step. */
   border-radius: var(--dsw-radius-sm, 8px);
   box-sizing: border-box;
-  opacity: .88;
-  transition: background-color 120ms ease-out, color 120ms ease-out, opacity 120ms ease-out;
+  color: var(--vscode-descriptionForeground);
+  opacity: 1;
+  transition: background-color 100ms ease-out, color 100ms ease-out;
 }
 .monaco-workbench .browser-nav-toolbar .action-item .action-label:hover,
 .monaco-workbench .browser-actions-toolbar .action-item .action-label:hover {
-  background: color-mix(in srgb, var(--vscode-foreground) 8%, transparent) !important;
-  opacity: 1;
+  background: color-mix(in srgb, var(--vscode-foreground) 7%, transparent) !important;
+  color: var(--vscode-foreground);
 }
 .monaco-workbench .browser-nav-toolbar .action-item .action-label:active,
 .monaco-workbench .browser-actions-toolbar .action-item .action-label:active {
-  transform: scale(.96);
+  background: color-mix(in srgb, var(--vscode-foreground) 11%, transparent) !important;
+}
+.monaco-workbench .browser-nav-toolbar .action-item .action-label:focus-visible,
+.monaco-workbench .browser-actions-toolbar .action-item .action-label:focus-visible {
+  outline: 1px solid var(--ubovm-browser-accent);
+  outline-offset: -1px;
 }
 .monaco-workbench .browser-nav-toolbar .action-item.disabled .action-label,
 .monaco-workbench .browser-actions-toolbar .action-item.disabled .action-label {
-  opacity: .38;
+  color: var(--vscode-disabledForeground, var(--vscode-descriptionForeground));
+  opacity: .42;
+  background: transparent !important;
 }
 
-/* DSH address field: hairline border, 8px radius, blue 1px inset focus ring. */
+/* DSH address field: 28px high, 12px text, hairline border, blue inset ring. */
 .monaco-workbench .browser-url-container {
-  min-height: 32px;
+  min-width: 0;
+  min-height: 28px;
+  height: 28px;
   align-items: center !important;
+  overflow: hidden;
   border-radius: var(--dsw-radius-sm, 8px) !important;
-  border: 0.5px solid color-mix(in srgb, var(--vscode-foreground) 12%, transparent) !important;
-  background: var(--vscode-input-background) !important;
+  border: 0.5px solid color-mix(in srgb, var(--vscode-foreground) 14%, transparent) !important;
+  background: color-mix(in srgb, var(--vscode-foreground) 4%, var(--vscode-editor-background)) !important;
   box-shadow: none;
-  transition: border-color 140ms ease-out, background 140ms ease-out;
+  transition: border-color 120ms ease-out, background-color 120ms ease-out;
 }
 .monaco-workbench .browser-url-container:hover {
-  border-color: color-mix(in srgb, var(--vscode-foreground) 20%, transparent) !important;
+  border-color: color-mix(in srgb, var(--vscode-foreground) 22%, transparent) !important;
 }
 .monaco-workbench .browser-url-container:has(.browser-url-display:focus) {
   outline: 1px solid var(--ubovm-browser-accent) !important;
@@ -1608,85 +1633,115 @@ html[data-ubovm-locale="en"] .monaco-workbench .part.panel .title-actions .actio
   border-color: transparent !important;
 }
 .monaco-workbench .browser-url-display {
-  padding: 6px 10px 6px 8px !important;
-  font-size: 13px !important;
+  min-width: 0;
+  padding: 3px 10px 3px 8px !important;
+  font-size: 12px !important;
   line-height: 20px !important;
+  color: var(--vscode-foreground);
   letter-spacing: 0;
 }
 .monaco-workbench .browser-url-display:empty::before {
   font-weight: 400;
+  color: var(--vscode-input-placeholderForeground, var(--vscode-descriptionForeground));
 }
+.monaco-workbench .browser-url-bar-widgets { padding: 2px; gap: 2px; }
 
+.monaco-workbench .browser-site-info-container { margin: 3px 0 3px 3px; }
 .monaco-workbench .browser-site-info-indicator {
-  width: 24px !important;
-  height: 24px !important;
-  border-radius: var(--dsw-radius-sm, 8px) !important;
+  width: 22px !important;
+  height: 22px !important;
+  border-radius: 6px !important;
 }
 .monaco-workbench .browser-favorite-indicator,
 .monaco-workbench .browser-share-toggle {
   min-height: 24px;
+  border: 0 !important;
   border-radius: var(--dsw-radius-sm, 8px) !important;
+  background: transparent !important;
+  color: var(--vscode-descriptionForeground) !important;
+  padding: 0 7px !important;
+  font-size: 11px !important;
+}
+.monaco-workbench .browser-favorite-indicator { padding: 0 4px !important; }
+/* DSH keeps the address field clean; reveal the native favorite toggle only
+ * while the user is actually working in the address bar. */
+.monaco-workbench .browser-favorite-indicator { display: none !important; }
+.monaco-workbench .browser-url-container:hover .browser-favorite-indicator,
+.monaco-workbench .browser-url-container:focus-within .browser-favorite-indicator {
+  display: inline-flex !important;
 }
 .monaco-workbench .browser-share-toggle.checked {
-  background: color-mix(in srgb, var(--ubovm-browser-accent) 18%, transparent) !important;
+  background: color-mix(in srgb, var(--ubovm-browser-accent) 16%, transparent) !important;
   color: var(--vscode-foreground) !important;
 }
 .monaco-workbench .browser-share-toggle.checked:hover {
-  background: color-mix(in srgb, var(--ubovm-browser-accent) 26%, transparent) !important;
+  background: color-mix(in srgb, var(--ubovm-browser-accent) 24%, transparent) !important;
 }
 
+/* The page surface stays flat; a shared tab gets a single 1px accent ring
+ * instead of the old thick green frame. */
+.monaco-workbench .browser-container { border-radius: 6px; }
 .monaco-workbench .browser-container::before {
   background: var(--vscode-widget-border, transparent) !important;
+  top: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  border-radius: 6px !important;
   animation: none !important;
 }
+.monaco-workbench .browser-container::after { border-radius: 6px; }
 .monaco-workbench .browser-container.shared::before {
-  background: var(--ubovm-browser-accent) !important;
-  opacity: .85;
-  top: -2px !important;
-  left: -2px !important;
-  right: -2px !important;
-  bottom: -2px !important;
+  top: -1px !important;
+  left: -1px !important;
+  right: -1px !important;
+  bottom: -1px !important;
+  border-radius: 7px !important;
+  background: color-mix(in srgb, var(--ubovm-browser-accent) 46%, transparent) !important;
+  opacity: 1;
 }
 
+/* Empty/restore state: quiet type, no accent card competing with the page. */
 .monaco-workbench .browser-welcome-content {
-  max-width: 360px;
+  max-width: 320px;
   padding: 24px 16px !important;
-  animation: ubovm-empty-enter 180ms ease-out;
+  animation: ubovm-empty-enter 160ms ease-out;
 }
 .monaco-workbench .browser-welcome-icon {
   display: grid;
   place-items: center;
   box-sizing: border-box;
-  width: 52px;
-  height: 52px;
-  min-height: 52px !important;
-  margin: 0 auto 18px;
-  border: 0.5px solid var(--vscode-widget-border, color-mix(in srgb, var(--vscode-foreground) 12%, transparent));
-  border-radius: var(--dsw-radius-md, 12px);
-  background: color-mix(in srgb, var(--vscode-foreground) 4%, var(--vscode-editor-background));
+  width: 40px;
+  height: 40px;
+  min-height: 40px !important;
+  margin: 0 auto 14px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
 }
 .monaco-workbench .browser-welcome-icon .codicon {
-  font-size: 24px !important;
+  font-size: 30px !important;
   margin: 0 !important;
-  color: var(--ubovm-browser-accent) !important;
+  color: var(--vscode-descriptionForeground) !important;
 }
 .monaco-workbench .browser-welcome-title {
-  font-size: 16px !important;
+  font-size: 13px !important;
   font-weight: 600 !important;
   letter-spacing: .01em;
   margin-top: 0 !important;
   padding: 0 !important;
 }
 .monaco-workbench .browser-welcome-subtitle {
-  font-size: 13px !important;
-  line-height: 1.55 !important;
-  max-width: 320px !important;
-  margin-top: 8px !important;
+  font-size: 12px !important;
+  line-height: 1.5 !important;
+  max-width: 280px !important;
+  margin-top: 6px !important;
   padding: 0 !important;
+  color: var(--vscode-descriptionForeground);
 }
 
 .monaco-workbench .browser-error-container {
-  padding: 48px 32px !important;
+  padding: 40px 24px !important;
   align-items: center !important;
 }
 .monaco-workbench .browser-error-content {
@@ -1702,12 +1757,54 @@ html[data-ubovm-locale="en"] .monaco-workbench .part.panel .title-actions .actio
 }
 
 .monaco-workbench .browser-emulation-toolbar {
-  padding: 6px 10px !important;
-  gap: 10px !important;
+  padding: 4px 6px !important;
+  gap: 6px !important;
   border-bottom: 0.5px solid color-mix(in srgb, var(--vscode-foreground) 10%, transparent);
 }
 .monaco-workbench .browser-find-widget-wrapper .simple-find-part {
   padding: 6px 10px 6px 12px !important;
+}
+
+/* The URL picker is a global quick input anchored by the native browser
+ * widget. Keep it inside the browser column and make it feel like part of the
+ * address field instead of a command-palette-sized panel over the chat. */
+.monaco-workbench .quick-input-widget:has(.quick-input-filter input[placeholder*="URL" i]),
+.monaco-workbench .quick-input-widget:has(.quick-input-filter input[placeholder*="网址"]) {
+  left: auto !important;
+  right: 18px !important;
+  width: min(380px, calc(100vw - 32px)) !important;
+  box-sizing: border-box;
+  border: 1px solid var(--ubovm-popup-border);
+  border-radius: 12px;
+  box-shadow: var(--ubovm-popup-shadow);
+  overflow: hidden;
+}
+.monaco-workbench .quick-input-widget:has(.quick-input-filter input[placeholder*="URL" i]) .quick-input-filter,
+.monaco-workbench .quick-input-widget:has(.quick-input-filter input[placeholder*="网址"]) .quick-input-filter {
+  padding: 4px;
+}
+.monaco-workbench .quick-input-widget:has(.quick-input-filter input[placeholder*="URL" i]) .quick-input-list .monaco-list-row,
+.monaco-workbench .quick-input-widget:has(.quick-input-filter input[placeholder*="网址"]) .quick-input-list .monaco-list-row {
+  border-radius: 6px;
+}
+.monaco-workbench .quick-input-widget:has(.quick-input-filter input[placeholder*="URL" i]) .quick-input-list,
+.monaco-workbench .quick-input-widget:has(.quick-input-filter input[placeholder*="网址"]) .quick-input-list {
+  padding: 2px 4px 4px;
+}
+@media (max-width: 600px) {
+  .monaco-workbench .quick-input-widget:has(.quick-input-filter input[placeholder*="URL" i]),
+  .monaco-workbench .quick-input-widget:has(.quick-input-filter input[placeholder*="网址"]) {
+    right: 12px !important;
+    width: min(320px, calc(100vw - 24px)) !important;
+  }
+  .monaco-workbench .browser-navbar { padding: 5px 4px !important; gap: 2px !important; }
+  .monaco-workbench .browser-nav-toolbar .action-item .action-label,
+  .monaco-workbench .browser-actions-toolbar .action-item .action-label {
+    width: 26px;
+    height: 26px;
+    border-radius: 7px;
+  }
+  .monaco-workbench .browser-url-display { padding-left: 6px !important; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1717,9 +1814,5 @@ html[data-ubovm-locale="en"] .monaco-workbench .part.panel .title-actions .actio
   .monaco-workbench .browser-welcome-content {
     transition: none;
     animation: none;
-  }
-  .monaco-workbench .browser-nav-toolbar .action-item .action-label:active,
-  .monaco-workbench .browser-actions-toolbar .action-item .action-label:active {
-    transform: none;
   }
 }

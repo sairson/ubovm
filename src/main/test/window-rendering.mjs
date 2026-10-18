@@ -5,26 +5,36 @@ import { installWindowRendering } from '../window-rendering.mjs';
 
 function harness({ visible = true, keepAliveMs = 20000 } = {}) {
   const app = Object.assign(new EventEmitter(), { isReady: () => false });
-  const powerMonitor = new EventEmitter(), timers = new Map(), loops = new Map(), warnings = [];
-  let next = 0, paints = 0, clock = 0;
+  const powerMonitor = new EventEmitter(), timers = new Map(), loops = new Map(), warnings = [], infos = [];
+  let next = 0, paints = 0, nudges = 0, transitions = 0, clock = 0;
   installWindowRendering({
     app, powerMonitor, keepAliveMs, now: () => clock,
     schedule: fn => { timers.set(++next, fn); return next; },
     cancel: id => timers.delete(id),
     interval: fn => { loops.set(++next, fn); return next; },
     clearLoop: id => loops.delete(id),
-    log: { warn: (...args) => warnings.push(args), error: (...args) => warnings.push(args) },
+    log: {
+      warn: (...args) => warnings.push(args),
+      error: (...args) => warnings.push(args),
+      info: (...args) => infos.push(args),
+    },
   });
   const contents = Object.assign(new EventEmitter(), { isDestroyed: () => false, invalidate: () => paints++ });
   const win = Object.assign(new EventEmitter(), {
-    id: 1, visible, destroyed: false, minimized: false, webContents: contents,
+    id: 1, visible, destroyed: false, minimized: false, maximized: false, fullscreen: false,
+    bounds: { x: 0, y: 0, width: 800, height: 600 }, webContents: contents,
     isDestroyed() { return this.destroyed; }, isVisible() { return this.visible; }, isMinimized() { return this.minimized; },
+    isMaximized() { return this.maximized; }, isFullScreen() { return this.fullscreen; },
+    getBounds() { return { ...this.bounds }; },
+    setBounds(bounds) { this.bounds = { ...bounds }; nudges++; },
+    unmaximize() { this.maximized = false; transitions++; },
+    maximize() { this.maximized = true; transitions++; },
   });
   app.emit('browser-window-created', {}, win);
   const flush = () => { const callbacks = [...timers.values()]; timers.clear(); callbacks.forEach(fn => fn()); };
   const tickKeepAlive = () => { for (const fn of [...loops.values()]) fn(); };
-  return { app, powerMonitor, win, contents, timers, loops, warnings, flush, tickKeepAlive,
-    paints: () => paints, setClock: value => { clock = value; } };
+  return { app, powerMonitor, win, contents, timers, loops, warnings, infos, flush, tickKeepAlive,
+    paints: () => paints, nudges: () => nudges, transitions: () => transitions, setClock: value => { clock = value; } };
 }
 
 test('restoration and wake repaint immediately and on delayed surface restoration, without navigation', () => {
@@ -74,6 +84,45 @@ test('window resizes and unresponsive renderers repaint the surface', () => {
   f.win.emit('unresponsive');
   assert.equal(f.paints(), base + 1, 'an unresponsive renderer repaints instead of only logging');
   assert.ok(f.warnings.some(args => String(args[0]).includes('unresponsive')));
+  f.flush();
+  assert.equal(f.nudges(), 2, 'an unresponsive renderer rebuilds the native surface');
+});
+
+test('idle focus, wake and the keyboard escape hatch rebuild a lost native surface', () => {
+  const f = harness();
+  f.app.emit('ready');
+  f.win.emit('focus'); f.flush();
+  assert.equal(f.nudges(), 0, 'a normal focus keeps the window geometry');
+  f.win.emit('blur');
+  f.setClock(60000);
+  f.win.emit('focus'); f.flush();
+  assert.equal(f.nudges(), 2, 'returning after an idle period resizes the pending surface');
+  assert.deepEqual(f.win.bounds, { x: 0, y: 0, width: 800, height: 600 }, 'the nudge restores the exact bounds');
+  f.setClock(90000);
+  f.powerMonitor.emit('resume'); f.flush();
+  assert.equal(f.nudges(), 4, 'wake/resume rebuilds the surface too');
+  assert.deepEqual(f.win.bounds, { x: 0, y: 0, width: 800, height: 600 });
+  f.setClock(95000);
+  let prevented = false;
+  f.contents.emit('before-input-event', { preventDefault: () => { prevented = true; } },
+    { type: 'keyDown', control: true, alt: true, key: 'r' });
+  assert.equal(prevented, true);
+  assert.equal(f.nudges(), 6, 'Ctrl+Alt+R forces an immediate rebuild even without an idle gap');
+  assert.ok(f.infos.some(args => String(args[0]).includes('Rebuilt')));
+});
+
+test('a maximized window rebuilds through the maximize transition without moving bounds', () => {
+  const f = harness();
+  f.app.emit('ready');
+  f.win.maximized = true;
+  const bounds = { ...f.win.bounds };
+  f.win.emit('blur');
+  f.setClock(60000);
+  f.win.emit('focus'); f.flush();
+  assert.equal(f.transitions(), 2, 'maximized windows unmaximize and maximize instead of resizing');
+  assert.equal(f.nudges(), 0);
+  assert.deepEqual(f.win.bounds, bounds);
+  assert.equal(f.win.maximized, true);
 });
 
 test('quit before ready removes wake hooks', () => {

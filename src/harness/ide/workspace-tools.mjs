@@ -1,7 +1,8 @@
-import { open, readdir, realpath, stat } from 'node:fs/promises';
+import { open, readFile, readdir, realpath, stat } from 'node:fs/promises';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { Type } from 'typebox';
 import { flagHelpProperties, withProgressiveDisclosure } from '../intools/shared/disclosure.mjs';
+import { detectImageMime, MAX_IMAGE_BYTES } from '../intools/shared/image-info.mjs';
 import { WORKSPACE_LIST_CATALOG, WORKSPACE_READ_CATALOG } from '../intools/shared/tool-catalogs.mjs';
 
 const failure = (code, message) => Object.assign(new Error(message), { code });
@@ -133,7 +134,39 @@ export async function createWorkspaceTools(workspaceRoots = [], { unbounded = fa
             truncated: fileTruncated || lineTruncated || nextLine !== null, fileTruncated, lineTruncated, accessibleLines: lines.length, nextLine });
         } finally { await handle.close(); }
       }
-    }, { ...WORKSPACE_READ_CATALOG, mode: 'flag' })
+    }, { ...WORKSPACE_READ_CATALOG, mode: 'flag' }),
+    {
+      name: 'read_image', recovery: 'retry-read-only', label: '读取图片',
+      description: `Read one image file from the workspace and return it to the model. Supports PNG, JPEG, WebP and GIF up to ${Math.round(MAX_IMAGE_BYTES / 1024 / 1024)} MiB. Use this for screenshots, diagrams, design references, OCR or visual checks. The path follows the same workspace boundary as read_workspace_file; 完全模式 accepts any absolute path. The returned metadata includes path, MIME type and byte size.`,
+      parameters: Type.Object({
+        root: Type.Optional(Type.Integer({ minimum: 0 })),
+        path: Type.String({ minLength: 1 }),
+      }, { additionalProperties: false }),
+      async execute(_id, input, signal) {
+        requirePath(input.path);
+        const target = await locate(input, signal);
+        if (target.missing) {
+          return result({ exists: false, path: target.display, root: target.root, mimeType: null, bytes: 0,
+            guidance: 'This image does not exist. Check the path before reading it again.' });
+        }
+        const info = await stat(target.path);
+        if (!info.isFile()) throw failure('WORKSPACE_NOT_FILE', 'Path must be a regular image file');
+        if (info.size > MAX_IMAGE_BYTES) throw failure('IMAGE_TOO_LARGE', `Image exceeds ${MAX_IMAGE_BYTES} bytes (${Math.round(MAX_IMAGE_BYTES / 1024 / 1024)} MiB). Use a smaller image or a screenshot crop.`);
+        signal?.throwIfAborted();
+        const buffer = await readFile(target.path);
+        signal?.throwIfAborted();
+        const mimeType = detectImageMime(buffer);
+        if (!mimeType) throw failure('IMAGE_UNSUPPORTED', 'Unsupported image bytes. Use PNG, JPEG, WebP or GIF.');
+        const metadata = { exists: true, path: target.display, root: target.root, mimeType, bytes: buffer.length };
+        return {
+          content: [
+            { type: 'image', data: buffer.toString('base64'), mimeType },
+            { type: 'text', text: JSON.stringify(metadata) }
+          ],
+          details: metadata
+        };
+      }
+    }
   ];
 }
 

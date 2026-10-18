@@ -19,7 +19,7 @@ body.vscode-dark {
 }
 /* DSH menu material: translucent fill + backdrop blur, hairline stroke in the
    elevation shadow, no real border. */
-body :is(.goal-tabs, .exploration-runs-popover, .worker-options-menu, .new-create-menu, #settings-discard) {
+body :is(.goal-tabs, .exploration-runs-popover, .worker-options-menu, #settings-discard) {
   color: var(--ink);
   background: var(--dsw-menu-surface-fill);
   backdrop-filter: var(--dsw-menu-backdrop-filter);
@@ -28,14 +28,14 @@ body :is(.goal-tabs, .exploration-runs-popover, .worker-options-menu, .new-creat
   border-radius: var(--overlay-radius);
   box-shadow: var(--overlay-shadow);
 }
-body :is(.goal-tabs, .worker-options-menu, .new-create-menu) { padding: 6px; }
-body :is(.goal-tabs, .worker-options-menu, .new-create-menu) button {
+body :is(.goal-tabs, .worker-options-menu) { padding: 6px; }
+body :is(.goal-tabs, .worker-options-menu) button {
   border-radius: var(--overlay-item-radius);
   min-height: 34px;
   transition: background 120ms, color 120ms;
 }
-body :is(.goal-tabs, .worker-options-menu, .new-create-menu) button:hover:enabled { background: var(--hover); color: var(--ink); }
-body :is(.goal-tabs, .worker-options-menu, .new-create-menu) button:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+body :is(.goal-tabs, .worker-options-menu) button:hover:enabled { background: var(--hover); color: var(--ink); }
+body :is(.goal-tabs, .worker-options-menu) button:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
 body .goal-tabs button[aria-selected="true"] { background: var(--selection-bg); color: var(--ink); }
 body :is(.goal-view-switcher, .exploration-runs) > summary { border-radius: 8px; transition: background 120ms, border-color 120ms; }
 body :is(.goal-view-switcher, .exploration-runs)[open] > summary { border-color: var(--focus); background: var(--selection-bg); }

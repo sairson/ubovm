@@ -21,26 +21,29 @@ select:focus-visible { outline: 2px solid var(--focus, var(--accent)); outline-o
 /* Follow the host theme; keep dark surfaces distinct without bright outlines. */
 body.vscode-dark {
   color-scheme: dark;
-  --canvas: var(--vscode-editor-background, #1b1e22);
+  /* Blend the editor chrome toward DSH's neutral dark without breaking the
+     native workbench seam. The webview keeps its own quiet surface, while the
+     editor, sidebar and terminal still follow the installed VS Code theme. */
+  --canvas: color-mix(in srgb, var(--vscode-editor-background, #1b1e22) 55%, #151517);
   --ink: var(--vscode-foreground, #e2e6e9);
-  --muted: color-mix(in srgb, var(--ink) 72%, var(--canvas));
-  --border: color-mix(in srgb, var(--ink) 17%, var(--canvas));
-  --wash: color-mix(in srgb, var(--ink) 4%, var(--canvas));
-  --hover: color-mix(in srgb, var(--ink) 9%, var(--canvas));
-  --surface-raised: color-mix(in srgb, var(--ink) 6%, var(--canvas));
+  --muted: color-mix(in srgb, var(--ink) 74%, var(--canvas));
+  --border: color-mix(in srgb, var(--ink) 15%, var(--canvas));
+  --wash: color-mix(in srgb, var(--ink) 5%, var(--canvas));
+  --hover: color-mix(in srgb, var(--ink) 10%, var(--canvas));
+  --surface-raised: color-mix(in srgb, var(--ink) 7%, var(--canvas));
   --accent: var(--dsw-alias-brand-primary);
   --accent-wash: color-mix(in srgb, var(--ink) 12%, var(--canvas));
   /* Dark selections stay quiet: closer to the surface than the light 15% mix. */
   --selection-bg: color-mix(in srgb, var(--ink) 10%, var(--canvas));
-  --focus: var(--vscode-focusBorder, #a0c4b0);
+  --focus: var(--dsw-alias-brand-accent);
   --dark-error: #f0a09a;
   --dark-warning: #ddc18b;
 }
 
 body.vscode-dark ::selection { background: var(--selection-bg); color: var(--selection-ink); }
 body.vscode-dark :is(input, textarea)::placeholder { color: var(--muted); opacity: .85; }
-body.vscode-dark .composer { background: var(--wash); border-color: var(--border); box-shadow: 0 3px 16px #00000022; }
-body.vscode-dark .composer:focus-within { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent), 0 8px 24px #00000030; }
+body.vscode-dark .composer { background: color-mix(in srgb, var(--ink) 7%, var(--canvas)); border-color: color-mix(in srgb, var(--ink) 12%, var(--canvas)); box-shadow: 0 8px 24px #00000030; }
+body.vscode-dark .composer:focus-within { border-color: color-mix(in srgb, var(--focus) 55%, var(--border)); box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus) 16%, transparent), 0 8px 24px #00000030; }
 body.vscode-dark :is(.primary-button, .submit, .composer .submit) { background: var(--accent); color: var(--dsw-alias-label-primary-foreground); border-color: transparent; }
 body.vscode-dark :is(.primary-button, .submit, .composer .submit):hover:enabled { background: color-mix(in srgb, var(--accent) 85%, var(--canvas)); }
 body.vscode-dark .composer .submit:disabled { background: var(--hover); color: var(--muted); }
@@ -48,7 +51,7 @@ body.vscode-dark .composer .submit:disabled { background: var(--hover); color: v
  * of a bright block, matching the subdued dark selection. */
 body.vscode-dark .approval-mode input:checked + span { background: var(--selection-bg); box-shadow: none; }
 
-body.vscode-dark :is(.goal-tabs, .worker-options-menu, .new-create-menu, .graph-workspace .graph-detail, #settings-discard) { background: var(--surface-raised); box-shadow: 0 12px 32px #00000050; }
+body.vscode-dark :is(.goal-tabs, .worker-options-menu, .graph-workspace .graph-detail, #settings-discard) { background: var(--surface-raised); box-shadow: 0 12px 32px #00000050; }
 body.vscode-dark :is(#note-editor, #settings-dialog) { background: var(--surface-raised); box-shadow: 0 24px 80px #00000070; }
 body.vscode-dark .project-switcher-shell,
 body.vscode-dark .ubovm-modal-shell { background: var(--surface-raised); box-shadow: 0 24px 80px #00000070; }
@@ -74,3 +77,23 @@ body.vscode-dark .md-content mark { background: color-mix(in srgb, var(--dark-wa
 body.vscode-high-contrast { color-scheme: dark; --accent: var(--vscode-textLink-foreground, #b6dfc8); --border: var(--vscode-contrastBorder, #fff); --accent-wash: var(--canvas); }
 body.vscode-high-contrast .composer .submit { background: var(--vscode-button-background, var(--canvas)); color: var(--vscode-button-foreground, var(--ink)); }
 body.vscode-high-contrast .graph-node[data-kind="root"] { color: var(--canvas); }
+
+/* Exploration workspace adopts the host theme's semantic palette. This block
+ * comes after the dark/high-contrast mappings on purpose: equal-specificity
+ * goal overrides must win the cascade, while chat keeps its DSH palette. */
+body[data-mode="goal"] {
+  --canvas: var(--vscode-editor-background, var(--dsw-alias-bg-base));
+  --ink: var(--vscode-foreground, var(--dsw-alias-label-primary));
+  --muted: var(--vscode-descriptionForeground, var(--dsw-alias-label-tertiary));
+  --border: var(--vscode-widget-border, var(--vscode-panel-border, color-mix(in srgb, var(--ink) 15%, var(--canvas))));
+  --focus: var(--vscode-focusBorder, var(--dsw-alias-brand-accent));
+  --accent: var(--vscode-button-background, var(--dsw-alias-brand-primary));
+  --accent-wash: color-mix(in srgb, var(--vscode-list-activeSelectionBackground, var(--accent)) 42%, var(--goal-surface-muted, var(--canvas)));
+  --hover: var(--vscode-list-hoverBackground, var(--dsw-alias-interactive-bg-hover-solid));
+  --wash: var(--vscode-list-inactiveSelectionBackground, var(--dsw-alias-interactive-bg-hover));
+  --selection-bg: color-mix(in srgb, var(--vscode-list-activeSelectionBackground, var(--accent)) 58%, var(--goal-canvas, var(--canvas)));
+  --selection-ink: var(--vscode-list-activeSelectionForeground, var(--ink));
+  --dsw-alias-link: var(--vscode-textLink-foreground, var(--dsw-static-deepseek-400));
+  --surface-raised: var(--vscode-editorWidget-background, var(--vscode-sideBar-background, var(--canvas)));
+}
+body.vscode-high-contrast[data-mode="goal"] { --border: var(--vscode-contrastBorder, #fff); }

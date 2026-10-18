@@ -2,6 +2,7 @@
 export function installWindowRendering({
   app, powerMonitor, log = console, schedule = setTimeout, cancel = clearTimeout,
   interval = setInterval, clearLoop = clearInterval, now = Date.now, keepAliveMs = 20000,
+  idleNudgeMs = 30000, hiddenNudgeMs = 5000, nudgeDelayMs = 300, nudgeGuardMs = 2000,
 }) {
   const windows = new Map();
   let stopped = false;
@@ -9,11 +10,16 @@ export function installWindowRendering({
   function attach(window) {
     const contents = window.webContents;
     const timers = new Set();
-    let keepAlive, lastPaint = 0;
+    const nudges = new Set();
+    let keepAlive, lastPaint = 0, lastBlur = now(), hiddenSince = 0, lastNudge = Number.NEGATIVE_INFINITY;
     const live = () => !stopped && !window.isDestroyed() && !contents.isDestroyed();
     const clearTimers = () => {
       for (const timer of timers) cancel(timer);
       timers.clear();
+    };
+    const clearNudges = () => {
+      for (const timer of nudges) cancel(timer);
+      nudges.clear();
     };
     const stopKeepAlive = () => {
       if (keepAlive === undefined) return;
@@ -32,16 +38,50 @@ export function installWindowRendering({
         return false;
       }
     };
+    // invalidate() only asks for the committed frame again. When Chromium or
+    // DirectComposition has dropped the native surface, the window stays a
+    // uniform background until a real resize rebuilds it. Match the manual
+    // "resize the window" workaround with the smallest possible geometry change.
+    const rebuildSurface = () => {
+      if (!surfaceReady() || window.isFullScreen()) return false;
+      if (now() - lastNudge < nudgeGuardMs) return false;
+      lastNudge = now();
+      try {
+        if (window.isMaximized()) {
+          window.unmaximize();
+          window.maximize();
+        } else {
+          const bounds = window.getBounds();
+          window.setBounds({ ...bounds, width: bounds.width + 1 });
+          window.setBounds(bounds);
+        }
+        log.info?.('[UBOVM] Rebuilt the window compositor surface.', { windowId: window.id });
+        return true;
+      } catch (error) {
+        log.warn('[UBOVM] Window compositor surface rebuild failed.', error);
+        return false;
+      }
+    };
+    const scheduleRebuild = (delay = nudgeDelayMs) => {
+      if (!surfaceReady()) return;
+      const timer = schedule(() => {
+        nudges.delete(timer);
+        rebuildSurface();
+      }, delay);
+      timer?.unref?.();
+      nudges.add(timer);
+    };
     const startKeepAlive = () => {
       if (!surfaceReady() || keepAlive !== undefined) return;
       keepAlive = interval(() => { repaint(); }, keepAliveMs);
       keepAlive?.unref?.();
     };
-    const recover = () => {
+    const recover = ({ native = false } = {}) => {
       if (!live()) return;
       clearTimers();
       if (!surfaceReady()) {
         stopKeepAlive();
+        clearNudges();
         return;
       }
       startKeepAlive();
@@ -58,41 +98,84 @@ export function installWindowRendering({
         timer?.unref?.();
         timers.add(timer);
       }
+      if (native) scheduleRebuild();
     };
-    const pause = () => { clearTimers(); stopKeepAlive(); };
-    const onInput = () => {
+    const pause = () => { clearTimers(); clearNudges(); stopKeepAlive(); };
+    const onInput = (event, input) => {
+      // Keep a keyboard escape hatch for a surface that is already blank; the
+      // command palette and menus are also unpainted in that state.
+      if (input?.type === 'keyDown' && input.control && input.alt && !input.meta
+        && String(input.key).toLowerCase() === 'r') {
+        event?.preventDefault?.();
+        rebuildSurface();
+        return;
+      }
       if (!surfaceReady() || now() - lastPaint < keepAliveMs) return;
       recover();
     };
     const gone = (_event, details) => log.error('[UBOVM] Renderer exited.', { windowId: window.id, ...details });
-    // An unresponsive renderer can drop its committed surface. Repaint so the
-    // window is not left blank if it recovers without a resize.
-    const unresponsive = () => { log.warn('[UBOVM] Window renderer unresponsive.', { windowId: window.id }); recover(); };
-    const recoverEvents = ['show', 'restore', 'focus', 'responsive', 'resized'];
-    const pauseEvents = ['hide', 'minimize'];
-    for (const event of recoverEvents) window.on(event, recover);
-    for (const event of pauseEvents) window.on(event, pause);
-    window.on('unresponsive', unresponsive);
-    contents.on('did-finish-load', recover);
-    contents.on('render-process-gone', gone);
-    contents.on('before-input-event', onInput);
+    // An unresponsive renderer can drop its committed surface. A repaint alone
+    // cannot reconnect a lost swap chain, so rebuild it after the repaint burst.
+    const unresponsive = () => {
+      log.warn('[UBOVM] Window renderer unresponsive.', { windowId: window.id });
+      recover();
+      scheduleRebuild();
+    };
+    const show = () => {
+      const background = hiddenSince && now() - hiddenSince >= hiddenNudgeMs;
+      hiddenSince = 0;
+      recover();
+      if (background) scheduleRebuild();
+    };
+    const restore = show;
+    const focus = () => {
+      const idle = now() - lastBlur >= idleNudgeMs;
+      recover();
+      if (idle) scheduleRebuild();
+    };
+    const blur = () => { lastBlur = now(); };
+    const hide = () => {
+      hiddenSince = now();
+      pause();
+    };
+    const resized = () => recover();
+    const responsive = () => recover();
     const dispose = () => {
       pause();
-      for (const event of recoverEvents) window.removeListener(event, recover);
-      for (const event of pauseEvents) window.removeListener(event, pause);
+      window.removeListener('show', show);
+      window.removeListener('restore', restore);
+      window.removeListener('focus', focus);
+      window.removeListener('blur', blur);
+      window.removeListener('hide', hide);
+      window.removeListener('minimize', hide);
+      window.removeListener('resized', resized);
+      window.removeListener('responsive', responsive);
       window.removeListener('unresponsive', unresponsive);
       window.removeListener('closed', dispose);
-      contents.removeListener('did-finish-load', recover);
+      contents.removeListener('did-finish-load', loaded);
       contents.removeListener('render-process-gone', gone);
       contents.removeListener('before-input-event', onInput);
       windows.delete(window);
     };
+    const loaded = () => recover();
     windows.set(window, { recover, dispose });
+    window.on('show', show);
+    window.on('restore', restore);
+    window.on('focus', focus);
+    window.on('blur', blur);
+    window.on('hide', hide);
+    window.on('minimize', hide);
+    window.on('resized', resized);
+    window.on('responsive', responsive);
+    window.on('unresponsive', unresponsive);
+    contents.on('did-finish-load', loaded);
+    contents.on('render-process-gone', gone);
+    contents.on('before-input-event', onInput);
     window.once('closed', dispose);
     startKeepAlive();
   }
   const created = (_event, window) => { if (!stopped) attach(window); };
-  const resume = () => { for (const { recover } of windows.values()) recover(); };
+  const resume = () => { for (const { recover } of windows.values()) recover({ native: true }); };
   const childGone = (_event, details) => {
     if (details.type === 'GPU') { log.warn('[UBOVM] GPU process exited.', details); resume(); }
   };
@@ -109,6 +192,7 @@ export function installWindowRendering({
     powerMonitor.removeListener('resume', resume);
     powerMonitor.removeListener('unlock-screen', resume);
     for (const record of [...windows.values()]) record.dispose();
+    windows.clear();
     app.removeListener('quit', dispose);
   };
   app.once('quit', dispose);

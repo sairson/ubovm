@@ -107,7 +107,7 @@ node build/build.mjs setup
 node build/build.mjs start
 ```
 
-建议先配置模型，再配置 SSH（渗透和 CTF 的远程执行环境），然后按任务打开浏览器、搜索、DNSLog、MCP 和 Skills。
+建议先配置模型，再配置 SSH（渗透和 CTF 的远程执行环境），然后按任务打开浏览器、搜索、DNSLog、MCP 和 Skills。模型默认预置 DeepSeek（`deepseek-flash`，可切到 `deepseek-v4-pro`），填入 API Key 即可使用；思考级别会按模型实际支持的范围收敛，连接失败时按余额、限流、上下文和参数分别提示。
 
 界面开发用 `node build/build.mjs dev`。其余动作见 `node build/build.mjs help`。
 

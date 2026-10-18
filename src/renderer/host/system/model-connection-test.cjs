@@ -18,7 +18,13 @@ function describeError(error) {
   }
   if (/timed? ?out|ETIMEDOUT|TimeoutError|AbortError/i.test(text)) return '连接超时，请检查地址、网络或防火墙。';
   if (/401|403|unauthorized|forbidden|invalid.?api.?key|incorrect.?api.?key|authentication/i.test(text)) return '认证失败，请检查 API Key 是否正确且适用于该服务地址。';
-  if (/404|not.?found|unknown.?model|model.?not.?found/i.test(text)) return '模型或接口不存在，请检查模型 ID、协议与服务地址。';
+  if (/404|not.?found|unknown.?model|model.?not.?exist|model.?not.?found/i.test(text)) return '模型或接口不存在，请检查模型 ID、协议与服务地址。';
+  if (/402|insufficient.?balance|insufficient.?quota|insufficient.?funds|payment.?required|billing|quota.?exceeded|余额不足|欠费/i.test(text)) return '账户余额或额度不足，请充值或检查服务商的配额。';
+  if (/context.?length|maximum.?context|context.?window.{0,40}(exceed|too|limit)|too many tokens|token.?limit|prompt.{0,20}too.?long/i.test(text)) return '请求超出模型上下文窗口，请缩短上下文或换用更大窗口的模型。';
+  if (/reasoning_effort|reasoning.?effort|thinking.{0,24}(not.?support|unsupported|invalid)|不支持.{0,8}(思考|推理)/i.test(text)) return '模型不支持所选推理/思考参数，请调整思考级别后重试。';
+  if (/429|rate.?limit|too many requests/i.test(text)) return '请求过于频繁，请稍后重试。';
+  if (/50[0234]|overloaded|server.?busy|temporarily.?unavailable|服务繁忙|服务暂时不可用/i.test(text)) return '服务暂时不可用或繁忙，请稍后重试。';
+  if (/400|422|invalid.?request|invalid.?parameter|bad.?request/i.test(text)) return '请求参数无效，请检查模型 ID、协议、思考级别与最大输出 Token。';
   if (/ECONNREFUSED/i.test(text)) return '连接被拒绝，请检查服务地址与端口。';
   if (/ENOTFOUND|EAI_AGAIN/i.test(text)) return '无法解析服务地址，请检查 URL 和 DNS。';
   if (/certificate|SSL|TLS/i.test(text)) return 'TLS/证书校验失败，请检查 HTTPS 地址或代理。';

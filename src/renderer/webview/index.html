@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'nonce-{{NONCE}}'; script-src 'nonce-{{NONCE}}'; frame-src 'self';">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'nonce-{{NONCE}}'; script-src 'nonce-{{NONCE}}'; img-src 'self' data: blob: https: vscode-webview-resource: vscode-resource:; frame-src 'self';">
   <title>UBOVM · 对话</title>
   <style nonce="{{NONCE}}">
     {{APP_STYLE}}
@@ -43,6 +43,7 @@
       <button class="text-button" id="assist-notes-toggle" type="button" aria-controls="goal-notes" aria-expanded="false">笔记</button>
       <div class="goal-module-actions" id="goal-notes-actions" hidden><button class="text-button" id="note-copy" type="button" disabled>复制</button><button class="text-button primary-button" id="note-new" type="button">＋ 新建笔记</button></div>
       <button class="workspace text-button" type="button" data-action="selectWorkspace" title="选择当前会话的工作空间" aria-label="选择当前会话的工作空间"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v10H3V6Z"/></svg><span id="workspace-name">{{WORKSPACE_NAME}}</span></button>
+      <button class="icon-button workspace-reveal" id="reveal-workspace" type="button" data-action="revealWorkspace" title="用文件资源管理器打开当前工作空间" aria-label="用文件资源管理器打开当前工作空间" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6Z"/><path d="M14 12h5m0 0-2-2m2 2-2 2"/></svg></button>
       <button class="icon-button" id="open-browser" type="button" data-action="browser" title="打开内置浏览器" aria-label="打开内置浏览器"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg></button>
       <button class="icon-button" id="validate-code-changes" type="button" data-action="validateCodeChanges" title="验证代码修改" aria-label="验证代码修改"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 12 4 4L17 6m-6 10 3 3 7-9"/></svg></button>
       <button class="icon-button" id="review-code-changes" type="button" data-action="reviewCodeChanges" title="代码更改：查看 diff 与撤销" aria-label="代码更改：查看 diff 与撤销"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h14v18H5V3ZM8 8h8m-8 8h8m-4-4v8"/></svg></button>
@@ -54,12 +55,7 @@
           <button type="button" role="menuitem" id="goal-more-validate" data-action="validateCodeChanges">验证代码修改</button>
         </div>
       </details>
-      <details class="new-create" id="new-create">
-        <summary class="icon-button new-create-toggle" title="新建对话" aria-label="新建对话"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></summary>
-        <div class="new-create-menu" role="menu">
-          <button type="button" role="menuitem" id="new-create-chat" data-create="chat">新建对话</button>
-        </div>
-      </details>
+      <button class="icon-button" id="toggle-right-sidebar" type="button" data-action="toggleFiles" title="打开 / 收起右侧边栏" aria-label="打开或收起右侧边栏"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/></svg></button>
     </header>
     <div class="operation-loading busy" id="operation-loading" role="status" aria-live="polite" hidden></div>
     <div class="ui-error" id="ui-error" role="alert" aria-live="assertive" hidden><div class="ui-error-content"><strong id="ui-error-title">操作未完成</strong><p id="ui-error-message"></p><button type="button" class="text-button" id="ui-render-retry" hidden>重新显示页面</button><details id="ui-error-details" hidden><summary>查看错误详情</summary><pre id="ui-error-detail"></pre></details></div><button type="button" id="ui-error-dismiss" aria-label="关闭错误提示">×</button></div>
@@ -114,10 +110,13 @@
             <form class="composer" id="prompt-form" aria-label="发送任务">
               <div class="context-row" id="composer-context">
                 <button class="context-add" id="attach-file" type="button" data-action="attachFile" title="添加文件上下文" aria-label="添加文件上下文"><span class="context-at" aria-hidden="true">@</span><span>添加上下文</span></button>
+                <button class="context-add" id="attach-image" type="button" data-action="pickImage" title="添加图片" aria-label="添加图片"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg><span>图片</span></button>
+                <input id="image-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden>
                 <span class="context-chip" id="composer-file" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9Z"/><path d="M14 3v6h6"/></svg><span id="context-label"></span><button class="context-remove" id="remove-context" type="button" title="移除文件上下文" aria-label="移除文件上下文"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10M7 17 17 7"/></svg></button></span>
                 <span class="context-caption" id="context-caption">当前工作区</span>
                 <span class="composer-status" id="composer-status" role="status" aria-live="polite"></span>
               </div>
+              <div class="composer-images" id="composer-images" aria-label="待发送图片" hidden></div>
               <textarea id="prompt-input" rows="1" maxlength="8000" aria-label="描述你的任务" aria-describedby="composer-status prompt-shortcut" placeholder="提问、规划，或描述你想完成的改动…"></textarea>
               <div class="composer-toolbar">
                 <div class="composer-options">

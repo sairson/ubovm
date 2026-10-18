@@ -121,6 +121,34 @@ test('sidebar tabs have comfortable spacing and tree rows retain native geometry
   assert.equal(await page.locator('.monaco-tl-twistie').first().evaluate(el => getComputedStyle(el, '::before').transitionDuration), '0s');
 });
 
+test('a lone file-tree tab collapses the redundant sidebar tab strip', async t => {
+  const browser = await chromium.launch({ channel: 'msedge', headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 300, height: 260 } });
+  const explorer = '<li class="action-item checked" role="tab" data-ubovm-composite-id="workbench.view.explorer"><a class="action-label">文件</a></li>';
+  await page.setContent(
+    '<div class="monaco-workbench">' +
+    '<div class="part sidebar pane-composite-part" style="width:300px;height:240px;--vscode-sideBar-background:#242826;--vscode-foreground:#e4e4e4">' +
+    '<div class="title has-composite-bar" style="height:35px">' +
+    '<div class="composite-bar-container"><div class="composite-bar"><div class="monaco-action-bar">' +
+    `<ul class="actions-container">${explorer}</ul>` +
+    '</div></div></div></div>' +
+    '<div class="explorer-folders-view" style="height:100%"></div>' +
+    '</div></div>'
+  );
+  for (const path of [
+    'vendor/vscode/src/vs/base/browser/ui/actionbar/actionbar.css',
+    'vendor/vscode/src/vs/workbench/browser/parts/media/paneCompositePart.css',
+    'src/renderer/workbench/workbench.css',
+  ]) await page.addStyleTag({ path });
+  assert.equal(await page.locator('.composite-bar-container').evaluate(el => getComputedStyle(el).display), 'none');
+  assert.notEqual(await page.locator('.title').evaluate(el => getComputedStyle(el).display), 'none');
+  await page.locator('.actions-container').evaluate(el => {
+    el.insertAdjacentHTML('beforeend', '<li class="action-item" role="tab" data-ubovm-composite-id="workbench.view.search"><a class="action-label">搜索</a><button class="ubovm-sidebar-tab-close">×</button></li>');
+  });
+  assert.notEqual(await page.locator('.composite-bar-container').evaluate(el => getComputedStyle(el).display), 'none');
+});
+
 test('Run and Debug welcome keeps native text layout instead of empty-state icon chrome', async t => {
   const browser = await chromium.launch({ channel: 'msedge', headless: true });
   t.after(() => browser.close());

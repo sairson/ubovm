@@ -3,7 +3,7 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const {
-  visibleTimelineParts, visibleActivities, displayActivityLabel, isBackgroundTool, isReadOnlyTool
+  visibleTimelineParts, visibleActivities, displayActivityLabel, isBackgroundTool, isReadOnlyTool, isFlatToolCard
 } = require('../../../webview/messages/timeline-parts.js');
 
 describe('timeline-parts', () => {
@@ -62,6 +62,17 @@ describe('timeline-parts', () => {
     }
     assert.equal(isReadOnlyTool(''), false);
     assert.equal(isReadOnlyTool(undefined), false);
+  });
+
+  it('keeps task updates flat without reclassifying them as read-only', () => {
+    assert.equal(isFlatToolCard('todo'), true);
+    assert.equal(isReadOnlyTool('todo'), false, 'todo mutates state even though its card is flat');
+    assert.equal(isFlatToolCard('read_workspace_file'), true);
+    assert.equal(isFlatToolCard('list_workspace_files'), true);
+    assert.equal(isFlatToolCard('edit_workspace_file'), false);
+    assert.equal(isFlatToolCard('note'), false, 'notes keep their result body');
+    assert.equal(isFlatToolCard(''), false);
+    assert.equal(isFlatToolCard(undefined), false);
   });
 
   it('localizes leaked snake_case tool ids instead of showing protocol names', () => {

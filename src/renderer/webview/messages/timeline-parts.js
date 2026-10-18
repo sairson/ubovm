@@ -30,8 +30,12 @@
     'web_search', 'fetch_web_content', 'navigate_workspace_code', 'load_skill',
     'scan_workspace_secrets', 'inventory_workspace_dependencies', 'analyze_workspace_call_chain'
   ]));
+  // Task-board updates are flat like read-only cards: the board already carries
+  // the current items, so the card only needs the operation, status and timing.
+  const FLAT_TOOLS = Object.freeze(new Set(['todo']));
   const isReadOnlyTool = name => typeof name === 'string' && name.length > 0
     && (READ_ONLY_TOOLS.has(name) || READ_ONLY_PREFIXES.some(prefix => name.startsWith(prefix)));
+  const isFlatToolCard = name => isReadOnlyTool(name) || FLAT_TOOLS.has(name);
   function eachToolPart(state, visit) {
     const seen = new Set();
     const walk = part => {
@@ -72,7 +76,7 @@
     }
     return visible.reverse();
   }
-  const api = { TOOL_LABELS, isBackgroundTool, isReadOnlyTool, visibleTimelineParts, visibleActivities, displayActivityLabel, eachToolPart };
+  const api = { TOOL_LABELS, isBackgroundTool, isReadOnlyTool, isFlatToolCard, visibleTimelineParts, visibleActivities, displayActivityLabel, eachToolPart };
   if (typeof module === 'object' && module.exports) module.exports = api;
   if (typeof window === 'object') window.UBOVMTimeline = api;
 })();

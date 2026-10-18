@@ -12,6 +12,14 @@
     return (Number.isFinite(usage.input) ? usage.input : 0) + (Number.isFinite(usage.output) ? usage.output : 0);
   };
   const userTextIds = new Set(['conversation-title', 'goal-objective', 'workspace-name', 'context-label', 'goal-selection-label']);
+  const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+  const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
+  const IMAGE_NAME = /\.(png|jpe?g|webp|gif)$/i;
+  const isImageFile = file => Boolean(file && (IMAGE_TYPES.has(file.type) || (!file.type && IMAGE_NAME.test(file.name || ''))));
+  const isImageUri = value => {
+    try { const uri = new URL(value); return uri.protocol === 'file:' && IMAGE_NAME.test(decodeURIComponent(uri.pathname)); }
+    catch { return false; }
+  };
   let connectionStatus = 'connecting';
   let readyResyncTimer;
   function requestReadyResync() {
@@ -526,7 +534,7 @@
   }
   let readingDrop = false, dropReadTask;
   function invalidateDropRead() { dropReadTask = undefined; readingDrop = false; clearDrop(); }
-  function contextPending() { return readingDrop || hasPending('attachFile') || hasPending('clearFileContext'); }
+  function contextPending() { return readingDrop || hasPending('attachFile') || hasPending('attachImage') || hasPending('attachImagePath') || hasPending('removeImage') || hasPending('clearFileContext'); }
   const fileDrag = transfer => [...(transfer?.types || [])].some(type => ['files', 'text/uri-list', 'resourceurls'].includes(type.toLowerCase()));
   let dragDepth = 0;
   const clearDrop = () => { dragDepth = 0; form.classList.remove('file-drag-over'); };
@@ -538,20 +546,52 @@
     if (!fileDrag(event.dataTransfer)) return;
     event.stopPropagation(); if (--dragDepth <= 0) clearDrop();
   });
+  async function imagePayload(file) {
+    if (!file || (file.type && !IMAGE_TYPES.has(file.type))) throw new Error('仅支持 PNG、JPEG、WebP 或 GIF 图片。');
+    if (file.size > MAX_IMAGE_BYTES) throw new Error('图片不能超过 4 MiB。');
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    let binary = '';
+    for (let offset = 0; offset < bytes.length; offset += 0x8000) binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+    return { name: file.name || 'image', mimeType: file.type || undefined, data: btoa(binary) };
+  }
+  function attachImageFile(file, sessionId = currentSessionId) {
+    return imagePayload(file).then(image => new Promise((resolve, reject) => {
+      const id = request('attachImage', { image }, resolve, reject, 30000);
+      if (!id) reject(new Error('当前会话尚未准备完成。'));
+    })).catch(error => {
+      if (sessionId === currentSessionId) showError(window.UBOVMErrors.normalize(error, 'attachImage'), sessionId);
+      throw error;
+    });
+  }
+  async function attachImageFiles(files, sessionId = currentSessionId) {
+    for (const file of files) {
+      if (sessionId !== currentSessionId || visualSuspended()) return;
+      await attachImageFile(file, sessionId).catch(() => {});
+    }
+  }
   form.addEventListener('dragover', event => {
     if (!fileDrag(event.dataTransfer)) return;
-    event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = byId('attach-file').disabled ? 'none' : 'copy';
+    event.preventDefault(); event.stopPropagation();
+    const imageDrag = [...(event.dataTransfer.items ?? [])].some(item => item.type?.startsWith('image/'));
+    event.dataTransfer.dropEffect = imageDrag || !byId('attach-file').disabled ? 'copy' : 'none';
   });
   form.addEventListener('drop', async event => {
     if (!fileDrag(event.dataTransfer)) return;
     event.preventDefault(); event.stopPropagation(); clearDrop();
     const sessionId = currentSessionId;
-    if (visualSuspended() || byId('attach-file').disabled || readingDrop) return;
+    if (visualSuspended() || readingDrop) return;
     const task = dropReadTask = {}, epoch = viewEpoch;
     readingDrop = true; updateControls();
     try {
       const files = [...event.dataTransfer.files];
       if ([...event.dataTransfer.items].some(item => item.webkitGetAsEntry?.()?.isDirectory)) throw new Error('请拖入文件，暂不支持文件夹。');
+      const imageFiles = files.filter(isImageFile);
+      if (imageFiles.length) {
+        readingDrop = false;
+        await attachImageFiles(imageFiles, sessionId);
+        return;
+      }
+      if (byId('attach-file').disabled) return;
       let attachment;
       if (files.length) {
         if (files.length !== 1) throw new Error('当前一次支持一个文件，请分别拖入；新文件将替换已有附件。');
@@ -563,6 +603,11 @@
       } else {
         const resources = event.dataTransfer.getData('ResourceURLs');
         const uris = resources ? JSON.parse(resources) : event.dataTransfer.getData('text/uri-list').split(/\r?\n/).filter(line => line && !line.startsWith('#'));
+        if (Array.isArray(uris) && uris.length === 1 && typeof uris[0] === 'string' && isImageUri(uris[0])) {
+          readingDrop = false;
+          request('attachImagePath', { uri: uris[0] }, () => { if (epoch === viewEpoch && sessionId === currentSessionId) input.focus({ preventScroll: true }); });
+          return;
+        }
         if (!Array.isArray(uris) || uris.length !== 1 || typeof uris[0] !== 'string' || !uris[0].startsWith('file:')) throw new Error('请拖入一个本地文本文件。');
         attachment = { uri: uris[0] };
       }
@@ -594,16 +639,17 @@
     setAttribute(button, 'aria-label', stop ? '停止执行' : busy ? (liveSteer ? '引导当前任务' : '加入队列') : '发送任务');
     setProperty(button, 'title', stop ? '停止当前执行' : busy ? (liveSteer ? '立刻引导当前任务（Enter）' : '加入队列（Enter）') : '发送（Enter）');
     setAttribute(button.querySelector('path'), 'd', stop ? 'M6 6h12v12H6Z' : 'M12 19V5m-6 6 6-6 6 6');
-    setProperty(button, 'disabled', connectionStatus === 'disconnected' || !currentSessionId || hostState?.recovering || navigationPending() || hasPending('rewindInput') || hasPending('cancelRun') || (stop ? hasPending('prompt') : configurationMissing() || hasPending('prompt') || hasPending('runGoal') || hasPending('resumeRun') || contextPending() || !field.value.trim() || field.value.length > field.maxLength));
+    setProperty(button, 'disabled', connectionStatus === 'disconnected' || !currentSessionId || hostState?.recovering || navigationPending() || hasPending('rewindInput') || hasPending('cancelRun') || (stop ? hasPending('prompt') : configurationMissing() || hasPending('prompt') || hasPending('runGoal') || hasPending('resumeRun') || contextPending() || (!field.value.trim() && !(hostState?.pendingImages?.length)) || field.value.length > field.maxLength));
   }
   function updateControls() {
     renderInputQueue();
+    renderPendingImages();
     document.querySelectorAll('.message-rewind').forEach(button => {
       setProperty(button, 'disabled', rewindControlsBlocked());
     });
     const unavailable = !currentSessionId || navigationPending();
     const waiting = [...pending.values()].find(item => item.sessionId === currentSessionId && !['setMode', 'newChat'].includes(item.action));
-    const waitingLabels = { openWorker: '正在打开日志', openMessageLink: '正在打开链接', attachFile: '正在添加文件', selectWorkspace: '正在打开工作区', saveGoal: '正在保存目标', addGoalNote: '正在保存笔记', prompt: '正在发送', cancelRun: '正在停止', runGoal: '正在准备执行', resumeRun: '正在恢复执行', copyText: '正在复制', steerInput: '正在发送引导', removeInput: '正在更新队列', resumeInputs: '正在继续队列' };
+    const waitingLabels = { openWorker: '正在打开日志', openMessageLink: '正在打开链接', attachFile: '正在添加文件', attachImage: '正在添加图片', attachImagePath: '正在添加图片', removeImage: '正在移除图片', selectWorkspace: '正在打开工作区', saveGoal: '正在保存目标', addGoalNote: '正在保存笔记', prompt: '正在发送', cancelRun: '正在停止', runGoal: '正在准备执行', resumeRun: '正在恢复执行', copyText: '正在复制', steerInput: '正在发送引导', removeInput: '正在更新队列', resumeInputs: '正在继续队列' };
     setProperty(byId('operation-loading'), 'hidden', !waiting);
     setText(byId('operation-loading'), waiting ? (waitingLabels[waiting.action] || '正在处理操作') + '，请稍候…' : '');
     const openingWorker = hasPending('openWorker');
@@ -613,11 +659,14 @@
     });
     const promptPending = hasPending('prompt');
     setProperty(input, 'disabled', unavailable);
-    setProperty(byId('new-create-chat'), 'disabled', unavailable || hasPending());
-    setAttribute(byId('new-create').querySelector('summary'), 'aria-disabled', String(unavailable || hasPending()));
     renderNavigationFeedback();
-    byId('new-create').querySelector('summary').setAttribute('aria-busy', String(navigationPending()));
     setProperty(byId('attach-file'), 'disabled', unavailable || busy || promptPending || contextPending());
+    const selectedModel = hostState?.modelSelection?.selected || '';
+    const defaultModel = hostState?.modelSelection?.defaultModel || '';
+    const imageUnsupported = hostState?.modelSelection?.imageInput === false && (!selectedModel || selectedModel === defaultModel);
+    setProperty(byId('attach-image'), 'disabled', unavailable || promptPending || contextPending() || imageUnsupported);
+    setProperty(byId('attach-image'), 'title', imageUnsupported ? '当前模型不支持图片输入' : '添加图片');
+    setProperty(byId('image-input'), 'disabled', unavailable || promptPending || contextPending() || imageUnsupported);
     if (byId('remove-context')) setProperty(byId('remove-context'), 'disabled', unavailable || busy || promptPending || contextPending());
     document.querySelectorAll('[data-prompt]').forEach(button => { button.disabled = unavailable || busy || promptPending; });
     const saving = hasPending('saveGoal');
@@ -938,7 +987,31 @@
     if (last) attachResumeNote(note, last);
     else if (showingConversation) messages.appendChild(note);
   }
-  function createMessageEntry(role, text, parts, streaming = false) {
+  function sameImages(left, right) {
+    const a = Array.isArray(left) ? left : [];
+    const b = Array.isArray(right) ? right : [];
+    return a.length === b.length && a.every((image, index) => image.id === b[index]?.id && image.uri === b[index]?.uri && image.name === b[index]?.name);
+  }
+  function setMessageImages(entry, images) {
+    const list = Array.isArray(images) ? images.filter(image => image && typeof image.uri === 'string' && image.uri) : [];
+    entry.images = list;
+    if (!list.length) { entry.imagesElement?.remove(); entry.imagesElement = undefined; return; }
+    if (!entry.imagesElement) {
+      entry.imagesElement = document.createElement('div');
+      entry.imagesElement.className = 'message-images';
+      entry.article.insertBefore(entry.imagesElement, entry.body);
+    }
+    entry.imagesElement.replaceChildren(...list.map(image => {
+      const figure = document.createElement('figure'); figure.className = 'message-image';
+      const preview = document.createElement('img');
+      preview.src = image.uri; preview.alt = image.name || '图片'; preview.title = image.name || '图片';
+      preview.loading = 'lazy'; preview.decoding = 'async';
+      const caption = document.createElement('figcaption'); caption.textContent = image.name || '图片';
+      figure.append(preview, caption);
+      return figure;
+    }));
+  }
+  function createMessageEntry(role, text, parts, streaming = false, images = []) {
     const article = document.createElement('article');
     article.className = 'message ' + role + (streaming ? ' streaming-message' : '');
     if (streaming) article.dataset.streaming = 'true';
@@ -948,8 +1021,10 @@
     const body = document.createElement('div');
     body.className = 'message-text';
     window.UBOVMMessage.update(body, text, { ...messageActions, role, parts, streaming, preserveBody: !streaming });
+    const entry = { article, heading, body, role, text, parts, images: [] };
     article.append(heading, body);
-    return { article, heading, body, role, text, parts };
+    setMessageImages(entry, images);
+    return entry;
   }
   function messageHistoryKey(item) {
     return typeof item.id === 'string' && item.id ? JSON.stringify([item.role, 'message', item.id])
@@ -1021,7 +1096,7 @@
       const prefix = [];
       for (const item of batch) {
         const parts = item.role === 'assistant' ? visibleTimelineParts(item.parts) : item.parts;
-        const entry = createMessageEntry(item.role, item.text, parts);
+        const entry = createMessageEntry(item.role, item.text, parts, false, item.images);
         entry.key = messageHistoryKey(item);
         decorateHistoryEntry(entry, item);
         if (entry.role === 'assistant' && typeof entry.messageId === 'string' && entry.messageId.startsWith('assist:')) {
@@ -1054,6 +1129,29 @@
       refreshLatest();
       if (view.historyStart > 0) scheduleHistoryFill();
     });
+  }
+  let pendingImageKey = '';
+  function renderPendingImages() {
+    const container = byId('composer-images');
+    if (!container) return;
+    const images = Array.isArray(hostState?.pendingImages) ? hostState.pendingImages : [];
+    const key = JSON.stringify(images.map(image => [image.id, image.uri]));
+    if (key === pendingImageKey) return;
+    pendingImageKey = key;
+    container.replaceChildren();
+    container.hidden = !images.length;
+    for (const image of images) {
+      const figure = document.createElement('figure'); figure.className = 'composer-image';
+      const preview = document.createElement('img');
+      preview.src = image.uri || ''; preview.alt = image.name || '待发送图片'; preview.loading = 'lazy'; preview.decoding = 'async';
+      const remove = document.createElement('button');
+      remove.type = 'button'; remove.className = 'composer-image-remove'; remove.dataset.imageId = image.id;
+      remove.title = '移除图片'; remove.setAttribute('aria-label', '移除图片 ' + (image.name || ''));
+      remove.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>';
+      const caption = document.createElement('figcaption'); caption.textContent = image.name || '图片';
+      figure.append(preview, remove, caption);
+      container.append(figure);
+    }
   }
   function renderMessages(items) {
     parkResumeNote();
@@ -1110,13 +1208,14 @@
           entry.text = item.text; entry.parts = parts;
           changed = true;
         } else if (!entry) {
-          entry = createMessageEntry(item.role, item.text, parts);
+          entry = createMessageEntry(item.role, item.text, parts, false, item.images);
           changed = true;
-        } else if (entry.role !== item.role || entry.text !== item.text || !sameParts(entry.parts, parts)) {
+        } else if (entry.role !== item.role || entry.text !== item.text || !sameParts(entry.parts, parts) || !sameImages(entry.images, item.images)) {
           entry.article.className = 'message ' + item.role;
           setText(entry.heading, item.role === 'user' ? '你' : 'UBOVM');
           entry.steeringStatus = undefined;
           window.UBOVMMessage.update(entry.body, item.text, { ...messageActions, role: item.role, parts, streaming: false, preserveBody: true });
+          setMessageImages(entry, item.images);
           entry.role = item.role; entry.text = item.text; entry.parts = parts;
           changed = true;
         }
@@ -1229,8 +1328,6 @@
     byId('goal-view-switcher').hidden = !goalMode;
     byId('goal-header-more').hidden = !goalMode;
     if (!goalMode) { byId('goal-view-switcher').open = false; byId('goal-header-more').open = false; }
-    setText(byId('new-create-chat'), goalMode ? '新建探索' : '新建对话');
-    byId('new-create-chat').title = goalMode ? '在当前项目中新建探索' : '在当前项目中新建对话';
     byId('open-browser').hidden = goalMode;
     byId('validate-code-changes').hidden = goalMode;
     byId('review-code-changes').hidden = goalMode;
@@ -1881,7 +1978,8 @@
     const field = input;
     const draftKey = 'assist';
     const text = field.value.trim();
-    if (configurationMissing() || hostState?.mode === 'goal' || !text || field.value.length > field.maxLength || navigationPending() || hasPending('rewindInput') || hasPending('cancelRun') || hasPending('prompt') || hasPending('runGoal') || hasPending('resumeRun') || composingPrompt || contextPending()) return;
+    const hasImages = (hostState?.pendingImages?.length ?? 0) > 0;
+    if (configurationMissing() || hostState?.mode === 'goal' || (!text && !hasImages) || field.value.length > field.maxLength || navigationPending() || hasPending('rewindInput') || hasPending('cancelRun') || hasPending('prompt') || hasPending('runGoal') || hasPending('resumeRun') || composingPrompt || contextPending()) return;
     const sessionId = currentSessionId;
     const submitted = field.value;
     forceScroll = true;
@@ -2075,30 +2173,10 @@
   input.addEventListener('keydown', event => {
     if (event.key === 'Enter' && !event.shiftKey && !composingPrompt && !event.isComposing && event.keyCode !== 229) { event.preventDefault(); sendPrompt(); }
   });
-  const newCreate = byId('new-create');
   const goalHeaderMore = byId('goal-header-more');
-  const closeNewCreate = () => { newCreate.open = false; };
   const closeGoalHeaderMore = () => { goalHeaderMore.open = false; };
-  newCreate.addEventListener('toggle', () => {
-    if (newCreate.open && (hasPending() || navigationPending())) closeNewCreate();
-    if (newCreate.open) closeGoalHeaderMore();
-  });
-  newCreate.querySelector('summary').addEventListener('click', event => {
-    if (hasPending() || navigationPending()) { event.preventDefault(); closeNewCreate(); }
-  });
-  goalHeaderMore.addEventListener('toggle', () => {
-    if (goalHeaderMore.open) closeNewCreate();
-  });
   document.addEventListener('pointerdown', event => {
-    if (!newCreate.contains(event.target)) closeNewCreate();
     if (!goalHeaderMore.contains(event.target)) closeGoalHeaderMore();
-  });
-  newCreate.addEventListener('keydown', event => {
-    if (event.key === 'Escape') {
-      event.preventDefault();
-      closeNewCreate();
-      newCreate.querySelector('summary').focus();
-    }
   });
   goalHeaderMore.addEventListener('keydown', event => {
     if (event.key === 'Escape') {
@@ -2106,10 +2184,6 @@
       closeGoalHeaderMore();
       goalHeaderMore.querySelector('summary').focus();
     }
-  });
-  byId('new-create-chat').addEventListener('click', () => {
-    closeNewCreate();
-    if (!hasPending()) request('newChat');
   });
   goalHeaderMore.querySelector('.goal-header-more-menu').addEventListener('click', event => {
     if (event.target.closest('button')) closeGoalHeaderMore();
@@ -2167,12 +2241,37 @@
   document.querySelectorAll('[data-action]').forEach(button => button.addEventListener('click', () => {
     if (button.dataset.action === 'selectWorkspace') {
       if (!busy && !hasPending()) request('selectWorkspace');
+    } else if (button.dataset.action === 'revealWorkspace') {
+      if (!currentSessionId || workspaceMissing() || hasPending('revealWorkspace')) return;
+      request('revealWorkspace');
     } else if (button.dataset.action === 'attachFile') {
       if (busy || contextPending() || !currentSessionId) return;
       const sessionId = currentSessionId;
       request('attachFile', {}, () => { if (sessionId === currentSessionId) input.focus({ preventScroll: true }); });
+    } else if (button.dataset.action === 'pickImage') {
+      if (hasPending('prompt') || contextPending() || !currentSessionId) return;
+      byId('image-input').click();
     } else vscode.postMessage({ action: button.dataset.action, sessionId: currentSessionId });
   }));
+  byId('image-input').addEventListener('change', event => {
+    const files = [...(event.target.files ?? [])];
+    event.target.value = '';
+    if (files.length) void attachImageFiles(files);
+  });
+  byId('composer-images').addEventListener('click', event => {
+    const button = event.target.closest('[data-image-id]');
+    if (!button || !currentSessionId || hasPending('removeImage')) return;
+    request('removeImage', { imageId: button.dataset.imageId }, () => {});
+  });
+  input.addEventListener('paste', event => {
+    const files = [...(event.clipboardData?.items ?? [])]
+      .filter(item => item.kind === 'file' && (IMAGE_TYPES.has(item.type) || !item.type))
+      .map(item => item.getAsFile())
+      .filter(Boolean);
+    if (!files.length) return;
+    event.preventDefault();
+    void attachImageFiles(files);
+  });
   byId('remove-context')?.addEventListener('click', () => {
     if (busy || contextPending() || !currentSessionId) return;
     const sessionId = currentSessionId;
@@ -2670,6 +2769,8 @@
           ? (inProject ? '切换项目目录：' : '切换工作空间：') + workspacePath
           : (inProject ? '选择当前项目的目录' : '选择当前会话的工作空间'));
         workspaceButton.dataset.configured = String(configured);
+        const revealWorkspaceButton = byId('reveal-workspace');
+        if (revealWorkspaceButton) revealWorkspaceButton.hidden = !configured;
         setText(byId('goal-workspace-name'), configured ? workspaceLabel : (inProject ? '尚未选择项目目录' : '尚未选择工作空间'));
         byId('goal-workspace-name').title = configured ? workspacePath : '';
       }
@@ -2926,7 +3027,7 @@
       cleanup(closeNoteEditor);
       cleanup(() => projectSwitcher.close());
       cleanup(() => modalDialog.close());
-      cleanup(() => { byId('new-create').open = false; byId('goal-header-more').open = false; });
+      cleanup(() => { byId('goal-header-more').open = false; });
     }
     hostState = state;
     currentSessionId = sessionId;

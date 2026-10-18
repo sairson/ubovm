@@ -492,7 +492,11 @@ test('native log streams independently, preserves tool state and clears on sessi
   await emit({ type: 'workers', sessionId: 'one', workers, selected: 'a' });
   assert.equal(await page.locator('.worker-panel').isVisible(), true);
   assert.equal(await page.locator('.worker-resize-handle').isVisible(), false);
-  assert.equal(await page.locator('.worker-close').isVisible(), false);
+  assert.equal(await page.locator('.worker-close').isVisible(), true, 'native Worker panel keeps a close action even without a pinned tab');
+  assert.equal(await page.locator('.worker-close').textContent(), '返回文件');
+  assert.equal(await page.locator('.worker-close').getAttribute('title'), '关闭 Worker 日志并返回文件');
+  await page.locator('.worker-close').click();
+  assert.equal(await page.evaluate(() => messages.some(message => message.action === 'closeWorkerPanel')), true);
   await page.setViewportSize({ width: 260, height: 360 });
   const searchBounds = await page.locator('.worker-search').boundingBox();
   const copyBounds = await page.locator('.worker-native-toolbar .worker-copy-log').boundingBox();

@@ -23,7 +23,7 @@
     return text;
   }
   const visible = element => !element.closest('[hidden]');
-  window.createWorkerPanel = function createWorkerPanel(actions, { initialWidth = 440, onWidthChange, openNative, standalone = false } = {}) {
+  window.createWorkerPanel = function createWorkerPanel(actions, { initialWidth = 440, onWidthChange, openNative, onClose, standalone = false } = {}) {
     const roster = document.getElementById('collaboration-workers'), cards = document.getElementById('collaboration-worker-list');
     const shell = document.querySelector('.shell'), main = document.getElementById('main-content');
     const goalDirectory = document.getElementById('goal-workers-list'), search = document.getElementById('goal-workers-search'), filter = document.getElementById('goal-workers-filter');
@@ -59,7 +59,15 @@
     retry.addEventListener('click', () => renderDetail());
     renderStatus.append(renderMessage, retry);
     scroller.append(summary, content); panel.append(resize, header, renderStatus, scroller); shell.append(panel);
-    if (standalone) { resize.hidden = true; close.hidden = true; options.hidden = true; }
+    if (standalone) {
+      resize.hidden = true; options.hidden = true;
+      // The sidebar tab close control can be unavailable when the restored
+      // active view is unpinned. Keep a close action inside the panel itself.
+      close.hidden = false;
+      setText(close, '返回文件');
+      setAttribute(close, 'aria-label', '关闭 Worker 日志并返回文件');
+      setAttribute(close, 'title', '关闭 Worker 日志并返回文件');
+    }
     let sessionId = '', workers = [], selected = '', returnFocus, lastTop = 0, expanded = false;
     let workersById = new Map(), workerNames = new Map();
     const pickerOptions = new Map();
@@ -196,7 +204,7 @@
       for (const list of lists.values()) for (const [key, view] of list) view.button.setAttribute('aria-expanded', String(key === selected));
       if (wasHidden) close.focus();
     }
-    close.addEventListener('click', () => dismiss());
+    close.addEventListener('click', () => { if (standalone && onClose) onClose(); else dismiss(); });
     expand.addEventListener('click', () => {
       endDrag(true);
       const top = scroller.scrollTop, view = views.get(selected);
@@ -358,7 +366,14 @@
         workerNames = new Map(workers.map((worker, index) => [worker.id, worker.name || '任务 ' + (index + 1)]));
         syncClock();
         goalMode = Boolean(input.goalMode);
-        setText(close, goalMode ? '← 返回目标' : '← 主对话'); close.title = goalMode ? '返回目标工作区（Esc），任务继续运行' : '返回主对话（Esc），任务继续运行';
+        if (standalone) {
+          setText(close, '返回文件');
+          setAttribute(close, 'aria-label', '关闭 Worker 日志并返回文件');
+          setAttribute(close, 'title', '关闭 Worker 日志并返回文件');
+        } else {
+          setText(close, goalMode ? '← 返回目标' : '← 主对话');
+          setAttribute(close, 'title', goalMode ? '返回目标工作区（Esc），任务继续运行' : '返回主对话（Esc），任务继续运行');
+        }
         const directoryError = document.getElementById('goal-workers-error');
         if (directoryError) { directoryError.hidden = !input.error; setText(directoryError, input.error ? '工作记录保存或读取失败：' + input.error : ''); }
         const visible = new Set(workers.map(worker => worker.id));

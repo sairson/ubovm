@@ -20,13 +20,41 @@ if (process.platform === 'win32') {
   app.commandLine.appendSwitch('disable-renderer-backgrounding');
   app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
   app.commandLine.appendSwitch('disable-background-timer-throttling');
+  // Escape hatch for machines where the DirectComposition-only window surface
+  // still stops presenting. It changes the native render path, so it stays
+  // opt-in instead of becoming the default for every Windows GPU.
+  if (process.env.UBOVM_DISABLE_DIRECT_COMPOSITION === '1') {
+    app.commandLine.appendSwitch('disable-direct-composition');
+  }
 }
+// Skia Graphite can stop presenting the window surface after idle; only the
+// native caption buttons remain until a resize. VS Code disables this backend
+// for the same failure (microsoft/vscode#263554). It is a no-op where Graphite
+// is already disabled, so keep the guard on every platform.
+app.commandLine.appendSwitch('disable-skia-graphite');
+
 const dataPaths = configureDataPaths({ app, legacyRoot: findLegacyRoot(app.getAppPath()) });
 process.argv.splice(0, process.argv.length, ...normalizeLaunchArguments(process.argv));
 const configuration = JSON.parse(readFileSync(new URL('../app.json', import.meta.url), 'utf8'));
 initializeUserSettings(dataPaths, configuration.settings);
 discardRestoredWorkbenchSession(dataPaths);
 installWindowRendering({ app, powerMonitor });
+// Keep the compositor diagnosis in the launcher log. Without this, a blank
+// window report cannot tell whether Graphite or hardware compositing was in use.
+app.whenReady().then(() => {
+  try {
+    const status = app.getGPUFeatureStatus();
+    console.log('[UBOVM] GPU feature status:', JSON.stringify({
+      gpuCompositing: status.gpu_compositing,
+      rasterization: status.rasterization,
+      skiaGraphite: status.skia_graphite,
+      directComposition: process.env.UBOVM_DISABLE_DIRECT_COMPOSITION === '1' ? 'disabled' : 'default'
+    }));
+  } catch (error) {
+    console.warn('[UBOVM] GPU feature status unavailable.', error);
+  }
+}).catch(() => {});
+
 // Resolve the mark from this module. An absolute path breaks Windows icons
 // when the install directory contains spaces.
 function loadPackagedIcon() {

@@ -85,6 +85,16 @@ function endpoint(value) {
   }
 }
 
+/** Two URLs identify the same catalog endpoint (trailing slash or /v1 aside). */
+function sameEndpoint(left, right) {
+  if (typeof left !== 'string' || typeof right !== 'string' || !left || !right) return false;
+  try {
+    const normalize = path => path.replace(/\/+$/u, '').replace(/\/v1$/u, '');
+    const a = new URL(left), b = new URL(right);
+    return a.origin === b.origin && a.search === b.search && normalize(a.pathname) === normalize(b.pathname);
+  } catch { return false; }
+}
+
 function validateModel(model) {
   object(model, 'model');
   for (const key of ['id', 'name', 'api', 'provider']) string(model[key], `model.${key}`);
@@ -204,8 +214,13 @@ export function createModelClient(configuration = {}) {
       if (!builtin) throw new TypeError('Unknown catalog model; a custom model requires api and baseUrl');
       source = { ...builtin };
     } else {
-      source = {
-        id: modelId, name: modelId, provider, api: string(configuration.api, 'api'),
+      const api = string(configuration.api, 'api');
+      // A known catalog model pointed at its official endpoint keeps the
+      // catalog's capability data (notably DeepSeek's thinkingLevelMap and
+      // pricing) instead of degrading to a bare custom endpoint.
+      const official = builtin && builtin.api === api && sameEndpoint(builtin.baseUrl, configuration.baseUrl);
+      source = official ? { ...builtin } : {
+        id: modelId, name: modelId, provider, api,
         baseUrl: configuration.baseUrl, reasoning: false, input: ['text'],
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
         contextWindow: 128000, maxTokens: 8192,
@@ -266,7 +281,15 @@ export function createModelClient(configuration = {}) {
         throw new TypeError('Model client must be used with its configured model');
       }
       const requestedId = typeof options.modelId === 'string' && selectableModels.includes(options.modelId) ? options.modelId : model.id;
-      const requestModel = requestedId === model.id ? model : { ...model, id: requestedId, name: requestedId, ...(requestedId.includes('muse-spark') ? { api: 'openai-responses' } : {}) };
+      let requestModel = model;
+      if (requestedId !== model.id) {
+        // Alternate selectable IDs must carry their own capabilities: DeepSeek
+        // Flash accepts images and a lower thinking level than V4 Pro.
+        const catalog = getBuiltinModel(model.provider, requestedId);
+        requestModel = catalog && catalog.api === model.api && sameEndpoint(catalog.baseUrl, model.baseUrl)
+          ? { ...model, ...catalog, id: requestedId, name: requestedId }
+          : { ...model, id: requestedId, name: requestedId, ...(requestedId.includes('muse-spark') ? { api: 'openai-responses' } : {}) };
+      }
       const requestDefaults = Object.fromEntries(Object.entries(defaults).map(([key, value]) => [
         key, typeof value === 'function' ? value : structuredClone(value),
       ]));

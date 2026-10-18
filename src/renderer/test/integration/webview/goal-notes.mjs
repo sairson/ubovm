@@ -116,6 +116,7 @@ test('goal setup requires the current session workspace before entering the run 
     const state = initialState();
     state.goal = null;
     state.context = { workspace: '选择工作空间（必选）', workspaceConfigured: false };
+    state.viewRevision = 1;
     await send(page, state);
     await page.locator('#goal-objective-input').fill('保留未保存的探索目标');
     assert.equal(await page.locator('#goal-save').isDisabled(), true);
@@ -123,22 +124,30 @@ test('goal setup requires the current session workspace before entering the run 
     await page.locator('#goal-editor').evaluate(form => form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })));
     assert.equal(await page.evaluate(() => window.sent.some(message => message.action === 'saveGoal')), false);
     assert.equal(await page.locator('#goal-workspace').isVisible(), false);
+    assert.equal(await page.locator('#reveal-workspace').isVisible(), false, 'no workspace means no reveal action');
     state.context = { workspace: 'C:/project', workspaceConfigured: true };
+    state.viewRevision = 2;
     await send(page, state);
     assert.equal(await page.locator('#goal-objective-input').inputValue(), '保留未保存的探索目标');
     assert.equal(await page.locator('#goal-save').isEnabled(), true);
+    assert.equal(await page.locator('#reveal-workspace').isVisible(), true);
+    assert.equal(await page.locator('#reveal-workspace').getAttribute('title'), '用文件资源管理器打开当前工作空间');
+    await page.locator('#reveal-workspace').click();
+    assert.equal(await page.evaluate(() => window.sent.some(message => message.action === 'revealWorkspace' && message.sessionId === 'goal-notes-1')), true);
     await page.locator('#goal-save').click();
     assert.equal(await page.evaluate(() => window.sent.some(message => message.action === 'saveGoal')), true);
 
     const historical = initialState();
     historical.conversation.id = 'historical-goal';
     historical.context.workspaceConfigured = false;
+    historical.viewRevision = 3;
     await send(page, historical);
     assert.equal(await page.locator('#goal-editor').isVisible(), true);
     assert.equal(await page.locator('#goal-workspace').isVisible(), false);
     assert.equal(await page.locator('#goal-cancel').isVisible(), false);
     assert.equal(await page.locator('#goal-view-switcher').isVisible(), false);
     historical.context.workspaceConfigured = true;
+    historical.viewRevision = 4;
     await send(page, historical);
     assert.equal(await page.locator('#goal-workspace').isVisible(), true);
   } finally { await browser.close(); }

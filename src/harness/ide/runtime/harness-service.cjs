@@ -786,9 +786,11 @@ function createHarnessService({ sdkPath, storageDirectory, workspaceRoots = [], 
     if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
     const text = typeof value.text === 'string' ? value.text : undefined;
     const messages = Array.isArray(value.messages) ? value.messages : undefined;
-    if (!(typeof text === 'string' && text.trim()) && !messages?.length) return undefined;
+    const images = Array.isArray(value.images) ? copy(value.images.slice(0, 4)) : undefined;
+    if (!(typeof text === 'string' && text.trim()) && !images?.length && !messages?.length) return undefined;
     return {
       ...(text !== undefined ? { text } : {}),
+      ...(images?.length ? { images } : {}),
       ...(messages ? { messages: copy(messages) } : {}),
       ...(value.context !== undefined ? { context: copy(value.context) } : {}),
       ...(value.approvalMode !== undefined ? { approvalMode: value.approvalMode } : {})
@@ -1063,7 +1065,7 @@ function createHarnessService({ sdkPath, storageDirectory, workspaceRoots = [], 
           if (!askHuman) throw new Error('人工问答界面不可用，无法向用户提问。');
           return askHuman(requestFor(entry, request));
         }, sessionId: entry.sessionId, directory: entry.directory,
-          workspaceRoots, unbounded, text: input.text, messages: input.messages, context: input.context, signal: entry.controller.signal,
+          workspaceRoots, unbounded, text: input.text, images: input.images, messages: input.messages, context: input.context, signal: entry.controller.signal,
           registerSteering: handler => { if (entry.eventRun === run) { entry.steer = handler; notify(entry, true); } },
           onEvent: runEvents(entry, collaborationEvent) });
       }
@@ -1182,7 +1184,7 @@ function createHarnessService({ sdkPath, storageDirectory, workspaceRoots = [], 
     assertOpen();
     if (input.approvalMode !== undefined && !['auto', 'manual', 'full'].includes(input.approvalMode)) throw failure('INVALID_APPROVAL_MODE', '无效的工具执行方式。');
     if (input.mode === 'goal') goalText(input.goal);
-    if (input.mode === 'assist' && (typeof input.text !== 'string' || !input.text.trim())) throw failure('MESSAGE_REQUIRED', '请输入消息。');
+    if (input.mode === 'assist' && (typeof input.text !== 'string' || (!input.text.trim() && !input.images?.length))) throw failure('MESSAGE_REQUIRED', '请输入消息或图片。');
     await restore(input); assertAvailable(input.conversationId); const entry = sessions.get(input.conversationId);
     if (entry.busy) throw failure('SESSION_BUSY', '该会话仍在运行。');
     if (entry.mode === 'assist') {

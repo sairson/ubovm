@@ -66,6 +66,14 @@ Edge 页面回归另使用浏览器虚拟时钟回拨一小时，验证实际页
 
 2026-09-30 桌面日志：`~/.ubovm/desktop/user-data/logs/20260930T161807/window1/renderer.log` 与 `window2/renderer.log` 在 16:18–16:19 记录两个扩展宿主多次无响应及随后恢复，部分触发 CPU 采样，但检查时未发现已保存的 `.cpuprofile`。主进程日志及崩溃目录未提供渲染进程崩溃证据。同期激活了 UBOVM、Emmet、Git 等扩展，现有记录不足以归因到某一扩展或证明其导致白屏；后续需要捕获扩展宿主采样并核对机器负载与界面异常时间，不据此修改 GPU 配置或覆盖安装版本。
 
+## 整窗空白 / 黑屏
+
+窗口空闲、系统唤醒/解锁或运行中整块变成主题背景色，标题栏只剩原生最小化/最大化/关闭按钮，拖一下窗口或最大化/还原后恢复。这属于原生合成表面丢失，不是对话页 DOM 白屏：`invalidate()` 只能重发已提交帧，必须让窗口发生一次真实尺寸变化才能重建 swap chain / DirectComposition 表面。
+
+处理分三层：启动时 `--disable-skia-graphite`（VS Code 对 macOS Graphite 呈现失败的上游规避）；长时间空闲后聚焦、托盘/最小化恢复、resume/unlock、GPU 崩溃和渲染器无响应时，主进程对窗口做 1px 尺寸重建（最大化窗口走 unmaximize/maximize）；仍需即时恢复时按 `Ctrl+Alt+R`。Windows 可用 `UBOVM_DISABLE_DIRECT_COMPOSITION=1` 尝试关闭 DirectComposition，或在 `~/.ubovm/desktop/argv.json` 启用 `"disable-hardware-acceleration": true` 使用软件渲染。启动日志记录 `gpuCompositing / rasterization / skiaGraphite`，用于确认命中路径。
+
+验证：`node src/main/test/window-rendering.mjs`、`node src/renderer/test/webview/visibility-resync.test.mjs`；`window-rendering-desktop.mjs` 增加真实 Electron 的 Graphite 开关断言。本机安全沙箱不能启动真实桌面窗口，未完成 GPU 长时间空闲复现，不能把单元测试等同于驱动层验收。详见 `docs/blank-window-rendering-2026-10-18.md`。
+
 ## 中断后保留历史
 
 停止协助模式只取消当前执行，不清空已有对话。中断或失败时，已生成的回复、思考展示与工具记录会保存到对话历史；工具的未完成状态保持为中断。历史先写入执行目录的恢复记录，再投递到会话，保存失败时阻止下一轮覆盖并允许重试；恢复不重新调用模型或执行工具，消息 ID 用于避免重复添加。
@@ -156,7 +164,7 @@ UBOVM 的工作台扩展，使用 VS Code Extension API 与 CommonJS 入口，�
 
 状态推送全局最多一条在途快照，其余更新仅按会话 ID 合并，发送时才投影最新状态。命令响应携带版本号，旧快照不能覆盖新状态；收到的状态只冻结一次，界面读取复用只读快照。普通 RPC 的待响应请求与执行中请求各限制为 256 条，停止另有各方向 8 条容量，关闭独享各方向 1 条容量。单个快照失败只报告该会话错误，保留上次可用内容及停止能力。线程按需启动，崩溃后由下一次恢复或启动操作重建，不自动重跑任务；已完成会话不受其他任务崩溃影响。启动期间会话立即占用，停止请求不会因线程尚未就绪而丢失。关闭先保存记录，超过 10 秒则终止线程。
 
-协助和探索会话未选择目录时，自动在 `~/.ubovm/workspace/<会话ID>/` 创建独立工作空间（旧会话的非 UUID 标识使用稳定哈希作为目录名），并持久化保存路径。顶部工作空间按钮显示完整路径，可点击选择其他本地目录；已配置的历史会话保留原目录。切换会话后，文件读写、搜索、验证与 Agent 本地命令使用该会话的目录。运行中不可切换工作空间；停止后可切换，执行检查点按工作空间隔离，切回原目录仍可恢复原执行。
+协助和探索会话未选择目录时，自动在 `~/.ubovm/workspace/<会话ID>/` 创建独立工作空间（旧会话的非 UUID 标识使用稳定哈希作为目录名），并持久化保存路径。顶部工作空间按钮显示完整路径，可点击选择其他本地目录；旁边的文件夹图标用系统文件资源管理器打开当前目录（`vscode.env.openExternal`，目录缺失或无法打开时提示重新选择）。已配置的历史会话保留原目录。切换会话后，文件读写、搜索、验证与 Agent 本地命令使用该会话的目录。运行中不可切换工作空间；停止后可切换，执行检查点按工作空间隔离，切回原目录仍可恢复原执行。
 
 ## 目录与职责
 
@@ -240,7 +248,7 @@ renderer/
 - 启动后主对话常驻，禁止通过关闭标签页、关闭全部编辑器或跨组移动操作移除；窗口重载后自动恢复。使用 `Ctrl+L` 聚焦主对话，`Ctrl+Shift+L` 或会话树标题栏的加号新建对话，已有会话继续保留并可从左侧切换。
 - `harness/session/sessions.cjs` 在 workspaceState 的 `conversations` v3 中持久化当前模式、每种模式的最近会话和历史；自动迁移旧 `conversation` 数据，并把 v2 混合会话的聊天与目标拆分保存。每种模式独立保留最多 50 个会话，每个会话保留最近 40 条消息。当前会话以圆点标识，重启后恢复选择与消息。`list()` / 扩展导出的 `conversationList()` 只返回当前模式，传入模式参数可只读查询另一模式；跨模式 `select` 会被拒绝。
 - `harness/config/model-config.cjs` 管理本机模型配置与 SecretStorage 凭据。点击配置入口或执行 `ubovm.configureModel`；Webview 状态不包含凭据，工作区设置不能替换端点或 MCP 命令。模型消息经过 Markdown 与静态 HTML 白名单渲染，工具输出保留纯文本；选中文件与当前工作区编辑内容作为有界上下文发送。
-- `ubovm.openSettings` 打开主空间内的系统配置；`webview/settings/settings.html`、`webview/settings/settings.css`、`webview/settings/settings-ui.js` 在宿主组装页面时注入同一 CSP nonce。分组、下拉选项与默认值集中在 `harness/config/settings-schema.cjs`，服务商预设由当前安装 SDK 目录整理到 `harness/config/model-presets.cjs`；服务商切换联动协议、地址与模型参数，MCP 使用含协议下拉框的连接表单。默认值只补齐未配置字段，不覆盖已有值，也不自动写入设置。`harness/config/settings-config.cjs` 负责宿主校验、版本冲突检测、失败回滚和加密凭据。系统配置包含模型、SSH、搜索、摘要、思考Agent和执行Agent；打开系统配置或首次初始化时，左侧会话树切换为可点击的配置分组列表（`ubovm.selectSettings`），当前分组带“当前设置”高亮；MCP/Skills 页仍保留会话树（弱化显示）。左侧会话栏底部固定显示图标化的“管理配置”入口（MCP、Skills、系统配置，文字隐藏），分别调用 `ubovm.openMcp`、`ubovm.openSkills`、`ubovm.openSettings`。各页均接入真实配置读取。`settingsRead/settingsSave` 消息只返回公开值及凭据存在状态，密码留空不覆盖；运行前才在扩展宿主注入凭据。`summaryEnabled` 控制摘要启用并保留参数。桌面端始终启用全部内置工具，兼容忽略旧 `toolsEnabled`、白名单与工具关闭标记，保留连接参数和凭据。`settingsNavigation` 仅在 Webview 接受切换后更新原生底部入口选中态，未保存提示可取消切换；返回对话清除配置高亮。
+- `ubovm.openSettings` 打开主空间内的系统配置；`webview/settings/settings.html`、`webview/settings/settings.css`、`webview/settings/settings-ui.js` 在宿主组装页面时注入同一 CSP nonce。分组、下拉选项与默认值集中在 `harness/config/settings-schema.cjs`，服务商预设由当前安装 SDK 目录整理到 `harness/config/model-presets.cjs`；DeepSeek 作为默认服务商，其模型清单、上下文/输出上限与思考档位收敛在 `harness/config/model-capabilities.cjs`，设置页按模型能力过滤思考级别，服务商切换联动协议、地址与模型参数，MCP 使用含协议下拉框的连接表单。默认值只补齐未配置字段，不覆盖已有值，也不自动写入设置。`harness/config/settings-config.cjs` 负责宿主校验、版本冲突检测、失败回滚和加密凭据。系统配置包含模型、SSH、搜索、摘要、思考Agent和执行Agent；打开系统配置或首次初始化时，左侧会话树切换为可点击的配置分组列表（`ubovm.selectSettings`），当前分组带“当前设置”高亮；MCP/Skills 页仍保留会话树（弱化显示）。左侧会话栏底部固定显示图标化的“管理配置”入口（MCP、Skills、系统配置，文字隐藏），分别调用 `ubovm.openMcp`、`ubovm.openSkills`、`ubovm.openSettings`。各页均接入真实配置读取。`settingsRead/settingsSave` 消息只返回公开值及凭据存在状态，密码留空不覆盖；运行前才在扩展宿主注入凭据。`summaryEnabled` 控制摘要启用并保留参数。桌面端始终启用全部内置工具，兼容忽略旧 `toolsEnabled`、白名单与工具关闭标记，保留连接参数和凭据。`settingsNavigation` 仅在 Webview 接受切换后更新原生底部入口选中态，未保存提示可取消切换；返回对话清除配置高亮。
 - `src/harness/ide/runtime/harness-service.cjs` 连接真实执行器：协助模式调用 `agents/collaboration/index.mjs` 的 `runCollaboration`，由 Chat 对话按需派生 Swarm Worker；探索模式调用 `createHarness`，继续使用 Reason/Worker 黑板调度。`swarm.status` 提供任务动态，`swarm.worker.event` 只把子 Worker 的工具事件投影到时间线；主对话正文与最终回复由 Chat 提供。会话模式标识仍为 `assist`，沿用已有历史和 `assist.sqlite`。`ubovm.runGoal/cancelRun/resumeRun` 提供开始、停止和恢复，界面显示真实状态、工具活动和证据。运行中可切换会话，后台回复按原会话 ID 保存；过期会话的前台写入会被拒绝。
 - 目标使用 SQLite 检查点，重开后只恢复显示，点击继续后才执行。协助保存独立 SQLite 历史、工具记录与摘要。MCP、Skills 和摘要由本机配置接入，基础工作区工具只读，桌面编码工具另外提供带版本检查的编辑、持久化 diff 和撤销。运行需要工作区信任，修改运行中目标前须先停止。
 - 对话可通过宿主工具 `install_skill` 与 `install_mcp_server` 安装技能或 MCP 服务：安装前走同一条人工审批，技能经校验后原子写入 `~/.ubovm/skills`，MCP 服务器写入本机设置、凭据进系统凭据库；成功后当前会话下一轮即可发现。`harness/config/skills-install.cjs` 负责技能校验与 ZIP / tar.gz 解包（`harness/config/archive.cjs`，无外部依赖、拒绝链接与路径穿越），`settings-config.cjs` 的 `addMcpServer` 复用与设置表单相同的校验和凭据隔离。
@@ -251,7 +259,7 @@ renderer/
 - 黑板详情返回文件时不等待主对话消息回执，通知失败单独记录；组件被替换后，旧导航不能再次展开新详情。SSH 测试的总超时覆盖模块加载、连接与清理，即使底层异步调用不响应取消也会释放测试状态；关闭组件后迟到的模块加载不会建立新连接，连接清理只启动一次。
 - 会话首屏和设置初载显示骨架，数据到达即撤下；目标各标签显示实际执行状态。配置刷新保留原表单，按配置指纹复用分栏节点，保留滚动、展开项和焦点；加载失败可重试，已关闭页面的迟到回包不会重新打开页面。新增动画仅使用透明度或变换，并遵守减少动态效果设置。
 - `webview/messages/message-markdown.js/.css` 使用随扩展打包的 Marked 解析 GFM，支持标题、列表、任务清单、引用、表格、链接和代码高亮。代码卡片提供语言、复制、长代码展开与 HTML 预览；未闭合代码围栏保持同一节点，流式追加不重置已完成段落、代码展开状态与选区。解析结果只创建白名单 DOM，图片与远端资源不会自动请求。
-- `webview/messages/message-view.js/.css` 将 `execution.parts` 和历史 `message.parts` 渲染为正文与嵌入式工具卡片交错的时间线。连续调用共用一组轻量边框，每行展示工具类别、动作、目标、真实状态与耗时；展开后优先显示纯文本输出，参数独立折叠。失败时保持原有展开状态，不自动展开；可手动展开查看原因，后续更新保留用户选择；复制等待宿主回执，HTML 通过隔离预览打开。文件工具可在指定工作区打开原文件，多根工作区不会串到同名文件。追加日志保留文本节点、选区与阅读位置，只在读者已处于底部时跟随新输出。SSH 与本地技能脚本按实际分块累积有界日志，MCP 进度继续按快照更新。执行结束复用流式消息节点，取消保留中断状态，历史与 Goal 补投递保留相同片段 ID；Goal 内部协议不进入正文。
+- `webview/messages/message-view.js/.css` 将 `execution.parts` 和历史 `message.parts` 渲染为正文与嵌入式工具卡片交错的时间线。连续调用共用一组轻量边框，每行展示工具类别、动作、目标、真实状态与耗时；展开后优先显示纯文本输出，参数独立折叠。失败时保持原有展开状态，不自动展开；可手动展开查看原因，后续更新保留用户选择；复制等待宿主回执，HTML 通过隔离预览打开。文件工具可在指定工作区打开原文件，多根工作区不会串到同名文件。追加日志保留文本节点、选区与阅读位置，只在读者已处于底部时跟随新输出。SSH 与本地技能脚本按实际分块累积有界日志，MCP 进度继续按快照更新。执行结束复用流式消息节点，取消保留中断状态，历史与 Goal 补投递保留相同片段 ID；Goal 内部协议不进入正文。任务更新（`todo`）卡片与只读卡片一样保持单行：不展开、不回显任务板内容，摘要只说明写入、更新、清理或查看动作；任务本身仍在任务板中查看。
 - 模型实际返回的明文 thinking 使用独立的 `type: 'thinking'` 时间线片段，记录来源、运行/完成/中断状态及有据可查的时间。思考默认展开并按安全 Markdown 渲染，手动收起后保留用户选择；细左线和次要文字与正式回答区分，展开、选区及局部滚动在流式更新和历史转存时保留。收起时延迟解析，纯思考阶段不显示正文输入光标。Reason 和 Worker 分别标明来源，思考不会拼接进 `streamText` 或最终回答；签名、加密及被标记为 redacted 的内容不进入界面。单个思考片段最多保留 12,000 字符，并与工具、正文共享时间线预算，优先保留最终回答。
 - `webview/preview/html-preview.js/.css` 提供隔离的静态 HTML/CSS/SVG 预览、源码切换、复制与键盘焦点管理，iframe 使用空 sandbox 和独立 CSP。脚本、表单、导航与外部资源禁用。`harness/session/message-actions.cjs` 将复制交给系统剪贴板，将外链交给系统浏览器；源码链接经工作区边界与 realpath 校验后打开到指定行列。
 
@@ -330,7 +338,7 @@ UBOVM_SMOKE_RESULT=<该测试工作区中的 JSON 文件绝对路径>
 
 Worker 缓存读取失败不阻塞主历史，后续恢复仅重试 Worker 记录，成功后清除错误并保留数据库中的目标状态。旧 Worker 缓存缺少正文片段时，会将已保存的结果或部分输出恢复为经过脱敏的正文片段，重载不会重复追加；只有工具记录时不插入“没有更多执行记录”的占位文案。`worker-views.cjs` 和 `worker-panel.mjs` 覆盖这些恢复与显示路径。
 
-桌面端点击 Worker 卡片或执行日志入口，会打开 VS Code 右侧原生侧边栏中的“Worker 日志”（`ubovm.workerLogs`）。面板与会话栏、编辑区由工作台统一布局，不占用主对话网页的布局；尺寸和显隐由 VS Code 管理。主对话不可见时，已打开的日志面板仍接收合并后的实时更新；面板隐藏后暂停发送，重新显示时补齐最新状态。切换会话会清除旧 Worker 的选择与日志，Worker 内切换保留工具展开和阅读位置。`node --test src/renderer/test/integration/webview/native-worker-panel.mjs` 验证原生消息桥、隐藏恢复、会话隔离和独立日志页面。
+桌面端点击 Worker 卡片或执行日志入口，会打开 VS Code 右侧原生侧边栏中的“Worker 日志”（`ubovm.workerLogs`）。面板与会话栏、编辑区由工作台统一布局，不占用主对话网页的布局；尺寸和显隐由 VS Code 管理。主对话不可见时，已打开的日志面板仍接收合并后的实时更新；面板隐藏后暂停发送，重新显示时补齐最新状态。切换会话会清除旧 Worker 的选择与日志，Worker 内切换保留工具展开和阅读位置。面板标题保留“返回文件”按钮：即使侧栏只显示未固定标签的活动 Worker 视图、标签关闭入口不可见，也能切回文件树关闭日志。`node --test src/renderer/test/integration/webview/native-worker-panel.mjs` 验证原生消息桥、隐藏恢复、会话隔离和独立日志页面。
 
 完整历史刷新按消息 ID（旧消息回退至首个片段 ID）复用节点，补载和裁剪消息不会将已有工具卡片误配给另一条消息。先移除过期记录再调整顺序，保留未移动消息的展开状态和文本选区；流式回复转存时核对位置，内容相同的旧回复不会抢占新回复节点。无标识的旧纯文本消息仍兼容按位置更新；仅执行状态更新继续跳过历史遍历。
 

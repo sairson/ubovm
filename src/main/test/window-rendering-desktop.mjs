@@ -31,6 +31,8 @@ try {
   });
   const page = await desktop.firstWindow({ timeout: 60000 });
   await page.locator('.monaco-workbench').waitFor({ timeout: 60000 });
+  assert.equal(await desktop.evaluate(({ app }) => app.commandLine.hasSwitch('disable-skia-graphite')), true,
+    'the desktop must opt out of the Graphite compositor before the window is created');
   const win = await desktop.browserWindow(page);
   await delay(2000);
   const originalThrottling = await win.evaluate(window => window.webContents.getBackgroundThrottling());

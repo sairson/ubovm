@@ -14,8 +14,8 @@
   window.addEventListener('ubovm-settings-visibility', () => { tick(); syncClock(); });
   const labels = { running: '运行中', completed: '完成', failed: '失败', interrupted: '已停止' };
   const executionLabels = { queued: '排队中', starting: '准备中', running: '运行中', stopping: '正在停止' };
-  const tools = { delivery_workflow: '交付闭环', search_workspace: '搜索项目代码', inventory_workspace_dependencies: '盘点工作区依赖', scan_workspace_secrets: '扫描疑似密钥', analyze_workspace_call_chain: '分析代码调用链', navigate_workspace_code: '代码符号导航', get_workspace_diagnostics: '读取代码诊断', validate_workspace_changes: '验证代码修改', recover_workspace_changes: '恢复代码修改状态', read_workspace_code: '读取待编辑代码', edit_workspace_file: '编辑代码', list_workspace_changes: '查看代码更改', wait_workers: '等待并行任务', spawn_worker: '分派并行任务', manage_workers: '调度并行任务', cancel_workers: '中断并行任务', list_workers: '检查协作进展', read_worker_evidence: '查看任务记录', read_workspace_file: '读取文件', list_workspace_files: '查看目录', run_local_shell_command: '运行本地命令', run_python: '运行 Python 沙箱', manage_python_environment: '管理 Python 依赖', run_linux_ssh_command: '运行命令', upload_sftp: 'SFTP 上传', deploy_remote_service: '部署远程服务', fetch_web_content: '读取网页', web_search: '搜索网页', load_skill: '加载技能', read_skills_resource: '读取技能资源', run_local_skill_script: '执行技能脚本', note: '更新笔记', todo: '更新任务', browser_action: '浏览器操作', read_context_evidence: '读取上下文证据', install_skill: '安装技能', install_mcp_server: '安装 MCP 服务', browser_connection_status: '检查浏览器状态', domain_inventory: '登记域名资产', learn_capability: '记录能力', inspect_harness: '查看运行预算', manage_harness_project: '管理任务配置', read_worker_result: '读取任务结果', read_workspace_change: '读取代码改动快照', preview_workspace_edits: '预览代码修改', preview_workspace_rename: '预览符号重命名', edit_workspace_files: '批量编辑代码', inspect_workspace_project: '检查项目配置', list_assist_evidence: '查看已记录证据', record_assist_evidence: '记录证据', attach_assist_evidence: '关联证据', list_linked_goals: '查看关联目标', create_linked_goal: '创建关联目标', ask_human: '询问用户' };
-  const kinds = { delivery_workflow: 'memory', search_workspace: 'search', inventory_workspace_dependencies: 'search', scan_workspace_secrets: 'search', analyze_workspace_call_chain: 'search', navigate_workspace_code: 'search', get_workspace_diagnostics: 'search', validate_workspace_changes: 'tool', recover_workspace_changes: 'file', read_workspace_code: 'file', edit_workspace_file: 'file', list_workspace_changes: 'folder', read_workspace_file: 'file', list_workspace_files: 'folder', run_local_shell_command: 'terminal', run_python: 'terminal', manage_python_environment: 'terminal', run_linux_ssh_command: 'terminal', upload_sftp: 'file', deploy_remote_service: 'terminal', fetch_web_content: 'browser', web_search: 'search', load_skill: 'skill', read_skills_resource: 'skill', run_local_skill_script: 'terminal', note: 'memory', todo: 'memory', browser_action: 'browser', read_context_evidence: 'search', install_skill: 'skill', install_mcp_server: 'mcp', browser_connection_status: 'browser', domain_inventory: 'memory', learn_capability: 'memory', inspect_harness: 'tool', manage_harness_project: 'tool', read_worker_result: 'tool', read_workspace_change: 'file', preview_workspace_edits: 'file', preview_workspace_rename: 'search', edit_workspace_files: 'file', inspect_workspace_project: 'search', list_assist_evidence: 'memory', record_assist_evidence: 'memory', attach_assist_evidence: 'memory', list_linked_goals: 'memory', create_linked_goal: 'memory', ask_human: 'memory' };
+  const tools = { delivery_workflow: '交付闭环', search_workspace: '搜索项目代码', inventory_workspace_dependencies: '盘点工作区依赖', scan_workspace_secrets: '扫描疑似密钥', analyze_workspace_call_chain: '分析代码调用链', navigate_workspace_code: '代码符号导航', get_workspace_diagnostics: '读取代码诊断', validate_workspace_changes: '验证代码修改', recover_workspace_changes: '恢复代码修改状态', read_workspace_code: '读取待编辑代码', edit_workspace_file: '编辑代码', list_workspace_changes: '查看代码更改', wait_workers: '等待并行任务', spawn_worker: '分派并行任务', manage_workers: '调度并行任务', cancel_workers: '中断并行任务', list_workers: '检查协作进展', read_worker_evidence: '查看任务记录', read_workspace_file: '读取文件', read_image: '读取图片', list_workspace_files: '查看目录', run_local_shell_command: '运行本地命令', run_python: '运行 Python 沙箱', manage_python_environment: '管理 Python 依赖', run_linux_ssh_command: '运行命令', upload_sftp: 'SFTP 上传', deploy_remote_service: '部署远程服务', fetch_web_content: '读取网页', web_search: '搜索网页', load_skill: '加载技能', read_skills_resource: '读取技能资源', run_local_skill_script: '执行技能脚本', note: '更新笔记', todo: '更新任务', browser_action: '浏览器操作', read_context_evidence: '读取上下文证据', install_skill: '安装技能', install_mcp_server: '安装 MCP 服务', browser_connection_status: '检查浏览器状态', domain_inventory: '登记域名资产', learn_capability: '记录能力', inspect_harness: '查看运行预算', manage_harness_project: '管理任务配置', read_worker_result: '读取任务结果', read_workspace_change: '读取代码改动快照', preview_workspace_edits: '预览代码修改', preview_workspace_rename: '预览符号重命名', edit_workspace_files: '批量编辑代码', inspect_workspace_project: '检查项目配置', list_assist_evidence: '查看已记录证据', record_assist_evidence: '记录证据', attach_assist_evidence: '关联证据', list_linked_goals: '查看关联目标', create_linked_goal: '创建关联目标', ask_human: '询问用户' };
+  const kinds = { delivery_workflow: 'memory', search_workspace: 'search', inventory_workspace_dependencies: 'search', scan_workspace_secrets: 'search', analyze_workspace_call_chain: 'search', navigate_workspace_code: 'search', get_workspace_diagnostics: 'search', validate_workspace_changes: 'tool', recover_workspace_changes: 'file', read_workspace_code: 'file', edit_workspace_file: 'file', list_workspace_changes: 'folder', read_workspace_file: 'file', read_image: 'file', list_workspace_files: 'folder', run_local_shell_command: 'terminal', run_python: 'terminal', manage_python_environment: 'terminal', run_linux_ssh_command: 'terminal', upload_sftp: 'file', deploy_remote_service: 'terminal', fetch_web_content: 'browser', web_search: 'search', load_skill: 'skill', read_skills_resource: 'skill', run_local_skill_script: 'terminal', note: 'memory', todo: 'memory', browser_action: 'browser', read_context_evidence: 'search', install_skill: 'skill', install_mcp_server: 'mcp', browser_connection_status: 'browser', domain_inventory: 'memory', learn_capability: 'memory', inspect_harness: 'tool', manage_harness_project: 'tool', read_worker_result: 'tool', read_workspace_change: 'file', preview_workspace_edits: 'file', preview_workspace_rename: 'search', edit_workspace_files: 'file', inspect_workspace_project: 'search', list_assist_evidence: 'memory', record_assist_evidence: 'memory', attach_assist_evidence: 'memory', list_linked_goals: 'memory', create_linked_goal: 'memory', ask_human: 'memory' };
   const icons = {
     file: 'M9 3H5v18h14V9L13 3H9m4 0v6h6M8 13h8M8 17h6',
     folder: 'M3 6h7l2 2h9v12H3V6Z',
@@ -28,7 +28,7 @@
     tool: 'm8 5-6 7 6 7m8-14 6 7-6 7M14 3l-4 18',
   };
   const tr = value => window.UBOVMi18n?.t(value) ?? value;
-  const isReadOnlyTool = name => window.UBOVMTimeline?.isReadOnlyTool?.(name) === true;
+  const isFlatToolCard = name => window.UBOVMTimeline?.isFlatToolCard?.(name) === true;
   const node = (tag, className, text) => { const value = document.createElement(tag); if (className) value.className = className; if (text !== undefined) value.textContent = tr(text); return value; };
   const setText = (element, value) => { const text = tr(value); if (element.textContent !== text) element.textContent = text; };
   const setRaw = (element, value) => { if (element.textContent !== value) element.textContent = value; };
@@ -145,6 +145,11 @@
     return lines > 1 ? `${lines} 行` : `${length} 字符`;
   }
   const readSummary = (part, input) => [hint(part, input), readMetric(part)].filter(Boolean).join(' · ');
+  // Task updates stay flat too: the result returns the whole board, but the
+  // board itself is where to read it, so the card only names the action.
+  const todoSummary = input => ({
+    write: '更新任务板', update: '更新任务状态', clear_completed: '清理已完成任务', list: '查看任务板'
+  })[typeof input.action === 'string' ? input.action : ''] || '';
   function setOutput(view, value) {
     const output = view.output, previous = view.renderedOutput ?? '';
     if (previous === value) return;
@@ -252,7 +257,7 @@
     readNote.hidden = true;
     body.append(search, output, readNote, actions, args, notice);
     element.append(summary, body);
-    const view = { element, summary, chevron, icon, iconPath, title, path, status, time, meta, input, output, search, info, label, copy, preview, stop, aside, notice, readNote, toolbar: actions, readOnly: false, live, latest, part: {}, options: {} };
+    const view = { element, summary, chevron, icon, iconPath, title, path, status, time, meta, input, output, search, info, label, copy, preview, stop, aside, notice, readNote, toolbar: actions, flat: false, live, latest, part: {}, options: {} };
     search.addEventListener('click', event => {
       const link = event.target?.closest?.('a.tool-search-link');
       if (!link || !search.contains(link) || view.released) return;
@@ -283,12 +288,12 @@
         }
       }
     });
-    // Read-only cards are a single flat row: no disclosure and no body.
-    summary.addEventListener('click', event => { if (view.readOnly) event.preventDefault(); });
-    summary.addEventListener('keydown', event => { if (view.readOnly && (event.key === 'Enter' || event.key === ' ')) event.preventDefault(); });
+    // Flat cards are a single row: no disclosure and no body.
+    summary.addEventListener('click', event => { if (view.flat) event.preventDefault(); });
+    summary.addEventListener('keydown', event => { if (view.flat && (event.key === 'Enter' || event.key === ' ')) event.preventDefault(); });
     element.addEventListener('toggle', () => {
       if (view.released) return;
-      if (view.readOnly) { if (element.open) element.open = false; return; }
+      if (view.flat) { if (element.open) element.open = false; return; }
       try { if (element.open) renderToolBody(view); else renderLivePreview(view); }
       catch {
         // A failed deferred render can be retried with the same state snapshot.
@@ -313,8 +318,8 @@
   }
   function updateTool(view, part, options) {
     view.options = options;
-    view.readOnly = isReadOnlyTool(part.name);
-    view.element.dataset.readonly = view.readOnly ? 'true' : 'false';
+    view.flat = isFlatToolCard(part.name);
+    view.element.dataset.readonly = view.flat ? 'true' : 'false';
     const asideHidden = part.status !== 'running' || !part.commandId || part.background === true || !options.onBackgroundCommand;
     if (view.aside.hidden !== asideHidden) view.aside.hidden = asideHidden;
     const stopHidden = part.status !== 'running' || !part.commandId || !options.onInterruptCommand;
@@ -349,21 +354,21 @@
         view.icon.dataset.kind = kind; view.iconPath.setAttribute('d', icons[kind]);
         view.title.title = title;
       }
-     const targetHint = hint(part, input);
-     setText(view.path, targetHint); view.path.title = view.path.textContent;
+      const targetHint = hint(part, input);
+      setText(view.path, targetHint); view.path.title = view.path.textContent;
     }
-    // Read-only cards stay flat but still report what they did and read (target
-    // plus a size), without echoing the returned content.
-    if (view.readOnly) {
-      setText(view.path, readSummary(part, parameters(part)));
+    // Flat cards still report what the operation touched, without echoing the
+    // returned content. Read cards add the size; task cards name the action.
+    if (view.flat) {
+      setText(view.path, part.name === 'todo' ? todoSummary(parameters(part)) : readSummary(part, parameters(part)));
       view.path.title = view.path.textContent;
     }
     const statusText = status === 'running' && part.background ? '后台运行' : executionLabels[executionState] || labels[status];
     setText(view.status, statusText);
     const summaryLabel = [title, view.path.textContent, statusText].filter(Boolean).join(' · ');
     if (view.element.firstElementChild.getAttribute('aria-label') !== summaryLabel) view.element.firstElementChild.setAttribute('aria-label', summaryLabel);
-    // Read-only cards are a single flat row: no disclosure and no body.
-    if (view.readOnly) {
+    // Flat cards are a single row: no disclosure and no body.
+    if (view.flat) {
       if (view.element.open) view.element.open = false;
       if (view.summary.tabIndex !== -1) view.summary.tabIndex = -1;
     } else if (view.summary.tabIndex === -1) {
@@ -381,7 +386,7 @@
     if (view.released || view.element.open) return;
     const part = view.part, streaming = view.streaming;
     const status = labels[part.status] ? part.status : 'completed';
-    if (view.readOnly) {
+    if (view.flat) {
       if (!view.live.hidden) view.live.hidden = true;
       if (view.live.textContent) view.live.textContent = '';
       view.liveOutput = part.output; view.liveStatus = status; view.liveStreaming = streaming;
@@ -413,10 +418,9 @@
       setRaw(view.input, args);
       view.renderedArgs = args;
     }
-    if (view.readOnly) {
-      // Read-only tools: keep the operation, target, parameters and recovery
-      // actions, but never render the returned content that the agent already
-      // consumed.
+    if (view.flat) {
+      // Flat tools: keep the operation, target and parameters, but never render
+      // the returned content that the agent already consumed.
       if (!view.search.hidden) { view.search.hidden = true; view.renderedSearchOutput = undefined; view.search.replaceChildren(); }
       if (!view.output.hidden) view.output.hidden = true;
       if (view.renderedOutput) { view.output.textContent = ''; view.renderedOutput = ''; view.lineOutput = ''; view.newlines = 0; }

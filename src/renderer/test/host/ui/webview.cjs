@@ -23,6 +23,8 @@ test('assembled page includes all components and a syntactically valid browser e
   }
   assert(!html.includes('id="composer-default-model"'), 'Composer must not show a separate default model label');
   assert(html.includes('id="open-browser"') && html.includes('data-action="browser"'), 'Conversation must expose a browser entry');
+  assert(html.includes('id="toggle-right-sidebar"') && html.includes('data-action="toggleFiles"'), 'Conversation must expose the right sidebar toggle');
+  assert(!html.includes('id="new-create"'), 'The header add-session entry is replaced by the right sidebar toggle');
   assert(html.includes('打开浏览器'), 'Home shortcuts must include the browser entry');
 });
 

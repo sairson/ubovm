@@ -22,6 +22,8 @@
 
 `index.mjs` 是工具工厂与 `createInternalTools` 的公开导出入口；编排实现位于 `runtime.mjs`。执行类工具在 `terminals/`，联网类工具在 `network/`。被动学习（`learn_capability`、共享库、后台队列）在 `../learning/`，由 runtime 接入。工具专属实现放在对应目录，跨工具复用的基础代码放在 `shared/`。测试与模块同级 `test/` 目录；新增工具仍通过根 `index.mjs` 注册和导出。Python 的 `setup.mjs` 仅供宿主初始化命令调用，不开放给 AI。
 
+协作对话的工具批处理由 `shared/tool-modes.mjs` 分类：只有审核过的只读工具标记为 `parallel`，其余（写、Shell、远程、浏览器、人工提问、MCP、未知工具）保持 `sequential`。Pi Agent 的规则是“批次中任一工具为 sequential，整批按源顺序执行”，因此混合读写天然有序；并行只读调用再由 `shared/tool-runtime.mjs` 的共享闸门限制并发，并对没有内部超时的工具施加协作式超时。目标模式的 Worker 循环因检查点 ledger 依赖调用顺序，仍保持 sequential。
+
 内置 Python 由 `src/main/prepare-python.mjs` 按 `resources/python-runtime.json` 下载、校验并准备，构建脚本复制到 SDK 同级的 `runtime/python`。`python/runtime.mjs` 负责源码和打包环境的定位，AI 无权改写解释器配置。
 
 Shell、SSH 与 Python 共用 `shared/process/process-output.mjs`：stdout/stderr 分别进行增量 UTF-8 解码，按到达顺序合并输出，每 16ms 或累计 32KiB 推送一次。连续 stderr 分片只在切入 stderr 时加前缀，避免将网络分片插入单词中。退出、失败和取消收尾时立即刷出剩余输出，结束后的迟到数据不再发布；输出预算包含 stderr 前缀与异常字节解码后的扩张。仅转发模式不重复保留完整结果，最终结果只合并一次。高频批处理、字节边界和结束竞态由 `shared/process/test/process-output.test.mjs`、`shared/process/test/process-stability.test.mjs` 及各工具测试覆盖。

@@ -28,7 +28,7 @@ const sections = {
     f('defaultTimeoutSeconds', '默认超时（秒）', 'number', { default: 120, max: 3600 }),
     f('maxTimeoutSeconds', '超时上限（秒）', 'number', { default: 600, max: 3600 }),
     f('maxOutputBytes', '输出字节上限', 'number', { default: 1048576, min: 1024, max: 10485760 })] },
-  model: { title: '模型连接', description: '先选择服务商并完成连接测试，再为默认、规划、任务和摘要分配模型。默认模型和本轮会话模型可以分别调整。', fields: modelFields },
+  model: { title: '模型连接', description: '默认预置 DeepSeek（deepseek-flash 与 deepseek-v4-pro）；思考级别按模型实际支持范围收敛，思考请求会忽略 temperature 等采样参数，上下文缓存自动复用。选择其他服务商会填入对应地址与能力，完成连接测试后再分配模型。', fields: modelFields },
   reasonModel: { title: '规划模型', description: '规划与分析使用的模型；打开继承时跟随默认模型。', fields: [f('inherit', '继承默认模型', 'checkbox'), ...modelFields] },
   workerModel: { title: '任务模型', description: '执行任务使用的模型；打开继承时跟随默认模型。', fields: [f('inherit', '继承默认模型', 'checkbox'), ...modelFields] },
   summaryModel: { title: '摘要模型', description: '压缩长对话使用的模型；打开继承时跟随规划模型。', fields: [f('inherit', '继承规划模型', 'checkbox'), ...modelFields] },

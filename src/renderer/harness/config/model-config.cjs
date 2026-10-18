@@ -1,6 +1,7 @@
 'use strict';
 
 const { createHash } = require('node:crypto');
+const { clampThinkingLevel, thinkingLevelsFor } = require('./model-capabilities.cjs');
 const copy = value => value === undefined ? undefined : structuredClone(value);
 const APIS = ['openai-completions', 'openai-responses', 'anthropic-messages', 'google-generative-ai', 'azure-openai-responses', 'google-vertex', 'mistral-conversations', 'bedrock-converse-stream', 'pi-messages', 'openai-codex-responses'];
 const MODEL_KEYS = new Set(['backend', 'provider', 'modelId', 'models', 'api', 'baseUrl', 'contextWindow', 'maxTokens', 'reasoning', 'input', 'compat', 'streamOptions']);
@@ -66,11 +67,13 @@ function modelConfig(value) {
   for (const key of ['provider', 'modelId']) if (typeof model[key] !== 'string' || !model[key].trim()) throw new Error('请先配置模型的服务商和模型名称。');
   model.provider = model.provider.trim(); model.modelId = model.modelId.trim();
   if (model.models !== undefined) {
-    // An empty list is the form's "use only the default model" state.
-    // Treat it as omitted so a freshly opened default configuration can be saved.
     if (!Array.isArray(model.models)) throw new Error('可选模型必须是 1–100 个非空名称。');
-    if (!model.models.length) delete model.models;
-    else {
+    if (!model.models.length) {
+      // An empty list means "only the default model". Persist that as a
+      // one-item list so a DeepSeek preset's suggested models do not come
+      // back after the user deliberately clears them.
+      model.models = [model.modelId];
+    } else {
       if (model.models.length > 100 || model.models.some(value => typeof value !== 'string' || !value.trim())) throw new Error('可选模型必须是 1–100 个非空名称。');
       model.models = [...new Set(model.models.map(value => value.trim()))];
       if (!model.models.includes(model.modelId)) model.models.unshift(model.modelId);
@@ -94,6 +97,14 @@ function keyFor(model) {
   return 'ubovm.model.key.' + createHash('sha256').update(JSON.stringify([model.provider, model.baseUrl ?? 'catalog'])).digest('hex');
 }
 
+// DeepSeek V4 models do not map the historical "medium" planning level.
+// Resolve the nearest supported level so a first run never sends an
+// unsupported reasoning_effort, while other providers keep the old default.
+function defaultReasonThinkingLevel(model) {
+  const levels = thinkingLevelsFor(model?.provider, model?.modelId);
+  return levels ? clampThinkingLevel(model.provider, model.modelId, 'medium') : 'medium';
+}
+
 /** Machine settings and SecretStorage remain in the extension host. */
 function createModelConfiguration(vscode, context) {
   const state = configurationState(context);
@@ -105,7 +116,7 @@ function createModelConfiguration(vscode, context) {
   function status() {
     try {
       const model = modelConfig(setting('model', {}));
-      return { connected: true, configured: true, label: `${model.backend ?? 'pi'} · ${model.modelId} · 已配置`, provider: model.provider, backend: model.backend ?? 'pi', defaultModel: model.modelId, models: model.models || [model.modelId] };
+      return { connected: true, configured: true, label: `${model.backend ?? 'pi'} · ${model.modelId} · 已配置`, provider: model.provider, backend: model.backend ?? 'pi', defaultModel: model.modelId, models: model.models || [model.modelId], input: Array.isArray(model.input) ? model.input : ['text'] };
     } catch (error) { return { connected: false, configured: false, label: '配置模型', error: error.message }; }
   }
   function assertHttpSecret(key, label = 'API Key') {
@@ -160,7 +171,7 @@ function createModelConfiguration(vscode, context) {
     result.maxRounds = maxRounds;
     result.reason = { ...reason, openIntents, maxIntents };
     // Planning log needs Reason thinking by default; workers stay opt-in.
-    if (result.reason.thinkingLevel === undefined) result.reason.thinkingLevel = 'medium';
+    if (result.reason.thinkingLevel === undefined) result.reason.thinkingLevel = defaultReasonThinkingLevel(result.reason.model ?? result.model);
     delete result.reason.maxConcurrency;
     delete result.reason.maxRounds;
     result.contextSummary = setting('summaryEnabled', true) === false ? false : setting('contextSummary', true);
@@ -211,20 +222,21 @@ function createModelConfiguration(vscode, context) {
       return status();
     }
     const backend = 'pi';
-    const provider = await vscode.window.showInputBox({ title: '服务商标识', value: current.provider ?? 'custom', prompt: '例如 deepseek、openrouter，或自定义端点的标识', ignoreFocusOut: true, validateInput: v => v.trim() ? undefined : '请输入服务商标识。' });
+    const provider = await vscode.window.showInputBox({ title: '服务商标识', value: current.provider ?? 'deepseek', prompt: '默认 deepseek；也可填写 openrouter 或自定义端点的标识', ignoreFocusOut: true, validateInput: v => v.trim() ? undefined : '请输入服务商标识。' });
     if (provider === undefined) return status();
-    const modelId = await vscode.window.showInputBox({ title: '模型名称', value: current.modelId ?? '', prompt: '服务商提供的模型 ID', ignoreFocusOut: true, validateInput: v => v.trim() ? undefined : '请输入模型名称。' });
+    const modelId = await vscode.window.showInputBox({ title: '模型名称', value: current.modelId ?? require('./model-presets.cjs')[provider]?.modelId ?? '', prompt: '服务商提供的模型 ID', ignoreFocusOut: true, validateInput: v => v.trim() ? undefined : '请输入模型名称。' });
     if (modelId === undefined) return status();
     const api = await vscode.window.showQuickPick([{ label: '使用内置模型目录', api: undefined }, ...APIS.map(api => ({ label: api, api }))], { title: '模型协议', placeHolder: current.api ?? '内置模型可使用模型目录；自定义端点请选择协议' });
     if (!api) return status();
     let baseUrl;
+    const providerPreset = require('./model-presets.cjs')[provider];
     if (api.api) {
-      const presetUrl = require('./model-presets.cjs')[provider]?.baseUrl ?? '';
+      const presetUrl = providerPreset?.baseUrl ?? '';
       baseUrl = await vscode.window.showInputBox({ title: '模型 API 地址', value: current.provider === provider && current.backend === backend ? current.baseUrl ?? '' : presetUrl, placeHolder: 'https://your-provider.example/v1', ignoreFocusOut: true,
         validateInput: value => { try { const url = new URL(value); return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password && !url.hash ? undefined : '请输入不含凭据的 HTTP(S) 地址。'; } catch { return '请输入完整的 HTTP(S) 地址。'; } } });
       if (baseUrl === undefined) return status();
     }
-    const model = modelConfig({ backend, provider, modelId, ...(api.api ? { api: api.api, baseUrl } : {}) });
+    const model = modelConfig({ backend, provider, modelId, ...(api.api ? { api: api.api, baseUrl } : {}), ...(Array.isArray(providerPreset?.models) ? { models: providerPreset.models } : {}) });
     const existing = await context.secrets.get(keyFor(model));
     const apiKey = await vscode.window.showInputBox({ title: 'API Key', prompt: existing ? '留空保留该端点已保存的密钥。' : '密钥保存在凭据库中；无需认证的兼容服务可填任意占位值。', password: true, ignoreFocusOut: true });
     if (apiKey === undefined) return status();

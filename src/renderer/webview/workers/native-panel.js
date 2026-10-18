@@ -62,7 +62,7 @@
       catch (error) { notify(error?.message || 'HTML 预览失败，请检查源码后重试。'); }
     }
   };
-  const panel = window.createWorkerPanel(actions, { standalone: true });
+  const panel = window.createWorkerPanel(actions, { standalone: true, onClose: () => vscode.postMessage({ action: 'closeWorkerPanel' }) });
   const element = document.getElementById('worker-panel'), picker = document.getElementById('worker-picker');
   const renderError = document.createElement('div'); renderError.className = 'worker-render-status'; renderError.hidden = true;
   const renderMessage = document.createElement('span'); renderMessage.setAttribute('role', 'alert'); renderMessage.textContent = 'Worker 视图显示失败，工作记录已保留。';

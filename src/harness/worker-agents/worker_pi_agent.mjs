@@ -365,6 +365,9 @@ export function createPiWorker({
               tools: phase === 'execute' ? wrappedTools : [], messages: restoredMessages
             },
             getApiKey,
+            // The worker checkpoint journal is order-sensitive: each tool call
+            // is reserved and persisted in ledger order. Only the collaboration
+            // loop opts into Pi's parallel batches; this loop stays sequential.
             toolExecution: 'sequential',
             sessionId: `ubovm:${node.id}:${phase}`,
             streamFn: async (requestModel, transcript, options) => {

@@ -1,0 +1,19 @@
+diff --git a/src/vs/workbench/contrib/browserView/electron-browser/features/browserNavigationFeatures.ts b/src/vs/workbench/contrib/browserView/electron-browser/features/browserNavigationFeatures.ts
+index 50e4f362..bdf2c46d 100644
+--- a/src/vs/workbench/contrib/browserView/electron-browser/features/browserNavigationFeatures.ts
++++ b/src/vs/workbench/contrib/browserView/electron-browser/features/browserNavigationFeatures.ts
+@@ -316,11 +316,12 @@ export class BrowserNavigationFeatures extends BrowserEditorContribution {
+ 				return;
+ 			}
+ 
+-			// A new tab (no URL loaded) auto-opens the picker so the user can immediately type / browse suggestions.
++			// A new tab (no URL loaded) focuses the URL display without opening the
++			// suggestion overlay; typing or clicking promotes the display to the picker.
+ 			// Otherwise we move focus into the browser editor so it doesn't stay on the tab control.
+ 			const url = this.editor.model?.url ?? (input instanceof BrowserEditorInput ? input.url : undefined);
+ 			if (!url && !this._hasInitiatedNavigation) {
+-				this._navbar.openUrlPicker();
++				this._navbar.focusUrlInput();
+ 			} else {
+ 				this.editor.ensureBrowserFocus();
+ 			}

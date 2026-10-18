@@ -280,6 +280,15 @@ describe('ide-browser-host', () => {
     assert.equal(vscode.lastOpen.options.preserveFocus, false);
   });
 
+  it('opens the native welcome surface without navigating to about:blank', async () => {
+    const vscode = fakeVscode();
+    const host = createIdeBrowserHost(vscode);
+    const opened = await host.open('', { startBlank: true, preserveFocus: false, viewColumn: vscode.ViewColumn.Two });
+    assert.equal(vscode.lastOpen.url, '');
+    assert.equal(opened.tab.url, '');
+    assert.equal(vscode.tabs.length, 1);
+  });
+
   it('keeps agent tab_new in the background and honors explicit user focus', async () => {
     const vscode = fakeVscode();
     const host = createIdeBrowserHost(vscode);

@@ -89,14 +89,25 @@ test('conversation page forces full paint and ready resync after visibility rest
 
 test('native window recovery schedules staggered invalidates', () => {
   const rendering = fs.readFileSync(path.join(root, '../main/window-rendering.mjs'), 'utf8');
-  assert.match(rendering, /const delayMs = Object.freeze\(\[0, 250, 1000\]\)/);
+  assert.match(rendering, /const delayMs = Object\.freeze\(\[0, 250, 1000\]\)/);
   assert.match(rendering, /keepAliveMs = 20000/);
   assert.match(rendering, /before-input-event/);
+  // A lost compositor surface cannot be restored with invalidate() alone: the
+  // smallest geometry change rebuilds the native surface (the manual resize fix).
+  assert.match(rendering, /window\.setBounds\(\{ \.\.\.bounds, width: bounds\.width \+ 1 \}\)/);
+  assert.match(rendering, /window\.on\('focus', focus\)/);
+  assert.match(rendering, /powerMonitor\.on\('unlock-screen', resume\)/);
   // Resizes and unresponsive renderers must repaint rather than leave a blank surface.
-  assert.match(rendering, /recoverEvents = \['show', 'restore', 'focus', 'responsive', 'resized'\]/);
-  assert.match(rendering, /Window renderer unresponsive\.[\s\S]{0,80}recover\(\)/);
+  assert.match(rendering, /window\.on\('resized', resized\)/);
+  assert.match(rendering, /window\.on\('responsive', responsive\)/);
+  assert.match(rendering, /Window renderer unresponsive\.[\s\S]{0,120}recover\(\)/);
   const index = fs.readFileSync(path.join(root, '../main/index.mjs'), 'utf8');
   assert.match(index, /disable-renderer-backgrounding/);
   assert.match(index, /disable-backgrounding-occluded-windows/);
   assert.match(index, /disable-background-timer-throttling/);
+  // Graphite's compositor is the upstream cause of idle blank windows. Windows
+  // has a separate, opt-in DirectComposition fallback for the same symptom.
+  assert.match(index, /disable-skia-graphite/);
+  assert.match(index, /UBOVM_DISABLE_DIRECT_COMPOSITION/);
+  assert.match(index, /getGPUFeatureStatus/);
 });

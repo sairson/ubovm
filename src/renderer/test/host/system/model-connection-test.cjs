@@ -5,6 +5,7 @@ const { createModelConnectionTest, describeError } = require('../../../host/syst
 test('model connection test classifies auth, missing model, and timeout failures', () => {
   assert.match(describeError({ status: 401, message: 'unauthorized' }), /认证失败/);
   assert.match(describeError({ status: 404, message: 'model not found' }), /模型或接口不存在/);
+  assert.match(describeError({ status: 404, message: 'Model Not Exist' }), /模型或接口不存在/);
   assert.match(describeError({ code: 'ETIMEDOUT', message: 'timeout' }), /连接超时/);
   assert.match(describeError({ code: 'ECONNREFUSED' }), /被拒绝/);
   assert.match(describeError({ message: 'secret-key-value failed' }), /模型连接失败/);
@@ -12,6 +13,15 @@ test('model connection test classifies auth, missing model, and timeout failures
   assert.match(describeError(new TypeError('Invalid streamOptions.reasoning')), /模型配置无效/);
   assert.match(describeError(new TypeError('Invalid streamOptions.reasoning')), /Invalid streamOptions.reasoning/);
   assert.match(describeError(new TypeError('Cannot convert argument to a ByteString because the character at index 7 has a value of 27169 which is greater than 255.')), /非英文字符/);
+});
+
+test('model connection test explains DeepSeek balance, context, reasoning and overload failures', () => {
+  assert.match(describeError({ status: 402, message: 'Insufficient Balance' }), /余额或额度不足/);
+  assert.match(describeError({ status: 429, message: 'insufficient_quota' }), /余额或额度不足/);
+  assert.match(describeError({ status: 400, message: "This model's maximum context length is 65536 tokens" }), /上下文窗口/);
+  assert.match(describeError({ status: 400, message: 'reasoning_effort is not supported for this model' }), /推理\/思考参数/);
+  assert.match(describeError({ status: 503, message: 'Service Unavailable' }), /服务暂时不可用/);
+  assert.match(describeError({ status: 400, message: 'Invalid Request' }), /请求参数无效/);
 });
 
 test('model connection test rejects non-Latin1 API keys before calling the provider', async () => {

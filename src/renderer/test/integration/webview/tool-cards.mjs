@@ -918,6 +918,30 @@ test('read-only tool cards stay a flat row that cannot expand', async t => {
   assert.equal(await card.getByRole('button', { name: '打开文件', exact: true }).count(), 0);
 });
 
+test('task update cards stay flat like read-only cards and never echo the board', async t => {
+  const f = await fixture(t);
+  const update = tool('todo-update', {
+    name: 'todo',
+    args: JSON.stringify({ action: 'update', todo_id: 'todo-1', status: 'completed' }),
+    output: JSON.stringify({
+      session_counts: { pending: 1, in_progress: 0, completed: 1 },
+      your_counts: { pending: 1, in_progress: 0, completed: 1 },
+      items: [{ id: 'todo-1', worker_id: 'worker', status: 'completed', content: 'secret task content', owner: 'true' }]
+    })
+  });
+  await f.emit(state([update]));
+  const card = f.card(0);
+  assert.equal(await card.getAttribute('data-readonly'), 'true');
+  assert.equal(await card.locator('.tool-chevron').isVisible(), false, 'no disclosure chevron');
+  assert.equal(await card.evaluate(element => element.open), false);
+  assert.match(await card.locator('.tool-path').textContent(), /更新任务状态/);
+  await card.locator(':scope > summary').evaluate(element => element.click());
+  await f.frames();
+  assert.equal(await card.evaluate(element => element.open), false, 'a task update must not expand');
+  assert.equal(await card.locator('.tool-output').isVisible(), false);
+  assert.doesNotMatch(await card.textContent(), /secret task content/);
+});
+
 test('read cards never expose a file-open action', async t => {
   const f = await fixture(t);
   const rooted = tool('rooted', { name: 'read_workspace_file', args: '{"path":"src/x.js"}',

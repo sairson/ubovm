@@ -9,7 +9,7 @@ const styles = [
   'src/renderer/workbench/workbench.css',
 ];
 
-test('integrated browser chrome keeps toolbar actions and a taller address bar', async t => {
+test('integrated browser chrome keeps DSH toolbar metrics, actions and address field', async t => {
   const browser = await chromium.launch({ channel: 'msedge', headless: true });
   t.after(() => browser.close());
   const page = await browser.newPage({ viewport: { width: 980, height: 640 } });
@@ -53,8 +53,9 @@ test('integrated browser chrome keeps toolbar actions and a taller address bar',
               </div>
             </div>
             <div class="browser-url-container">
-              <div class="browser-url-display" data-placeholder="Search or enter URL"></div>
+              <div class="browser-url-display" data-placeholder="Search or enter URL" tabindex="0"></div>
               <div class="browser-url-bar-widgets">
+                <button class="browser-favorite-indicator" title="Favorite">★</button>
                 <button class="browser-share-toggle checked">Share</button>
               </div>
             </div>
@@ -95,11 +96,30 @@ test('integrated browser chrome keeps toolbar actions and a taller address bar',
       height: Math.round(box.height),
       radius: style.borderRadius,
       padding: getComputedStyle(el.querySelector('.browser-url-display')).paddingTop,
+      fontSize: getComputedStyle(el.querySelector('.browser-url-display')).fontSize,
     };
   });
-  assert.ok(url.height >= 32, `address bar height ${url.height}`);
+  assert.ok(url.height >= 28 && url.height <= 30, `address bar height ${url.height}`);
   assert.equal(url.radius, '8px');
-  assert.equal(url.padding, '6px');
+  assert.equal(url.padding, '3px');
+  assert.equal(url.fontSize, '12px');
+
+  const tool = await page.locator('.browser-nav-toolbar .action-item .action-label').first().evaluate(el => {
+    const box = el.getBoundingClientRect();
+    return { width: Math.round(box.width), height: Math.round(box.height), radius: getComputedStyle(el).borderRadius };
+  });
+  assert.deepEqual(tool, { width: 28, height: 28, radius: '8px' });
+  const navbarHeight = await page.locator('.browser-navbar').evaluate(el => Math.round(el.getBoundingClientRect().height));
+  assert.equal(navbarHeight, 38);
+
+  const focus = await page.locator('.browser-url-display').evaluate(el => {
+    el.focus();
+    const style = getComputedStyle(el.closest('.browser-url-container'));
+    return { width: style.outlineWidth, color: style.outlineColor };
+  });
+  assert.equal(focus.width, '1px');
+  assert.notEqual(focus.color, 'rgba(0, 0, 0, 0)');
+  await page.evaluate(() => document.activeElement?.blur());
 
   const share = await page.locator('.browser-share-toggle.checked').evaluate(el => {
     const style = getComputedStyle(el);
@@ -108,22 +128,53 @@ test('integrated browser chrome keeps toolbar actions and a taller address bar',
   assert.equal(share.image, 'none');
   assert.notEqual(share.color, 'rgba(0, 0, 0, 0)');
 
+  assert.equal(await page.locator('.browser-favorite-indicator').evaluate(el => getComputedStyle(el).display), 'none');
+  await page.locator('.browser-url-container').hover();
+  assert.notEqual(await page.locator('.browser-favorite-indicator').evaluate(el => getComputedStyle(el).display), 'none');
+  await page.mouse.move(0, 0);
+
   const welcome = await page.locator('.browser-welcome-icon').evaluate(el => {
     const box = el.getBoundingClientRect();
     const style = getComputedStyle(el);
     return { width: Math.round(box.width), height: Math.round(box.height), radius: style.borderRadius };
   });
-  assert.equal(welcome.width, 52);
-  assert.equal(welcome.height, 52);
-  assert.equal(welcome.radius, '12px');
+  assert.equal(welcome.width, 40);
+  assert.equal(welcome.height, 40);
+  assert.equal(welcome.radius, '8px');
 
   const title = await page.locator('.browser-welcome-title').evaluate(el => getComputedStyle(el).fontSize);
-  assert.equal(title, '16px');
+  assert.equal(title, '13px');
 
-  const border = await page.locator('.browser-container.shared').evaluate(el =>
-    getComputedStyle(el, '::before').backgroundImage
-  );
-  assert.equal(border, 'none');
+  const border = await page.locator('.browser-container.shared').evaluate(el => {
+    const style = getComputedStyle(el, '::before');
+    return { image: style.backgroundImage, color: style.backgroundColor };
+  });
+  assert.equal(border.image, 'none');
+  assert.notEqual(border.color, 'rgba(0, 0, 0, 0)');
 
   await page.screenshot({ path: '.cache/browser-chrome.png' });
+
+  await page.setViewportSize({ width: 600, height: 640 });
+  const narrow = await page.evaluate(() => {
+    const nav = document.querySelector('.browser-navbar').getBoundingClientRect();
+    const url = document.querySelector('.browser-url-container').getBoundingClientRect();
+    const tool = document.querySelector('.browser-nav-toolbar .action-label').getBoundingClientRect();
+    return { nav: { height: Math.round(nav.height) }, url: { width: Math.round(url.width), height: Math.round(url.height) }, tool: { width: Math.round(tool.width) }, scrollWidth: document.documentElement.scrollWidth };
+  });
+  assert.equal(narrow.nav.height, 38);
+  assert.equal(narrow.url.height, 28);
+  assert.ok(narrow.url.width > 120, `narrow address width ${narrow.url.width}`);
+  assert.equal(narrow.tool.width, 26);
+  assert.ok(narrow.scrollWidth <= 601, `narrow page overflows: ${narrow.scrollWidth}`);
+  await page.screenshot({ path: '.cache/browser-chrome-narrow.png' });
+
+  await page.setViewportSize({ width: 320, height: 640 });
+  const tiny = await page.evaluate(() => ({
+    nav: Math.round(document.querySelector('.browser-navbar').getBoundingClientRect().height),
+    url: Math.round(document.querySelector('.browser-url-container').getBoundingClientRect().width),
+    scrollWidth: document.documentElement.scrollWidth,
+  }));
+  assert.equal(tiny.nav, 38);
+  assert.ok(tiny.url > 80, `320px address width ${tiny.url}`);
+  assert.ok(tiny.scrollWidth <= 321, `320px page overflows: ${tiny.scrollWidth}`);
 });

@@ -163,7 +163,7 @@ function createHarnessService(options) {
     const descriptor = { conversationId: input?.conversationId, mode, goal: input?.goal, executionBranch: input?.executionBranch };
     if (mode === 'assist') {
       descriptor.lastInput = {
-        text: input?.text, messages: input?.messages, context: input?.context, approvalMode: input?.approvalMode
+        text: input?.text, images: input?.images, messages: input?.messages, context: input?.context, approvalMode: input?.approvalMode
       };
     }
     return structuredClone(descriptor);

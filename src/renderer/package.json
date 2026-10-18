@@ -2,7 +2,7 @@
   "name": "ubovm-core",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "publisher": "ubovm",
   "private": true,
   "license": "MIT",
@@ -415,7 +415,8 @@
                 "xhigh",
                 "max"
               ],
-              "default": "medium"
+              "default": "medium",
+              "markdownDescription": "DeepSeek V4 仅支持部分思考档位（低/高/最高）；保存时会把不支持的档位收敛到最接近的支持值。"
             },
             "systemPrompt": {
               "type": "string"

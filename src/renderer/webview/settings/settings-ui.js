@@ -230,6 +230,15 @@ function createSettingsPanel(vscode) {
     setText(pending.status, unchanged ? (result.ok ? result.message || '连接成功。' : window.UBOVMErrors.text(result.failure || result.message)) + (result.ok && Number.isFinite(result.durationMs) ? `（${result.durationMs} ms）` : '') : currentRevision ? '配置已更改，请重新测试连接。' : '已保存配置发生变化，请重新测试连接。');
   }
   const modelRoles = [['model', '默认模型'], ['reasonModel', '规划模型'], ['workerModel', '任务模型'], ['summaryModel', '摘要模型']];
+  const thinkingOrder = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+  const thinkingLabels = { off: '关闭', minimal: '最低', low: '较低', medium: '中等', high: '较高', xhigh: '很高', max: '最高' };
+  function clampToLevels(levels, level) {
+    const requested = thinkingOrder.indexOf(level);
+    if (requested === -1) return levels[0];
+    for (let index = requested; index < thinkingOrder.length; index++) if (levels.includes(thinkingOrder[index])) return thinkingOrder[index];
+    for (let index = requested - 1; index >= 0; index--) if (levels.includes(thinkingOrder[index])) return thinkingOrder[index];
+    return levels[0];
+  }
   const modelEqual = (left, right) => left && right && ['provider', 'modelId', 'api', 'baseUrl'].every(key => String(left[key] ?? '') === String(right[key] ?? ''));
   function matchingProfileId(roleValue, library) {
     if (!roleValue || roleValue.inherit) return '';
@@ -583,7 +592,7 @@ function createSettingsPanel(vscode) {
       let list = modelId.list ? document.getElementById(modelId.list) : null;
       if (!models.length) { modelId.removeAttribute('list'); list?.remove(); return; }
       if (!list) { list = document.createElement('datalist'); list.id = 'model-id-options-' + requestScope; document.body.appendChild(list); modelId.setAttribute('list', list.id); }
-      list.replaceChildren(...models.map(value => { const option = document.createElement('option'); option.value = value; return option; }));
+      list.replaceChildren(...models.map(value => { const option = document.createElement('option'); option.value = value; const label = preset?.modelLabels?.[value]; if (label) option.label = label; return option; }));
     };
     provider.addEventListener('change', () => {
       const preset = { ...(data.modelPresets[provider.value] ?? data.modelPresets.custom) };
@@ -606,6 +615,34 @@ function createSettingsPanel(vscode) {
       markDirty(); status('已填入服务商预设；检查配置后保存。');
     });
     syncModelCatalog();
+  }
+  // DeepSeek V4 supports only some reasoning levels (Flash: low/high/max,
+  // Pro: high/max). Keep the form honest: disable unsupported options and
+  // preview the level the provider will actually receive, mirroring the
+  // harness's clamp instead of silently sending an invalid reasoning_effort.
+  function bindThinkingCapabilities() {
+    if (!['reason', 'worker'].includes(section)) return;
+    const select = fields.querySelector('[data-setting="thinkingLevel"]');
+    if (!select) return;
+    const role = section === 'reason' ? 'reasonModel' : 'workerModel';
+    const configured = data.values[role];
+    const model = configured && configured.inherit === false && configured.provider ? configured : data.values.model;
+    const preset = data.modelPresets?.[model?.provider];
+    const levels = preset?.thinkingLevels?.[model?.modelId];
+    if (!Array.isArray(levels) || levels.length < 2) return;
+    const field = select.closest('.settings-field');
+    if (!field) return;
+    let hint = field.querySelector('[data-thinking-capability]');
+    if (!hint) { hint = element('p', 'settings-field-hint'); hint.dataset.thinkingCapability = ''; field.append(hint); }
+    if (!hint.id) hint.id = 'thinking-capability-' + section;
+    const supported = levels.map(level => thinkingLabels[level] ?? level).join(' / ');
+    const requested = select.value;
+    const effective = requested && !levels.includes(requested) ? clampToLevels(levels, requested) : requested;
+    if (effective && effective !== requested) select.value = effective;
+    setText(hint, `${model.modelId} 支持思考级别：${supported}。` + (effective !== requested ? `当前配置将按「${thinkingLabels[effective] ?? effective}」执行。` : ''));
+    for (const option of select.options) if (option.value) option.disabled = !levels.includes(option.value);
+    const describedBy = (select.getAttribute('aria-describedby') ?? '').split(/\s+/).filter(Boolean);
+    if (!describedBy.includes(hint.id)) select.setAttribute('aria-describedby', [...describedBy, hint.id].join(' '));
   }
   function refreshSSHList() {
     const groups = [...fields.querySelectorAll('.settings-ssh-profile')];
@@ -760,7 +797,9 @@ function createSettingsPanel(vscode) {
     });
     const actions = element('div', 'settings-model-actions');
     const create = element('button', '', '新建'); create.type = 'button';
-    create.addEventListener('click', () => openLibraryProfile({ id: '', name: '', model: { provider: 'openai', modelId: '', api: 'openai-completions', baseUrl: '' }, secretState: {} }, { dirtyAfter: true }));
+    const newProfilePreset = { ...(data.modelPresets?.deepseek ?? {}) };
+    delete newProfilePreset.label; delete newProfilePreset.modelLabels; delete newProfilePreset.thinkingLevels;
+    create.addEventListener('click', () => openLibraryProfile({ id: '', name: '', model: { ...newProfilePreset, modelId: '' }, secretState: {} }, { dirtyAfter: true }));
     const add = element('button', '', '另存为新配置'); add.type = 'button';
     add.addEventListener('click', () => {
       card.dataset.profileId = ''; selectedModels.set('model', ''); select.value = '';
@@ -799,7 +838,7 @@ function createSettingsPanel(vscode) {
     const keyRow = common.querySelector('[data-field="apiKey"]');
     keyRow.append(element('p', 'settings-model-hint', '留空保留已存密钥。同一服务商、同一 API 地址共用凭据。'));
     const protocolNote = element('p', 'settings-model-hint'); protocolNote.dataset.sdkProtocol = '';
-    setText(protocolNote, '选择服务商后会填入预设，确认模型与地址，再填写 API Key。');
+    setText(protocolNote, '默认预置 DeepSeek；选择服务商会填入地址与模型，确认后填写 API Key。');
     const testRow = element('div', 'settings-model-test');
     const test = element('button', '', '测试连接'); test.type = 'button';
     const testStatus = element('p', 'settings-model-hint settings-model-test-status'); testStatus.setAttribute('role', 'status');
@@ -1177,6 +1216,7 @@ function createSettingsPanel(vscode) {
       if (body.children.length) fields.append(advanced);
     }
     bindProviderPresets();
+    bindThinkingCapabilities();
     const inherit = fields.querySelector('[data-setting="inherit"]');
     if (inherit) {
       const note = element('div', 'settings-inherit-note');

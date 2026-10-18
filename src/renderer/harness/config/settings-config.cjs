@@ -5,6 +5,7 @@ const path = require('node:path');
 const { homedir } = require('node:os');
 const { sections, sshFields, mcpFields, modelPresets, tools } = require('./settings-schema.cjs');
 const { modelConfig, keyFor, configurationState, updateConfiguration } = require('./model-config.cjs');
+const { clampThinkingLevel } = require('./model-capabilities.cjs');
 const { defaultDirectory, readSkillsCatalog } = require('./skills-catalog.cjs');
 const clone = value => value === undefined ? undefined : structuredClone(value);
 const plain = value => value && typeof value === 'object' && !Array.isArray(value);
@@ -201,8 +202,14 @@ function createSettingsConfiguration(vscode, context) {
         ? { ...stored, ...modelConfig(Object.fromEntries(Object.entries(stored).filter(([key]) => key !== 'inherit'))) } : stored;
       const defaults = Object.fromEntries(spec.fields.filter(field => field.type !== 'secret').map(field => [field.key, clone(field.default)]));
       if (Object.hasOwn(modelSections, section)) {
-        const { label, ...preset } = availableModelPresets[value.provider] ?? (value.provider ? availableModelPresets.custom : availableModelPresets.openai);
-        Object.assign(defaults, preset);
+        // DeepSeek is the out-of-the-box provider; an unknown but explicit
+        // provider still falls back to the neutral custom preset.
+        const { label, ...preset } = availableModelPresets[value.provider]
+          ?? (value.provider ? availableModelPresets.custom : availableModelPresets.deepseek);
+        // Presets also carry UI-only metadata (reasoning levels, model labels).
+        // Only real form fields become values; everything else stays in
+        // modelPresets for the webview to read.
+        for (const entry of spec.fields) if (preset[entry.key] !== undefined) defaults[entry.key] = clone(preset[entry.key]);
       }
       // An explicit empty string / false / zero is a user choice, not a missing value.
       values[section] = { ...defaults, ...Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== undefined)) };
@@ -414,6 +421,14 @@ function createSettingsConfiguration(vscode, context) {
     } else {
       const value = validateFields(input, sections[section].fields); rejectSecrets(value);
       const next = patchFields(old[section], sections[section].fields, value);
+      if (section === 'reason' || section === 'worker') {
+        // DeepSeek V4 accepts low/high/max only. Persist the level the harness
+        // will actually send so the stored form and runtime stay in agreement.
+        const roleModel = object(old[section]?.model ?? old.model);
+        if (typeof next.thinkingLevel === 'string' && next.thinkingLevel) {
+          next.thinkingLevel = clampThinkingLevel(roleModel.provider, roleModel.modelId, next.thinkingLevel);
+        }
+      }
       if (section === 'reason') {
         const openIntents = next.openIntents ?? 5;
         if ((next.maxConcurrency ?? 3) > openIntents) throw new Error('并行任务数不能超过同时进行上限。');

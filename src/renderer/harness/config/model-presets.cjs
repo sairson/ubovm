@@ -1,6 +1,11 @@
 'use strict';
-// Presets from the installed pi-ai 0.86.1 catalog.
+// Presets from the installed pi-ai 0.86.1 catalog. DeepSeek is the desktop's
+// default provider; its capability table (models, reasoning levels, limits)
+// lives in model-capabilities.cjs so the settings UI, model defaults and the
+// harness agree on the same values.
+const { providerPreset } = require('./model-capabilities.cjs');
 module.exports = {
+  "deepseek": providerPreset('deepseek'),
   "openai": {
     "label": "OpenAI",
     "provider": "openai",
@@ -37,20 +42,6 @@ module.exports = {
     "baseUrl": "https://generativelanguage.googleapis.com/v1beta",
     "contextWindow": 1048576,
     "maxTokens": 65536,
-    "reasoning": true,
-    "input": [
-      "text",
-      "image"
-    ]
-  },
-  "deepseek": {
-    "label": "DeepSeek",
-    "provider": "deepseek",
-    "modelId": "deepseek-flash",
-    "api": "openai-completions",
-    "baseUrl": "https://api.deepseek.com",
-    "contextWindow": 1000000,
-    "maxTokens": 384000,
     "reasoning": true,
     "input": [
       "text",

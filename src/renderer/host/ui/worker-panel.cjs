@@ -137,7 +137,7 @@ function createWorkerPanel(vscode, { readState, onAction, onError = () => {}, re
           else if (message?.action === 'selectWorker') {
             const state = readState();
             if (message.sessionId === state.sessionId && state.workers.some(worker => worker.id === message.workerId)) selected = message.workerId;
-          } else if (['copyText', 'openMessageLink', 'interruptCommand', 'backgroundCommand'].includes(message?.action)) await onAction(message, next);
+          } else if (['copyText', 'openMessageLink', 'interruptCommand', 'backgroundCommand', 'closeWorkerPanel'].includes(message?.action)) await onAction(message, next);
         } catch (error) { if (view === next) report(error); }
       });
       const visibility = next.onDidChangeVisibility(() => {

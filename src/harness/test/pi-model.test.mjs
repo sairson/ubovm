@@ -46,6 +46,52 @@ test('legacy SDK configuration uses Pi transport with its original endpoint and 
   assert.throws(() => createModelClient({ backend: 'unknown' }), /Pi Agent/);
 });
 
+test('official DeepSeek endpoints inherit catalog capabilities while proxies keep custom limits', async () => {
+  const official = createModelClient({
+    provider: 'deepseek', modelId: 'deepseek-flash', api: 'openai-completions',
+    baseUrl: 'https://api.deepseek.com', apiKey: 'k', streamFn: () => 'ok',
+  });
+  assert.equal(official.model.name, 'DeepSeek V4.1 Flash');
+  assert.deepEqual(official.model.input, ['text', 'image']);
+  assert.deepEqual(official.model.thinkingLevelMap, { minimal: null, low: 'low', medium: null, high: 'high', max: 'max' });
+  assert.equal(official.model.cost.input, 0.3);
+
+  // DeepSeek documents both `https://api.deepseek.com` and its /v1 form.
+  const v1 = createModelClient({
+    provider: 'deepseek', modelId: 'deepseek-flash', api: 'openai-completions',
+    baseUrl: 'https://api.deepseek.com/v1', apiKey: 'k', streamFn: () => 'ok',
+  });
+  assert.deepEqual(v1.model.thinkingLevelMap, official.model.thinkingLevelMap);
+  assert.equal(v1.model.cost.input, 0.3);
+  assert.equal(v1.model.baseUrl, 'https://api.deepseek.com/v1');
+
+  const proxy = createModelClient({
+    provider: 'deepseek', modelId: 'deepseek-flash', api: 'openai-completions',
+    baseUrl: 'https://deepseek-proxy.example/v1', apiKey: 'k', streamFn: () => 'ok',
+  });
+  assert.equal(proxy.model.thinkingLevelMap, undefined);
+  assert.equal(proxy.model.cost.input, 0);
+  assert.equal(proxy.model.baseUrl, 'https://deepseek-proxy.example/v1');
+});
+
+test('selectable model IDs resolve their own catalog capabilities', async () => {
+  const models = [];
+  const client = createModelClient({
+    provider: 'deepseek', modelId: 'deepseek-flash', api: 'openai-completions',
+    baseUrl: 'https://api.deepseek.com', apiKey: 'k', models: ['deepseek-flash', 'deepseek-v4-pro', 'team-alias'],
+    streamFn: model => { models.push(model); return 'ok'; },
+  });
+  assert.equal(await client.streamFn(client.model, {}, { modelId: 'deepseek-v4-pro' }), 'ok');
+  assert.equal(models[0].id, 'deepseek-v4-pro');
+  assert.deepEqual(models[0].input, ['text']);
+  assert.deepEqual(models[0].thinkingLevelMap, { minimal: null, low: null, medium: null, high: 'high', max: 'max' });
+  assert.equal(models[0].cost.input, 1.32);
+  // An alias without a catalog entry keeps the configured model's capabilities.
+  await client.streamFn(client.model, {}, { modelId: 'team-alias' });
+  assert.equal(models[1].id, 'team-alias');
+  assert.deepEqual(models[1].input, ['text', 'image']);
+});
+
 test('an already-built model client is accepted instead of re-validated as a configuration', async () => {
   const client = createModelClient({ provider: 'smoke', modelId: 'fixture', api: 'openai-completions', baseUrl: 'https://offline.invalid/v1', apiKey: 'k',
     streamFn: () => 'ok' });

@@ -2236,7 +2236,7 @@ test('goal header substitutes module actions and restores overview controls', as
   await openMore();
   assert(await page.locator('#goal-edit').isVisible());
   assert(await page.locator('#goal-more-browser').isVisible());
-  assert(await page.locator('#new-create').isVisible());
+  assert(await page.locator('#toggle-right-sidebar').isVisible());
   await page.locator('#goal-edit').click();
   assert(await page.locator('#goal-editor').isVisible());
   await page.locator('#goal-cancel').click();

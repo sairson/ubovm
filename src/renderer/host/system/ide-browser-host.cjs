@@ -321,7 +321,10 @@ function createIdeBrowserHost(vscode, { lockCommand = 'workbench.action.browser.
   }
 
   async function openTab(url, options = {}) {
-    const target = typeof url === 'string' && url ? url : 'about:blank';
+    // An explicit empty target starts the native welcome surface without a
+    // synthetic about:blank page. Other callers keep the old fallback.
+    const target = options.startBlank === true && (url === undefined || url === '')
+      ? '' : (typeof url === 'string' && url ? url : 'about:blank');
     // Column 2 is the file/browser area. Beside would split the locked conversation group.
     const viewColumn = options.viewColumn ?? vscode.ViewColumn.Two;
     const preserveFocus = options.preserveFocus === true;

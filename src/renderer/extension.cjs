@@ -2,8 +2,8 @@
 
 const vscode = require('vscode');
 const { normalize: normalizeError, text: errorText } = require('./webview/errors.js');
-const { readFileSync, existsSync } = require('node:fs');
-const { open } = require('node:fs/promises');
+const { readFileSync, existsSync, mkdirSync } = require('node:fs');
+const { open, readFile, stat } = require('node:fs/promises');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const { pathToFileURL } = require('node:url');
@@ -29,6 +29,7 @@ const { createExecutionPublisher } = require('./host/agent/state-publisher.cjs')
 const { createTerminalService } = require('./host/system/terminal-service.cjs');
 const { readTheme, setTheme } = require('./host/system/theme.cjs');
 const { interfaceText, setInterfaceLocale, currentInterfaceLocale } = require('./harness/runtime/interface-text.cjs');
+const { imageRoot, saveImage, isManagedImage, MAX_IMAGES_PER_MESSAGE, MAX_IMAGE_BYTES } = require('./harness/attachments/image-store.cjs');
 
 let shutdownHarness = async () => {};
 const uiText = (message, ...args) => interfaceText(message, ...args);
@@ -89,6 +90,15 @@ async function activate(context) {
   const sessionExplorer = require('./host/ui/session-explorer.cjs').createSessionExplorer(vscode, { onDidChangeFiles: scheduleFolderCheck });
   context.subscriptions.push(sessionExplorer);
   const fileContexts = new Map();
+  const pendingImages = new Map();
+  const attachmentRoot = imageRoot();
+  mkdirSync(attachmentRoot, { recursive: true });
+  function imageView(image) {
+    let uri = '';
+    try { uri = welcome?.webview.asWebviewUri(vscode.Uri.file(image.path)).toString() ?? ''; }
+    catch { uri = ''; }
+    return { ...image, uri };
+  }
   let messageQueue = Promise.resolve();
   let harness;
   let executionPublisher;
@@ -414,9 +424,21 @@ async function activate(context) {
       }
       await harness.releaseWorkspace(id);
       await sessions.setWorkspace(uris[0].fsPath, id);
-      fileContexts.delete(id);
+      fileContexts.delete(id); pendingImages.delete(id);
       await restoreExecution();
     });
+  }
+
+  async function revealWorkspace(expectedSessionId) {
+    const id = expectedSessionId ?? sessions.current().id;
+    const workspace = sessions.get(id)?.workspace;
+    if (!workspace) throw new Error('请先选择工作空间。');
+    const uri = vscode.Uri.file(workspace);
+    let stat;
+    try { stat = await vscode.workspace.fs.stat(uri); }
+    catch { throw new Error('工作空间目录不存在，请重新选择。'); }
+    if (!(stat.type & vscode.FileType.Directory)) throw new Error('工作空间必须是目录。');
+    if (!await vscode.env.openExternal(uri)) throw new Error('无法打开文件资源管理器。');
   }
 
   function workspaceName(conversation = sessions.current()) {
@@ -450,20 +472,22 @@ async function activate(context) {
     const activeFile = attached !== null && editor?.document.uri.scheme === 'file' ? vscode.workspace.asRelativePath(editor.document.uri) : '';
     const file = attached?.label || activeFile;
     const execution = assistantExecution(conversation);
+    const modelStatus = modelConfiguration.status();
     const relatedConversations = sessions.related(conversation.id);
     const assistEvidence = conversation.mode !== 'assist' ? [] : (conversation.assistEvidence || []).map(item => ({
       ...item,
       attachedGoalIds: relatedConversations.filter(goal => goal.mode === 'goal' && (goal.sourceEvidenceIds || []).includes(item.id)).map(goal => goal.id)
     }));
     return {
-      type: 'state', nativeWorkerPanel: true, nativeBlackboardSidebar: true, theme: readTheme(vscode), recovering, messages: conversation.messages.map((message, index) => message.role === 'user' ? { ...message, id: messageIds[index] } : message), inputQueue: conversation.inputQueue?.map(({ id, text, delivery, modelId }) => ({ id, text, delivery, ...(modelId ? { modelId } : {}) })), queuePaused: conversation.queuePaused || ['interrupted', 'failed'].includes(harness.state(conversation.id).status), conversation: { id: conversation.id, title: conversation.title, legacyDraftId: conversation.legacyDraftId }, conversationUsage: conversation.usage ?? null,
+      type: 'state', nativeWorkerPanel: true, nativeBlackboardSidebar: true, theme: readTheme(vscode), recovering, messages: conversation.messages.map((message, index) => message.role === 'user' ? { ...message, id: messageIds[index], ...(message.images?.length ? { images: message.images.map(imageView) } : {}) } : message), inputQueue: conversation.inputQueue?.map(({ id, text, delivery, modelId, images }) => ({ id, text, delivery, ...(modelId ? { modelId } : {}), ...(images?.length ? { imageCount: images.length } : {}) })), queuePaused: conversation.queuePaused || ['interrupted', 'failed'].includes(harness.state(conversation.id).status), conversation: { id: conversation.id, title: conversation.title, legacyDraftId: conversation.legacyDraftId }, conversationUsage: conversation.usage ?? null,
       mode: conversation.mode, goal: conversation.goal, assistEvidence, conversationIds: sessions.ids(), relatedConversations,
       context: { workspace: workspaceName(conversation), workspaceConfigured: Boolean(conversation.workspace), projectId: conversation.projectId || null, file, fileSource: attached?.kind === 'selection' ? 'selection' : attached ? 'attached' : activeFile ? 'active' : null,
          selectionLabel: attached?.rangeLabel || '' },
       toolApprovals: toolApprovals.snapshot(conversation.id), humanQuestions: humanQuestions.snapshot(conversation.id), codeChanges: coding.turnSummary(conversation.id),
+      pendingImages: (pendingImages.get(conversation.id) ?? []).map(imageView),
       requireToolApproval: (vscode.workspace.getConfiguration('ubovm').inspect('worker')?.globalValue?.requireToolApproval ?? true) !== false,
-      provider: modelConfiguration.status(), ssh: readSSHStatus(vscode), execution: { ...execution, mode: conversation.mode }, busy: execution.busy,
-      projects: projectCatalog(), modelSelection: { provider: modelConfiguration.status().provider, selected: conversation.selectedModelId || '', models: modelConfiguration.status().models || [] }
+      provider: modelStatus, ssh: readSSHStatus(vscode), execution: { ...execution, mode: conversation.mode }, busy: execution.busy,
+      projects: projectCatalog(), modelSelection: { provider: modelStatus.provider, selected: conversation.selectedModelId || '', models: modelStatus.models || [], defaultModel: modelStatus.defaultModel || '', imageInput: (modelStatus.input ?? ['text']).includes('image') }
     };
   }
 
@@ -754,18 +778,23 @@ async function activate(context) {
 
   function submitPrompt(text, expectedSessionId, approvalMode) {
     if (approvalMode !== undefined && !['auto', 'manual', 'full'].includes(approvalMode)) return Promise.reject(new Error('无效的工具执行方式。'));
-    if (typeof text !== 'string' || !text.trim()) return Promise.reject(new Error('请先输入消息内容。'));
+    if (typeof text !== 'string') return Promise.reject(new Error('请先输入消息内容。'));
+    const pending = pendingImages.get(expectedSessionId) ?? [];
+    if (!text.trim() && !pending.length) return Promise.reject(new Error('请先输入消息内容或添加图片。'));
     if (text.length > 8000) return Promise.reject(new Error('请将每条消息控制在 8000 个字符以内。'));
+    const messageText = text.trim() || '请查看并分析这张图片。';
     const operation = messageQueue.then(async () => {
       assertCurrentSession(expectedSessionId);
       const conversation = sessions.current();
+      const images = pendingImages.get(conversation.id) ?? [];
       if (conversation.mode === 'assist') {
         const context = await executionContext(conversation);
         await sessions.updateInputQueue(conversation.id, current => {
           if (current.inputQueue.length >= 20) throw new Error('输入队列最多保留 20 条消息。');
-          return { inputQueue: [...current.inputQueue, { id: randomUUID(), text: text.trim(), approvalMode, modelId: conversation.selectedModelId, context }],
+          return { inputQueue: [...current.inputQueue, { id: randomUUID(), text: messageText, approvalMode, modelId: conversation.selectedModelId, context, ...(images.length ? { images } : {}) }],
             queuePaused: current.inputQueue.length ? current.queuePaused : false };
         });
+        if (images.length) pendingImages.delete(conversation.id);
         if (!harness.isBusy(conversation.id)) {
           try { await drainInputs(conversation.id, !conversation.inputQueue.length); }
           catch (error) {
@@ -776,7 +805,7 @@ async function activate(context) {
           const latest = sessions.current();
           const execution = harness.state(latest.id);
           const item = latest.inputQueue.at(-1);
-          if (item && latest.inputQueue.length === 1 && !latest.queuePaused && !item.delivery
+          if (item && latest.inputQueue.length === 1 && !latest.queuePaused && !item.delivery && !item.images?.length
             && typeof harness.steer === 'function' && execution.canSteer && execution.runId) {
             try { await steerQueuedInput(latest.id, item.id, execution.runId); }
             catch (error) {
@@ -790,11 +819,13 @@ async function activate(context) {
       assertCanRun(conversation.id);
       if (conversation.mode === 'goal' && !conversation.goal) throw new Error('请先保存目标，再开始执行。');
       if (conversation.mode === 'goal' && harness.state(conversation.id).canResume) throw new Error('此目标有待恢复的执行，请先点击“继续执行”。');
+      if (conversation.mode === 'goal' && images.length) throw new Error('探索模式暂不支持图片；请切到协助对话发送图片。');
       const context = await executionContext(conversation);
-      await sessions.appendMessage(conversation.id, { role: 'user', text: text.trim() });
+      await sessions.appendMessage(conversation.id, { role: 'user', text: messageText, ...(images.length ? { images } : {}) });
+      if (images.length) pendingImages.delete(conversation.id);
       markFullAccess(conversation.id, approvalMode);
       await harness.start({ conversationId: conversation.id, mode: conversation.mode, goal: conversation.goal,
-        text: text.trim(), approvalMode, messages: sessions.get(conversation.id).messages, context });
+        text: messageText, images, approvalMode, messages: sessions.get(conversation.id).messages, context });
       await openAssistant();
       return publishState();
     });
@@ -823,7 +854,7 @@ async function activate(context) {
     if (conversation.inputQueue.some(input => input.delivery)) return;
     try {
       assertCanRun(id);
-      await sessions.appendMessage(id, { id: item.id, role: 'user', text: item.text });
+      await sessions.appendMessage(id, { id: item.id, role: 'user', text: item.text, ...(item.images?.length ? { images: item.images } : {}) });
       markFullAccess(id, item.approvalMode);
       if (shuttingDown || stoppedInputQueues.has(id)) return;
       // Commit dequeue before launch: a later persistence failure must never
@@ -834,7 +865,7 @@ async function activate(context) {
         return;
       }
       await harness.start({ conversationId: id, mode: 'assist', executionBranch: conversation.executionBranch,
-        text: item.text, approvalMode: item.approvalMode, modelId: item.modelId, context: item.context, messages: sessions.get(id).messages });
+        text: item.text, images: item.images, approvalMode: item.approvalMode, modelId: item.modelId, context: item.context, messages: sessions.get(id).messages });
     } catch (error) {
       await sessions.updateInputQueue(id, () => ({ queuePaused: true }));
       throw error;
@@ -848,6 +879,7 @@ async function activate(context) {
     if (!item) throw new Error('该输入已开始执行或已从队列移除。');
     const execution = harness.state(id);
     if (shuttingDown || conversation.mode !== 'assist' || !harness.isBusy(id) || !execution.canSteer || runId !== execution.runId) throw new Error('当前运行已变化或尚未就绪，输入仍保留在队列中。');
+    if (item.images?.length) throw new Error('带图片的输入会在下一轮发送，不能立刻引导当前任务。');
     await sessions.beginSteering(id, item.id);
     let accepted;
     try { accepted = !shuttingDown && !stoppedInputQueues.has(id) && await harness.steer(id, { id: item.id, runId: execution.runId, text: item.text, context: item.context }); }
@@ -1173,7 +1205,7 @@ async function activate(context) {
     if (harness.isBusy(id)) throw new Error('此会话正在运行，请先停止后再删除。');
     const wasCurrent = sessions.current().id === id;
     await sessions.remove(id);
-    fileContexts.delete(id); restoreErrors.delete(id);
+    fileContexts.delete(id); pendingImages.delete(id); restoreErrors.delete(id);
     try { await harness.remove(id); await coding.remove(id); codeSummaryRuns.delete(id); await validation.remove(id); }
     catch (error) {
       output.appendLine(String(error));
@@ -1199,7 +1231,7 @@ async function activate(context) {
     await sessions.removeProject(id, { expectedSessionIds: sessionIds });
     let cleanupFailed = false;
     for (const session of removed) {
-      fileContexts.delete(session.id); restoreErrors.delete(session.id); codeSummaryRuns.delete(session.id);
+      fileContexts.delete(session.id); pendingImages.delete(session.id); restoreErrors.delete(session.id); codeSummaryRuns.delete(session.id);
       const results = await Promise.allSettled([harness.remove(session.id), coding.remove(session.id), validation.remove(session.id)]);
       for (const result of results) if (result.status === 'rejected') { cleanupFailed = true; output.appendLine(String(result.reason)); }
     }
@@ -1268,6 +1300,46 @@ async function activate(context) {
       assertIdle();
       fileContexts.set(sessions.current().id, null);
     });
+  }
+
+  async function attachImage(expectedSessionId, image) {
+    assertCurrentSession(expectedSessionId);
+    const sessionId = sessions.current().id;
+    const current = pendingImages.get(sessionId) ?? [];
+    if (current.length >= MAX_IMAGES_PER_MESSAGE) throw new Error(`一条消息最多附加 ${MAX_IMAGES_PER_MESSAGE} 张图片。`);
+    if (!image || typeof image !== 'object') throw new Error('图片数据无效。');
+    const saved = await saveImage({ conversationId: sessionId, name: image.name, mimeType: image.mimeType, data: image.data });
+    if (!saved || !isManagedImage(saved.path)) throw new Error('图片未能保存到附件目录。');
+    if (!current.some(item => item.id === saved.id)) pendingImages.set(sessionId, [...current, saved]);
+    return publishState();
+  }
+
+  async function attachImagePath(expectedSessionId, uri) {
+    assertCurrentSession(expectedSessionId);
+    const sessionId = sessions.current().id;
+    if (typeof uri !== 'string' || !uri.startsWith('file:')) throw new Error('仅支持本地图片文件。');
+    const parsed = vscode.Uri.parse(uri);
+    if (parsed.scheme !== 'file' || !parsed.fsPath) throw new Error('仅支持本地图片文件。');
+    const current = pendingImages.get(sessionId) ?? [];
+    if (current.length >= MAX_IMAGES_PER_MESSAGE) throw new Error(`一条消息最多附加 ${MAX_IMAGES_PER_MESSAGE} 张图片。`);
+    const info = await stat(parsed.fsPath);
+    if (!info.isFile()) throw new Error('请选择普通图片文件。');
+    if (info.size > MAX_IMAGE_BYTES) throw new Error(`图片不能超过 ${Math.round(MAX_IMAGE_BYTES / 1024 / 1024)} MiB。`);
+    const buffer = await readFile(parsed.fsPath);
+    const saved = await saveImage({ conversationId: sessionId, name: path.basename(parsed.fsPath), data: buffer.toString('base64') });
+    if (!saved || !isManagedImage(saved.path)) throw new Error('图片未能保存到附件目录。');
+    if (!current.some(item => item.id === saved.id)) pendingImages.set(sessionId, [...current, saved]);
+    return publishState();
+  }
+
+  function removeImage(expectedSessionId, imageId) {
+    assertCurrentSession(expectedSessionId);
+    const sessionId = sessions.current().id;
+    const current = pendingImages.get(sessionId) ?? [];
+    const next = current.filter(image => image.id !== imageId);
+    if (next.length === current.length) return publishState();
+    if (next.length) pendingImages.set(sessionId, next); else pendingImages.delete(sessionId);
+    return publishState();
   }
 
   async function searchConversations() {
@@ -1386,7 +1458,7 @@ async function activate(context) {
       return;
     }
     try {
-      const goalActions = ['openRelatedConversation', 'setMode', 'setModel', 'saveGoal', 'toggleGoalCriterion', 'addGoalNote', 'attachAssistEvidence', 'prompt', 'runGoal', 'cancelRun', 'interruptCommand', 'backgroundCommand', 'resumeRun', 'newChat', 'selectWorkspace', 'attachFile', 'clearFileContext', 'toolApproval', 'answerQuestion'];
+      const goalActions = ['openRelatedConversation', 'setMode', 'setModel', 'saveGoal', 'toggleGoalCriterion', 'addGoalNote', 'attachAssistEvidence', 'prompt', 'runGoal', 'cancelRun', 'interruptCommand', 'backgroundCommand', 'resumeRun', 'newChat', 'selectWorkspace', 'attachFile', 'attachImage', 'attachImagePath', 'removeImage', 'clearFileContext', 'toolApproval', 'answerQuestion'];
       if (goalActions.includes(message.action) && typeof message.sessionId !== 'string') {
         throw new Error('缺少会话标识，请重新打开当前会话后重试。');
       }
@@ -1464,6 +1536,8 @@ async function activate(context) {
       else if (message.action === 'removeInput' || message.action === 'resumeInputs' || message.action === 'steerInput') await changeInputQueue(message);
       else if (message.action === 'rewindInput') await rewindInput(message);
       else if (message.action === 'selectWorkspace') await chooseWorkspace(message.sessionId);
+      else if (message.action === 'revealWorkspace') await revealWorkspace(message.sessionId);
+      else if (message.action === 'closeWorkerPanel') await vscode.commands.executeCommand('workbench.view.explorer');
       else if (message.action === 'newChat') await newChat(message.sessionId);
       else if (message.action === 'setMode') await setMode(message.mode, message.sessionId);
       else if (message.action === 'openRelatedConversation') {
@@ -1485,6 +1559,9 @@ async function activate(context) {
       else if (message.action === 'toggleGoalCriterion') await toggleGoalCriterion(message.criterionId, message.done, message.sessionId);
       else if (message.action === 'addGoalNote') await addGoalNote(message.text, message.sessionId);
       else if (message.action === 'attachFile') await attachFile(message.sessionId, message.attachment);
+      else if (message.action === 'attachImage') await attachImage(message.sessionId, message.image);
+      else if (message.action === 'attachImagePath') await attachImagePath(message.sessionId, message.uri);
+      else if (message.action === 'removeImage') await removeImage(message.sessionId, message.imageId);
       else if (message.action === 'clearFileContext') await clearFileContext(message.sessionId);
       else if (message.action === 'runGoal') await runGoal(message.sessionId);
       else if (message.action === 'cancelRun') await cancelRun(message.sessionId);
@@ -1638,7 +1715,7 @@ async function activate(context) {
     welcome = panel;
     welcomeReady = false;
     panel.title = '对话';
-    panel.webview.options = { enableScripts: true, localResourceRoots: [] };
+    panel.webview.options = { enableScripts: true, localResourceRoots: [vscode.Uri.file(attachmentRoot)] };
     const subscription = panel.webview.onDidReceiveMessage(message => {
       if (panel !== welcome) return;
       // Fast-lane heartbeats before any async onMessage work so UI clicks cannot
@@ -1742,7 +1819,7 @@ async function activate(context) {
         publishState();
         return { viewType: welcome.viewType, reused: true };
       }
-      const panel = vscode.window.createWebviewPanel('ubovm.welcome', '对话', vscode.ViewColumn.One, { enableScripts: true, localResourceRoots: [], retainContextWhenHidden: true });
+      const panel = vscode.window.createWebviewPanel('ubovm.welcome', '对话', vscode.ViewColumn.One, { enableScripts: true, localResourceRoots: [vscode.Uri.file(attachmentRoot)], retainContextWhenHidden: true });
       bindConversation(panel);
       await lockConversation();
       preparedPanels.add(panel);
@@ -1879,7 +1956,7 @@ async function activate(context) {
           await ideBrowserHost.open(active.url || 'about:blank', { preserveFocus: false, viewColumn: column });
         }
       } else {
-        await ideBrowserHost.open('about:blank', { preserveFocus: false, viewColumn: column });
+        await ideBrowserHost.open('', { preserveFocus: false, viewColumn: column, startBlank: true });
       }
       await vscode.commands.executeCommand('workbench.action.browser.focusUrlInput');
     } catch (error) {
@@ -1958,6 +2035,7 @@ async function activate(context) {
     registerCommand('ubovm.hideFiles', () => vscode.commands.executeCommand('workbench.action.closeSidebar')),
     registerCommand('ubovm.createFirstFile', createFirstFile),
     registerCommand('ubovm.selectWorkspace', () => chooseWorkspace()),
+    registerCommand('ubovm.revealWorkspace', () => revealWorkspace()),
     registerCommand('ubovm.submitPrompt', submitPrompt),
     registerCommand('ubovm.setMode', setMode),
     registerCommand('ubovm.saveGoal', saveGoal),

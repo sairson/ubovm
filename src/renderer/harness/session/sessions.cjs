@@ -217,6 +217,24 @@ function goalSnapshot(goal) {
   } : null;
 }
 
+function cleanImages(value) {
+  if (!Array.isArray(value)) return [];
+  const allowed = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+  return value.filter(image => image && typeof image === 'object'
+    && typeof image.id === 'string' && /^[a-f0-9]{8,64}$/.test(image.id)
+    && typeof image.path === 'string' && image.path.length > 0 && image.path.length <= 4096 && path.isAbsolute(image.path)
+    && allowed.has(image.mimeType)
+    && Number.isSafeInteger(image.bytes) && image.bytes > 0 && image.bytes <= 4 * 1024 * 1024)
+    .slice(0, 4)
+    .map(image => ({
+      id: image.id,
+      name: typeof image.name === 'string' && image.name.trim() ? image.name.trim().slice(0, 120) : 'image',
+      mimeType: image.mimeType,
+      bytes: image.bytes,
+      path: image.path,
+    }));
+}
+
 function cleanMessages(value) {
   if (!Array.isArray(value)) return [];
   const messages = value.filter(message => message && ['user', 'assistant'].includes(message.role) && typeof message.text === 'string')
@@ -227,8 +245,10 @@ function cleanMessages(value) {
       const parts = message.role === 'assistant' ? cleanTimelineParts(message.parts) : [];
       const text = message.role === 'assistant' ? formatToolValue(message.text, Number.MAX_SAFE_INTEGER).text : message.text;
       const usage = message.role === 'assistant' ? sanitizeUsage(message.usage) : undefined;
+      const images = message.role === 'user' ? cleanImages(message.images) : [];
       return { role: message.role, ...(typeof message.id === 'string' && message.id.length > 0 && message.id.length <= 200 ? { id: message.id } : {}), text: message.role === 'assistant' && text.length > limit
         ? text.slice(0, limit - marker.length) + marker : text.slice(0, limit), ...(parts.length ? { parts } : {}),
+        ...(images.length ? { images } : {}),
         ...(usage ? { usage } : {}),
         ...(message.role === 'user' && ['sending', 'accepted', 'uncertain'].includes(message.steeringStatus) ? { steeringStatus: message.steeringStatus } : {}) };
     });
@@ -290,7 +310,11 @@ function restoreState(stored, legacyMessages) {
     const storedUsage = sanitizeUsage(session.usage);
     const base = {
       inputQueue: (Array.isArray(session.inputQueue) ? session.inputQueue : []).filter(item => typeof item?.id === 'string' && typeof item.text === 'string' && item.text.trim() && item.text.length <= 8000).slice(0, 20)
-        .map(item => ({ ...item, ...(item.delivery ? { delivery: 'uncertain' } : {}) })),
+        .map(item => {
+          const { images: rawImages, ...rest } = item;
+          const images = cleanImages(rawImages);
+          return { ...rest, ...(images.length ? { images } : {}), ...(item.delivery ? { delivery: 'uncertain' } : {}) };
+        }),
       ...(session.inputQueue?.length || session.queuePaused !== undefined ? { queuePaused: true } : {}),
       ...(typeof session.executionBranch === 'string' ? { executionBranch: session.executionBranch } : {}),
       id: session.id, title, messages, placeholder: session.placeholder === true && messages.length === 0 && !goal,
@@ -999,7 +1023,7 @@ function createSessions(vscode, context, onDidChange, { isBusy = () => false, cr
         if (normalized[0].id) {
           const previous = existing.messages.find(message => message.id === normalized[0].id);
           if (previous) {
-            if (previous.role !== normalized[0].role || previous.text !== normalized[0].text || JSON.stringify(previous.parts ?? []) !== JSON.stringify(normalized[0].parts ?? [])) throw new Error('重复消息标识对应不同内容。');
+            if (previous.role !== normalized[0].role || previous.text !== normalized[0].text || JSON.stringify(previous.parts ?? []) !== JSON.stringify(normalized[0].parts ?? []) || JSON.stringify(previous.images ?? []) !== JSON.stringify(normalized[0].images ?? [])) throw new Error('重复消息标识对应不同内容。');
             return current();
           }
         }

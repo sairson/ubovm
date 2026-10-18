@@ -61,6 +61,7 @@ test('Pi provider selection retains endpoint identity and typing avoids redundan
     const provider = page.locator('[data-setting="provider"]');
     await provider.selectOption('openrouter');
     assert.equal(await page.locator('[data-setting="baseUrl"]').inputValue(), 'https://openrouter.ai/api/v1');
+    assert.equal(await page.locator('.settings-model-credential').textContent(), '端点已更改');
     await provider.selectOption('deepseek');
     assert.equal(await page.locator('[data-setting="api"]').inputValue(), 'openai-completions');
     const metrics = await page.evaluate(async () => {
@@ -88,7 +89,7 @@ test('Pi provider selection retains endpoint identity and typing avoids redundan
     assert.equal(credentialMetrics.mutations, 0, JSON.stringify(credentialMetrics));
     assert.equal(await page.locator('.settings-model-credential').textContent(), '新凭据待保存');
     await page.locator('[data-setting="apiKey"]').fill('');
-    assert.equal(await page.locator('.settings-model-credential').textContent(), '端点已更改');
+    assert.equal(await page.locator('.settings-model-credential').textContent(), '未填写凭据');
     await page.locator('[data-clear-secret="apiKey"]').check();
     assert.equal(await page.locator('.settings-model-credential').textContent(), '凭据待清除');
     await page.locator('[data-clear-secret="apiKey"]').uncheck();
@@ -167,6 +168,39 @@ test('Python settings are reachable and submit interpreter and permissions witho
     assert.equal(request.value.executable, process.execPath);
     assert.deepEqual(request.value.allowedDomains, ['pypi.org', 'example.com']);
     assert(manifest.contributes.commands.some(command => command.command === 'ubovm.setupPythonSandbox'));
+  } finally { await browser.close(); }
+});
+
+test('DeepSeek defaults expose its model list and clamp planning to supported thinking levels', async () => {
+  const values = { model: { provider: 'deepseek', modelId: 'deepseek-flash', api: 'openai-completions', baseUrl: 'https://api.deepseek.com' }, reason: {}, worker: {}, contextSummary: true, intools: { allowedTools: [] } };
+  const service = createSettingsConfiguration({ ConfigurationTarget: { Global: 1 }, workspace: { getConfiguration: () => ({
+    inspect: key => ({ globalValue: values[key] }), update: async (key, value) => { values[key] = value; }
+  }) } }, { secrets: { get: async () => undefined } });
+  const browser = await chromium.launch({ channel: 'msedge', headless: true });
+  try {
+    const page = await browser.newPage();
+    await page.addInitScript(() => { window.sent = []; window.acquireVsCodeApi = () => ({ getState() {}, setState() {}, postMessage: message => window.sent.push(message) }); });
+    await page.route('**/*', route => route.fulfill({ contentType: 'text/html', body: renderWebview() }));
+    await page.goto('http://deepseek-defaults.test/');
+    const snapshot = await service.snapshot({ includeSkills: false });
+    assert.equal(snapshot.values.model.provider, 'deepseek');
+    assert.deepEqual(snapshot.values.model.models, ['deepseek-flash', 'deepseek-v4-pro']);
+    await page.evaluate(data => window.postMessage({ type: 'openSettings', page: 'settings', data }, '*'), snapshot);
+    await page.waitForFunction(() => document.querySelector('#settings-dialog').open);
+    assert.equal(await page.locator('[data-setting="modelId"]').inputValue(), 'deepseek-flash');
+    assert.deepEqual((await page.locator('[data-setting="models"]').inputValue()).split('\n'), ['deepseek-flash', 'deepseek-v4-pro']);
+    await page.evaluate(() => window.postMessage({ type: 'settingsSection', section: 'reason' }, '*'));
+    await page.waitForFunction(() => document.querySelector('#settings-section-title').textContent === '规划设置');
+    const thinking = page.locator('[data-setting="thinkingLevel"]');
+    assert.equal(await thinking.inputValue(), 'high');
+    assert.equal(await thinking.locator('option[value="medium"]').isDisabled(), true);
+    assert.equal(await thinking.locator('option[value="low"]').isDisabled(), false);
+    assert.equal(await thinking.locator('option[value="max"]').isDisabled(), false);
+    assert.match(await page.locator('[data-thinking-capability]').textContent(), /支持思考级别/);
+    await page.locator('#settings-save').click();
+    const request = await page.evaluate(() => window.sent.findLast(message => message.action === 'settingsSave'));
+    assert.equal(request.section, 'reason');
+    assert.equal(request.value.thinkingLevel, 'high');
   } finally { await browser.close(); }
 });
 
