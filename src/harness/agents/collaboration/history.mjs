@@ -1,4 +1,15 @@
 export const plain = message => typeof message?.content === 'string' ? message.content : (message?.content ?? []).filter(part => part.type === 'text').map(part => part.text).join('\n');
+const messageSizeCache = new WeakMap();
+const messageBytes = message => {
+  if (message && typeof message === 'object') {
+    const cached = messageSizeCache.get(message);
+    if (cached !== undefined) return cached;
+    const size = Buffer.byteLength(JSON.stringify(message) ?? 'null');
+    messageSizeCache.set(message, size);
+    return size;
+  }
+  return Buffer.byteLength(JSON.stringify(message) ?? 'null');
+};
 
 /** Keep interrupted progress without handing a provider unmatched tool calls. */
 export function interruptedHistory(messages, limits) {
@@ -28,19 +39,20 @@ export function interruptedHistory(messages, limits) {
 export function boundedHistory(messages, limits = {}) {
   const maximumMessages = limits.maxHistoryMessages ?? 200, maximumBytes = limits.maxHistoryBytes ?? 4 << 20;
   if (!Number.isSafeInteger(maximumMessages) || maximumMessages < 4 || maximumMessages > 2000 || !Number.isSafeInteger(maximumBytes) || maximumBytes < 65536 || maximumBytes > 32 << 20) throw new TypeError('Invalid assistant history limits');
-  const sizes = messages.map(message => Buffer.byteLength(JSON.stringify(message) ?? 'null'));
+  const sizes = messages.map(messageBytes);
   let bytes = 2 + Math.max(0, messages.length - 1) + sizes.reduce((total, size) => total + size, 0);
   let start = 0;
+  let droppedBytes = 0;
   while (messages.length - start > maximumMessages || bytes > maximumBytes) {
     let nextTurn = start + 1;
     while (nextTurn < messages.length && messages[nextTurn].role !== 'user') nextTurn++;
-    if (nextTurn === messages.length) return compactTurn(messages.slice(start), maximumBytes);
-    for (; start < nextTurn; start++) bytes -= sizes[start] + 1;
+    if (nextTurn === messages.length) return compactTurn(messages.slice(start), maximumBytes, { droppedMessages: start, droppedBytes });
+    for (; start < nextTurn; start++) { bytes -= sizes[start] + 1; droppedBytes += sizes[start] + 1; }
   }
-  return { messages: messages.slice(start), omitted: start > 0 };
+  return { messages: messages.slice(start), omitted: start > 0, ...(start > 0 ? { historyGap: { kind: 'turns-omitted', droppedMessages: start, droppedBytes } } : {}) };
 }
 
-function compactTurn(messages, maximumBytes) {
+function compactTurn(messages, maximumBytes, gap = {}) {
   const first = messages.find(message => message.role === 'user');
   const last = messages.findLast(message => message.role === 'assistant' && message.stopReason === 'stop');
   const prompt = first ? plain(first) : '', answer = last ? plain(last) : '';
@@ -58,5 +70,5 @@ function compactTurn(messages, maximumBytes) {
     if (fits(compact(middle))) low = middle;
     else high = middle - 1;
   }
-  return { messages: compact(low), omitted: true };
+  return { messages: compact(low), omitted: true, historyGap: { kind: 'turn-compacted', droppedMessages: gap.droppedMessages ?? 0, droppedBytes: gap.droppedBytes ?? 0, retainedCharsPerMessage: low } };
 }

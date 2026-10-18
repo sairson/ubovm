@@ -106,11 +106,18 @@ export function rateLimitDelayMs(error, { maxDelayMs = 60000 } = {}) {
 // consult this cooldown instead of hammering a throttled provider in lockstep.
 const rateLimitCooldowns = new Map();
 const RATE_LIMIT_COOLDOWN_ENTRIES = 1024;
+const COOLDOWN_JITTER_RATIO = 0.15;
 
 function noteRateLimit(key, delayMs) {
   if (!key || !(delayMs > 0)) return;
-  if (rateLimitCooldowns.size >= RATE_LIMIT_COOLDOWN_ENTRIES) rateLimitCooldowns.clear();
-  const until = Date.now() + delayMs;
+  const now = Date.now();
+  for (const [entry, until] of rateLimitCooldowns) if (until <= now) rateLimitCooldowns.delete(entry);
+  if (rateLimitCooldowns.size >= RATE_LIMIT_COOLDOWN_ENTRIES) {
+    const oldest = rateLimitCooldowns.keys().next().value;
+    if (oldest !== undefined) rateLimitCooldowns.delete(oldest);
+  }
+  const jitter = Math.round(delayMs * COOLDOWN_JITTER_RATIO * Math.random());
+  const until = now + delayMs + jitter;
   if ((rateLimitCooldowns.get(key) ?? 0) < until) rateLimitCooldowns.set(key, until);
 }
 

@@ -14,8 +14,8 @@
   window.addEventListener('ubovm-settings-visibility', () => { tick(); syncClock(); });
   const labels = { running: '运行中', completed: '完成', failed: '失败', interrupted: '已停止' };
   const executionLabels = { queued: '排队中', starting: '准备中', running: '运行中', stopping: '正在停止' };
-  const tools = { delivery_workflow: '交付闭环', search_workspace: '搜索项目代码', inventory_workspace_dependencies: '盘点工作区依赖', scan_workspace_secrets: '扫描疑似密钥', analyze_workspace_call_chain: '分析代码调用链', navigate_workspace_code: '代码符号导航', get_workspace_diagnostics: '读取代码诊断', validate_workspace_changes: '验证代码修改', recover_workspace_changes: '恢复代码修改状态', read_workspace_code: '读取待编辑代码', edit_workspace_file: '编辑代码', list_workspace_changes: '查看代码更改', wait_workers: '等待并行任务', spawn_worker: '分派并行任务', manage_workers: '调度并行任务', cancel_workers: '中断并行任务', list_workers: '检查协作进展', read_worker_evidence: '查看任务记录', read_workspace_file: '读取文件', list_workspace_files: '查看目录', run_local_shell_command: '运行本地命令', run_python: '运行 Python 沙箱', manage_python_environment: '管理 Python 依赖', run_linux_ssh_command: '运行命令', upload_sftp: 'SFTP 上传', deploy_remote_service: '部署远程服务', fetch_web_content: '读取网页', web_search: '搜索网页', load_skill: '加载技能', read_skills_resource: '读取技能资源', run_local_skill_script: '执行技能脚本', note: '更新笔记', todo: '更新任务', browser_action: '浏览器操作', read_context_evidence: '读取上下文证据' };
-  const kinds = { delivery_workflow: 'memory', search_workspace: 'search', inventory_workspace_dependencies: 'search', scan_workspace_secrets: 'search', analyze_workspace_call_chain: 'search', navigate_workspace_code: 'search', get_workspace_diagnostics: 'search', validate_workspace_changes: 'tool', recover_workspace_changes: 'file', read_workspace_code: 'file', edit_workspace_file: 'file', list_workspace_changes: 'folder', read_workspace_file: 'file', list_workspace_files: 'folder', run_local_shell_command: 'terminal', run_python: 'terminal', manage_python_environment: 'terminal', run_linux_ssh_command: 'terminal', upload_sftp: 'file', deploy_remote_service: 'terminal', fetch_web_content: 'browser', web_search: 'search', load_skill: 'skill', read_skills_resource: 'skill', run_local_skill_script: 'terminal', note: 'memory', todo: 'memory', browser_action: 'browser', read_context_evidence: 'search' };
+  const tools = { delivery_workflow: '交付闭环', search_workspace: '搜索项目代码', inventory_workspace_dependencies: '盘点工作区依赖', scan_workspace_secrets: '扫描疑似密钥', analyze_workspace_call_chain: '分析代码调用链', navigate_workspace_code: '代码符号导航', get_workspace_diagnostics: '读取代码诊断', validate_workspace_changes: '验证代码修改', recover_workspace_changes: '恢复代码修改状态', read_workspace_code: '读取待编辑代码', edit_workspace_file: '编辑代码', list_workspace_changes: '查看代码更改', wait_workers: '等待并行任务', spawn_worker: '分派并行任务', manage_workers: '调度并行任务', cancel_workers: '中断并行任务', list_workers: '检查协作进展', read_worker_evidence: '查看任务记录', read_workspace_file: '读取文件', list_workspace_files: '查看目录', run_local_shell_command: '运行本地命令', run_python: '运行 Python 沙箱', manage_python_environment: '管理 Python 依赖', run_linux_ssh_command: '运行命令', upload_sftp: 'SFTP 上传', deploy_remote_service: '部署远程服务', fetch_web_content: '读取网页', web_search: '搜索网页', load_skill: '加载技能', read_skills_resource: '读取技能资源', run_local_skill_script: '执行技能脚本', note: '更新笔记', todo: '更新任务', browser_action: '浏览器操作', read_context_evidence: '读取上下文证据', install_skill: '安装技能', install_mcp_server: '安装 MCP 服务', browser_connection_status: '检查浏览器状态', domain_inventory: '登记域名资产', learn_capability: '记录能力', inspect_harness: '查看运行预算', manage_harness_project: '管理任务配置', read_worker_result: '读取任务结果', read_workspace_change: '读取代码改动快照', preview_workspace_edits: '预览代码修改', preview_workspace_rename: '预览符号重命名', edit_workspace_files: '批量编辑代码', inspect_workspace_project: '检查项目配置', list_assist_evidence: '查看已记录证据', record_assist_evidence: '记录证据', attach_assist_evidence: '关联证据', list_linked_goals: '查看关联目标', create_linked_goal: '创建关联目标', ask_human: '询问用户' };
+  const kinds = { delivery_workflow: 'memory', search_workspace: 'search', inventory_workspace_dependencies: 'search', scan_workspace_secrets: 'search', analyze_workspace_call_chain: 'search', navigate_workspace_code: 'search', get_workspace_diagnostics: 'search', validate_workspace_changes: 'tool', recover_workspace_changes: 'file', read_workspace_code: 'file', edit_workspace_file: 'file', list_workspace_changes: 'folder', read_workspace_file: 'file', list_workspace_files: 'folder', run_local_shell_command: 'terminal', run_python: 'terminal', manage_python_environment: 'terminal', run_linux_ssh_command: 'terminal', upload_sftp: 'file', deploy_remote_service: 'terminal', fetch_web_content: 'browser', web_search: 'search', load_skill: 'skill', read_skills_resource: 'skill', run_local_skill_script: 'terminal', note: 'memory', todo: 'memory', browser_action: 'browser', read_context_evidence: 'search', install_skill: 'skill', install_mcp_server: 'mcp', browser_connection_status: 'browser', domain_inventory: 'memory', learn_capability: 'memory', inspect_harness: 'tool', manage_harness_project: 'tool', read_worker_result: 'tool', read_workspace_change: 'file', preview_workspace_edits: 'file', preview_workspace_rename: 'search', edit_workspace_files: 'file', inspect_workspace_project: 'search', list_assist_evidence: 'memory', record_assist_evidence: 'memory', attach_assist_evidence: 'memory', list_linked_goals: 'memory', create_linked_goal: 'memory', ask_human: 'memory' };
   const icons = {
     file: 'M9 3H5v18h14V9L13 3H9m4 0v6h6M8 13h8M8 17h6',
     folder: 'M3 6h7l2 2h9v12H3V6Z',
@@ -28,6 +28,7 @@
     tool: 'm8 5-6 7 6 7m8-14 6 7-6 7M14 3l-4 18',
   };
   const tr = value => window.UBOVMi18n?.t(value) ?? value;
+  const isReadOnlyTool = name => window.UBOVMTimeline?.isReadOnlyTool?.(name) === true;
   const node = (tag, className, text) => { const value = document.createElement(tag); if (className) value.className = className; if (text !== undefined) value.textContent = tr(text); return value; };
   const setText = (element, value) => { const text = tr(value); if (element.textContent !== text) element.textContent = text; };
   const setRaw = (element, value) => { if (element.textContent !== value) element.textContent = value; };
@@ -105,6 +106,14 @@
     if (search.status === 'no_results' || !search.results.length) return '无可用结果';
     return `${search.returned || search.results.length} 条结果`;
   }
+  const shortId = value => { const text = String(value ?? '').trim(); return text.length > 12 ? text.slice(0, 12) + '…' : text; };
+  function lineRange(input) {
+    const start = Number(input.startLine ?? input.start), end = Number(input.endLine ?? input.end);
+    if (Number.isSafeInteger(start) && Number.isSafeInteger(end) && start > 1 && end >= start) return `:${start}-${end}`;
+    if (Number.isSafeInteger(end) && end > 0) return `:1-${end}`;
+    if (Number.isSafeInteger(start) && start > 1) return `:${start}`;
+    return '';
+  }
   function hint(part, input) {
     if (part.name === 'web_search') {
       const search = part.output ? parseSearchOutput(part.output) : null;
@@ -114,18 +123,28 @@
       if (query) return query.slice(0, 160);
       if (summary) return summary;
     }
-    for (const key of ['path', 'url', 'query', 'command', 'name', 'skill', 'action']) if (typeof input[key] === 'string' && input[key]) return input[key].replace(/\s+/g, ' ').slice(0, 160);
-    return part.name?.startsWith('mcp_') ? part.name.slice(4) : '';
+    let text = '';
+    for (const key of ['path', 'url', 'query', 'symbol', 'glob', 'pattern', 'command', 'resource', 'skill', 'name', 'action']) {
+      if (typeof input[key] === 'string' && input[key]) { text = input[key].replace(/\s+/g, ' ').slice(0, 160); break; }
+    }
+    if (!text && ['read_worker_evidence', 'read_worker_result'].includes(part.name)) text = shortId(input.worker_id ?? input.workerId);
+    if (!text && part.name === 'read_context_evidence') text = shortId(input.artifactId);
+    if (!text && part.name?.startsWith('mcp_')) text = part.name.slice(4);
+    // File reads name the exact range they read.
+    if (text && ['read_workspace_file', 'read_workspace_code'].includes(part.name)) text += lineRange(input);
+    return text;
   }
-  function fileTarget(part, input) {
-    if (!['read_workspace_file', 'read_workspace_code'].includes(part.name) || typeof input.path !== 'string' || !input.path.trim()) return null;
-    const rootIndex = input.root === undefined ? 0 : input.root;
-    if (!Number.isSafeInteger(rootIndex) || rootIndex < 0) return null;
-    // Tool arguments are literal paths, unlike Markdown URLs. Protect URL
-    // metacharacters before the host splits a fragment and decodes the path.
-    const href = input.path.replace(/[%#?]/g, character => encodeURIComponent(character));
-    return { href, rootIndex };
+  // What a read tool returned, as a size only: never the echoed content.
+  function readMetric(part) {
+    if (part.name === 'web_search') return ''; // the target hint already carries the result count
+    if (typeof part.output !== 'string' || !part.output) return part.status === 'running' ? '读取中…' : '';
+    const length = part.output.length;
+    if (length > 100000) return `${Math.round(length / 1024)} KB`;
+    let lines = 1;
+    for (let index = part.output.indexOf('\n'); index !== -1; index = part.output.indexOf('\n', index + 1)) lines++;
+    return lines > 1 ? `${lines} 行` : `${length} 字符`;
   }
+  const readSummary = (part, input) => [hint(part, input), readMetric(part)].filter(Boolean).join(' · ');
   function setOutput(view, value) {
     const output = view.output, previous = view.renderedOutput ?? '';
     if (previous === value) return;
@@ -220,17 +239,20 @@
     const input = node('pre', 'tool-parameters'), output = node('pre', 'tool-output');
     output.tabIndex = input.tabIndex = 0; output.setAttribute('aria-label', '工具输出'); input.setAttribute('aria-label', '工具参数');
     const actions = node('div', 'tool-result-toolbar'), info = node('span', 'tool-result-info');
-    const copy = node('button', 'tool-action', '复制输出'), preview = node('button', 'tool-action', '预览 HTML'), open = node('button', 'tool-action', '打开文件');
-    copy.type = preview.type = open.type = 'button';
+    const copy = node('button', 'tool-action', '复制输出'), preview = node('button', 'tool-action', '预览 HTML');
+    copy.type = preview.type = 'button';
     const latest = node('button', 'tool-action', '回到最新'); latest.type = 'button'; latest.hidden = true;
     latest.title = '滚动到日志底部，继续跟随新输出';
     const label = node('span', 'tool-result-label', '输出');
-    actions.append(label, info, open, preview, latest, copy);
+    actions.append(label, info, preview, latest, copy);
     const args = node('details', 'tool-arguments'); args.append(node('summary', '', '参数'), meta, input);
     const notice = node('p', 'tool-truncation', '显示内容已截断。');
-    body.append(search, output, actions, args, notice);
+    // Read-only tools keep their card but never echo the returned content.
+    const readNote = node('p', 'tool-read-note', '读取类操作不需要回显结果内容，可在「参数」中确认目标，或按需重新读取。');
+    readNote.hidden = true;
+    body.append(search, output, readNote, actions, args, notice);
     element.append(summary, body);
-    const view = { element, icon, iconPath, title, path, status, time, meta, input, output, search, info, label, copy, preview, open, stop, aside, notice, live, latest, part: {}, options: {} };
+    const view = { element, summary, chevron, icon, iconPath, title, path, status, time, meta, input, output, search, info, label, copy, preview, stop, aside, notice, readNote, toolbar: actions, readOnly: false, live, latest, part: {}, options: {} };
     search.addEventListener('click', event => {
       const link = event.target?.closest?.('a.tool-search-link');
       if (!link || !search.contains(link) || view.released) return;
@@ -261,8 +283,12 @@
         }
       }
     });
+    // Read-only cards are a single flat row: no disclosure and no body.
+    summary.addEventListener('click', event => { if (view.readOnly) event.preventDefault(); });
+    summary.addEventListener('keydown', event => { if (view.readOnly && (event.key === 'Enter' || event.key === ' ')) event.preventDefault(); });
     element.addEventListener('toggle', () => {
       if (view.released) return;
+      if (view.readOnly) { if (element.open) element.open = false; return; }
       try { if (element.open) renderToolBody(view); else renderLivePreview(view); }
       catch {
         // A failed deferred render can be retried with the same state snapshot.
@@ -283,18 +309,12 @@
       finally { if (!view.released) { copy.disabled = false; view.copyReset = setTimeout(() => { copy.textContent = '复制输出'; }, 1400); } }
     });
     preview.addEventListener('click', () => { if (!view.released) view.options.onPreviewHtml?.(view.part.output || '', preview); });
-    open.addEventListener('click', async () => {
-      if (view.released || open.disabled || !view.target || !view.options.onOpenLink) return;
-      clearTimeout(view.openReset); open.textContent = '打开文件';
-      open.disabled = true;
-      try { if (await view.options.onOpenLink(view.target.href, { rootIndex: view.target.rootIndex }) === false) throw new Error('File open failed'); }
-      catch { if (!view.released) { open.textContent = '打开失败'; view.openReset = setTimeout(() => { open.textContent = '打开文件'; }, 1400); } }
-      finally { if (!view.released) open.disabled = false; }
-    });
     return view;
   }
   function updateTool(view, part, options) {
     view.options = options;
+    view.readOnly = isReadOnlyTool(part.name);
+    view.element.dataset.readonly = view.readOnly ? 'true' : 'false';
     const asideHidden = part.status !== 'running' || !part.commandId || part.background === true || !options.onBackgroundCommand;
     if (view.aside.hidden !== asideHidden) view.aside.hidden = asideHidden;
     const stopHidden = part.status !== 'running' || !part.commandId || !options.onInterruptCommand;
@@ -328,14 +348,27 @@
       if (argumentsChanged) {
         view.icon.dataset.kind = kind; view.iconPath.setAttribute('d', icons[kind]);
         view.title.title = title;
-        view.target = fileTarget(part, input);
       }
-      setText(view.path, hint(part, input)); view.path.title = view.path.textContent;
+     const targetHint = hint(part, input);
+     setText(view.path, targetHint); view.path.title = view.path.textContent;
+    }
+    // Read-only cards stay flat but still report what they did and read (target
+    // plus a size), without echoing the returned content.
+    if (view.readOnly) {
+      setText(view.path, readSummary(part, parameters(part)));
+      view.path.title = view.path.textContent;
     }
     const statusText = status === 'running' && part.background ? '后台运行' : executionLabels[executionState] || labels[status];
     setText(view.status, statusText);
     const summaryLabel = [title, view.path.textContent, statusText].filter(Boolean).join(' · ');
     if (view.element.firstElementChild.getAttribute('aria-label') !== summaryLabel) view.element.firstElementChild.setAttribute('aria-label', summaryLabel);
+    // Read-only cards are a single flat row: no disclosure and no body.
+    if (view.readOnly) {
+      if (view.element.open) view.element.open = false;
+      if (view.summary.tabIndex !== -1) view.summary.tabIndex = -1;
+    } else if (view.summary.tabIndex === -1) {
+      view.summary.tabIndex = 0;
+    }
     renderLivePreview(view);
     renderToolBody(view);
     trackDuration(view);
@@ -348,13 +381,19 @@
     if (view.released || view.element.open) return;
     const part = view.part, streaming = view.streaming;
     const status = labels[part.status] ? part.status : 'completed';
+    if (view.readOnly) {
+      if (!view.live.hidden) view.live.hidden = true;
+      if (view.live.textContent) view.live.textContent = '';
+      view.liveOutput = part.output; view.liveStatus = status; view.liveStreaming = streaming;
+      return;
+    }
     if (view.liveOutput === part.output && view.liveStatus === status && view.liveStreaming === streaming) return;
     // A bounded tail provides live feedback without materializing the folded
     // log. Never scan an entire command output for each incoming chunk.
-    const showLive = streaming && ['running', 'failed'].includes(status) && Boolean(part.output);
+    const showLive = streaming && status === 'running' && Boolean(part.output);
     if (showLive) {
       const tail = part.output.slice(-1200).replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').replace(/\r\n?/g, '\n');
-      const lines = tail.trimEnd().split('\n').slice(-2).join('\n').slice(-400);
+       const lines = tail.trimEnd().split('\n').slice(-2).join('\n').slice(-400);
       setRaw(view.live, lines);
     }
     if (view.live.hidden === showLive) view.live.hidden = !showLive;
@@ -374,6 +413,25 @@
       setRaw(view.input, args);
       view.renderedArgs = args;
     }
+    if (view.readOnly) {
+      // Read-only tools: keep the operation, target, parameters and recovery
+      // actions, but never render the returned content that the agent already
+      // consumed.
+      if (!view.search.hidden) { view.search.hidden = true; view.renderedSearchOutput = undefined; view.search.replaceChildren(); }
+      if (!view.output.hidden) view.output.hidden = true;
+      if (view.renderedOutput) { view.output.textContent = ''; view.renderedOutput = ''; view.lineOutput = ''; view.newlines = 0; }
+      if (view.readNote.hidden) view.readNote.hidden = false;
+      setText(view.label, ''); setText(view.info, '');
+      if (!view.label.hidden) view.label.hidden = true;
+      if (!view.info.hidden) view.info.hidden = true;
+      setToolbarVisibility(view, part, { preview: true, latest: true });
+      view.bodyDirty = false;
+      return true;
+    }
+    if (!view.readNote.hidden) view.readNote.hidden = true;
+    if (view.label.hidden) view.label.hidden = false;
+    if (view.info.hidden) view.info.hidden = false;
+    if (view.toolbar.hidden) view.toolbar.hidden = false;
     const waiting = { queued: '正在等待同一会话的前一条命令结束，可单独中断此排队命令。', starting: '正在准备命令执行…', stopping: '正在停止命令并清理进程…' };
     const search = part.name === 'web_search' && part.output ? parseSearchOutput(part.output) : null;
     const placeholder = status === 'running' ? waiting[part.executionState] || (streaming ? '正在执行，等待输出…' : '等待工具返回…') : status === 'interrupted' ? '调用已停止，执行状态请以已有记录为准。' : '无文本输出。';
@@ -399,12 +457,7 @@
       const lines = output ? view.newlines + (output.endsWith('\n') ? 0 : 1) : 0;
       setText(view.info, (status === 'running' ? executionLabels[part.executionState] || '接收中' : '') + (lines ? (status === 'running' ? ' · ' : '') + lines + ' 行' : ''));
     }
-    const previewHidden = !part.output || !htmlSource(part.output) || Boolean(search);
-    if (view.open.hidden !== !view.target) view.open.hidden = !view.target;
-    if (view.copy.hidden !== !part.output) view.copy.hidden = !part.output;
-    if (view.latest.hidden !== (!part.output || Boolean(search))) view.latest.hidden = !part.output || Boolean(search);
-    if (view.preview.hidden !== previewHidden) view.preview.hidden = previewHidden;
-    if (view.notice.hidden !== !part.truncated) view.notice.hidden = !part.truncated;
+    setToolbarVisibility(view, part, { preview: !part.output || !htmlSource(part.output) || Boolean(search), latest: !part.output || Boolean(search) });
     setText(view.notice, part.outputTail ? '仅显示最新输出，较早内容已截断。' : '显示内容已截断。');
     view.bodyDirty = false;
     return true;
@@ -427,15 +480,16 @@
     element.open = kind === 'thinking';
     const indicator = node('span', 'thinking-indicator'); indicator.setAttribute('aria-hidden', 'true');
     const title = node('span', 'thinking-title'), source = node('span', 'thinking-source'), time = node('span', 'thinking-time');
+    const badge = kind === 'summary' ? node('span', 'summary-badge') : null;
     const chevron = node('span', 'thinking-chevron', '›'); chevron.setAttribute('aria-hidden', 'true');
-    summary.append(indicator, title, source, time, chevron);
+    summary.append(indicator, title, source, ...(badge ? [badge] : []), time, chevron);
     const body = node('div', 'thinking-body'), content = node('div', 'thinking-content');
     body.tabIndex = 0; body.setAttribute('aria-label', kind === 'summary' ? '上下文摘要' : '思考内容');
     const metrics = node('p', 'summary-metrics'); metrics.hidden = true;
     const notice = node('p', 'thinking-truncation', '思考内容较长，此处显示已保留的部分。');
     if (kind === 'summary') body.append(metrics);
     body.append(content, notice); element.append(summary, body);
-    const view = { element, title, source, time, body, content, metrics, notice, part: {}, options: {}, rendered: false };
+    const view = { element, title, source, badge, time, body, content, metrics, notice, part: {}, options: {}, rendered: false };
     summary.addEventListener('click', () => { view.userGesture = true; });
     summary.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') view.userGesture = true; });
     element.addEventListener('toggle', () => {
@@ -491,30 +545,64 @@
     view.dirty = false;
     return true;
   }
+  function summaryScopeLabel(kinds) {
+    const keys = Object.keys(kinds ?? {});
+    if (!keys.length) return '上下文摘要';
+    const body = keys.includes('transcript'), tool = keys.some(key => key === 'tool-result' || key === 'tool-arguments');
+    if (body && tool || keys.length > 1 && body) return '混合摘要';
+    if (tool) return '工具摘要';
+    if (body) return '正文摘要';
+    return '事实摘要';
+  }
   function updateSummary(view, part, options) {
     const actionsChanged = ['onCopy', 'onOpenLink', 'onPreviewHtml'].some(key => view.options[key] !== options[key]);
     view.options = options;
     if (view.element.isConnected && !active.has(view) && ['running', 'streaming'].includes(view.part.status)) trackDuration(view);
-    const keys = ['id', 'text', 'status', 'source', 'workerId', 'startedAt', 'endedAt', 'truncated', 'fallback', 'beforeTokens', 'afterTokens'];
-    if (!view.dirty && !actionsChanged && keys.every(key => part[key] === view.part[key])) return false;
+    const keys = ['id', 'text', 'status', 'source', 'workerId', 'startedAt', 'endedAt', 'truncated', 'fallback', 'beforeTokens', 'afterTokens', 'kinds'];
+    // `kinds` is rebuilt on every projection, so compare by value to avoid a
+    // re-render on identical telemetry.
+    const unchanged = key => key === 'kinds' ? JSON.stringify(part[key]) === JSON.stringify(view.part[key]) : part[key] === view.part[key];
+    if (!view.dirty && !actionsChanged && keys.every(unchanged)) return false;
     view.dirty = true;
     view.part = { ...part };
     const status = ['running', 'failed', 'interrupted'].includes(part.status) ? part.status : 'completed';
     if (view.element.dataset.status !== status) view.element.dataset.status = status;
-    setText(view.title, { running: '正在整理上下文', completed: '上下文摘要', failed: '摘要未完成', interrupted: '摘要已停止' }[status]);
+    const scope = summaryScopeLabel(part.kinds);
+    setText(view.title, { running: '正在整理上下文', completed: scope, failed: '摘要未完成', interrupted: '摘要已停止' }[status]);
     setText(view.source, part.source === 'reason' ? '规划' : part.source === 'worker' ? '子任务' : '');
     const title = part.workerId || view.source.textContent;
     if (view.source.title !== title) view.source.title = title;
     view.displayText = part.text || { running: '正在整理较早的对话与工具记录，完成后会在此显示摘要。', completed: '本次上下文整理已完成。', failed: '上下文整理未完成，请查看本轮执行错误。', interrupted: '上下文整理已停止。' }[status];
-    if (part.fallback) view.displayText = '本次使用原文摘录，未生成完整摘要。\n\n' + view.displayText;
+    // A fallback no longer pastes raw source; it keeps a recoverable pointer, so
+    // the copy must not claim an excerpt was used.
+    if (part.fallback) view.displayText = '本次未生成摘要，已保留可恢复来源。\n\n' + view.displayText;
     const hasMetrics = [part.beforeTokens, part.afterTokens].every(value => Number.isSafeInteger(value) && value >= 0);
     if (view.metrics.hidden !== !hasMetrics) view.metrics.hidden = !hasMetrics;
-    setText(view.metrics, hasMetrics ? `上下文用量估算：${part.beforeTokens.toLocaleString('en-US')} → ${part.afterTokens.toLocaleString('en-US')} tokens` : '');
+    const savedPercent = hasMetrics && part.beforeTokens > 0 && part.afterTokens <= part.beforeTokens
+      ? Math.round((1 - part.afterTokens / part.beforeTokens) * 100) : 0;
+    setText(view.metrics, hasMetrics
+      ? `上下文用量估算：${part.beforeTokens.toLocaleString('en-US')} → ${part.afterTokens.toLocaleString('en-US')} tokens${savedPercent ? ` · 节省 ${savedPercent}%` : ''}`
+      : '');
+    const saved = savedPercent ? `节省 ${savedPercent}%` : '';
+    setText(view.badge, part.fallback ? '未生成' : status === 'completed' ? saved || '已整理' : status === 'running' ? '进行中' : '需关注');
     if (view.notice.hidden !== !part.truncated) view.notice.hidden = !part.truncated;
     setText(view.notice, '摘要较长，此处仅显示已保留的部分。');
     trackDuration(view); renderThinking(view);
     view.dirty = false;
     return true;
+  }
+  // The toolbar is shared by both card modes. Previously the read-only branch and
+  // the regular branch each re-declared the same visibility rules, which is how
+  // they drifted apart (read-only forced `latest` hidden; the regular branch keyed
+  // it off the output). Keep the rules in one place, and let each caller override
+  // only what actually differs.
+  function setToolbarVisibility(view, part, rules) {
+    const set = (element, hidden) => { if (element.hidden !== hidden) element.hidden = hidden; };
+    set(view.preview, rules.preview === true);
+    set(view.latest, rules.latest === true);
+    set(view.copy, !part.output);
+    set(view.toolbar, false);
+    set(view.notice, !part.truncated);
   }
   function markdown(element, text, options) {
     if (window.UBOVMMarkdown) return window.UBOVMMarkdown.update(element, text, options);
@@ -660,29 +748,101 @@
     return changed;
   }
   function refreshToolBatch(batch, items) {
+    const operationLabel = item => {
+      const title = item.element.querySelector('.tool-title')?.textContent?.trim();
+      const path = item.element.querySelector('.tool-path')?.textContent?.trim();
+      if (!title) return '工具调用';
+      return path && path !== title ? `${title}：${path}` : title;
+    };
+    const operationSummary = (entries, limit = 3) => {
+      const labels = entries.map(operationLabel).filter(Boolean);
+      const visible = labels.slice(0, limit);
+      const suffix = labels.length > limit ? ` 等 ${labels.length} 项` : '';
+      return visible.join('、') + suffix;
+    };
     batch.toolItems = items;
-    const compact = items.length >= 4, expanded = batch.dataset.expanded === 'true';
+    // Only timestamps that overlap indicate parallel work. Mere adjacency is
+    // not enough: a sequence of file reads should remain a sequential list.
+    const clusters = [];
+    for (const item of items) {
+      const start = Number(item.part.startedAt);
+      const last = clusters.at(-1);
+      if (last && Number.isFinite(start) && start > 0 && start <= last.end) {
+        last.items.push(item);
+        last.end = Math.max(last.end, Number(item.part.endedAt) || (['running', 'streaming'].includes(item.part.status) ? Infinity : start));
+      } else clusters.push({ items: [item], end: Number(item.part.endedAt) || (['running', 'streaming'].includes(item.part.status) && start > 0 ? Infinity : start) });
+    }
+    const previousGroups = batch.parallelGroups || new Map();
+    const nextGroups = new Map();
+    let anchor = batch.firstChild;
+    for (const cluster of clusters) {
+      if (cluster.items.length === 1) {
+        const card = cluster.items[0].element;
+        delete card.dataset.parallelGroup;
+        if (card.parentNode !== batch || card.previousSibling !== anchor) batch.insertBefore(card, anchor.nextSibling);
+        anchor = card;
+        continue;
+      }
+      const key = cluster.items[0].part.id;
+      let parallel = previousGroups.get(key);
+      if (!parallel) {
+        parallel = node('div', 'parallel-tools');
+        const heading = node('button', 'parallel-tools-heading'); heading.type = 'button';
+        const title = node('span', 'parallel-tools-title');
+        const progress = node('span', 'parallel-tools-progress');
+        const arrow = node('span', 'parallel-tools-chevron', '›'); arrow.setAttribute('aria-hidden', 'true');
+        heading.append(title, progress, arrow);
+        parallel.append(heading);
+        parallel.dataset.collapsed = 'false';
+        heading.setAttribute('aria-expanded', 'true');
+        heading.addEventListener('click', () => {
+          parallel.dataset.collapsed = String(parallel.dataset.collapsed !== 'true');
+          heading.setAttribute('aria-expanded', String(parallel.dataset.collapsed !== 'true'));
+          for (const card of cluster.items) card.element.hidden = parallel.dataset.collapsed === 'true';
+        });
+      }
+      nextGroups.set(key, parallel);
+      const firstCard = cluster.items[0].element;
+      if (parallel.parentNode !== batch || parallel.nextSibling !== firstCard) batch.insertBefore(parallel, firstCard);
+      for (const item of cluster.items) item.element.dataset.parallelGroup = key;
+      const runningCount = cluster.items.filter(item => ['running', 'streaming'].includes(item.part.status)).length;
+      const failedCount = cluster.items.filter(item => item.part.status === 'failed').length;
+      parallel.dataset.status = failedCount ? 'failed' : runningCount ? 'running' : 'completed';
+       setText(parallel.firstChild.firstChild, `并行：${operationSummary(cluster.items, 2)}`);
+      setText(parallel.firstChild.children[1], failedCount ? `${failedCount} 失败 · ${cluster.items.length - runningCount - failedCount} 完成` : runningCount ? `${runningCount} 运行中 · ${cluster.items.length - runningCount} 完成` : '全部完成');
+       parallel.firstChild.setAttribute('aria-label', `${operationSummary(cluster.items)}，${failedCount ? `${failedCount} 个失败` : runningCount ? `${runningCount} 个运行中` : '全部完成'}`);
+      anchor = cluster.items.at(-1).element;
+    }
+    for (const [key, parallel] of previousGroups) if (!nextGroups.has(key)) parallel.remove();
+    batch.parallelGroups = nextGroups;
+    // Two consecutive calls already form a useful tool group. Waiting for
+    // four made the grouping invisible in normal agent turns.
+    const compact = items.length >= 2, expanded = batch.dataset.expanded === 'true';
     if (batch.dataset.compact !== String(compact)) batch.dataset.compact = String(compact);
     const toggle = batch.firstChild;
     if (toggle.hidden !== !compact) toggle.hidden = !compact;
     let hidden = 0, running = 0, failed = 0;
+    const keepRecent = items.length <= 3 ? 1 : 3;
     items.forEach((item, index) => {
       const status = item.part.status;
       if (['running', 'streaming'].includes(status)) running++;
       if (status === 'failed') failed++;
       // Preserve open logs and actionable results, even when new calls arrive.
-      const fold = compact && !expanded && index < items.length - 3 && status === 'completed' && !item.element.open;
-      if (item.element.hidden !== fold) item.element.hidden = fold;
+      const fold = compact && !expanded && index < items.length - keepRecent && status === 'completed' && !item.element.open && !item.element.closest('.parallel-tools');
+      const parallel = item.element.dataset.parallelGroup ? nextGroups.get(item.element.dataset.parallelGroup) : undefined;
+      const hiddenByParallel = parallel?.dataset.collapsed === 'true';
+      if (item.element.hidden !== (fold || hiddenByParallel)) item.element.hidden = fold || hiddenByParallel;
       if (fold) hidden++;
     });
-    setText(toggle, `${items.length} 个工具调用${running ? ` · ${running} 个运行中` : ''}${failed ? ` · ${failed} 个失败` : ''} · ${expanded ? '收起历史' : hidden ? `展开 ${hidden} 条历史` : '查看全部'}`);
+    setText(toggle, `执行：${operationSummary(items)}${running ? ` · ${running} 个运行中` : ''}${failed ? ` · ${failed} 个失败` : ''} · ${expanded ? '收起历史' : hidden ? `展开 ${hidden} 条历史` : '查看全部'}`);
+    toggle.title = operationSummary(items, items.length);
     if (toggle.getAttribute('aria-expanded') !== String(expanded)) toggle.setAttribute('aria-expanded', String(expanded));
     if (batch.dataset.failures !== String(failed > 0)) batch.dataset.failures = String(failed > 0);
   }
   function releaseItem(item) {
     item.released = true;
     item.pending = undefined;
-    active.delete(item); clearTimeout(item.copyReset); clearTimeout(item.openReset);
+    active.delete(item); clearTimeout(item.copyReset);
     let failure;
     try { window.UBOVMMarkdown?.release?.(item.element); } catch (error) { failure = error; }
     try { if (item.content) release(item.content); } catch (error) { failure ??= error; }
@@ -704,5 +864,5 @@
     if (!active.size) { clearInterval(clock); clock = undefined; }
     if (failure) throw failure;
   }
-  window.UBOVMMessage = Object.freeze({ update, release });
+  window.UBOVMMessage = Object.freeze({ update, release, summaryScopeLabel });
 })();

@@ -244,6 +244,11 @@ export class BrowserManager {
       case 'snapshot': return { ...common, ...await this.snapshot(state, input) };
       case 'accessibility': return { ...common, ...await this.accessibility(scope, state, input) };
       case 'click': case 'fill': case 'select': case 'check': case 'press': case 'hover': {
+        if (action === 'press' && !input.ref && !input.selector) {
+          // ref is optional for press: fall back to the focused element.
+          await page.keyboard.press(requireString(input.key, 'key'));
+          return { ...common, action, completed: true };
+        }
         const locator = this.locator(state, input);
         if (action === 'fill') await locator.fill(input.value ?? '', { timeout });
         else if (action === 'select') {
@@ -261,11 +266,15 @@ export class BrowserManager {
       }
       case 'scroll': await page.mouse.wheel(input.delta_x || 0, input.delta_y || (input.delta_x ? 0 : 600)); return { ...common, completed: true };
       case 'wait': {
-        const condition = requireString(input.wait_for, 'wait_for');
+        // Shared contract with the IDE backend: ref waits for a state (default
+        // visible), query waits for matching text, otherwise wait for load.
+        const condition = typeof input.wait_for === 'string' && input.wait_for
+          ? input.wait_for : (input.ref ? 'visible' : (input.query ? 'text' : 'load'));
         if (input.ref) {
           if (!['visible', 'hidden', 'attached', 'detached'].includes(condition)) throw new TypeError('wait_for with ref must be visible, hidden, attached or detached');
           await this.locator(state, input).waitFor({ state: condition, timeout });
         }
+        else if (input.query) await page.getByText(String(input.query), { exact: false }).first().waitFor({ state: 'visible', timeout });
         else if (['load', 'domcontentloaded', 'networkidle'].includes(condition)) await page.waitForLoadState(condition, { timeout });
         else await page.getByText(condition, { exact: false }).first().waitFor({ state: 'visible', timeout });
         return { ...common, completed: true };

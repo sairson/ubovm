@@ -486,11 +486,34 @@ export type CollaborationEvent = { type: 'tool_approval'; toolCallId: string; to
   | { type: 'middleware.status'; status: { contextSummary: boolean; mcp: McpDiagnostic[]; skills: SkillCatalogEntry[] } }
   | { type: 'memory.status'; memory: MemorySnapshot };
 export interface ToolApprovalRequest { workerId: string; toolCallId: string; toolName: string; args: JsonValue; signal?: AbortSignal }
+export interface AskHumanOption { label: string; description?: string }
+export interface AskHumanRequest {
+  question: string;
+  options: AskHumanOption[];
+  /** True when the human may pick more than one option. */
+  multiple: boolean;
+  /** True when the human may also type a free-form answer. */
+  allowCustom: boolean;
+  sessionId?: string;
+  workerId?: string;
+  conversationId?: string;
+  signal?: AbortSignal;
+}
+export interface AskHumanAnswer {
+  /** Chosen option labels; empty when the human typed a custom answer. */
+  selected: string[];
+  /** Free-form answer, empty when none was provided. */
+  custom: string;
+  /** True when the human dismissed the question without answering. */
+  cancelled: boolean;
+}
 export interface CollaborationTurnOptions {
   /** Register the current root agent's steering handler; cleared when the turn ends. */
   registerSteering?: (handler: ((input: { text: string; context?: JsonValue }) => void) | undefined) => void;
   /** Host approval hook for every root/worker tool call. Only true permits execution. */
   requestToolApproval?: (request: ToolApprovalRequest) => Awaitable<boolean>;
+  /** Host question hook backing the ask_human tool. Omit to keep ask_human unavailable. */
+  askHuman?: (request: AskHumanRequest) => Awaitable<AskHumanAnswer>;
   configuration?: CollaborationConfiguration;
   sessionId: string;
   /** Durable conversation directory (assist.sqlite, compatible with existing assist sessions). */
@@ -617,7 +640,9 @@ export type ContextSummaryEvent =
   | { type: 'context.summary_end'; scope: string; operationId: string; startedAt: number; endedAt: number; status: 'completed' | 'failed' | 'interrupted'; text: string; fallback: boolean; truncated: boolean; beforeTokens: number; afterTokens?: number }
   | { type: 'context.summary'; scope: string; kind: ContextSummaryRequest['kind']; artifactId: string; fallback: boolean; partial: boolean; truncated: boolean; coverage: ContextSummaryCoverage[] }
   /** Emitted for newly applied compression, never for unchanged or cached projections. */
-  | { type: 'context.compacted'; scope: string; beforeTokens: number; afterTokens: number; summaryCalls: number };
+  | { type: 'context.compacted'; scope: string; beforeTokens: number; afterTokens: number; summaryCalls: number }
+  /** Estimated tokens of the projection sent to the model; limit is null when the window is unknown. */
+  | { type: 'context.usage'; scope: string; tokens: number; limit: number | null };
 /** Host-observed source coverage; summarized does not imply factual verification. */
 export interface ContextSummaryCoverage {
   /** UTF-16 source range in the archived artifact. */
@@ -628,14 +653,34 @@ export interface ContextSummaryCoverage {
 }
 export interface ContextSummaryOptions {
   model?: ModelClientOptions;
+  /** An already-built model client shared with the host turn; takes precedence over `model`. */
+  client?: ModelClient;
   summarize?: (request: ContextSummaryRequest) => Awaitable<string>;
   triggerTokens?: number;
+  /**
+   * Share of the model's usable input at which compaction starts when the
+   * context window is known (1–100). Larger windows therefore compact later; a
+   * 1M-token model triggers near its limit. Default 90. `triggerTokens` still
+   * applies as the floor and as the trigger when the window is unknown.
+   */
+  triggerPercent?: number;
   targetTokens?: number;
+  /** Message-count fallback. Scaled up (capped at 8x) when a large context window is known, so large models compact far later by count. */
   triggerMessages?: number;
   keepRecentMessages?: number;
   maxSummaryTokens?: number;
+  /** Output budget for one tool digest; default 1024. */
+  toolSummaryTokens?: number;
   maxSummaryCalls?: number;
+  /** Auxiliary tool-digest calls one transform may schedule; default 16. */
+  maxToolSummaryCalls?: number;
+  maxCacheBytes?: number;
+  maxCacheEntries?: number;
+  /** Auxiliary summary calls one transform may schedule; default 8. Remaining source becomes a bounded excerpt. */
+  maxSummaryCallsPerTransform?: number;
   maxSummaryCallsPerScope?: number;
+  /** Divider applied to triggerMessages when keepRecentMessages is at least 32; default 2. */
+  earlyCompactRatio?: number;
   maxSummaryInputTokens?: number;
   timeoutMs?: number;
   load?: (key: string) => Awaitable<JsonValue | undefined>;
@@ -966,6 +1011,8 @@ export interface NoteEvidence {
   isError?: boolean;
 }
 export function createTodoTool(options: { store: MemoryStore; sessionId: string; workerId?: string }): TodoTool;
+export function createAskHumanTool(options: { askHuman?: (request: AskHumanRequest) => Awaitable<AskHumanAnswer>; sessionId?: string; workerId?: string }): AgentTool;
+export function normalizeAskHumanInput(input: unknown): { question: string; options: AskHumanOption[]; multiple: boolean; allowCustom: boolean };
 export function createDeliveryTool(options: { store: MemoryStore; sessionId: string; workerId?: string }): AgentTool & { summary(): string };
 export function createNoteTool(options: {
   store: MemoryStore; sessionId: string; workerId?: string; blackboard?: Blackboard; canPromote?: boolean;
@@ -1103,7 +1150,10 @@ export class BrowserManager implements BrowserBackend {
 export function createBrowserTools(options: BrowserBinding & { manager?: Pick<BrowserBackend, 'status' | 'call'> }): AgentTool[];
 
 export type InternalToolName = 'delivery_workflow' | 'browser_action' | 'browser_connection_status' | 'fetch_web_content' | 'note' | 'todo' | 'web_search' | 'read_skills_resource' | 'run_local_skill_script' | 'run_linux_ssh_command' | 'run_local_shell_command' | 'run_python' | 'manage_python_environment' | 'upload_sftp' | 'deploy_remote_service' | 'learn_capability';
+/** Tools that exist only when the host supplies an interactive hook (a human is present); never in goal sessions. */
+export type HostInteractionToolName = 'ask_human';
 export const INTERNAL_TOOL_NAMES: readonly InternalToolName[];
+export const HOST_INTERACTION_TOOL_NAMES: readonly HostInteractionToolName[];
 export interface LocalShellOptions {
   cwd?: string;
   defaultTimeoutSeconds?: number;
@@ -1130,6 +1180,8 @@ export interface InternalToolsOptions {
   localShell?: false | LocalShellOptions;
   /** Host-only command registration; return a cleanup callback. Interrupt targets one call, including a queued call. */
   onCommand?: (command: { id: string; workerId: string; toolCallId: string; name: string; interrupt(): boolean }) => void | (() => void);
+  /** Host question hook backing the ask_human tool. Omit to keep ask_human unavailable. */
+  askHuman?: (request: AskHumanRequest) => Awaitable<AskHumanAnswer>;
   python?: false | PythonToolOptions;
   sessionId?: string;
   blackboard?: Blackboard;
@@ -1145,7 +1197,7 @@ export interface InternalToolsOptions {
   skillResource?: false | SkillResourceOptions;
   skillScript?: false | SkillScriptOptions;
   target?: string;
-  allowedTools?: readonly InternalToolName[];
+  allowedTools?: readonly (InternalToolName | HostInteractionToolName)[];
   canPromote?: boolean;
 }
 export interface InternalToolsHooks {

@@ -46,6 +46,17 @@ test('legacy SDK configuration uses Pi transport with its original endpoint and 
   assert.throws(() => createModelClient({ backend: 'unknown' }), /Pi Agent/);
 });
 
+test('an already-built model client is accepted instead of re-validated as a configuration', async () => {
+  const client = createModelClient({ provider: 'smoke', modelId: 'fixture', api: 'openai-completions', baseUrl: 'https://offline.invalid/v1', apiKey: 'k',
+    streamFn: () => 'ok' });
+  // Forwarding the very client must be a no-op, not "Unknown model configuration field: sourceKind".
+  assert.equal(createModelClient(client), client);
+  const forwarded = createModelClient({ ...client });
+  assert.equal(forwarded.model.id, 'fixture');
+  assert.equal(forwarded.sourceKind, 'fromCustomEndpoint');
+  assert.equal(forwarded.fromCustomEndpoint, true);
+});
+
 test('streamOptions default to a small transient retry budget and honor explicit zero', async () => {
   let options;
   const client = createModelClient({

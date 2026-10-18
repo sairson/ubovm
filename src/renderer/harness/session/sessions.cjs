@@ -28,6 +28,23 @@ function inputMessageIds(messages, role) {
   return ids;
 }
 
+const USAGE_KEYS = ['input', 'output', 'cacheRead', 'cacheWrite', 'totalTokens'];
+const COST_KEYS = ['input', 'output', 'cacheRead', 'cacheWrite', 'total'];
+// Cumulative per-conversation usage. It lives on the session record so it
+// survives history trimming (MAX_MESSAGES) and reloads, unlike summing the
+// retained messages would.
+function addUsage(total, usage, sign = 1) {
+  if (!usage || typeof usage !== 'object') return total;
+  const next = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, ...(total ?? {}) };
+  for (const key of USAGE_KEYS) if (Number.isFinite(usage[key])) next[key] = Math.max(0, (next[key] || 0) + sign * usage[key]);
+  if (usage.cost && typeof usage.cost === 'object') {
+    const cost = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, ...(next.cost ?? {}) };
+    for (const key of COST_KEYS) if (Number.isFinite(usage.cost[key])) cost[key] = Math.max(0, (cost[key] || 0) + sign * usage.cost[key]);
+    next.cost = cost;
+  }
+  return next;
+}
+
 const STORAGE_KEY = 'conversations';
 const MAX_SESSIONS = 50;
 const MAX_MESSAGES = 40;
@@ -270,6 +287,7 @@ function restoreState(stored, legacyMessages) {
     const mode = session.mode === 'goal' ? 'goal' : 'assist';
     const title = typeof session.title === 'string' && session.title.trim() ? session.title.slice(0, 60)
       : mode === 'goal' ? goalTitle(goal, titleFrom(messages, '新探索')) : titleFrom(messages);
+    const storedUsage = sanitizeUsage(session.usage);
     const base = {
       inputQueue: (Array.isArray(session.inputQueue) ? session.inputQueue : []).filter(item => typeof item?.id === 'string' && typeof item.text === 'string' && item.text.trim() && item.text.length <= 8000).slice(0, 20)
         .map(item => ({ ...item, ...(item.delivery ? { delivery: 'uncertain' } : {}) })),
@@ -278,6 +296,8 @@ function restoreState(stored, legacyMessages) {
       id: session.id, title, messages, placeholder: session.placeholder === true && messages.length === 0 && !goal,
       ...(typeof session.projectId === 'string' ? { projectId: session.projectId } : {}),
       ...(typeof session.workspace === 'string' && session.workspace.trim() ? { workspace: session.workspace.trim() } : {}),
+      ...(typeof session.selectedModelId === 'string' && session.selectedModelId.trim() ? { selectedModelId: session.selectedModelId.trim() } : {}),
+      ...(storedUsage ? { usage: storedUsage } : {}),
       ...(session.historyTruncated === true ? { historyTruncated: true } : {}),
       ...(typeof session.sourceConversationId === 'string' && mode === 'goal' ? { sourceConversationId: session.sourceConversationId } : {}),
       ...(typeof session.goalRequestKey === 'string' && mode === 'goal' ? { goalRequestKey: session.goalRequestKey } : {}),
@@ -946,6 +966,14 @@ function createSessions(vscode, context, onDidChange, { isBusy = () => false, cr
         return commitSession({ ...existing, ...changes, updatedAt: Date.now() });
       });
     },
+    setModel(id, modelId) {
+      if (typeof modelId !== 'string' || !modelId.trim() || modelId.length > 200) return Promise.reject(new Error('模型名称无效。'));
+      return enqueue(() => {
+        const existing = state.sessions.find(session => session.id === id);
+        if (!existing) throw new Error('会话不存在。');
+        return commitSession({ ...existing, selectedModelId: modelId.trim(), updatedAt: Date.now() });
+      });
+    },
     rewindInput(id, messageId) {
       return enqueue(() => {
         const existing = state.sessions.find(session => session.id === id);
@@ -953,8 +981,11 @@ function createSessions(vscode, context, onDidChange, { isBusy = () => false, cr
         const messageIds = inputMessageIds(existing.messages, 'user');
         const index = existing.messages.findIndex((message, index) => message.role === 'user' && messageIds[index] === messageId);
         if (index < 0) throw new Error('该用户消息已不存在。');
+        // Rewinding drops replies, so their usage must leave the running total too.
+        let usage = existing.usage;
+        for (const message of existing.messages.slice(index)) if (message.role === 'assistant') usage = addUsage(usage, sanitizeUsage(message.usage), -1);
         return commitSession({ ...existing, messages: existing.messages.slice(0, index), queuePaused: true,
-          executionBranch: randomUUID(), updatedAt: Date.now() });
+          executionBranch: randomUUID(), updatedAt: Date.now(), ...(usage ? { usage } : {}) });
       });
     },
     appendMessage(id, message) {
@@ -974,7 +1005,10 @@ function createSessions(vscode, context, onDidChange, { isBusy = () => false, cr
         }
         const messages = cleanMessages([...existing.messages, normalized[0]]);
         const hasUser = existing.messages.some(item => item.role === 'user' && item.text.trim());
+        // The store is idempotent per message id, so a redelivered reply is counted once.
+        const usage = normalized[0].role === 'assistant' ? sanitizeUsage(normalized[0].usage) : undefined;
         return commitSession({ ...existing, messages, updatedAt: Date.now(),
+          ...(usage ? { usage: addUsage(existing.usage, usage) } : {}),
           title: existing.mode === 'goal' && existing.goal ? goalTitle(existing.goal, '新探索')
             : hasUser ? existing.title : titleFrom(messages, existing.title)
         });

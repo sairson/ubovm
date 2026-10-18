@@ -18,9 +18,9 @@ async function fixture(t) {
   await writeFile(join(directory, 'index.mjs'), 'export const unused = true;');
   await writeFile(join(directory, 'agents/collaboration/index.mjs'), 'export const runCollaboration = options => options.configuration.fixture(options);');
   await writeFile(join(directory, 'ide/workspace-tools.mjs'), 'export const createWorkspaceTools = async () => [];');
-  const create = ({ requestToolApproval, onMessage, additionalTools } = {}) => {
+  const create = ({ requestToolApproval, askHuman, onMessage, additionalTools } = {}) => {
     const service = createHarnessService({ sdkPath: join(directory, 'index.mjs'), storageDirectory: join(directory, 'storage'), workspaceRoots: [directory],
-      requestToolApproval, onMessage, ...(additionalTools ? { additionalTools } : {}),
+      requestToolApproval, askHuman, onMessage, ...(additionalTools ? { additionalTools } : {}),
       readConfiguration: async () => ({ fixture: input => new Promise((complete, reject) => {
         requests.push({ ...input, complete }); input.signal.addEventListener('abort', () => reject(input.signal.reason), { once: true });
       }) }) }); services.push(service); return service;
@@ -145,6 +145,26 @@ test('conversation boundaries isolate background agents, approvals, cancellation
   assert.equal(await secondApproval, true);
   second.complete('B final answer'); await f.idle(service, 'conversation-b');
   assert.deepEqual(delivered.map(item => [item.id, item.value.text]), [['conversation-b', 'B final answer']]);
+});
+
+test('the root agent is not reported as a parallel worker on approval or question requests', async t => {
+  const f = await fixture(t);
+  const approvals = [], questions = [];
+  const service = f.create({
+    requestToolApproval: request => { approvals.push(request); return true; },
+    askHuman: request => { questions.push(request); return { selected: [], custom: '', cancelled: true }; }
+  });
+  const run = await f.start(service);
+  await run.requestToolApproval({ workerId: run.sessionId, toolCallId: 'root-call', toolName: 'probe', args: {} });
+  await run.requestToolApproval({ workerId: `${run.sessionId}/worker-1`, toolCallId: 'worker-call', toolName: 'probe', args: {} });
+  await run.askHuman({ workerId: run.sessionId, toolCallId: 'root-ask', question: 'Root?', options: [{ label: 'yes' }] });
+  await run.askHuman({ workerId: `${run.sessionId}/worker-1`, toolCallId: 'worker-ask', question: 'Worker?', options: [{ label: 'yes' }] });
+  assert.equal(approvals[0].workerId, undefined);
+  assert.equal(approvals[0].conversationId, 'chat');
+  assert.equal(approvals[1].workerId, `${run.sessionId}/worker-1`);
+  assert.equal(questions[0].workerId, undefined);
+  assert.equal(questions[1].workerId, `${run.sessionId}/worker-1`);
+  run.complete('done'); await f.idle(service);
 });
 
 async function saveWorkerCache(f, workers) {

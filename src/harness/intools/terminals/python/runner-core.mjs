@@ -67,9 +67,10 @@ export async function executePythonRequest(request, signal, observer = () => {},
     }
     const payload = join(controlDirectory, 'request.json');
     await writeFile(payload, JSON.stringify(executionRequest), { mode: 0o600 });
-    const privatePaths = await privatePythonPaths([executionRequest.workspace, controlDirectory, ...request.readRoots], undefined, { signal });
-    const workspacePrivatePaths = await workspacePrivatePythonPaths(executionRequest.workspace, { signal });
-    const policy = pythonPolicy({ ...executionRequest, controlDirectory, privatePaths, workspacePrivatePaths, protectedRuntimePaths }, platform);
+    const workspaceRoots = [executionRequest.workspace, ...(executionRequest.workspaceRoots || [])];
+    const privatePaths = await privatePythonPaths([...workspaceRoots, controlDirectory, ...request.readRoots], undefined, { signal });
+    const workspacePrivatePaths = (await Promise.all(workspaceRoots.map(root => workspacePrivatePythonPaths(root, { signal })))).flat();
+    const policy = pythonPolicy({ ...executionRequest, workspaceRoots, controlDirectory, privatePaths, workspacePrivatePaths, protectedRuntimePaths }, platform);
     await omitMissingPythonDenyPaths(policy, platform, { signal });
     if (platform === 'win32') policy.windows = { srtWin: { path: backend.VENDORED_SRT_WIN_EXE } };
     initialized = true;

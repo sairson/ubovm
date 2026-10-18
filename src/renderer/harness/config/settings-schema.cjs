@@ -1,27 +1,34 @@
 'use strict';
 
 const modelPresets = require('./model-presets.cjs');
-const defaultValues = { ...modelPresets.openai, inherit: true, enabled: true, thinkingLevel: 'off', maxIntents: 5, openIntents: 5, maxConcurrency: 3, maxRounds: 0, maxRepairs: 1, maxResponseBytes: 32768,
+const defaultValues = { ...modelPresets.custom, inherit: true, enabled: true, thinkingLevel: 'off', maxIntents: 5, openIntents: 5, maxConcurrency: 3, maxRounds: 0, maxRepairs: 1, maxResponseBytes: 32768,
   maxModelCalls: 0, maxToolCalls: 0, maxPlanSteps: 8, maxCheckpointBytes: 16777216, maxToolResultBytes: 262144,
   connectTimeoutMs: 20000, callTimeoutMs: 60000, maxResultBytes: 262144, maxSkills: 160, maxSkillBytes: 262144, maxTotalBytes: 4194304, maxFiles: 256, maxWorkers: 10000,
   known_hosts_file: '' };
 const f = (key, label, type = 'text', extra = {}) => ({ key, label, type, default: defaultValues[key] ?? (type === 'checkbox' ? false : ['lines', 'checklist', 'servers'].includes(type) ? [] : type === 'json' ? {} : ''), ...extra });
-const modelFields = [f('provider', '服务商', 'select', { options: Object.keys(modelPresets), labels: Object.fromEntries(Object.entries(modelPresets).map(([key, value]) => [key, value.label])), allowCustom: true }), f('modelId', '模型名称'),
+const modelFields = [f('provider', '服务商', 'select', { options: Object.keys(modelPresets), labels: Object.fromEntries(Object.entries(modelPresets).map(([key, value]) => [key, value.label])), allowCustom: true }), f('modelId', '默认模型'), f('models', '可选模型（每行一个）', 'lines', { default: [] }),
   f('api', 'API 协议', 'select', { options: ['', 'openai-completions', 'openai-responses', 'anthropic-messages', 'google-generative-ai', 'azure-openai-responses', 'google-vertex', 'mistral-conversations', 'bedrock-converse-stream', 'pi-messages', 'openai-codex-responses'] }),
   f('baseUrl', 'API 地址', 'text', { placeholder: '自定义服务需要填写实际 API 地址' }), f('apiKey', 'API Key', 'secret'),
   f('contextWindow', '上下文窗口', 'number'), f('maxTokens', '最大输出 Token', 'number'), f('reasoning', '支持推理', 'checkbox'),
   f('input', '支持的输入类型', 'checklist', { options: ['text', 'image'], labels: { text: '文本', image: '图片' }, default: ['text'] }), f('compat', '兼容性参数', 'json'), f('streamOptions', '请求与采样参数', 'json')];
 const thinking = f('thinkingLevel', '思考级别', 'select', { options: ['', 'off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'], labels: { '': '跟随模型默认', off: '关闭', minimal: '最低', low: '较低', medium: '中等', high: '较高', xhigh: '很高', max: '最高' } });
-const tools = ['delivery_workflow', 'todo', 'note', 'fetch_web_content', 'web_search', 'browser_action', 'browser_connection_status', 'read_skills_resource', 'run_local_skill_script', 'run_linux_ssh_command', 'run_local_shell_command', 'run_python', 'manage_python_environment', 'upload_sftp', 'deploy_remote_service'];
+// Every autonomous built-in the desktop exposes. This must keep parity with
+// INTERNAL_TOOL_NAMES in harness/intools/runtime.mjs (minus learn_capability,
+// which stays a back-channel): the host force-assigns this list to
+// intools.allowedTools, so a name missing here is silently unreachable even
+// when the prompts and bundled skills instruct the agent to call it. Host
+// interaction tools (ask_human) are intentionally absent: the assist path adds
+// them only when a human-facing hook is wired, and goal sessions never do.
+const tools = ['delivery_workflow', 'todo', 'note', 'domain_inventory', 'fetch_web_content', 'web_search', 'browser_action', 'browser_connection_status', 'read_skills_resource', 'run_local_skill_script', 'run_linux_ssh_command', 'run_local_shell_command', 'run_python', 'manage_python_environment', 'upload_sftp', 'deploy_remote_service'];
 const sections = {
-  python: { title: 'Python 执行', description: '对话可在本地沙箱里运行 Python，无需 Docker。解释器留空时使用随 IDE 打包的 Python；联网域名默认为 *，可按行收窄。首次准备沙箱时，Windows 可能弹出授权提示。', fields: [
+  python: { title: 'Python 执行', description: '对话可在本地沙箱里运行 Python，无需 Docker。默认允许联网和访问/修改所有已打开工作区；凭据目录仍受保护。解释器留空时使用随 IDE 打包的 Python。首次准备沙箱时，Windows 可能弹出授权提示。', fields: [
     f('executable', 'Python 解释器绝对路径', 'text', { placeholder: '例如 C:\\Python312\\python.exe 或项目 .venv 中的 Python' }),
     f('allowedDomains', '允许联网的域名（每行一个，* 表示任意主机）', 'lines', { default: ['*'] }),
-    f('allowWorkspaceWrite', '允许修改项目文件（不生成 IDE 修改快照）', 'checkbox', { default: false }),
+    f('allowWorkspaceWrite', '允许修改已打开工作区文件（不生成 IDE 修改快照）', 'checkbox', { default: true }),
     f('defaultTimeoutSeconds', '默认超时（秒）', 'number', { default: 120, max: 3600 }),
     f('maxTimeoutSeconds', '超时上限（秒）', 'number', { default: 600, max: 3600 }),
     f('maxOutputBytes', '输出字节上限', 'number', { default: 1048576, min: 1024, max: 10485760 })] },
-  model: { title: '模型连接', description: '先维护我的模型（可测试连接），再为默认、规划、任务和摘要分配使用。', fields: modelFields },
+  model: { title: '模型连接', description: '先选择服务商并完成连接测试，再为默认、规划、任务和摘要分配模型。默认模型和本轮会话模型可以分别调整。', fields: modelFields },
   reasonModel: { title: '规划模型', description: '规划与分析使用的模型；打开继承时跟随默认模型。', fields: [f('inherit', '继承默认模型', 'checkbox'), ...modelFields] },
   workerModel: { title: '任务模型', description: '执行任务使用的模型；打开继承时跟随默认模型。', fields: [f('inherit', '继承默认模型', 'checkbox'), ...modelFields] },
   summaryModel: { title: '摘要模型', description: '压缩长对话使用的模型；打开继承时跟随规划模型。', fields: [f('inherit', '继承规划模型', 'checkbox'), ...modelFields] },
@@ -33,8 +40,9 @@ const sections = {
     f('baseURL', 'Tavily 服务地址', 'text', { default: 'https://api.tavily.com' }), f('searchDepth', '搜索深度', 'select', { options: ['basic', 'advanced', 'fast', 'ultra-fast'], labels: { basic: '基础', advanced: '深入', fast: '快速', 'ultra-fast': '极速' }, default: 'basic' }),
     f('topic', '搜索主题', 'select', { options: ['general', 'news', 'finance'], labels: { general: '通用', news: '新闻', finance: '财经' }, default: 'general' }), f('includeAnswer', '包含搜索摘要', 'checkbox'), f('projectID', 'Tavily 项目 ID'),
     f('fallbackToPublicProviders', '允许公共搜索回退', 'checkbox', { default: true }), f('timeoutMs', '请求超时（毫秒）', 'number', { default: 15000 }), f('providerRetryAttempts', '重试次数', 'number', { default: 3, max: 5 })] },
-  summary: { title: '上下文摘要', description: '长对话达到阈值后压缩历史上下文，保留最近消息；摘要模型在「模型连接」中单独设置。', fields: [f('enabled', '启用上下文摘要', 'checkbox', { default: true }),
-    ...Object.entries({ triggerTokens: ['触发 Token 数', 49152], targetTokens: ['压缩后的目标 Token 数', 24576], triggerMessages: ['触发消息数', 60], keepRecentMessages: ['保留最近消息数', 8], maxSummaryTokens: ['单次摘要最大 Token', 1024], maxSummaryInputTokens: ['单次摘要输入 Token', 12000], maxSummaryCalls: ['单轮摘要次数上限', 16], maxSummaryCallsPerScope: ['每个作用域摘要次数上限', 64], timeoutMs: ['摘要超时（毫秒）', 30000] }).map(([key, [label, value]]) => f(key, label, 'number', { default: value }))] },
+  summary: { title: '上下文摘要', description: '正文摘要与工具摘要分开：对话正文压缩为「进度检查点」（用户目标、决策、待办、失败与不确定），工具结果压缩为「工具摘要」（观测值、成功/失败、精确引用、未验证项），二者使用不同的提示词、输出预算与调用上限，互不抢占额度。压缩阈值按当前模型上下文窗口的可用比例计算：已知窗口时按「触发窗口占比」触发，窗口越大压缩越晚（例如 1M 上下文的模型会在接近上限时才触发，而不再固定在 96K）；窗口未知时回退到「触发 Token 数」。消息数量阈值会随窗口放大（大窗口更晚按消息数压缩），且一次压缩后只有再次明显增长才重新触发，避免同一段历史被反复摘要。压缩失败时不再回填原文，而是标记不可用并保留可恢复 artifact。摘要模型在「模型连接」中单独设置。', fields: [f('enabled', '启用上下文摘要', 'checkbox', { default: true }),
+    f('triggerPercent', '触发窗口占比（%）', 'number', { default: 90, min: 50, max: 99 }),
+    ...Object.entries({ triggerTokens: ['触发 Token 数', 49152], targetTokens: ['压缩后的目标 Token 数', 24576], triggerMessages: ['触发消息数', 60], keepRecentMessages: ['保留最近消息数', 8], maxSummaryTokens: ['正文摘要单次最大 Token', 4096], toolSummaryTokens: ['工具摘要单次最大 Token', 1024], maxSummaryInputTokens: ['单次摘要输入 Token', 12000], maxSummaryCalls: ['正文摘要单轮次数上限', 16], maxToolSummaryCalls: ['工具摘要单轮次数上限', 16], maxSummaryCallsPerTransform: ['单轮摘要分段次数上限', 8], maxSummaryCallsPerScope: ['每个作用域摘要次数上限', 64], earlyCompactRatio: ['提前压缩倍数', 2], timeoutMs: ['摘要超时（毫秒）', 30000] }).map(([key, [label, value]]) => f(key, label, 'number', { default: value }))] },
   reason: { title: '规划设置', description: '控制同时进行的任务数量、规划轮次，以及思考深度。字节上限和协议修复收在「预算与提示词」里。', fields: [
     f('thinkingLevel', '思考级别', 'select', { options: ['', 'off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'], labels: { '': '跟随模型默认', off: '关闭', minimal: '最低', low: '较低', medium: '中等', high: '较高', xhigh: '很高', max: '最高' }, default: 'medium' }),
     f('openIntents', '同时进行的任务上限（排队+执行中）', 'number', { min: 1, max: 20 }),

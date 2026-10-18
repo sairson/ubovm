@@ -8,35 +8,44 @@ const failure = (code, message) => Object.assign(new Error(message), { code });
 const inside = (root, path) => { const value = relative(root, path); return value === '' || value !== '..' && !value.startsWith(`..${sep}`) && !isAbsolute(value); };
 const result = value => ({ content: [{ type: 'text', text: JSON.stringify(value) }], details: value });
 
-/** Read-only workspace capabilities. Canonical paths prevent traversal through symlinks. */
-export async function createWorkspaceTools(workspaceRoots = []) {
+/** Read-only workspace capabilities. Canonical paths prevent traversal through symlinks.
+ * Path note: ubovm/src/renderer/workbench/ and ubovm/src/renderer/webview/ are siblings;
+ * startup.html/workbench.css live under workbench/, not webview/. If a webview/... lookup misses,
+ * did-you-mean: retry under workbench/. Large files (e.g. workbench.css ~1715 lines,
+ * message-view.css 300+ lines): page read_workspace_file via nextLine loop; code to edit pages
+ * via read_workspace_code nextOffset loop; on tool_defect re-read with the other read tool. */
+export async function createWorkspaceTools(workspaceRoots = [], { unbounded = false } = {}) {
   if (!Array.isArray(workspaceRoots) || workspaceRoots.some(root => typeof root !== 'string')) throw new TypeError('workspaceRoots must be an array of paths');
   const roots = [...new Set(await Promise.all(workspaceRoots.map(root => realpath(resolve(root)))))];
   async function locate(input = {}, signal) {
     signal?.throwIfAborted();
     const index = input.root ?? 0, requested = input.path ?? '.';
-    if (!Number.isInteger(index) || !roots[index]) throw failure('WORKSPACE_REQUIRED', 'Select an open workspace root before reading files');
+    const root = roots[index];
+    if (!Number.isInteger(index) || (!root && !unbounded)) throw failure('WORKSPACE_REQUIRED', 'Select an open workspace root before reading files');
     if (typeof requested !== 'string' || requested.includes('\0') || requested.replace(/^[A-Za-z]:/, '').includes(':')) throw failure('INVALID_WORKSPACE_PATH', 'Invalid workspace path');
-    const candidate = resolve(roots[index], requested);
-    if (!inside(roots[index], candidate)) throw failure('WORKSPACE_BOUNDARY', 'Path is outside the selected workspace');
+    // 完全模式 resolves against the workspace root when there is one, but accepts
+    // absolute and escaping paths and never enforces the boundary.
+    const origin = root ?? process.cwd();
+    const candidate = resolve(origin, requested);
+    if (!unbounded && !inside(origin, candidate)) throw failure('WORKSPACE_BOUNDARY', 'Path is outside the selected workspace');
     let canonical;
     try { canonical = await realpath(candidate); }
     catch (error) {
       if (error.code === 'ENOENT' || error.code === 'ENOTDIR') {
         signal?.throwIfAborted();
-        return { path: candidate, root: index, missing: true, missingCode: error.code, display: relative(roots[index], candidate) || requested || '.' };
+        return { path: candidate, root: index, missing: true, missingCode: error.code, display: (root ? relative(root, candidate) : candidate) || requested || '.' };
       }
       throw error;
     }
-    if (!inside(roots[index], canonical)) throw failure('WORKSPACE_BOUNDARY', 'Resolved path is outside the selected workspace');
+    if (!unbounded && !inside(origin, canonical)) throw failure('WORKSPACE_BOUNDARY', 'Resolved path is outside the selected workspace');
     signal?.throwIfAborted();
-    return { path: canonical, root: index, display: relative(roots[index], canonical) || '.' };
+    return { path: canonical, root: index, display: (root && inside(root, canonical) ? relative(root, canonical) : canonical) || '.' };
   }
   const base = { root: Type.Optional(Type.Integer({ minimum: 0 })), path: Type.Optional(Type.String()) };
   return [
     withProgressiveDisclosure({
       name: 'list_workspace_files', recovery: 'retry-read-only', label: 'List workspace files',
-      description: `${WORKSPACE_LIST_CATALOG.description} Roots: ${JSON.stringify(roots.map((path, root) => ({ root, path })))}`,
+      description: `${WORKSPACE_LIST_CATALOG.description} Roots: ${JSON.stringify(roots.map((path, root) => ({ root, path })))}${unbounded ? ' 完全模式 is active: root/path may be any absolute path on this machine, not only the roots listed.' : ''}`,
       parameters: Type.Object({
         ...base,
         offset: Type.Optional(Type.Integer({ minimum: 0 })),
@@ -75,7 +84,7 @@ export async function createWorkspaceTools(workspaceRoots = []) {
     }, { ...WORKSPACE_LIST_CATALOG, mode: 'flag' }),
     withProgressiveDisclosure({
       name: 'read_workspace_file', recovery: 'retry-read-only', label: 'Read workspace file',
-      description: WORKSPACE_READ_CATALOG.description,
+      description: `${WORKSPACE_READ_CATALOG.description} Path: ubovm/src/renderer/workbench/ and ubovm/src/renderer/webview/ are siblings; startup.html/workbench.css are under workbench/. Large files page via nextLine; editable code via read_workspace_code nextOffset; on tool_defect use the other read tool.${unbounded ? ' 完全模式 is active: path may be any absolute path on this machine.' : ''}`,
       parameters: Type.Object({
         ...base,
         path: Type.Optional(Type.String()),

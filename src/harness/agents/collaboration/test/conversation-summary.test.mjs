@@ -135,3 +135,19 @@ test('summary abort still interrupts the conversation model call', async () => {
     throw cancel;
   } }, signal: controller.signal }), error => error === cancel || error?.code === 'ABORT_ERR' || error?.name === 'AbortError');
 });
+
+test('a long collaboration turn does not re-summarize the same history every model call', async t => {
+  const summarized = [], requests = [];
+  const summary = createContextSummaryMiddleware({ triggerTokens: 1000, targetTokens: 500, triggerMessages: 3,
+    keepRecentMessages: 1, maxSummaryTokens: 100, onEvent: event => { if (event.type === 'context.summary') requests.push(event); },
+    summarize: async ({ text }) => { summarized.push(text); return 'Historical evidence retained.'; } });
+  t.after(() => summary.close());
+  const prompt = 'CURRENT_REQUEST ' + 'p'.repeat(1200);
+  const history = [{ role: 'user', content: 'Old request ' + 'a'.repeat(1200), timestamp: 1 },
+    { role: 'assistant', content: [{ type: 'text', text: 'Old reply ' + 'b'.repeat(1200) }], timestamp: 2 }];
+  const { requests: modelRequests } = await conversation({ summary, history, prompt });
+  assert.equal(modelRequests.length, 2);
+  assert.ok(summarized.length > 0, 'the fixture must compact older history');
+  assert.ok(summarized.length <= modelRequests.length,
+    `re-summarizing unchanged history must not grow linearly with model calls; ${summarized.length} summaries for ${modelRequests.length} model calls`);
+});

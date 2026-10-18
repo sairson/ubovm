@@ -23,7 +23,8 @@ test('history drops whole old turns while preserving tool exchanges and source m
     { role: 'toolResult', toolCallId: 'call', content: [{ type: 'text', text: 'result' }] }, answer('done')];
   const before = structuredClone(messages);
   const result = boundedHistory(messages, { maxHistoryMessages: 4 });
-  assert.deepEqual(result, { messages: messages.slice(2), omitted: true });
+  assert.deepEqual(result, { messages: messages.slice(2), omitted: true,
+    historyGap: { kind: 'turns-omitted', droppedMessages: 2, droppedBytes: result.historyGap.droppedBytes } });
   assert.deepEqual(messages, before);
 });
 
@@ -32,7 +33,9 @@ test('byte accounting includes UTF-8 text, JSON escaping and commas at the exact
   const current = [user('中文\\"\n'.repeat(8000)), answer('done')];
   const bytes = Buffer.byteLength(JSON.stringify(current));
   assert(bytes > 65536);
-  assert.deepEqual(boundedHistory([...prefix, ...current], { maxHistoryBytes: bytes }), { messages: current, omitted: true });
+  const exact = boundedHistory([...prefix, ...current], { maxHistoryBytes: bytes });
+  assert.deepEqual(exact, { messages: current, omitted: true,
+    historyGap: { kind: 'turns-omitted', droppedMessages: 2, droppedBytes: exact.historyGap.droppedBytes } });
   const clipped = boundedHistory(current, { maxHistoryBytes: bytes - 1 });
   assert.equal(clipped.omitted, true);
   assert(Buffer.byteLength(JSON.stringify(clipped.messages)) <= bytes - 1);

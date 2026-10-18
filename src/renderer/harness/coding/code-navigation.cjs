@@ -17,7 +17,7 @@ function bounded(action, signal) {
   });
 }
 
-function createCodeNavigation(vscode, { locate, workspaceFolders }) {
+function createCodeNavigation(vscode, { locate, workspaceFolders, unbounded = () => false }) {
   return sessionId => ({
     name: 'navigate_workspace_code', recovery: 'retry-read-only', label: '代码符号与引用导航',
     description: 'Use installed language providers to list document symbols or find definitions/references at a one-based line and UTF-16 column. Results are limited to this session’s workspace roots. Empty results do not prove absence: the language provider may be unavailable or still indexing; fall back to search_workspace. Unsaved source documents are rejected.',
@@ -61,8 +61,11 @@ function createCodeNavigation(vscode, { locate, workspaceFolders }) {
         if (uri?.scheme !== 'file' || !range?.start || !range?.end) { omitted++; continue; }
         if (!canonical.has(uri.fsPath)) canonical.set(uri.fsPath, await fs.realpath(uri.fsPath).catch(() => null));
         const file = canonical.get(uri.fsPath), root = file ? roots.findIndex(r => inside(r, file)) : -1;
-        if (root < 0) { omitted++; continue; }
-        const value = { root, path: path.relative(roots[root], file), line: range.start.line + 1, column: range.start.character + 1, endLine: range.end.line + 1, endColumn: range.end.character + 1 };
+        // 完全模式 reports provider results outside every workspace root with an
+        // absolute path and root -1 instead of silently omitting them.
+        const open = unbounded(sessionId) === true;
+        if (root < 0 && (!open || !file)) { omitted++; continue; }
+        const value = { root, path: root >= 0 ? path.relative(roots[root], file) : file, line: range.start.line + 1, column: range.start.character + 1, endLine: range.end.line + 1, endColumn: range.end.character + 1 };
         if (input.action === 'symbols') Object.assign(value, { name: String(item.name ?? '').slice(0, 500), kind: item.kind, container: String(item.containerName ?? container).slice(0, 500) });
         const id = JSON.stringify(value);
         if (!seen.has(id)) { seen.add(id); results.push(value); }

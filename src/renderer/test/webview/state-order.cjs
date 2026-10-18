@@ -21,17 +21,17 @@ test('failed receive transactions restore both ordering counters for an identica
   assert.equal(order.execution(delta(4, 'b'), current).execution.status, 'completed');
 });
 
-test('invalid fresh state shapes consume no revision and stale malformed data is ignored', () => {
+test('invalid fields are downgraded and the revision advances instead of retrying forever', () => {
   const order = createStateOrder();
   let current = order.full(full(1));
   for (const invalid of [{ messages: {} }, { relatedConversations: {} }, { context: [] }, { mode: 'invalid' }, { execution: { parts: {} } }]) {
-    assert.throws(() => order.full({ ...full(2), ...invalid }, current), TypeError);
+    assert.doesNotThrow(() => { current = order.full({ ...full(2), ...invalid }, current); });
   }
-  current = order.full(full(2), current);
+  current = order.full(full(8), current);
   assert.equal(current.conversation.id, 'a');
-  assert.equal(order.full({ ...full(1), messages: {} }, current), null);
-  assert.throws(() => order.execution({ ...delta(3), execution: [] }, current), TypeError);
-  assert.equal(order.execution(delta(3), current).execution.status, 'completed');
+  assert.doesNotThrow(() => { current = order.full({ ...full(9), messages: {} }, current); });
+  assert.doesNotThrow(() => order.execution({ ...delta(10), execution: [] }, current));
+  assert.equal(order.execution(delta(11), current).execution.status, 'completed');
 });
 
 test('old and duplicate execution updates cannot undo completion or a newer full state', () => {
@@ -66,7 +66,7 @@ test('stale full states cannot switch conversations back and foreign deltas cons
   assert.equal(current.conversation.id, 'b'); assert.equal(current.execution.status, 'completed');
 });
 
-test('legacy fixtures work until versioned messages arrive, and malformed states do not advance revisions', () => {
+test('legacy execution fixtures continue to apply without a view revision', () => {
   const order = createStateOrder();
   let current = order.full(full(undefined));
   current = order.execution(delta(undefined), current);
@@ -74,7 +74,16 @@ test('legacy fixtures work until versioned messages arrive, and malformed states
   assert.equal(order.full({ viewRevision: 100 }, current), null);
   current = order.full(full(2), current);
   assert.equal(order.full(full(undefined), current), null);
-  assert.equal(order.execution(delta(undefined), current), null);
+  assert.equal(order.execution(delta(undefined), current).execution.status, 'completed');
+});
+
+test('unversioned execution uses seq for deduplication when provided', () => {
+  const order = createStateOrder();
+  let current = order.full(full(1));
+  current = order.execution({ ...delta(undefined), seq: 2, execution: { status: 'running' } }, current);
+  assert.equal(order.execution({ ...delta(undefined), seq: 2, execution: { status: 'completed' } }, current), null);
+  current = order.execution({ ...delta(undefined), seq: 3, execution: { status: 'completed' } }, current);
+  assert.equal(current.execution.status, 'completed');
 });
 
 test('execution ticks can clear recovering without replacing conversation history', () => {

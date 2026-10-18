@@ -8,7 +8,16 @@ export function openLocalShell(executable, args, cwd, { spawnProcess = spawn, cl
   child.on('error', () => {});
   child.once('close', () => { closed = true; });
   for (const stream of [child.stdin, child.stdout, child.stderr]) stream.on('error', error => child.emit('error', error));
-  return { stdout: child.stdout, stderr: child.stderr, events: child, write: data => child.stdin.write(data),
+  // PowerShell `-Command -` reads stdin and reparses it. A write whose final
+  // newline is still buffered, or that lands mid-quote, makes PowerShell parse
+  // an incomplete line and fail with TerminatorExpectedAtEndOfString (surfaced
+  // as CLIXML). Deliver each frame as one complete, newline-terminated write.
+  const frame = data => {
+    const text = String(data);
+    return text.endsWith('\n') ? text : `${text}\n`;
+  };
+  return { stdout: child.stdout, stderr: child.stderr, events: child,
+    write: data => child.stdin.write(frame(data)),
     close() {
       if (closing) return closing;
       closing = new Promise(resolve => {

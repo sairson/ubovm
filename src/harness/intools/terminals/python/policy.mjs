@@ -1,7 +1,7 @@
 import { access, lstat, open, opendir, realpath, stat } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
+import { basename, delimiter, dirname, isAbsolute, join, parse, resolve } from 'node:path';
 import { contained } from '../../shared/common.mjs';
 import { bundledPythonCandidates } from './runtime.mjs';
 
@@ -98,12 +98,19 @@ export function pythonAllowsHost(domains, host, port = 443) {
   });
 }
 
-export function pythonPolicy({ workspace, outputDirectory, controlDirectory, readRoots, protectedRuntimePaths = [], privatePaths = [join(homedir(), '.ubovm')], workspacePrivatePaths = [], allowedDomains = [], allowWorkspaceWrite = false }, platform = process.platform, home = homedir()) {
+export function pythonPolicy({ workspace, workspaceRoots = [], outputDirectory, controlDirectory, readRoots = [], protectedRuntimePaths = [], privatePaths = [join(homedir(), '.ubovm')], workspacePrivatePaths = [], allowedDomains = [], allowWorkspaceWrite = false, unbounded = false }, platform = process.platform, home = homedir()) {
   const protectedPaths = [join(home, '.ssh'), join(home, '.aws'), join(home, '.azure'), join(home, '.config', 'gcloud'),
     ...privatePaths, ...workspacePrivatePaths, join(home, '.codex'), ...['.git', '.env', '.agents', '.codex', '.ubovm-python'].map(name => join(workspace, name))];
-  const allowRead = [workspace, controlDirectory, ...readRoots];
-  const allowWrite = [outputDirectory, ...(allowWorkspaceWrite ? [workspace] : [])];
-  const denyWrite = [...new Set([...protectedPaths, controlDirectory, ...protectedRuntimePaths, ...readRoots])];
+  const openWorkspaces = [workspace, ...workspaceRoots];
+  // 完全模式 grants the whole volume that holds the workspace instead of only the
+  // open workspaces, and drops every credential/secret deny. It falls back to the
+  // confined policy when the workspace paths yield no volume root.
+  const volumes = unbounded ? [...new Set(openWorkspaces.map(root => parse(root).root).filter(Boolean))] : [];
+  const open = volumes.length > 0;
+  const writeRoots = open ? volumes : allowWorkspaceWrite ? openWorkspaces : [];
+  const allowRead = [...(open ? volumes : openWorkspaces), controlDirectory, ...readRoots];
+  const allowWrite = [outputDirectory, ...writeRoots];
+  const denyWrite = open ? [] : [...new Set([...protectedPaths, controlDirectory, ...protectedRuntimePaths, ...readRoots])];
   const overlaps = (path, roots) => roots.some(root => contained(root, path) || contained(path, root));
   return {
     // Sandbox-runtime rejects a bare "*" in allowedDomains. An open host
@@ -115,7 +122,7 @@ export function pythonPolicy({ workspace, outputDirectory, controlDirectory, rea
       // roots. Stamp exceptions within those grants, not huge unrelated host
       // profiles/runtime trees. Outside them the account's normal NTFS access
       // applies; this is not a VM or an absolute read allowlist.
-      denyRead: platform === 'win32' ? protectedPaths.filter(path => overlaps(path, [...allowRead, ...allowWrite])) : [home, ...protectedPaths],
+      denyRead: open ? [] : platform === 'win32' ? protectedPaths.filter(path => overlaps(path, [...allowRead, ...allowWrite])) : [home, ...protectedPaths],
       allowRead,
       allowWrite,
       denyWrite: platform === 'win32' ? denyWrite.filter(path => overlaps(path, allowWrite)) : denyWrite

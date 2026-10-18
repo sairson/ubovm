@@ -488,7 +488,7 @@ test('native log streams independently, preserves tool state and clears on sessi
   await page.goto('http://worker.test/');
   assert.equal(await page.locator('#worker-empty').textContent(), '正在加载 Worker 日志…');
   const emit = data => page.evaluate(async data => { dispatchEvent(new MessageEvent('message', { data })); await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); }, data);
-  const workers = [{ id: 'a', name: '检查实现', status: 'running', parts: [{ id: 'tool', type: 'tool', name: 'read_workspace_file', status: 'running', args: '{}', output: 'first' }] }, { id: 'b', name: '验证测试', status: 'completed', result: '测试完成' }];
+  const workers = [{ id: 'a', name: '检查实现', status: 'running', parts: [{ id: 'tool', type: 'tool', name: 'run_local_shell_command', status: 'running', args: '{"command":"echo first"}', output: 'first' }] }, { id: 'b', name: '验证测试', status: 'completed', result: '测试完成' }];
   await emit({ type: 'workers', sessionId: 'one', workers, selected: 'a' });
   assert.equal(await page.locator('.worker-panel').isVisible(), true);
   assert.equal(await page.locator('.worker-resize-handle').isVisible(), false);

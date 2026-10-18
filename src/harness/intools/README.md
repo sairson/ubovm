@@ -15,6 +15,7 @@
 | `note/` | 会话笔记工具（资产/漏洞字段、黑板晋升）；与 `../learning/` 被动学习无关 |
 | `domain-inventory/` | 域名攻击面台账（种子域、关联资产、覆盖状态）；安全阶段验收门禁 |
 | `todo/` | 任务清单工具 |
+| `ask-human/` | 向用户提问并获取选择（单选/多选 + 自定义回答）；属宿主交互工具，仅在协助模式提供 `askHuman` 钩子时启用，目标模式不包含 |
 | `delivery/` | 交付工作流工具与记录校验 |
 | `shared/` | 跨工具基础：`common.mjs`、`disclosure.mjs`（渐进式披露）、`tool-catalogs.mjs`、`http/`、`store/`、`process/` |
 | `runtime.mjs` | `createInternalTools` 会话编排（证据、学习接线、Worker 工具缓存） |

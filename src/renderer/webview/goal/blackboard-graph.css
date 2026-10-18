@@ -19,15 +19,16 @@
 .graph-edge-label { fill: var(--muted); stroke: none; font-size: 9px; opacity: .8; }
 .graph-edge-label.is-selected { opacity: 1; fill: var(--ink); }
 .graph-node.graph-goal-badge { background: var(--accent-wash); color: var(--accent); border-color: var(--accent); }
-.graph-node { position: absolute; box-sizing: border-box; display: flex; flex-direction: column; align-items: stretch; gap: 6px; width: var(--graph-node-width, 240px); height: var(--graph-node-height, 128px); padding: 12px 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--canvas); color: var(--ink); text-align: left; transition: box-shadow .15s, border-color .15s; }
+.graph-node { position: absolute; box-sizing: border-box; display: flex; flex-direction: column; align-items: stretch; gap: 6px; width: var(--graph-node-width, 240px); height: var(--graph-node-height, 128px); padding: 12px 16px; border: 1px solid var(--graph-node-border, var(--border)); border-radius: 12px; background: var(--graph-node-surface, var(--canvas)); color: var(--ink); text-align: left; transition: box-shadow .15s, border-color .15s; }
 .graph-node:hover { box-shadow: 0 0 0 5px color-mix(in srgb, var(--focus) 10%, transparent); }
 .graph-node[aria-pressed="true"] { box-shadow: 0 0 0 8px color-mix(in srgb, var(--focus) 16%, transparent); }
 .graph-node-state { flex-shrink: 0; color: inherit; font-size: 10px; line-height: 14px; font-weight: 600; }
 .graph-node-title { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; flex-shrink: 0; min-width: 0; max-height: 60px; overflow: hidden; font-size: 13px; line-height: 20px; font-weight: 500; white-space: normal; word-break: normal; overflow-wrap: anywhere; }
 .graph-node-info { display: block; margin-top: auto; color: var(--muted); font-size: 10px; line-height: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .graph-node[data-kind="fact"] { background: var(--canvas); border-color: color-mix(in srgb, var(--muted) 40%, var(--canvas)); }
-.graph-node[data-outcome="partial"] .graph-node-state, .graph-node[data-outcome="blocked"] .graph-node-state { color: var(--vscode-problemsWarningIcon-foreground, #a87930); }
-.graph-node[data-outcome="confirmed"] .graph-node-state { color: var(--accent); }
+.graph-node[data-outcome="partial"] .graph-node-state, .graph-node[data-outcome="blocked"] .graph-node-state { color: var(--graph-warn, #a87930); }
+.graph-node[data-outcome="confirmed"] .graph-node-state { color: var(--graph-accent, var(--accent)); }
+.graph-node[data-outcome="negative"] .graph-node-state { color: var(--graph-error, #b7554b); }
 .graph-node[data-kind="root"] { background: var(--accent-wash); color: var(--accent); border-color: var(--border); width: 88px; height: 48px; margin-left: calc((var(--graph-node-width, 240px) - 88px) / 2); margin-top: calc((var(--graph-node-height, 128px) - 48px) / 2); justify-content: center; text-align: center; border-radius: 24px; }
 .graph-node[data-kind="root"] .graph-node-info { display: none; }
 .graph-node[data-kind="root"] .graph-node-state { display: none; }
@@ -73,14 +74,37 @@
   --graph-accent: color-mix(in srgb, var(--accent) 80%, var(--ink));
   --graph-line: color-mix(in srgb, var(--ink) 32%, var(--canvas));
   --graph-error: var(--vscode-errorForeground, #b7554b);
+  --graph-warn: var(--vscode-problemsWarningIcon-foreground, #a87930);
   --graph-surface: color-mix(in srgb, var(--ink) 2%, var(--canvas));
+  /* Raised card surface so nodes read as objects instead of holes. The layer
+     token is white in light themes and lifts above the base in dark themes. */
+  --graph-node-surface: var(--dsw-alias-bg-layer-3, var(--canvas));
+  --graph-node-border: var(--dsw-alias-border-l4, var(--border));
+  --graph-node-shadow: 0 2px 4px #00000006;
+}
+/* A light card needs a real shadow once the surface is dark; hairline shadows
+   are invisible there and the node loses its edge. */
+body.vscode-dark .graph-workspace, body.vscode-high-contrast .graph-workspace {
+  --graph-node-surface: var(--dsw-static-neutral-bluish-750, var(--canvas));
+  --graph-node-border: rgba(255, 255, 255, 0.24);
+  --graph-node-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+  /* The dim amber fallback would sink into the lighter dark card. */
+  --graph-warn: var(--vscode-problemsWarningIcon-foreground, var(--dsw-static-amber-400, #e0b356));
 }
 .graph-viewport { background: var(--graph-surface); border: 1px solid var(--border); }
-.graph-node[data-kind="fact"] { background: var(--canvas); border-color: color-mix(in srgb, var(--ink) 18%, var(--canvas)); box-shadow: 0 2px 4px #00000006; }
+.graph-node[data-kind="fact"] { background: var(--graph-node-surface, var(--canvas)); border-color: var(--graph-node-border, var(--border)); box-shadow: var(--graph-node-shadow); }
 .graph-node[data-kind="fact"] .graph-node-state { color: var(--muted); opacity: 1; }
-.graph-node[data-kind="root"] { background: var(--graph-accent); border-color: var(--graph-accent); color: #fff; }
+/* Fact nodes carry an outcome; keep it legible over the raised card instead of
+   flattening every fact label to the same muted gray. */
+.graph-node[data-kind="fact"][data-outcome="confirmed"] .graph-node-state { color: var(--graph-accent, var(--accent)); }
+.graph-node[data-kind="fact"][data-outcome="partial"] .graph-node-state,
+.graph-node[data-kind="fact"][data-outcome="blocked"] .graph-node-state { color: var(--graph-warn, #a87930); }
+.graph-node[data-kind="fact"][data-outcome="negative"] .graph-node-state { color: var(--graph-error, #b7554b); }
+/* The accent is near-black on light themes and near-white on dark ones, so the
+   badge text must be the opposite surface token, never a fixed white. */
+.graph-node[data-kind="root"] { background: var(--graph-accent); border-color: var(--graph-accent); color: var(--canvas); }
 .graph-node:hover { border-color: var(--graph-accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--graph-accent) 8%, transparent); }
-.graph-node[aria-pressed="true"] { border-color: var(--graph-accent); background: color-mix(in srgb, var(--graph-accent) 5%, var(--canvas)); box-shadow: 0 0 0 3px color-mix(in srgb, var(--graph-accent) 12%, transparent); }
+.graph-node[aria-pressed="true"] { border-color: var(--graph-accent); background: color-mix(in srgb, var(--graph-accent) 8%, var(--graph-node-surface, var(--canvas))); box-shadow: 0 0 0 3px color-mix(in srgb, var(--graph-accent) 12%, transparent); }
 .graph-node[data-kind="root"][aria-pressed="true"] { background: var(--graph-accent); }
 .graph-edges path, .graph-edges path[data-status="completed"] { stroke: var(--graph-line); stroke-opacity: 1; }
 .graph-edges path[data-kind="achieves"] { stroke: var(--graph-accent); stroke-width: 1.6; }
@@ -101,7 +125,7 @@
 .graph-edges path[data-selection-id]:not(.graph-edge-hit):is(:hover, :focus-visible) { stroke: var(--graph-accent); stroke-width: 2.5; outline: none; }
 .graph-edges .graph-edge-hit:is(:hover, :focus-visible) + path { stroke: var(--graph-accent); stroke-width: 2.5; }
 .graph-edge-label[data-selection-id]:focus-visible { fill: var(--graph-accent); text-decoration: underline; }
-.graph-frontier { background: var(--canvas); border-color: var(--graph-line); color: var(--muted); }
+.graph-frontier { background: var(--graph-node-surface, var(--canvas)); border-color: var(--graph-line); color: var(--muted); }
 .graph-frontier[data-status="running"] { background: color-mix(in srgb, var(--graph-accent) 7%, var(--canvas)); border-color: var(--graph-accent); color: var(--graph-accent); }
 .graph-frontier[data-status="failed"] { border-color: var(--graph-error); color: var(--graph-error); }
 

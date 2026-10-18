@@ -16,7 +16,9 @@ export function shellScript(command, token, windows = false, cwd) {
   if (windows) {
     const source = `${cwd === undefined ? '' : `Set-Location -LiteralPath '${cwd.replaceAll("'", "''")}';\n`}${command}`;
     const encoded = Buffer.from(source, 'utf8').toString('base64');
-    return `$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); $OutputEncoding=[Console]::OutputEncoding; $global:LASTEXITCODE=0; $${token}=0; try { . ([scriptblock]::Create([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}')))) | Out-String -Stream | ForEach-Object { [Console]::WriteLine($_) }; $${token}=$global:LASTEXITCODE } catch { [Console]::Error.WriteLine($_.ToString()); $${token}=1 }; [Console]::Out.Write(([char]30)+'${token}:'+$${token}+([char]31)); [Console]::Error.Write(([char]30)+'${token}:'+$${token}+([char]31)); Remove-Variable ${token} -ErrorAction SilentlyContinue\n`;
+    // $ProgressPreference silences CLIXML progress records that PowerShell emits
+    // when its output is a pipe; the host also receives no CLIXML envelope.
+    return `$ProgressPreference='SilentlyContinue'; $ErrorActionPreference='Stop'; [Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); $OutputEncoding=[Console]::OutputEncoding; $global:LASTEXITCODE=0; $${token}=0; try { . ([scriptblock]::Create([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}')))) | Out-String -Stream | ForEach-Object { [Console]::WriteLine($_) }; $${token}=$global:LASTEXITCODE } catch { [Console]::Error.WriteLine($_.ToString()); $${token}=1 }; [Console]::Out.Write(([char]30)+'${token}:'+$${token}+([char]31)); [Console]::Error.Write(([char]30)+'${token}:'+$${token}+([char]31)); Remove-Variable ${token} -ErrorAction SilentlyContinue\n`;
   }
   const source = `${cwd === undefined ? '' : `cd ${quote(cwd)} && `}eval ${quote(command)}`;
   return `${source}\n${token}=$?\nprintf '\\036${token}:%s\\037' "$${token}"\nprintf '\\036${token}:%s\\037' "$${token}" >&2\nunset ${token}\n`;

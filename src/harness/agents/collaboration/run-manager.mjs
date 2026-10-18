@@ -38,7 +38,13 @@ export function createRunManager({ limits = {}, signal, now, monotonicNow } = {}
     if (configured.maxDurationMs && elapsed() >= configured.maxDurationMs) throw timeout();
     const used = kind === 'model' ? modelCalls : toolCalls;
     const maximum = configured[kind === 'model' ? 'maxModelCalls' : 'maxToolCalls'];
-    if (maximum && used >= maximum) throw stop('HARNESS_CALL_LIMIT', `Harness 全局 ${kind} 调用预算已耗尽，执行记录已保留。`);
+    if (maximum && used >= maximum) {
+      // A call budget is admission control for this call, not a reason to
+      // abort unrelated workers that may still be able to finish and persist.
+      throw Object.assign(new Error(`Harness 全局 ${kind} 调用预算已耗尽，执行记录已保留。`), {
+        code: 'HARNESS_CALL_LIMIT', retryable: true, scope: 'call'
+      });
+    }
     const counts = workers.get(workerId) ?? { modelCalls: 0, toolCalls: 0 };
     if (kind === 'model') { modelCalls++; counts.modelCalls++; }
     else { toolCalls++; counts.toolCalls++; }

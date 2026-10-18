@@ -13,6 +13,13 @@
   --ubovm-modal-shadow: 0 24px 72px #18251d28, 0 4px 12px #18251d10;
   --ubovm-sidebar-tab-radius: 6px;
   --ubovm-sidebar-tab-pad-x: 8px;
+  /* DeepSeek Harness radius scale, shared by the custom workbench chrome. */
+  --dsw-radius-xs: 4px;
+  --dsw-radius-sm: 8px;
+  --dsw-radius-md: 12px;
+  --dsw-radius-lg: 16px;
+  --dsw-radius-xl: 20px;
+  --dsw-radius-panel: 28px;
 }
 .monaco-workbench.vs-dark {
   --ubovm-popup-shadow: 0 12px 36px #0006, 0 2px 6px #0003;
@@ -225,33 +232,37 @@ html:not(.ubovm-content-slow) .ubovm-sessions-loading .tree-explorer-viewlet-tre
 .monaco-workbench .part.editor :is(.editor-actions, .title > .title-actions) .action-item:not(:has(.codicon-screen-full, .codicon-screen-normal, .codicon-open-preview, .codicon-preview, .codicon-file-code)) { display: none !important; }
 
 /* File and browser editors share this title strip. Keep native tab hit targets
- * and close actions; restyle the chrome so it matches the sidebar chips. */
+ * and close actions; keep the tab strip flat and integrated with the editor. */
 .monaco-workbench .part.editor > .content .editor-group-container > .title.tabs {
   --editor-group-tab-height: 24px !important;
-  --ubovm-editor-tab-radius: 3px;
+  --ubovm-editor-tab-radius: 0;
   --ubovm-editor-tab-inactive: color-mix(in srgb, var(--vscode-foreground) 62%, transparent);
-  --ubovm-editor-tab-chip: color-mix(in srgb, var(--vscode-foreground) 10%, transparent);
-  --ubovm-editor-tab-chip-idle: color-mix(in srgb, var(--vscode-foreground) 4%, transparent);
-  --ubovm-editor-tab-chip-hover: color-mix(in srgb, var(--vscode-foreground) 7%, transparent);
+  --ubovm-editor-tab-chip: transparent;
+  --ubovm-editor-tab-chip-idle: transparent;
+  --ubovm-editor-tab-chip-hover: color-mix(in srgb, var(--vscode-foreground) 4%, transparent);
   --ubovm-editor-tab-accent: var(--vscode-focusBorder, #3d7a55);
-  padding: 0 6px;
+  padding: 0 8px;
   box-sizing: border-box;
-  background: color-mix(in srgb, var(--vscode-foreground) 4%, var(--vscode-editor-background)) !important;
-  border-bottom: 1px solid color-mix(in srgb, var(--vscode-foreground) 10%, transparent);
+  background: var(--vscode-editor-background) !important;
+  border-bottom: 1px solid color-mix(in srgb, var(--vscode-foreground) 7%, transparent);
   cursor: default;
 }
 .monaco-workbench.vs-dark .part.editor > .content .editor-group-container > .title.tabs {
   --ubovm-editor-tab-inactive: color-mix(in srgb, var(--vscode-foreground) 72%, transparent);
-  --ubovm-editor-tab-chip: color-mix(in srgb, var(--vscode-foreground) 14%, transparent);
-  --ubovm-editor-tab-chip-idle: color-mix(in srgb, var(--vscode-foreground) 6%, transparent);
-  --ubovm-editor-tab-chip-hover: color-mix(in srgb, var(--vscode-foreground) 10%, transparent);
+  --ubovm-editor-tab-chip: transparent;
+  --ubovm-editor-tab-chip-idle: transparent;
+  --ubovm-editor-tab-chip-hover: color-mix(in srgb, var(--vscode-foreground) 6%, transparent);
   --ubovm-editor-tab-accent: var(--vscode-focusBorder, #a3c0ae);
-  background: color-mix(in srgb, var(--vscode-foreground) 6%, var(--vscode-editor-background)) !important;
-  border-bottom-color: color-mix(in srgb, var(--vscode-foreground) 14%, transparent);
+  background: var(--vscode-editor-background) !important;
+  border-bottom-color: color-mix(in srgb, var(--vscode-foreground) 10%, transparent);
 }
 .monaco-workbench .part.editor > .content .editor-group-container > .title > .tabs-and-actions-container {
   --tabs-border-bottom-color: transparent !important;
   align-items: center;
+}
+.monaco-workbench .part.editor .tabs-and-actions-container:not(.wrapping) .tabs-container {
+  gap: 0;
+  padding: 0;
 }
 .monaco-workbench .part.editor > .content .editor-group-container > .title > .tabs-and-actions-container.tabs-border-bottom::after {
   display: none;
@@ -293,7 +304,7 @@ html:not(.ubovm-content-slow) .ubovm-sessions-loading .tree-explorer-viewlet-tre
 }
 .monaco-workbench.modern-ui-tabs:not(:is(.hc-black, .hc-light)) .part.editor > .content .editor-group-container .tabs-container > .tab > .tab-fill,
 .monaco-workbench .part.editor > .content .editor-group-container .tabs-container > .tab > .tab-fill {
-  inset: 3px 2px !important;
+  inset: 0 !important;
   border: none !important;
   border-radius: var(--ubovm-editor-tab-radius) !important;
   background: var(--ubovm-editor-tab-chip-idle) !important;
@@ -469,13 +480,13 @@ html:not(.ubovm-content-slow) .ubovm-sessions-loading .tree-explorer-viewlet-tre
 }
 .monaco-workbench.modern-ui-tabs.vs-dark .part.sidebar.pane-composite-part > .title > .composite-bar-container > .composite-bar > .monaco-action-bar .action-item:not(.icon):hover,
 .monaco-workbench.vs-dark .part.sidebar.pane-composite-part > .title > .composite-bar-container > .composite-bar > .monaco-action-bar .action-item:not(.icon):hover {
-  background: color-mix(in srgb, var(--vscode-foreground) 9%, transparent) !important;
-  background-color: color-mix(in srgb, var(--vscode-foreground) 9%, transparent) !important;
+  background: color-mix(in srgb, var(--vscode-foreground) 6%, transparent) !important;
+  background-color: color-mix(in srgb, var(--vscode-foreground) 6%, transparent) !important;
 }
 .monaco-workbench.modern-ui-tabs.vs-dark .part.sidebar.pane-composite-part > .title > .composite-bar-container > .composite-bar > .monaco-action-bar .action-item:not(.icon).checked,
 .monaco-workbench.vs-dark .part.sidebar.pane-composite-part > .title > .composite-bar-container > .composite-bar > .monaco-action-bar .action-item:not(.icon).checked {
-  background: color-mix(in srgb, var(--vscode-foreground) 12%, transparent) !important;
-  background-color: color-mix(in srgb, var(--vscode-foreground) 12%, transparent) !important;
+  background: color-mix(in srgb, var(--vscode-foreground) 10%, transparent) !important;
+  background-color: color-mix(in srgb, var(--vscode-foreground) 10%, transparent) !important;
   box-shadow: none !important;
 }
 /* Modern UI paints fill on the indicator; hide it so both states share one pill. */
@@ -1558,7 +1569,8 @@ html[data-ubovm-locale="en"] .monaco-workbench .part.panel .title-actions .actio
   width: 28px;
   height: 28px;
   padding: 0;
-  border-radius: 3px;
+  /* DeepSeek Harness browser chrome: 28px controls on the 8px radius step. */
+  border-radius: var(--dsw-radius-sm, 8px);
   box-sizing: border-box;
   opacity: .88;
   transition: background-color 120ms ease-out, color 120ms ease-out, opacity 120ms ease-out;
@@ -1577,21 +1589,23 @@ html[data-ubovm-locale="en"] .monaco-workbench .part.panel .title-actions .actio
   opacity: .38;
 }
 
+/* DSH address field: hairline border, 8px radius, blue 1px inset focus ring. */
 .monaco-workbench .browser-url-container {
   min-height: 32px;
   align-items: center !important;
-  border-radius: 4px !important;
-  border-color: color-mix(in srgb, var(--vscode-foreground) 14%, transparent) !important;
+  border-radius: var(--dsw-radius-sm, 8px) !important;
+  border: 0.5px solid color-mix(in srgb, var(--vscode-foreground) 12%, transparent) !important;
   background: var(--vscode-input-background) !important;
-  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--vscode-foreground) 5%, transparent);
-  transition: border-color 140ms ease-out, box-shadow 140ms ease-out;
+  box-shadow: none;
+  transition: border-color 140ms ease-out, background 140ms ease-out;
 }
 .monaco-workbench .browser-url-container:hover {
-  border-color: color-mix(in srgb, var(--vscode-foreground) 24%, transparent) !important;
+  border-color: color-mix(in srgb, var(--vscode-foreground) 20%, transparent) !important;
 }
 .monaco-workbench .browser-url-container:has(.browser-url-display:focus) {
-  border-color: var(--ubovm-browser-accent) !important;
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--ubovm-browser-accent) 55%, transparent);
+  outline: 1px solid var(--ubovm-browser-accent) !important;
+  outline-offset: -1px;
+  border-color: transparent !important;
 }
 .monaco-workbench .browser-url-display {
   padding: 6px 10px 6px 8px !important;
@@ -1606,12 +1620,12 @@ html[data-ubovm-locale="en"] .monaco-workbench .part.panel .title-actions .actio
 .monaco-workbench .browser-site-info-indicator {
   width: 24px !important;
   height: 24px !important;
-  border-radius: 3px !important;
+  border-radius: var(--dsw-radius-sm, 8px) !important;
 }
 .monaco-workbench .browser-favorite-indicator,
 .monaco-workbench .browser-share-toggle {
   min-height: 24px;
-  border-radius: 3px !important;
+  border-radius: var(--dsw-radius-sm, 8px) !important;
 }
 .monaco-workbench .browser-share-toggle.checked {
   background: color-mix(in srgb, var(--ubovm-browser-accent) 18%, transparent) !important;
@@ -1647,8 +1661,8 @@ html[data-ubovm-locale="en"] .monaco-workbench .part.panel .title-actions .actio
   height: 52px;
   min-height: 52px !important;
   margin: 0 auto 18px;
-  border: 1px solid var(--vscode-widget-border, color-mix(in srgb, var(--vscode-foreground) 12%, transparent));
-  border-radius: 6px;
+  border: 0.5px solid var(--vscode-widget-border, color-mix(in srgb, var(--vscode-foreground) 12%, transparent));
+  border-radius: var(--dsw-radius-md, 12px);
   background: color-mix(in srgb, var(--vscode-foreground) 4%, var(--vscode-editor-background));
 }
 .monaco-workbench .browser-welcome-icon .codicon {
@@ -1677,20 +1691,20 @@ html[data-ubovm-locale="en"] .monaco-workbench .part.panel .title-actions .actio
 }
 .monaco-workbench .browser-error-content {
   padding: 20px 22px;
-  border: 1px solid var(--vscode-widget-border, transparent);
-  border-radius: 6px;
+  border: 0.5px solid var(--vscode-widget-border, transparent);
+  border-radius: var(--dsw-radius-sm, 8px);
   background: color-mix(in srgb, var(--vscode-foreground) 3%, var(--vscode-editor-background));
 }
 .monaco-workbench .browser-overlay-paused-message {
   padding: 18px 28px !important;
-  border-radius: 6px !important;
+  border-radius: var(--dsw-radius-sm, 8px) !important;
   box-shadow: var(--ubovm-popup-shadow) !important;
 }
 
 .monaco-workbench .browser-emulation-toolbar {
   padding: 6px 10px !important;
   gap: 10px !important;
-  border-bottom: 1px solid color-mix(in srgb, var(--vscode-foreground) 8%, transparent);
+  border-bottom: 0.5px solid color-mix(in srgb, var(--vscode-foreground) 10%, transparent);
 }
 .monaco-workbench .browser-find-widget-wrapper .simple-find-part {
   padding: 6px 10px 6px 12px !important;
@@ -1709,4 +1723,3 @@ html[data-ubovm-locale="en"] .monaco-workbench .part.panel .title-actions .actio
     transform: none;
   }
 }
-

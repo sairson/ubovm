@@ -11,10 +11,27 @@
     run_python: '运行 Python 沙箱', manage_python_environment: '管理 Python 依赖', run_linux_ssh_command: '运行命令',
     upload_sftp: 'SFTP 上传', deploy_remote_service: '部署远程服务', fetch_web_content: '读取网页', web_search: '搜索网页',
     load_skill: '加载技能', read_skills_resource: '读取技能资源', run_local_skill_script: '执行技能脚本',
-    note: '更新笔记', todo: '更新任务', browser_action: '浏览器操作', read_context_evidence: '读取上下文证据'
+    note: '更新笔记', todo: '更新任务', browser_action: '浏览器操作', read_context_evidence: '读取上下文证据',
+    install_skill: '安装技能', install_mcp_server: '安装 MCP 服务',
+    browser_connection_status: '检查浏览器状态', domain_inventory: '登记域名资产', learn_capability: '记录能力',
+    inspect_harness: '查看运行预算', manage_harness_project: '管理任务配置', read_worker_result: '读取任务结果',
+    read_workspace_change: '读取代码改动快照', preview_workspace_edits: '预览代码修改', preview_workspace_rename: '预览符号重命名',
+    edit_workspace_files: '批量编辑代码', inspect_workspace_project: '检查项目配置',
+    list_assist_evidence: '查看已记录证据', record_assist_evidence: '记录证据', attach_assist_evidence: '关联证据',
+    list_linked_goals: '查看关联目标', create_linked_goal: '创建关联目标', ask_human: '询问用户'
   });
   const isBackgroundTool = part => Boolean(part && part.type === 'tool' && part.background === true);
   const visibleTimelineParts = parts => Array.isArray(parts) ? parts.filter(part => !isBackgroundTool(part)) : [];
+  // Read-only tools return content the user does not need echoed back (file
+  // reads, search results, evidence lookups). Their cards keep the operation,
+  // target and status but must not render the returned body.
+  const READ_ONLY_PREFIXES = Object.freeze(['read_', 'list_', 'get_', 'search_', 'inspect_']);
+  const READ_ONLY_TOOLS = Object.freeze(new Set([
+    'web_search', 'fetch_web_content', 'navigate_workspace_code', 'load_skill',
+    'scan_workspace_secrets', 'inventory_workspace_dependencies', 'analyze_workspace_call_chain'
+  ]));
+  const isReadOnlyTool = name => typeof name === 'string' && name.length > 0
+    && (READ_ONLY_TOOLS.has(name) || READ_ONLY_PREFIXES.some(prefix => name.startsWith(prefix)));
   function eachToolPart(state, visit) {
     const seen = new Set();
     const walk = part => {
@@ -55,7 +72,7 @@
     }
     return visible.reverse();
   }
-  const api = { TOOL_LABELS, isBackgroundTool, visibleTimelineParts, visibleActivities, displayActivityLabel, eachToolPart };
+  const api = { TOOL_LABELS, isBackgroundTool, isReadOnlyTool, visibleTimelineParts, visibleActivities, displayActivityLabel, eachToolPart };
   if (typeof module === 'object' && module.exports) module.exports = api;
   if (typeof window === 'object') window.UBOVMTimeline = api;
 })();

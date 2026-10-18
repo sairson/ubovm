@@ -17,10 +17,13 @@ function record(value, label, code) {
   return value;
 }
 
+// Unknown keys are ignored instead of rejected: models routinely add fields such
+// as "ok", "status" or "success" to an otherwise valid object. Unknown keys never
+// change semantics (they are not read), and a genuinely missing required field is
+// still reported by the caller, which is the actionable error.
 function fields(value, allowed, label, code) {
   record(value, label, code);
-  const unknown = Object.keys(value).find((key) => !allowed.includes(key));
-  if (unknown !== undefined) throw invalid(code, `${label} contains unknown field ${JSON.stringify(unknown)}.`);
+  return Object.keys(value).filter((key) => !allowed.includes(key));
 }
 
 function required(value, label, code, { exact = false } = {}) {
@@ -91,10 +94,11 @@ export function parsePlan(text, { maxSteps = 8, replan = false } = {}) {
   fields(value, replan ? ['done', 'steps'] : ['steps'], 'Plan', code);
   if (replan) {
     if (typeof value.done !== 'boolean') throw invalid(code, 'A replanning decision must contain a boolean done.');
-    if (value.done) {
-      if (Object.hasOwn(value, 'steps')) throw invalid(code, 'A completed replanning decision must not contain steps.');
-      return { done: true, steps: [] };
-    }
+    // `done` is the authoritative decision. Models routinely echo the schema's
+    // `steps` key (often as an empty array) next to done:true; ignoring it keeps
+    // the turn valid instead of forcing a repair. Remaining work is handed off
+    // and named in the conclusion.
+    if (value.done) return { done: true, steps: [] };
   }
   if (!Array.isArray(value.steps) || value.steps.length === 0) {
     throw invalid(code, 'An unfinished plan requires a nonempty steps array.');

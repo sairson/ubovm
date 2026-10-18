@@ -472,7 +472,9 @@ export async function createHarness(options = {}) {
     if (options.contextSummary !== false) {
       const config = options.contextSummary === true || options.contextSummary === undefined ? {} : options.contextSummary;
       const defaultClient = reason.client ?? worker.client;
-      summary = createContextSummaryMiddleware({ ...(defaultClient ? { model: defaultClient } : {}), ...config,
+      // A role client is already built; pass it as `client`, not as `model`
+      // (which is a model configuration and would reject client-only fields).
+      summary = createContextSummaryMiddleware({ ...(defaultClient ? { client: defaultClient } : {}), ...config,
         load: async key => load(`context:${key}`) ?? await config.load?.(key),
         save: async (key, value) => { await config.save?.(key, clone(value)); await save(`context:${key}`, value); },
         onEvent: event => { dispatchMiddleware?.(event); observer(config.onEvent, event); }

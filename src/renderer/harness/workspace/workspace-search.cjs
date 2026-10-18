@@ -6,7 +6,7 @@ const { StringDecoder } = require('node:string_decoder');
 const result = value => ({ content: [{ type: 'text', text: JSON.stringify(value) }], details: value });
 const inside = (root, file) => { const p = path.relative(root, file); return p !== '..' && !p.startsWith('..' + path.sep) && !path.isAbsolute(p); };
 
-function createWorkspaceSearch(vscode, { executable, workspaceFolders = () => vscode.workspace.workspaceFolders ?? [],
+function createWorkspaceSearch(vscode, { executable, workspaceFolders = () => vscode.workspace.workspaceFolders ?? [], unbounded = () => false,
   maxConcurrent = 4, maxPerSession = 2, timeoutMs = 15000, stopTimeoutMs = 1000, spawnProcess = spawn } = {}) {
   for (const value of [maxConcurrent, maxPerSession]) if (!Number.isSafeInteger(value) || value < 1) throw new TypeError('Invalid search capacity');
   for (const value of [timeoutMs, stopTimeoutMs]) if (!Number.isSafeInteger(value) || value < 1 || value > 2147483647) throw new TypeError('Invalid search timeout');
@@ -35,6 +35,17 @@ function createWorkspaceSearch(vscode, { executable, workspaceFolders = () => vs
     if (!Number.isInteger(rootIndex) || rootIndex < 0 || !folders[rootIndex]) throw new Error('请选择工作区。');
     const requestedRoot = path.resolve(folders[rootIndex].uri.fsPath);
     const root = await fs.realpath(requestedRoot);
+    // 完全模式 scans any directory; the confined modes keep the scan inside the root.
+    const open = unbounded(sessionId) === true;
+    let scanRoot = root;
+    if (input.path !== undefined) {
+      if (typeof input.path !== 'string' || !input.path || input.path.includes('\0')) throw new Error('搜索目录无效。');
+      const real = await fs.realpath(path.resolve(root, input.path)).catch(() => null);
+      const info = real ? await fs.stat(real).catch(() => null) : null;
+      if (!info?.isDirectory()) throw new Error('搜索目录不存在，或不是目录。');
+      if (!open && !inside(root, real)) throw new Error('搜索目录超出工作区。');
+      scanRoot = real;
+    }
     const rootKey = value => process.platform === 'win32' ? value.toLowerCase() : value;
     function assertWorkspaceCurrent() {
       const current = workspaceFolders(sessionId).filter(folder => folder.uri.scheme === 'file')[rootIndex]?.uri.fsPath;
@@ -78,7 +89,7 @@ function createWorkspaceSearch(vscode, { executable, workspaceFolders = () => vs
     const found = [], recent = [];
     let seen = 0, more = false, partial = false, searchIssue;
     await new Promise((resolve, reject) => {
-      const child = spawnProcess(program, args, { cwd: root, shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+      const child = spawnProcess(program, args, { cwd: scanRoot, shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
       ticket.physical = true;
       const decoder = new StringDecoder('utf8');
       let buffered = '', stderr = '', failure, bytes = 0, done = false, stopped = false, stopTimer;
@@ -159,17 +170,18 @@ function createWorkspaceSearch(vscode, { executable, workspaceFolders = () => vs
     const matches = [], verifiedPaths = new Map();
     for (const item of found) {
       signal?.throwIfAborted();
-      const requested = path.resolve(root, item.path);
-      if (!inside(root, requested)) continue;
+      const requested = path.resolve(scanRoot, item.path);
+      if (!inside(scanRoot, requested)) continue;
       if (!verifiedPaths.has(requested)) {
         const canonical = await fs.realpath(requested).catch(() => null);
-        verifiedPaths.set(requested, canonical !== null && inside(root, canonical));
+        verifiedPaths.set(requested, canonical !== null && inside(scanRoot, canonical));
       }
       if (verifiedPaths.get(requested)) matches.push(item);
     }
     signal?.throwIfAborted(); assertWorkspaceCurrent();
     const payload = {
       engine: 'ripgrep', root: rootIndex, mode, cannotSearch: Boolean(searchIssue),
+      ...(scanRoot === root ? {} : { directory: scanRoot }),
       matches: searchIssue ? [] : matches, offset,
       nextOffset: searchIssue ? null : more ? offset + found.length : null,
       truncated: Boolean(!searchIssue && (more || partial)), partial: Boolean(!searchIssue && partial),
@@ -196,8 +208,8 @@ function createWorkspaceSearch(vscode, { executable, workspaceFolders = () => vs
     try { return await performSearch(input, signal, sessionId, ticket); }
     finally { if (!ticket.physical) release(ticket); }
   }
-  return { tools: sessionId => [{ name: 'search_workspace', recovery: 'retry-read-only', label: '搜索项目代码', description: 'Read-only ripgrep (rg) code search. mode=text returns matching lines, nearby context and up to 200 match ranges per line; files lists paths by glob; matchingFiles is rg -l (paths containing a pattern); count returns per-file occurrence counts and matchedLines. Supply query OR patterns (OR semantics, at most 20). Literal by default; regex=true enables Rust regex, wholeWord restricts words, caseSensitive defaults false. types filters rg language types such as js, ts, py, rust. Respects .gitignore/.ignore; mandatory .git/dependency/cache exclusions cannot be overridden; never follows links. Lines/UTF-16 columns are one-based, endColumn exclusive. Ranges refer to full lines even when displayed text is truncated. Use nextOffset for pagination (lines for text, files otherwise); counts cover returned files only. Partial results are not exhaustive. Unsaved buffers are not searched. Empty matches with cannotSearch=false means no hits in searchable files; cannotSearch=true means the engine could not search (invalid regex or type).',
-    parameters: { type: 'object', properties: { root: { type: 'integer', minimum: 0 }, mode: { type: 'string', enum: ['files', 'text', 'matchingFiles', 'count'] }, query: { type: 'string', minLength: 1, maxLength: 2000 }, patterns: { type: 'array', minItems: 1, maxItems: 20, items: { type: 'string', minLength: 1, maxLength: 2000 } }, types: { type: 'array', maxItems: 20, items: { type: 'string', pattern: '^[a-zA-Z0-9][a-zA-Z0-9_-]{0,39}$' } }, regex: { type: 'boolean' }, wholeWord: { type: 'boolean' }, contextLines: { type: 'integer', minimum: 0, maximum: 10 }, caseSensitive: { type: 'boolean' }, include: { type: 'array', items: { type: 'string' } }, exclude: { type: 'array', items: { type: 'string' } }, offset: { type: 'integer', minimum: 0, maximum: 10000 }, limit: { type: 'integer', minimum: 1, maximum: 200 } }, additionalProperties: false },
+  return { tools: sessionId => [{ name: 'search_workspace', recovery: 'retry-read-only', label: '搜索项目代码', description: 'Read-only ripgrep (rg) code search. mode=text returns matching lines, nearby context and up to 200 match ranges per line; files lists paths by glob; matchingFiles is rg -l (paths containing a pattern); count returns per-file occurrence counts and matchedLines. Supply query OR patterns (OR semantics, at most 20). Literal by default; regex=true enables Rust regex, wholeWord restricts words, caseSensitive defaults false. types filters rg language types such as js, ts, py, rust. path narrows the scan to a directory (absolute allowed only in 完全模式; otherwise it must stay inside the selected root) and defaults to the whole root. Respects .gitignore/.ignore; mandatory .git/dependency/cache exclusions cannot be overridden; never follows links. Lines/UTF-16 columns are one-based, endColumn exclusive. Ranges refer to full lines even when displayed text is truncated. Use nextOffset for pagination (lines for text, files otherwise); counts cover returned files only. Partial results are not exhaustive. Unsaved buffers are not searched. Empty matches with cannotSearch=false means no hits in searchable files; cannotSearch=true means the engine could not search (invalid regex or type).',
+    parameters: { type: 'object', properties: { root: { type: 'integer', minimum: 0 }, path: { type: 'string', maxLength: 4096 }, mode: { type: 'string', enum: ['files', 'text', 'matchingFiles', 'count'] }, query: { type: 'string', minLength: 1, maxLength: 2000 }, patterns: { type: 'array', minItems: 1, maxItems: 20, items: { type: 'string', minLength: 1, maxLength: 2000 } }, types: { type: 'array', maxItems: 20, items: { type: 'string', pattern: '^[a-zA-Z0-9][a-zA-Z0-9_-]{0,39}$' } }, regex: { type: 'boolean' }, wholeWord: { type: 'boolean' }, contextLines: { type: 'integer', minimum: 0, maximum: 10 }, caseSensitive: { type: 'boolean' }, include: { type: 'array', items: { type: 'string' } }, exclude: { type: 'array', items: { type: 'string' } }, offset: { type: 'integer', minimum: 0, maximum: 10000 }, limit: { type: 'integer', minimum: 1, maximum: 200 } }, additionalProperties: false },
     execute: (_id, input, signal) => search(input, signal, sessionId) }] };
 }
 module.exports = { createWorkspaceSearch };

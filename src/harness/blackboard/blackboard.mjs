@@ -211,6 +211,7 @@ function validateSnapshot(input) {
 /** A session-owned DAG. Writes are serialized; readers only see persisted commits. */
 export class Blackboard {
   #state;
+  #snapshotCache;
   #persist;
   #openIntents = MAX_OPEN_INTENTS;
   #queue = Promise.resolve();
@@ -228,6 +229,7 @@ export class Blackboard {
       nodes: [{ id: rootId, kind: 'root', parentIds: [], childIds: [], createdAt: timestamp,
         updatedAt: timestamp, intent: null, attempts: [], fact: { content: goal, createdAt: timestamp }, provenance: null }]
     };
+    this.#snapshotCache = clone(this.#state);
     this.#persist = persist;
   }
 
@@ -237,6 +239,7 @@ export class Blackboard {
     const state = validateSnapshot(snapshot);
     const board = new Blackboard({ sessionId: state.sessionId, goal: state.goal, persist, openIntents });
     board.#state = state;
+    board.#snapshotCache = clone(state);
     return board;
   }
 
@@ -252,15 +255,21 @@ export class Blackboard {
     }
     const board = new Blackboard({ sessionId: sessionId ?? state?.sessionId, goal: goal ?? state?.goal, openIntents, persist: snapshot => writeSnapshot(path, snapshot) });
     if (state) board.#state = state;
+    if (state) board.#snapshotCache = clone(state);
     else await board.#persist(clone(board.#state));
     return board;
   }
 
-  snapshot() { return clone(this.#state); }
+  // Coordinators can opt into the immutable internal view to avoid cloning a
+  // large graph repeatedly within one event-loop turn. Public callers retain
+  // the defensive clone by default.
+  snapshot({ clone: copy = true } = {}) { return copy ? globalThis.structuredClone(this.#snapshotCache) : this.#snapshotCache; }
   node(id) { return clone(this.#state.nodes.find(node => node.id === id)); }
-  pendingIntents() {
-    return this.snapshot().nodes.filter(node => node.intent?.status === 'pending')
+  pendingIntents({ clone: copy = true } = {}) {
+    const nodes = this.snapshot({ clone: !copy }).nodes;
+    const pending = nodes.filter(node => node.intent?.status === 'pending')
       .sort((left, right) => priorities[left.intent.priority] - priorities[right.intent.priority]);
+    return copy ? clone(pending) : pending;
   }
 
   // The read barrier includes already-enqueued writes, not just visible state.
@@ -290,8 +299,9 @@ export class Blackboard {
       if (JSON.stringify(next) === JSON.stringify(this.#state)) return clone(result);
       if (next.revision === Number.MAX_SAFE_INTEGER) throw new Error('Blackboard revision exhausted');
       next.revision++;
-      await this.#persist(clone(next));
+      await this.#persist(next);
       this.#state = next;
+      this.#snapshotCache = clone(next);
       const event = { type, sessionId: next.sessionId, revision: next.revision };
       for (const listener of this.#listeners) {
         try { Promise.resolve(listener(clone(event))).catch(() => {}); } catch { /* observers cannot roll back commits */ }

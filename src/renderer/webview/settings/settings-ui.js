@@ -575,6 +575,16 @@ function createSettingsPanel(vscode) {
   }
   function bindProviderPresets() {
     const provider = fields.querySelector('[data-setting="provider"]'); if (!provider) return;
+    const modelId = fields.querySelector('[data-setting="modelId"]');
+    const syncModelCatalog = () => {
+      if (!modelId) return;
+      const preset = data.modelPresets[provider.value];
+      const models = Array.isArray(preset?.models) ? preset.models.filter(value => typeof value === 'string' && value) : [];
+      let list = modelId.list ? document.getElementById(modelId.list) : null;
+      if (!models.length) { modelId.removeAttribute('list'); list?.remove(); return; }
+      if (!list) { list = document.createElement('datalist'); list.id = 'model-id-options-' + requestScope; document.body.appendChild(list); modelId.setAttribute('list', list.id); }
+      list.replaceChildren(...models.map(value => { const option = document.createElement('option'); option.value = value; return option; }));
+    };
     provider.addEventListener('change', () => {
       const preset = { ...(data.modelPresets[provider.value] ?? data.modelPresets.custom) };
       for (const [key, value] of Object.entries(preset)) {
@@ -590,8 +600,12 @@ function createSettingsPanel(vscode) {
       setText(key.closest('.settings-field').querySelector('.settings-secret-help span'), '清除当前端点已保存的凭据');
       fields.querySelector('[data-setting="compat"]').value = '{}';
       fields.querySelector('[data-setting="streamOptions"]').value = '{}';
+      const modelsField = fields.querySelector('[data-setting="models"]');
+      if (modelsField) modelsField.value = Array.isArray(preset?.models) ? preset.models.join('\n') : '';
+      syncModelCatalog();
       markDirty(); status('已填入服务商预设；检查配置后保存。');
     });
+    syncModelCatalog();
   }
   function refreshSSHList() {
     const groups = [...fields.querySelectorAll('.settings-ssh-profile')];

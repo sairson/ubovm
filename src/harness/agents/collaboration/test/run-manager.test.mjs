@@ -30,7 +30,7 @@ test('shared budgets include every worker and snapshots remain detached', () => 
     snapshot.workers[0].modelCalls = 99; snapshot.limits.maxModelCalls = 99;
     assert.equal(runtime.snapshot().workers[0].modelCalls, 1);
     assert.throws(() => runtime.beforeModel('other'), { code: 'HARNESS_CALL_LIMIT' });
-    assert.equal(runtime.signal.aborted, true);
+    assert.equal(runtime.signal.aborted, false);
     assert.equal(runtime.snapshot().modelCalls, 3);
   } finally { runtime.close(); }
 });

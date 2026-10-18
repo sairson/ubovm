@@ -98,7 +98,7 @@ test('Pi profiles hydrate across roles and autonomous collaboration without leak
 
 test('Python settings enable the AI tool, persist host permissions and validate before saving', async () => {
   const f = fixture();
-  assert.equal((await f.service.snapshot()).values.python.allowWorkspaceWrite, false);
+  assert.equal((await f.service.snapshot()).values.python.allowWorkspaceWrite, true);
   assert.deepEqual((await f.service.snapshot()).values.python.allowedDomains, ['*']);
   assert((await f.model.read()).intools.allowedTools.includes('run_python'));
   assert((await f.model.read()).intools.allowedTools.includes('manage_python_environment'));
@@ -357,9 +357,12 @@ test('SSH form can clear a private key path while retaining unexposed output lim
 test('summary validation is atomic, disabling keeps parameters, and re-enabling restores them', async () => {
   const f = fixture(); const before = structuredClone(f.values);
   await assert.rejects(f.save('summary', { enabled: true, triggerTokens: 1000, targetTokens: 2000 }), /必须小于/); assert.deepEqual(f.values, before);
+  await assert.rejects(f.save('summary', { enabled: true, triggerPercent: 10 }), /触发窗口占比/); assert.deepEqual(f.values, before);
   await f.save('summary', { enabled: false, triggerTokens: 32000, targetTokens: 12000 });
   assert.equal((await f.model.read()).contextSummary, false); assert.equal((await f.service.snapshot()).values.summary.triggerTokens, 32000);
-  await f.save('summary', { enabled: true, triggerTokens: 32000, targetTokens: 12000 }); assert.equal((await f.model.read()).contextSummary.targetTokens, 12000);
+  await f.save('summary', { enabled: true, triggerTokens: 32000, targetTokens: 12000, triggerPercent: 95 });
+  assert.equal((await f.model.read()).contextSummary.targetTokens, 12000);
+  assert.equal((await f.model.read()).contextSummary.triggerPercent, 95);
 });
 test('legacy tool switches and allowlists cannot disable built-ins or erase connection parameters', async () => {
   for (const intools of [false, { allowedTools: [], browser: false, webSearch: false, fetchContent: false, skillResource: false, skillScript: false },
@@ -373,6 +376,18 @@ test('legacy tool switches and allowlists cannot disable built-ins or erase conn
     await assert.rejects(f.save('tools', { enabled: false }));
     assert.deepEqual(f.values, before);
   }
+});
+test('the desktop tool allowlist keeps parity with the built-in tool set', async () => {
+  // The host force-assigns settings-schema tools to intools.allowedTools, so any
+  // built-in missing there is silently unreachable even though the system prompts
+  // and bundled skills instruct the agent to call it (that is how domain_inventory
+  // was lost). learn_capability stays an intentional back-channel.
+  const { INTERNAL_TOOL_NAMES } = await import('../../../../harness/intools/runtime.mjs');
+  const listed = require('../../../harness/config/settings-schema.cjs').tools;
+  const expected = INTERNAL_TOOL_NAMES.filter(name => name !== 'learn_capability');
+  for (const name of expected) assert.ok(listed.includes(name), `settings-schema tools must include built-in ${name}`);
+  for (const name of listed) assert.ok(INTERNAL_TOOL_NAMES.includes(name), `settings-schema tools has unknown built-in ${name}`);
+  assert.equal(listed.length, expected.length, 'allowlist must not carry extra or duplicate entries');
 });
 test('MCP credentials are private, survive edits and do not follow changed server endpoints', async () => {
   const f = fixture(); const server = { name: 'remote', transport: 'sse', url: 'https://mcp.example/sse' };

@@ -74,6 +74,23 @@ const errorText = error => {
 const abortError = () => new DOMException('Collaboration swarm closed', 'AbortError');
 const textFields = (key, text, wasTruncated = false) => ({ [key]: text.slice(0, textLimits[key]),
   ...(wasTruncated || text.length > textLimits[key] ? { [`${key}Truncated`]: true } : {}) });
+// Truncated text is the most misread signal in this file: a prefix reads like a whole answer. Every
+// place that stores or forwards sliced text attaches the same machine-readable recovery contract.
+const truncationRecovery = (data, extra = {}) => data?.resultTruncated === true ? {
+  truncated: true,
+  mustReadFullResult: true,
+  tool: 'read_worker_result',
+  worker_id: data.id,
+  nextOffset: 0,
+  ...(typeof data.resultLength === 'number' ? { total: data.resultLength } : {}),
+  reason: 'The visible text is only a prefix. Read every page with read_worker_result + nextOffset before summarizing or concluding.',
+  ...extra,
+} : undefined;
+// A worker that never ran because a file/import does not exist is not the same fact as a worker that
+// ran and failed. Reporting the first as 'failed' makes the parent misread a missing path as a bug.
+const notFoundCodes = new Set(['ENOENT', 'MODULE_NOT_FOUND', 'NOT_FOUND', 'ERR_MODULE_NOT_FOUND']);
+const isNotFoundFailure = error => error?.code === 'SWARM_NOT_FOUND' || notFoundCodes.has(error?.code)
+  || notFoundCodes.has(error?.cause?.code);
 
 /**
  * A bounded tree of independent chat/tool loops. runWorker must honor its signal.
@@ -97,6 +114,7 @@ export function createSwarm({ sessionId, maxConcurrency = 3, maxWorkers = 12, ma
 
   const workers = new Map(), watchers = new Set(), running = new Set(), spawning = new Set(), resumes = [];
   let slots = 0, created = 0, closed = false, closePromise, persistenceError;
+  const resultReads = new Set();
   let persistTail = Promise.resolve();
   let omittedWorkerCount = state?.omittedWorkerCount ?? 0;
   let omittedInterruptedWorkerCount = state?.omittedInterruptedWorkerCount ?? 0;
@@ -125,7 +143,7 @@ export function createSwarm({ sessionId, maxConcurrency = 3, maxWorkers = 12, ma
       || (saved.priority !== undefined && (!Number.isSafeInteger(saved.priority) || saved.priority < priorityLimit.min || saved.priority > priorityLimit.max))
       || (!active.has(saved.status) && !terminal.has(saved.status))
       || (saved.depth !== undefined && (!Number.isSafeInteger(saved.depth) || saved.depth < 1))
-      || ['createdAt', 'startedAt', 'finishedAt', 'cancelRequestedAt'].some(key => saved[key] !== undefined && (typeof saved[key] !== 'number' || !Number.isFinite(saved[key])))
+       || ['createdAt', 'startedAt', 'finishedAt', 'cancelRequestedAt', 'resultLength'].some(key => saved[key] !== undefined && (typeof saved[key] !== 'number' || !Number.isFinite(saved[key]) || saved[key] < 0))
       || ['name', 'result', 'error', 'cancelReason'].some(key => saved[key] !== undefined && typeof saved[key] !== 'string')) {
       omit(saved); continue;
     }
@@ -140,8 +158,11 @@ export function createSwarm({ sessionId, maxConcurrency = 3, maxWorkers = 12, ma
       if (saved[key] !== undefined) Object.assign(recovered, textFields(key, saved[key], saved[`${key}Truncated`] === true));
     }
     for (const key of ['startedAt', 'finishedAt', 'cancelRequestedAt']) if (saved[key] !== undefined) recovered[key] = saved[key];
+    if (saved.resultLength !== undefined) recovered.resultLength = saved.resultLength;
     if (active.has(recovered.status)) Object.assign(recovered, { status: 'interrupted',
-      error: 'Worker was interrupted before this conversation resumed; it was not replayed.', finishedAt: Date.now() });
+      errorCategory: 'not_found', errorCode: 'not_found',
+      error: 'Worker was interrupted before this conversation resumed; it was not replayed. No result was ever produced, so treat this as not_found rather than failed: do not report it as a failed attempt, and do not retry a path that was never confirmed to exist.',
+      finishedAt: Date.now() });
     workers.set(recovered.id, { data: recovered, historical: true });
   }
 
@@ -166,10 +187,12 @@ export function createSwarm({ sessionId, maxConcurrency = 3, maxWorkers = 12, ma
     }, error => {
       if (persistenceError) return;
       persistenceError = error instanceof Error ? error : new Error(errorText(error));
-      // A broken execution journal invalidates every live worker, not only
-      // future dispatches. Keep slots held until their cleanup really settles.
+      persistenceError.code ||= 'SWARM_PERSISTENCE_FAILED';
+      // A failed journal means the host can no longer establish a trustworthy
+      // lifecycle. Stop cooperative workers before they produce conclusions
+      // that cannot be durably associated with their execution state.
       for (const worker of workers.values()) {
-        if (!worker.historical && worker.executing && active.has(worker.data.status)) worker.controller.abort(persistenceError);
+        if (!worker.historical && active.has(worker.data.status) && !worker.controller.signal.aborted) worker.controller.abort(persistenceError);
       }
       schedule();
       for (const watcher of [...watchers]) watcher();
@@ -253,12 +276,29 @@ export function createSwarm({ sessionId, maxConcurrency = 3, maxWorkers = 12, ma
     const blocked = blockage(worker, ownerId);
     if (blocked) data.blocked = blocked;
     if (worker.slot && worker.data.cancelRequestedAt) data.releasing = true;
+    const recovery = truncationRecovery(data, { required: true, offset: 0 });
+    if (recovery) {
+      data.resultRecovery = recovery;
+      if (typeof data.guidance !== 'string') data.guidance = `${recovery.reason} Do not conclude from the prefix.`;
+    }
     return data;
   }
   const statusOrder = { running: 0, waiting: 1, queued: 2, interrupted: 3, failed: 4, completed: 5 };
   function presentMany(list, ownerId = sessionId) {
     return list.map(worker => present(worker, ownerId)).sort((left, right) => (statusOrder[left.status] ?? 9) - (statusOrder[right.status] ?? 9)
       || (right.priority ?? 0) - (left.priority ?? 0) || (left.createdAt ?? 0) - (right.createdAt ?? 0));
+  }
+  function markResultRead(workerId, nextOffset) {
+    if (typeof workerId !== 'string' || !Number.isSafeInteger(nextOffset) || nextOffset < 0) return;
+    // Any deliberate page read is engagement. A reader may page a tail slice by
+    // offset instead of walking the whole result, and that must not be treated
+    // as if it never looked at the output.
+    resultReads.add(workerId);
+  }
+  function unreadResults(ownerId = sessionId) {
+    return descendants(ownerId).filter(worker => worker.data.status === 'completed' && worker.data.resultTruncated === true
+      && Number.isSafeInteger(worker.data.resultLength) && !resultReads.has(worker.data.id))
+      .map(worker => ({ worker_id: worker.data.id, offset: 0, total: worker.data.resultLength }));
   }
   function preemptSkip(worker) {
     const unmet = (worker.data.dependsOn ?? []).filter(id => workers.get(id)?.data.status !== 'completed');
@@ -379,19 +419,27 @@ export function createSwarm({ sessionId, maxConcurrency = 3, maxWorkers = 12, ma
           worker.controller.signal.throwIfAborted();
           worker.executing = true;
           const assigned = worker.data.writes?.length
-            ? `${worker.data.task}\n\nAssigned write paths (exclusive; edit only these files): ${worker.data.writes.join(', ')}`
+            ? `${worker.data.task}\n\nAssigned write paths (exclusive; edit only these files): ${worker.data.writes.join(', ')}\n\nIf an expected file or import does not exist, that is a missing dependency, not a failed dependency: verify the path, then report it as not found (status not_found) with file:line instead of reporting a failure.`
             : worker.data.task;
           const value = await runWorker({ workerId: worker.data.id, parentId: worker.data.parentId,
             task: assigned, depth: worker.data.depth, signal: worker.controller.signal, profile: worker.data.profile, modelProfile: worker.data.modelProfile,
             dependencies: (worker.data.dependsOn ?? []).map(id => {
               const data = workers.get(id).data;
+              const dependencyResultTruncated = data.resultTruncated === true || (data.result?.length ?? 0) > 4096;
+              const notFound = data.errorCategory === 'not_found' || isNotFoundFailure(data.errorCode);
               return { worker_id: id, status: data.status, result: (data.result ?? '').slice(0, 4096),
-                resultTruncated: data.resultTruncated === true || (data.result?.length ?? 0) > 4096 };
+                resultTruncated: dependencyResultTruncated,
+                ...(notFound ? { not_found: true, note: 'This dependency never produced a result (missing path or import), which is not the same as running and failing.' } : {}),
+                ...(dependencyResultTruncated ? truncationRecovery({ ...data, id }, { note: 'The dependency result is truncated to 4096 characters.' }) : {}) };
             }) });
           worker.controller.signal.throwIfAborted();
-          Object.assign(worker.data, { status: 'completed', ...textFields('result', typeof value === 'string' ? value : String(value ?? '')) });
-        } catch (error) {
-          Object.assign(worker.data, { status: worker.controller.signal.aborted ? 'interrupted' : 'failed', ...textFields('error', errorText(error)) });
+          const fullResult = typeof value === 'string' ? value : String(value ?? '');
+          Object.assign(worker.data, { status: 'completed', resultLength: fullResult.length, ...textFields('result', fullResult) });
+         } catch (error) {
+           const journalAbort = worker.controller.signal.aborted && worker.controller.signal.reason?.code === 'SWARM_PERSISTENCE_FAILED';
+           const notFound = !worker.controller.signal.aborted && isNotFoundFailure(error);
+           const status = !notFound && worker.controller.signal.aborted && !(journalAbort && !worker.executing) ? 'interrupted' : 'failed';
+           Object.assign(worker.data, { status, ...(notFound ? { errorCategory: 'not_found', errorCode: error?.code ?? error?.cause?.code ?? 'not_found' } : {}), ...textFields('error', errorText(error)) });
         } finally {
           worker.data.finishedAt = Date.now();
           release(worker);
@@ -590,7 +638,9 @@ export function createSwarm({ sessionId, maxConcurrency = 3, maxWorkers = 12, ma
       schedule();
       return report(worker, workerId, preemption, input.preempt === true);
     } catch (error) {
-      Object.assign(data, { status: closed || signal?.aborted || callSignal?.aborted || parent?.controller.signal.aborted || worker.controller.signal.aborted ? 'interrupted' : 'failed', ...textFields('error', errorText(error)), finishedAt: Date.now() });
+      const journalAbort = worker.controller.signal.aborted && worker.controller.signal.reason?.code === 'SWARM_PERSISTENCE_FAILED';
+      const interrupted = closed || signal?.aborted || callSignal?.aborted || parent?.controller.signal.aborted || worker.controller.signal.aborted;
+      Object.assign(data, { status: interrupted && !(journalAbort && !worker.executing) ? 'interrupted' : 'failed', ...textFields('error', errorText(error)), finishedAt: Date.now() });
       await changed().catch(() => {});
       throw error;
     }
@@ -798,5 +848,5 @@ export function createSwarm({ sessionId, maxConcurrency = 3, maxWorkers = 12, ma
   function aborted() { close().catch(() => {}); }
   signal?.addEventListener('abort', aborted, { once: true });
   if (signal?.aborted) aborted();
-  return { toolsFor, snapshot, settle, close, admission: (id = sessionId) => structuredClone(admissionSnapshot(id)), inspect, assertCanWrite };
+  return { toolsFor, snapshot, settle, close, admission: (id = sessionId) => structuredClone(admissionSnapshot(id)), inspect, assertCanWrite, markResultRead, unreadResults };
 }

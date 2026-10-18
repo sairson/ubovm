@@ -59,10 +59,11 @@ calling more tools to think longer. Do not claim that tools ran unless their
 results are in the transcript.`,
   replan: `Review the executed steps against the intent and latest shared evidence.
 Remove covered work. Stay in this plan only to finish the current slice's acceptance check.
-If the next action is a new slice, return {"done":true} and name it in the conclusion.
+The boolean "done" is the decision: if the next action is a new slice, return {"done":true} and name it in the conclusion.
 Otherwise return only JSON:
 {"done":false,"steps":[{"description":"one action that finishes this check","doneWhen":"observable acceptance condition"}]}.
 If execution has converged, including a concrete blocker, return {"done":true}.
+When done is true, leave the steps key out (or empty); it is ignored either way.
 No tools are available in this phase. Do not re-add a completed step without a
 materially different action or new evidence. Do not lengthen this context to keep thinking.`,
   conclude: `Produce durable factual knowledge, not a conversational sign-off.

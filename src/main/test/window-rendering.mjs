@@ -62,6 +62,20 @@ test('idle windows keep the compositor alive and wake on first input without nav
   assert.equal(f.loops.size, 0); f.tickKeepAlive(); assert.equal(f.paints(), 7);
 });
 
+test('window resizes and unresponsive renderers repaint the surface', () => {
+  const f = harness();
+  f.app.emit('ready');
+  const before = f.paints();
+  f.win.emit('resized');
+  assert.equal(f.paints(), before + 1, 'a resize repaints immediately');
+  f.flush();
+  assert.equal(f.paints(), before + 3, 'a resize also schedules delayed surface repaints');
+  const base = f.paints();
+  f.win.emit('unresponsive');
+  assert.equal(f.paints(), base + 1, 'an unresponsive renderer repaints instead of only logging');
+  assert.ok(f.warnings.some(args => String(args[0]).includes('unresponsive')));
+});
+
 test('quit before ready removes wake hooks', () => {
   const app = Object.assign(new EventEmitter(), { isReady: () => false }), powerMonitor = new EventEmitter();
   const dispose = installWindowRendering({ app, powerMonitor });

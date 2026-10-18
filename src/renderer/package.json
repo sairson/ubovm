@@ -554,9 +554,17 @@
               "type": "integer",
               "minimum": 1
             },
+            "maxSummaryCallsPerTransform": {
+              "type": "integer",
+              "minimum": 1
+            },
             "maxSummaryCallsPerScope": {
               "type": "integer",
               "minimum": 1
+            },
+            "earlyCompactRatio": {
+              "type": "integer",
+              "minimum": 2
             },
             "maxSummaryInputTokens": {
               "type": "integer",

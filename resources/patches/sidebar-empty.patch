@@ -31,7 +31,7 @@ diff --git a/src/vs/workbench/browser/parts/paneCompositePart.ts b/src/vs/workbe
  		const compositeId = composite.getId();
  		this.activePaneContextKey.set(compositeId);
  		this.element.dataset.activeComposite = compositeId;
-@@ -249,10 +253,77 @@ export abstract class AbstractPaneCompositePart extends CompositePart<PaneCompos
+@@ -249,10 +253,99 @@ export abstract class AbstractPaneCompositePart extends CompositePart<PaneCompos
  		this.updateCompositeBar();
  
  		const focusTracker = this._register(trackFocus(parent));
@@ -122,14 +122,9 @@ diff --git a/src/vs/workbench/browser/parts/paneCompositePart.ts b/src/vs/workbe
 +		chooser.append(hint, actions);
 +		this.emptyPaneMessageElement?.replaceChildren(chooser);
 +		this._register(addDisposableListener(this.element, 'ubovm-empty-sidebar', () => {
-+			this.element.dataset.ubovmEmpty = 'true';
-+			this.storageService.store('ubovm.sidebar.empty', true, 1, 1);
-+			this.hideActiveComposite();
-+			this.layoutEmptyMessage();
-+			if (!this.layoutService.isVisible(this.partId)) {
-+				this.layoutService.setPartHidden(false, this.partId);
-+			}
-+			fileButton.focus();
++			// Closing the last tab collapses the right sidebar (DSH-style); the
++			// title toggle reopens it on the last active view.
++			this.hideActivePaneComposite();
 +		}));
 +	}
 +

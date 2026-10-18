@@ -13,7 +13,8 @@ test('operation errors preserve drafts, show safe details, dismiss and recover f
     await page.goto('http://errors.test/');
     await page.clock.install();
     const send = data => page.evaluate(data => window.dispatchEvent(new MessageEvent('message', { data })), data);
-    const state = id => ({ type: 'state', mode: 'assist', conversation: { id }, messages: [], context: {}, provider: { configured: true }, execution: { status: 'idle', workers: [], activities: [] }, busy: false });
+    let viewRevision = 0;
+    const state = id => ({ viewRevision: ++viewRevision, type: 'state', mode: 'assist', conversation: { id }, messages: [], context: {}, provider: { configured: true }, execution: { status: 'idle', workers: [], activities: [] }, busy: false });
     await send(state('a'));
     const composer = page.locator('#prompt-input');
     await composer.fill('保留这份草稿');

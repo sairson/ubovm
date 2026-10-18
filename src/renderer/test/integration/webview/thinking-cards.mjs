@@ -80,6 +80,13 @@ test('context summaries use a lazy inline foldout with real status, estimates an
   assert.match(await card.locator('.summary-metrics').textContent(), /14,000 → 3,500/);
   await f.emit(state([{ ...done, afterTokens: 3000 }]));
   assert.match(await card.locator('.summary-metrics').textContent(), /3,000/);
+  // The card title separates the body checkpoint from tool digests.
+  await f.emit(state([{ ...done, kinds: { 'tool-result': { summaries: 2, fallback: false, truncated: false } } }]));
+  assert.match(await card.locator('summary').textContent(), /工具摘要/);
+  await f.emit(state([{ ...done, kinds: { transcript: { summaries: 1, fallback: false, truncated: false } } }]));
+  assert.match(await card.locator('summary').textContent(), /正文摘要/);
+  await f.emit(state([{ ...done, kinds: { transcript: { summaries: 1, fallback: false, truncated: false }, 'tool-result': { summaries: 1, fallback: false, truncated: false } } }]));
+  assert.match(await card.locator('summary').textContent(), /混合摘要/);
   const parts = [done, text('answer', '已根据整理后的上下文继续处理。')];
   await f.emit(state(parts, { busy: false, messages: [user, { role: 'assistant', text: '已根据整理后的上下文继续处理。', parts }], execution: { busy: false, status: 'completed', parts } }));
   assert(await card.evaluate(node => node === summaryCard && node.open));
@@ -122,7 +129,8 @@ test('summary fallback, failure and interruption remain honest and keep unsafe m
   const f = await fixture(t);
   const summary = { id: 'summary', type: 'summary', source: 'reason', startedAt: start, endedAt: start + 100, status: 'completed', fallback: true, truncated: true, text: '<img src="https://blocked-thinking.invalid/x" onerror="window.injected=true">\n\nOriginal excerpts' };
   await f.emit(state([summary])); await f.toggle(0);
-  assert.match(await f.card(0).locator('.thinking-content').textContent(), /原文摘录/);
+  assert.match(await f.card(0).locator('.thinking-content').textContent(), /本次未生成摘要/);
+  assert.match(await f.card(0).locator('summary').textContent(), /未生成/);
   assert(await f.card(0).locator('.thinking-truncation').isVisible());
   assert.equal(await f.page.evaluate(() => window.injected), undefined);
   for (const status of ['failed', 'interrupted']) {

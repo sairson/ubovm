@@ -10,7 +10,7 @@
 .delivery-objective { color: var(--ink); }
 .delivery-artifact, .delivery-detail, .delivery-check small, .delivery-caption { color: var(--muted); font-size: 11px; }
 .delivery-stages { list-style: none; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; padding: 0; margin: 12px 0; }
-.delivery-stage { display: flex; flex-direction: column; gap: 3px; padding: 8px; border: 1px solid var(--border); border-radius: 6px; }
+.delivery-stage { display: flex; flex-direction: column; gap: 3px; padding: 8px; border: 0.5px solid var(--border); border-radius: var(--dsw-radius-sm); }
 .delivery-stage strong { font-size: 11px; font-weight: 500; }
 .delivery-stage span { color: var(--muted); font-size: 10px; }
 .delivery-stage[data-status="accepted"] { border-color: var(--accent); background: var(--accent-wash); }

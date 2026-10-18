@@ -1,5 +1,5 @@
 'use strict';
-// Presets from the installed pi-ai 0.86.1 catalog; no network discovery.
+// Presets from the installed pi-ai 0.86.1 catalog.
 module.exports = {
   "openai": {
     "label": "OpenAI",
@@ -13,7 +13,7 @@ module.exports = {
     "input": [
       "text",
       "image"
-    ]
+    ],
   },
   "anthropic": {
     "label": "Anthropic",

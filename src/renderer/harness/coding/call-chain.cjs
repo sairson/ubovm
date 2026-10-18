@@ -7,7 +7,7 @@ const { bounded } = require('./code-navigation.cjs');
 const inside = (root, file) => { const p = path.relative(root, file); return !p || p !== '..' && !p.startsWith('..' + path.sep) && !path.isAbsolute(p); };
 const result = value => ({ content: [{ type: 'text', text: JSON.stringify(value) }], details: value });
 
-function createCallChain(vscode, { locate, workspaceFolders }) {
+function createCallChain(vscode, { locate, workspaceFolders, unbounded = () => false }) {
   return sessionId => ({
     name: 'analyze_workspace_call_chain', recovery: 'retry-read-only', label: '分析代码调用链',
     description: 'Read-only bounded BFS over language-provider definition/references starting at a workspace path and 1-based line/column. Depth and node caps apply; results stay inside session workspace roots. Empty or truncated chains do not prove absence of callers/callees; fall back to search_workspace when providers are incomplete. Dirty buffers are rejected.',
@@ -69,10 +69,11 @@ function createCallChain(vscode, { locate, workspaceFolders }) {
           let filePath;
           try { filePath = await fs.realpath(hitUri.fsPath); } catch { omitted++; continue; }
           const root = roots.findIndex(r => inside(r, filePath));
-          if (root < 0) { omitted++; continue; }
+          // 完全模式 keeps provider hits outside the workspace roots (root -1, absolute path).
+          if (root < 0 && unbounded(sessionId) !== true) { omitted++; continue; }
           hits.push({
             root,
-            path: path.relative(roots[root], filePath).split(path.sep).join('/'),
+            path: (root >= 0 ? path.relative(roots[root], filePath) : filePath).split(path.sep).join('/'),
             line: range.start.line + 1,
             column: range.start.character + 1,
             file: filePath
@@ -88,7 +89,7 @@ function createCallChain(vscode, { locate, workspaceFolders }) {
         if (current.depth >= maxDepth) continue;
         const currentFile = current.file ?? (current.root === target.rootIndex && current.path === target.path
           ? target.file
-          : path.join(roots[current.root], current.path.split('/').join(path.sep)));
+          : current.root >= 0 ? path.join(roots[current.root], current.path.split('/').join(path.sep)) : current.path);
         const expansions = [];
         if (direction === 'callees' || direction === 'both') {
           expansions.push(['callees', 'vscode.executeDefinitionProvider'], ['callees', 'vscode.executeImplementationProvider']);

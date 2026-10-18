@@ -203,16 +203,20 @@ export async function createMcpMiddleware({ servers = [], connectTimeoutMs = 20_
       const transport = makeTransport(server, maxResultBytes);
       client.onclose = () => { diagnostic.connected = false; };
       let connected = false;
+      // A stdio server often cold-starts by fetching a package (`npx -y …`,
+      // `uvx …`). Give it a floor well above the request timeout so a slow first
+      // start does not silently register the server with zero tools.
+      const startTimeout = server.transport === 'stdio' ? Math.max(connectTimeoutMs, 45_000) : connectTimeoutMs;
       try {
-        const available = await boundedOperation(signal, connectTimeoutMs, async activeSignal => {
-          await client.connect(transport, { signal: activeSignal, timeout: connectTimeoutMs, maxTotalTimeout: connectTimeoutMs });
+        const available = await boundedOperation(signal, startTimeout, async activeSignal => {
+          await client.connect(transport, { signal: activeSignal, timeout: startTimeout, maxTotalTimeout: startTimeout });
           activeSignal.throwIfAborted();
           const found = [];
           const remoteNames = new Set();
           const cursors = new Set();
           let cursor;
           for (let page = 0; page < MAX_DISCOVERY_PAGES; page++) {
-            const listed = await client.listTools(cursor === undefined ? {} : { cursor }, { signal: activeSignal, timeout: connectTimeoutMs, maxTotalTimeout: connectTimeoutMs });
+            const listed = await client.listTools(cursor === undefined ? {} : { cursor }, { signal: activeSignal, timeout: startTimeout, maxTotalTimeout: startTimeout });
             activeSignal.throwIfAborted();
             for (const tool of listed.tools) {
               if (!tool.name || remoteNames.has(tool.name)) throw failure('MCP_DISCOVERY_INVALID', 'MCP server advertises duplicate or empty tool names');
@@ -253,8 +257,10 @@ export async function createMcpMiddleware({ servers = [], connectTimeoutMs = 20_
         connected = true;
       } catch (error) {
         // Keep credentials, command arguments and transport response bodies out
-        // of public diagnostics. The original error remains available as cause.
-        diagnostic.error = `MCP server ${server.name} connection or discovery failed`;
+        // of public diagnostics. A short error code (ENOENT, MCP_TIMEOUT, …) is
+        // safe and lets the user see why a server did not register.
+        const reason = typeof error?.code === 'string' && error.code ? ` (${error.code})` : '';
+        diagnostic.error = `MCP server ${server.name} connection or discovery failed${reason}`;
         await client.close().catch(() => {});
         await transport.close().catch(() => {});
         signal?.throwIfAborted();
@@ -266,7 +272,19 @@ export async function createMcpMiddleware({ servers = [], connectTimeoutMs = 20_
     signal?.throwIfAborted();
     abortListener = () => { void close().catch(() => {}); };
     signal?.addEventListener('abort', abortListener, { once: true });
-    return Object.freeze({ tools: Object.freeze(tools), diagnostics: () => structuredClone(diagnostics), close });
+    // Surface server state to the agent so it can explain why an installed
+    // server's tools are missing instead of guessing.
+    const instructionProvider = () => {
+      if (!diagnostics.length) return '';
+      const lines = diagnostics.map(diagnostic => {
+        const label = `${diagnostic.name} (${diagnostic.transport})`;
+        if (diagnostic.enabled === false) return `- ${label}: disabled`;
+        if (diagnostic.connected) return `- ${label}: connected${diagnostic.tools.length ? `; tools: ${diagnostic.tools.join(', ')}` : '; no tools advertised'}`;
+        return `- ${label}: NOT connected (${diagnostic.error ?? 'connection failed'}); its tools are unavailable until it connects`;
+      });
+      return `MCP servers (host-configured). Call a server's tools by the full name shown. A server installed during a turn is connected from the next turn:\n${lines.join('\n')}`;
+    };
+    return Object.freeze({ tools: Object.freeze(tools), diagnostics: () => structuredClone(diagnostics), instructionProvider, close });
   } catch (error) {
     await close().catch(() => {});
     throw error;

@@ -22,6 +22,11 @@ export function createLocalShellTool({ cwd = process.cwd(), defaultTimeoutSecond
   const lifetime = new AbortController(), active = new Set();
   let closed = false, closing;
   const executable = windows ? join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe') : '/bin/sh';
+  // Windows PowerShell 5.1 rejects cmd/bash idioms (`&&`, `||`, `dir /s /b`,
+  // `%VAR%`). A parse error means nothing executed, so the same text can be
+  // retried safely under cmd.exe instead of failing with a confusing message.
+  const POWER_SHELL_SYNTAX_ERROR = /ParserError|ParentContainsErrorRecordException|InvalidEndOfLine|UnexpectedToken|MissingEndCurlyBrace|MissingEndParenthesisInMethodCall|TerminatorExpectedAtEndOfString|MissingExpressionAfter|ExpressionsOnlyAsFirstElement/i;
+  const powerShellSyntaxError = error => windows && POWER_SHELL_SYNTAX_ERROR.test(String(error?.message || ''));
   const tool = {
     name: 'run_local_shell_command', label: 'Run local shell command',
     description: LOCAL_SHELL_CATALOG.description,
@@ -58,19 +63,53 @@ export function createLocalShellTool({ cwd = process.cwd(), defaultTimeoutSecond
             return directory;
           });
           const timeout = integer(input.timeout_seconds, defaultTimeoutSeconds, 1, maxTimeoutSeconds, 'timeout_seconds');
+          const runCmdFallback = async directory => {
+            bound.signal.throwIfAborted();
+            // `cmd /u` emits UTF-16LE; PowerShell decodes it with the console set
+            // to Unicode and re-emits UTF-8, so non-ASCII output survives instead
+            // of being mangled by the UTF-8 decoder.
+            const script = [
+              "$ProgressPreference = 'SilentlyContinue'",
+              '[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
+              '$OutputEncoding = [Console]::OutputEncoding',
+              `$cmd = '${command.replace(/'/g, "''")}'`,
+              '$prev = [Console]::OutputEncoding',
+              '[Console]::OutputEncoding = [System.Text.Encoding]::Unicode',
+              '$out = & $env:ComSpec /d /s /u /c $cmd',
+              '$code = $LASTEXITCODE',
+              '[Console]::OutputEncoding = $prev',
+              '$out',
+              'exit $code'
+            ].join('\n');
+            const args = ['-NoLogo', '-NoProfile', '-NonInteractive', '-OutputFormat', 'Text', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')];
+            return await runLocalProcess({ lifecycle, executable, args, cwd: directory, env: process.env, timeout, maxOutputBytes, label: 'Local shell command (cmd fallback)',
+              details: { cwd: directory, shell: 'cmd.exe', shell_fallback: 'cmd', purpose: input.purpose, reason } }, bound.signal, onUpdate);
+          };
           if (input.session !== undefined) {
             const session = namedShell(sessions, input.session, () => new PersistentShell(async () => openLocalShell(executable,
-              windows ? ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', '-'] : [], cwd), { windows }));
-            return await session.execute(command, { timeout, maxOutputBytes, prepare: async () => {
-              const directory = await directoryForCommand();
-              return { cwd: input.cwd === undefined ? undefined : directory };
-            },
-              lifecycle, reset: input.reset_session, details: { session: input.session, shell: executable, purpose: input.purpose, reason } }, bound.signal, onUpdate);
+              windows ? ['-NoLogo', '-NoProfile', '-NonInteractive', '-OutputFormat', 'Text', '-Command', '-'] : [], cwd), { windows }));
+            try {
+              return await session.execute(command, { timeout, maxOutputBytes, prepare: async () => {
+                const directory = await directoryForCommand();
+                return { cwd: input.cwd === undefined ? undefined : directory };
+              },
+                lifecycle, reset: input.reset_session, details: { session: input.session, shell: executable, purpose: input.purpose, reason } }, bound.signal, onUpdate);
+            } catch (error) {
+              // The named shell keeps its PowerShell state, so a cmd-style command
+              // runs as a one-off cmd process in the requested directory.
+              if (powerShellSyntaxError(error)) return await runCmdFallback(await directoryForCommand());
+              throw error;
+            }
           }
           const directory = await directoryForCommand();
-          const script = "$ErrorActionPreference = 'Stop'; [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); $global:LASTEXITCODE = 0;\n" + command + '\nexit $LASTEXITCODE';
-          const args = windows ? ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')] : ['-c', command];
-          return await runLocalProcess({ lifecycle, executable, args, cwd: directory, env: process.env, timeout, maxOutputBytes, label: 'Local shell command', details: { cwd: directory, shell: executable, purpose: input.purpose, reason } }, bound.signal, onUpdate);
+          const script = "$ProgressPreference = 'SilentlyContinue'; $ErrorActionPreference = 'Stop'; [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); $OutputEncoding = [Console]::OutputEncoding; $global:LASTEXITCODE = 0;\n" + command + '\nexit $LASTEXITCODE';
+          const args = windows ? ['-NoLogo', '-NoProfile', '-NonInteractive', '-OutputFormat', 'Text', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')] : ['-c', command];
+          try {
+            return await runLocalProcess({ lifecycle, executable, args, cwd: directory, env: process.env, timeout, maxOutputBytes, label: 'Local shell command', details: { cwd: directory, shell: executable, purpose: input.purpose, reason } }, bound.signal, onUpdate);
+          } catch (error) {
+            if (powerShellSyntaxError(error)) return await runCmdFallback(directory);
+            throw error;
+          }
         } finally { bound.release(); }
       })();
       active.add(operation);

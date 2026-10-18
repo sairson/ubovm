@@ -120,7 +120,17 @@
               </div>
               <textarea id="prompt-input" rows="1" maxlength="8000" aria-label="描述你的任务" aria-describedby="composer-status prompt-shortcut" placeholder="提问、规划，或描述你想完成的改动…"></textarea>
               <div class="composer-toolbar">
-                <div class="composer-options"><fieldset id="tool-approval-mode" class="approval-mode" aria-label="工具执行方式"><label title="自动执行工具，无需人工审核"><input type="radio" name="tool-approval-mode" value="auto"><span>自动</span></label><label title="每次工具调用须人工批准"><input type="radio" name="tool-approval-mode" value="manual" checked><span>人工</span></label></fieldset><span class="mode"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 6-5 6 5 6m8-12 5 6-5 6m-3-15-2 18"/></svg><span class="mode-name">协助</span></span><button class="provider" id="provider-label" type="button" data-action="openSettings" title="配置模型连接">未连接模型</button></div>
+                <div class="composer-options">
+                  <fieldset id="tool-approval-mode" class="approval-mode" aria-label="工具执行方式"><label title="自动执行工具，无需人工审核"><input type="radio" name="tool-approval-mode" value="auto"><span>自动</span></label><label title="每次工具调用须人工批准"><input type="radio" name="tool-approval-mode" value="manual" checked><span>人工</span></label><label title="完全模式：不限制工作区，可读写任意路径（含凭据目录），且工具直接执行、不再人工审核"><input type="radio" name="tool-approval-mode" value="full"><span>完全</span></label></fieldset>
+                  <span class="mode"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 6-5 6 5 6m8-12 5 6-5 6m-3-15-2 18"/></svg><span class="mode-name">协助</span></span>
+                  <button class="provider" id="provider-label" type="button" data-action="openSettings" title="打开模型配置">未连接模型</button>
+                  <select id="composer-model" class="composer-model" aria-label="当前对话模型" title="选择当前 provider 中配置的模型" hidden></select>
+                  <span class="context-usage" id="context-usage" role="img">
+                    <span class="context-usage-bar" aria-hidden="true"><span class="context-usage-fill" id="context-usage-fill"></span></span>
+                    <span class="context-usage-value" id="context-usage-value">0K</span>
+                    <span class="context-usage-total" id="context-usage-total">Σ 0K</span>
+                  </span>
+                </div>
                 <div class="composer-send"><span class="prompt-shortcut" id="prompt-shortcut">Enter 发送 · Shift + Enter 换行</span><span class="prompt-count" id="prompt-count" hidden></span><button class="submit" id="submit-prompt" type="submit" title="发送（Enter）" aria-label="发送任务" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5m-6 6 6-6 6 6"/></svg></button></div>
               </div>
             </form>
@@ -178,6 +188,14 @@
         </div>
         <p class="assist-evidence-hint" id="assist-evidence-hint" role="status" hidden></p>
       </section>
+      <details class="assist-todos" id="assist-todos" aria-label="任务清单" hidden>
+        <summary class="assist-todos-summary" title="助手在本次对话中记录的任务进度">
+          <span class="assist-todos-title">任务清单</span>
+          <span class="assist-todos-progress" aria-hidden="true"><span></span></span>
+          <span class="assist-todos-count" id="assist-todos-count"></span>
+        </summary>
+        <div class="assist-todos-groups" id="assist-todos-groups"></div>
+      </details>
       <section class="collaboration-workers" id="collaboration-workers" aria-label="并行任务" hidden>
         <div class="worker-roster-heading"><h2>并行任务 <span id="worker-count"></span></h2><p id="worker-swarm-status" role="status"></p></div>
         <p class="execution-error" id="worker-storage-error" role="status" hidden></p>

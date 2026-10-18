@@ -16,6 +16,7 @@ const { createSSHConnectionTest } = require('./host/system/ssh-connection-test.c
 const { createModelConnectionTest } = require('./host/system/model-connection-test.cjs');
 const { keyFor: modelKeyFor, modelConfig: parseModelConfig } = require('./harness/config/model-config.cjs');
 const { createHarnessService } = require('./host/agent/agent-service.cjs');
+const { createInstallTools } = require('./host/agent/install-tools.cjs');
 const { createWorkspaceSearch } = require('./harness/workspace/workspace-search.cjs');
 const { createWorkspaceAudit } = require('./harness/workspace/workspace-audit.cjs');
 const { createWorkspaceValidation } = require('./harness/workspace/workspace-validation.cjs');
@@ -229,16 +230,30 @@ async function activate(context) {
     openSettings: () => openSettings('settings', 'ssh')
   });
   context.subscriptions.push(terminalService, ...terminalService.register());
-  const search = createWorkspaceSearch(vscode, { workspaceFolders: sessionFolders });
-  const audit = createWorkspaceAudit(vscode, { workspaceFolders: sessionFolders });
-  const validation = createWorkspaceValidation(vscode, context, { changes: id => coding.changes(id), workspaceFolders: sessionFolders });
-  const coding = createCodingService(vscode, context, { beforeEdit: validation.capture, workspaceFolders: sessionFolders,
+  // 完全模式 (approvalMode 'full'): tools run with no workspace boundary and no
+  // per-call approval. The flag is per conversation and rewritten on every run
+  // start, so 自动/人工 always fall back to the confined behaviour.
+  const fullAccess = new Map();
+  const markFullAccess = (id, approvalMode) => { if (approvalMode === 'full') fullAccess.set(id, true); else fullAccess.delete(id); };
+  const unbounded = id => fullAccess.get(id) === true;
+  const search = createWorkspaceSearch(vscode, { workspaceFolders: sessionFolders, unbounded });
+  const audit = createWorkspaceAudit(vscode, { workspaceFolders: sessionFolders, unbounded });
+  const validation = createWorkspaceValidation(vscode, context, { changes: id => coding.changes(id), workspaceFolders: sessionFolders, unbounded });
+  const coding = createCodingService(vscode, context, { beforeEdit: validation.capture, workspaceFolders: sessionFolders, unbounded,
     turnId: id => harness?.state(id).runId });
   context.subscriptions.push(coding, validation);
+  const installTools = createInstallTools({
+    settings: settingsConfiguration,
+    onInstalled: event => {
+      output.appendLine(event.type === 'skill' ? `已通过对话安装 Skill：${event.name}` : `已通过对话安装 MCP 服务：${event.name}`);
+      try { schedulePublishState(); } catch { /* publish happens again with the next snapshot */ }
+    }
+  });
   const toolApprovals = require('./host/agent/tool-approvals.cjs').createToolApprovals({ onChange: () => schedulePublishState() });
+  const humanQuestions = require('./host/agent/human-questions.cjs').createHumanQuestions({ onChange: () => schedulePublishState() });
   const stoppedInputQueues = new Set();
   const scheduledInputQueues = new Set();
-  context.subscriptions.push(toolApprovals);
+  context.subscriptions.push(toolApprovals, humanQuestions);
   let learningRecovery, learningStartup = Promise.resolve();
   const codeSummaryRuns = new Map();
   harness = createHarnessService({
@@ -254,6 +269,7 @@ async function activate(context) {
     },
     beforeSession: async () => { await learningStartup; return learningRecovery?.pause(); },
     requestToolApproval: request => toolApprovals.request(request),
+    askHuman: request => humanQuestions.request(request),
     ideBrowserHost,
     sdkPath: sdkPath ?? sdkCandidates[0],
     storageDirectory: path.join((context.storageUri ?? context.globalStorageUri).fsPath, 'harness'),
@@ -264,7 +280,7 @@ async function activate(context) {
       if (!ssh.configured) throw new Error(ssh.error);
       return browserInstaller.configure(configuration);
     },
-    additionalTools: conversationId => [...coding.tools(conversationId), ...search.tools(conversationId), ...audit.tools(conversationId), ...validation.tools(conversationId), ...require('./harness/session/goal-tools.cjs').goalTools(sessions, conversationId)],
+    additionalTools: conversationId => [...coding.tools(conversationId), ...search.tools(conversationId), ...audit.tools(conversationId), ...validation.tools(conversationId), ...installTools.tools(conversationId), ...require('./harness/session/goal-tools.cjs').goalTools(sessions, conversationId)],
     onChange: id => {
       sessions.refreshRunning(id);
       publishModeRunning();
@@ -440,19 +456,24 @@ async function activate(context) {
       attachedGoalIds: relatedConversations.filter(goal => goal.mode === 'goal' && (goal.sourceEvidenceIds || []).includes(item.id)).map(goal => goal.id)
     }));
     return {
-      type: 'state', nativeWorkerPanel: true, nativeBlackboardSidebar: true, theme: readTheme(vscode), recovering, messages: conversation.messages.map((message, index) => message.role === 'user' ? { ...message, id: messageIds[index] } : message), inputQueue: conversation.inputQueue?.map(({ id, text, delivery }) => ({ id, text, delivery })), queuePaused: conversation.queuePaused || ['interrupted', 'failed'].includes(harness.state(conversation.id).status), conversation: { id: conversation.id, title: conversation.title, legacyDraftId: conversation.legacyDraftId },
+      type: 'state', nativeWorkerPanel: true, nativeBlackboardSidebar: true, theme: readTheme(vscode), recovering, messages: conversation.messages.map((message, index) => message.role === 'user' ? { ...message, id: messageIds[index] } : message), inputQueue: conversation.inputQueue?.map(({ id, text, delivery, modelId }) => ({ id, text, delivery, ...(modelId ? { modelId } : {}) })), queuePaused: conversation.queuePaused || ['interrupted', 'failed'].includes(harness.state(conversation.id).status), conversation: { id: conversation.id, title: conversation.title, legacyDraftId: conversation.legacyDraftId }, conversationUsage: conversation.usage ?? null,
       mode: conversation.mode, goal: conversation.goal, assistEvidence, conversationIds: sessions.ids(), relatedConversations,
       context: { workspace: workspaceName(conversation), workspaceConfigured: Boolean(conversation.workspace), projectId: conversation.projectId || null, file, fileSource: attached?.kind === 'selection' ? 'selection' : attached ? 'attached' : activeFile ? 'active' : null,
-        selectionLabel: attached?.rangeLabel || '' },
-      toolApprovals: toolApprovals.snapshot(conversation.id), codeChanges: coding.turnSummary(conversation.id),
+         selectionLabel: attached?.rangeLabel || '' },
+      toolApprovals: toolApprovals.snapshot(conversation.id), humanQuestions: humanQuestions.snapshot(conversation.id), codeChanges: coding.turnSummary(conversation.id),
       requireToolApproval: (vscode.workspace.getConfiguration('ubovm').inspect('worker')?.globalValue?.requireToolApproval ?? true) !== false,
       provider: modelConfiguration.status(), ssh: readSSHStatus(vscode), execution: { ...execution, mode: conversation.mode }, busy: execution.busy,
-      projects: projectCatalog()
+      projects: projectCatalog(), modelSelection: { provider: modelConfiguration.status().provider, selected: conversation.selectedModelId || '', models: modelConfiguration.status().models || [] }
     };
   }
 
   function assistantExecution(conversation) {
     const execution = harness?.state(conversation.id) ?? { status: 'idle', busy: false, workers: [], streamText: '', canResume: false };
+    // The harness owns the run's permission mode, and it is re-read on every run
+    // start (including resume/restore). Mirror it so extension-side workspace
+    // tools stay unbounded for a resumed 完全模式 run instead of silently
+    // reverting to the confined behaviour.
+    markFullAccess(conversation.id, execution.approvalMode);
     const explorationRuns = sessions.goalSummaries().map(goal => {
       const run = harness?.runtimeSummary(goal.id) || {};
       return { ...goal, status: run.status || 'idle', phase: run.phase, busy: run.busy === true,
@@ -732,7 +753,7 @@ async function activate(context) {
   }
 
   function submitPrompt(text, expectedSessionId, approvalMode) {
-    if (approvalMode !== undefined && !['auto', 'manual'].includes(approvalMode)) return Promise.reject(new Error('无效的工具执行方式。'));
+    if (approvalMode !== undefined && !['auto', 'manual', 'full'].includes(approvalMode)) return Promise.reject(new Error('无效的工具执行方式。'));
     if (typeof text !== 'string' || !text.trim()) return Promise.reject(new Error('请先输入消息内容。'));
     if (text.length > 8000) return Promise.reject(new Error('请将每条消息控制在 8000 个字符以内。'));
     const operation = messageQueue.then(async () => {
@@ -742,7 +763,7 @@ async function activate(context) {
         const context = await executionContext(conversation);
         await sessions.updateInputQueue(conversation.id, current => {
           if (current.inputQueue.length >= 20) throw new Error('输入队列最多保留 20 条消息。');
-          return { inputQueue: [...current.inputQueue, { id: randomUUID(), text: text.trim(), approvalMode, context }],
+          return { inputQueue: [...current.inputQueue, { id: randomUUID(), text: text.trim(), approvalMode, modelId: conversation.selectedModelId, context }],
             queuePaused: current.inputQueue.length ? current.queuePaused : false };
         });
         if (!harness.isBusy(conversation.id)) {
@@ -771,6 +792,7 @@ async function activate(context) {
       if (conversation.mode === 'goal' && harness.state(conversation.id).canResume) throw new Error('此目标有待恢复的执行，请先点击“继续执行”。');
       const context = await executionContext(conversation);
       await sessions.appendMessage(conversation.id, { role: 'user', text: text.trim() });
+      markFullAccess(conversation.id, approvalMode);
       await harness.start({ conversationId: conversation.id, mode: conversation.mode, goal: conversation.goal,
         text: text.trim(), approvalMode, messages: sessions.get(conversation.id).messages, context });
       await openAssistant();
@@ -802,6 +824,7 @@ async function activate(context) {
     try {
       assertCanRun(id);
       await sessions.appendMessage(id, { id: item.id, role: 'user', text: item.text });
+      markFullAccess(id, item.approvalMode);
       if (shuttingDown || stoppedInputQueues.has(id)) return;
       // Commit dequeue before launch: a later persistence failure must never
       // make an accepted model/tool execution eligible for automatic replay.
@@ -811,7 +834,7 @@ async function activate(context) {
         return;
       }
       await harness.start({ conversationId: id, mode: 'assist', executionBranch: conversation.executionBranch,
-        text: item.text, approvalMode: item.approvalMode, context: item.context, messages: sessions.get(id).messages });
+        text: item.text, approvalMode: item.approvalMode, modelId: item.modelId, context: item.context, messages: sessions.get(id).messages });
     } catch (error) {
       await sessions.updateInputQueue(id, () => ({ queuePaused: true }));
       throw error;
@@ -1363,7 +1386,7 @@ async function activate(context) {
       return;
     }
     try {
-      const goalActions = ['openRelatedConversation', 'setMode', 'saveGoal', 'toggleGoalCriterion', 'addGoalNote', 'attachAssistEvidence', 'prompt', 'runGoal', 'cancelRun', 'interruptCommand', 'backgroundCommand', 'resumeRun', 'newChat', 'selectWorkspace', 'attachFile', 'clearFileContext', 'toolApproval'];
+      const goalActions = ['openRelatedConversation', 'setMode', 'setModel', 'saveGoal', 'toggleGoalCriterion', 'addGoalNote', 'attachAssistEvidence', 'prompt', 'runGoal', 'cancelRun', 'interruptCommand', 'backgroundCommand', 'resumeRun', 'newChat', 'selectWorkspace', 'attachFile', 'clearFileContext', 'toolApproval', 'answerQuestion'];
       if (goalActions.includes(message.action) && typeof message.sessionId !== 'string') {
         throw new Error('缺少会话标识，请重新打开当前会话后重试。');
       }
@@ -1415,6 +1438,10 @@ async function activate(context) {
         assertCurrentSession(message.sessionId);
         if (!toolApprovals.respond({ id: message.approvalId, conversationId: message.sessionId, decision: message.decision })) throw new Error('该审核已处理或失效，请查看最新状态。');
       }
+      else if (message.action === 'answerQuestion') {
+        assertCurrentSession(message.sessionId);
+        if (!humanQuestions.respond({ id: message.questionId, conversationId: message.sessionId, selected: message.selected, custom: message.custom, cancelled: message.cancelled })) throw new Error('请选择至少一个选项，或填写一条回答后再提交。');
+      }
       else if (message.action === 'firstPaint') {
         clearTimeout(recoveryTimer);
         releaseFirstPaint();
@@ -1433,6 +1460,7 @@ async function activate(context) {
         releaseFirstPaint();
       }
       else if (message.action === 'prompt') await submitPrompt(message.text, message.sessionId, message.approvalMode);
+      else if (message.action === 'setModel') await updateSession(message.sessionId, () => sessions.setModel(message.sessionId, message.modelId));
       else if (message.action === 'removeInput' || message.action === 'resumeInputs' || message.action === 'steerInput') await changeInputQueue(message);
       else if (message.action === 'rewindInput') await rewindInput(message);
       else if (message.action === 'selectWorkspace') await chooseWorkspace(message.sessionId);

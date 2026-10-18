@@ -927,6 +927,23 @@ test('cancelling a pending approval exits without executing even if approval arr
   assert.equal(executed, 0);
 });
 
+test('ask_human reaches the host question hook without the side-effect approval gate', async t => {
+  let approvals = 0, asked, calls = 0;
+  const options = await fixture(t, (model, request) => {
+    if (++calls === 1) return respond(model, [toolCall('ask', 'ask_human', { question: 'Deploy now?', options: [{ label: 'yes' }, { label: 'no', description: 'later' }] })]);
+    assert.equal(toolResults(request, 'ask_human').at(-1).isError, false);
+    return respond(model, 'decided');
+  }, { intools: { knowledge: false } });
+  const answer = await runCollaboration({ ...options, text: 'Confirm the deployment',
+    requestToolApproval: () => { approvals++; return false; },
+    askHuman: async request => { asked = request; return { selected: ['no'], custom: 'after the freeze', cancelled: false }; } });
+  assert.equal(answer, 'decided');
+  assert.equal(approvals, 0, 'reading a human answer is not a side effect');
+  assert.equal(asked.question, 'Deploy now?');
+  assert.equal(asked.multiple, false);
+  assert.equal(asked.allowCustom, true);
+});
+
 test('collaboration closes its database when memory unsubscribe fails and permits the next turn', async t => {
   const { MemoryStore } = await import('../../../intools/shared/store/memory-store.mjs');
   const options = await fixture(t, model => respond(model, 'done'), { intools: { knowledge: false, allowedTools: [] } });

@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
-const { createCodingService } = require('../../../harness/coding/coding-service.cjs');
+const { createCodingService, withLines } = require('../../../harness/coding/coding-service.cjs');
 
 async function fixture(t) {
   const parent = await fs.realpath(os.tmpdir()), root = await fs.mkdtemp(path.join(parent, 'ubovm-coding-'));
@@ -352,15 +352,22 @@ test('paged reads preserve unicode and reject changed versions and dirty buffers
   await assert.rejects(f.call('read_workspace_code', { path: 'page.txt' }), /未保存/);
 });
 
-test('batch edits stop at failure and retain reviewable scoped snapshots', async t => {
+test('batch edits preflight every file before writing and stay reviewable', async t => {
   const f = await fixture(t);
-  const result = await f.call('edit_workspace_files', { files: [
+  const invalid = await f.call('edit_workspace_files', { files: [
     { path: 'nested/src/a.js', operation: 'create', createParents: true, newText: 'first' },
-    { path: 'nested/src/a.js', operation: 'replace', expectedHash: 'stale', oldText: 'first', newText: 'second' },
-    { path: 'never.js', operation: 'create', newText: 'never' }
+    { path: 'nested/src/a.js', operation: 'create', newText: 'duplicate entry for the same file' },
+    { path: 'gone.txt', operation: 'replace', expectedHash: 'stale', oldText: 'x', newText: 'y' }
   ] });
-  assert.equal(result.status, 'partially_applied'); assert.equal(result.failedIndex, 1);
-  await assert.rejects(fs.stat(path.join(f.root, 'never.js')), { code: 'ENOENT' });
+  assert.equal(invalid.status, 'invalid');
+  assert.deepEqual(invalid.applied, [], 'a preflight failure applies nothing');
+  assert.equal(invalid.results[0].valid, true, 'the first entry is individually valid');
+  assert.equal(invalid.results[1].valid, false); assert.match(invalid.results[1].error, /只能出现一次/);
+  assert.equal(invalid.results[2].valid, false);
+  await assert.rejects(fs.stat(path.join(f.root, 'nested/src/a.js')), { code: 'ENOENT' }, 'nothing may be written when preflight fails');
+  // A valid batch applies and keeps scoped, reviewable snapshots.
+  const result = await f.call('edit_workspace_files', { files: [{ path: 'nested/src/a.js', operation: 'create', createParents: true, newText: 'first' }] });
+  assert.equal(result.status, 'applied');
   const changeId = result.completed[0].changeId;
   const after = await f.call('read_workspace_change', { changeId, side: 'after', limit: 2 });
   assert.equal(after.content, 'fi'); assert.equal(after.nextOffset, 2);
@@ -369,6 +376,129 @@ test('batch edits stop at failure and retain reviewable scoped snapshots', async
   await fs.writeFile(path.join(f.root, 'nested/src/a.js'), 'external');
   assert.equal((await f.call('read_workspace_change', { changeId, side: 'after' })).state, 'conflict');
   assert.equal(await fs.readFile(path.join(f.root, 'nested/src/a.js'), 'utf8'), 'external');
+});
+
+test('replaceAll replaces every occurrence and honours expectedCount', async t => {
+  const f = await fixture(t);
+  await fs.writeFile(path.join(f.root, 'r.js'), 'let a = 1;\nlet b = 1;\nlet c = 2;\n');
+  const read = await f.call('read_workspace_code', { path: 'r.js' });
+  await assert.rejects(f.call('edit_workspace_file', { path: 'r.js', operation: 'replaceAll', oldText: '= 9', newText: '= 0', expectedHash: read.hash }), /不存在/);
+  await assert.rejects(f.call('edit_workspace_file', { path: 'r.js', operation: 'replaceAll', oldText: '= 1', newText: '= 0', expectedCount: 3, expectedHash: read.hash }), /不符/);
+  assert.equal(await fs.readFile(path.join(f.root, 'r.js'), 'utf8'), 'let a = 1;\nlet b = 1;\nlet c = 2;\n');
+  const result = await f.call('edit_workspace_file', { path: 'r.js', operation: 'replaceAll', oldText: '= 1', newText: '= 0', expectedCount: 2, expectedHash: read.hash });
+  assert.equal(result.replacements, 2);
+  assert.equal(result.diff.added, 2); assert.equal(result.diff.removed, 2);
+  assert.equal(await fs.readFile(path.join(f.root, 'r.js'), 'utf8'), 'let a = 0;\nlet b = 0;\nlet c = 2;\n');
+});
+
+test('insert places text by line without manual offsets', async t => {
+  const f = await fixture(t);
+  await fs.writeFile(path.join(f.root, 'i.txt'), 'one\ntwo\nthree\n');
+  const read = await f.call('read_workspace_code', { path: 'i.txt' });
+  const head = await f.call('edit_workspace_file', { path: 'i.txt', operation: 'insert', afterLine: 0, newText: 'zero\n', expectedHash: read.hash });
+  assert.equal(head.diff.firstChangedLine, 1);
+  assert.equal(await fs.readFile(path.join(f.root, 'i.txt'), 'utf8'), 'zero\none\ntwo\nthree\n');
+  const mid = await f.call('edit_workspace_file', { path: 'i.txt', operation: 'insert', afterLine: 2, newText: 'middle\n', expectedHash: head.hash });
+  assert.equal(await fs.readFile(path.join(f.root, 'i.txt'), 'utf8'), 'zero\none\nmiddle\ntwo\nthree\n');
+  await assert.rejects(f.call('edit_workspace_file', { path: 'i.txt', operation: 'insert', afterLine: 99, newText: 'x', expectedHash: mid.hash }), /afterLine/);
+  const tail = await f.call('edit_workspace_file', { path: 'i.txt', operation: 'insert', afterLine: 6, newText: 'end\n', expectedHash: mid.hash });
+  assert.equal(await fs.readFile(path.join(f.root, 'i.txt'), 'utf8'), 'zero\none\nmiddle\ntwo\nthree\nend\n');
+  assert.equal(tail.diff.firstChangedLine, 6);
+});
+
+test('applyPatch applies unified diff hunks located by context', async t => {
+  const f = await fixture(t);
+  await fs.writeFile(path.join(f.root, 'p.js'), 'const a = 1;\nconst b = 2;\nconst c = 3;\n');
+  const read = await f.call('read_workspace_code', { path: 'p.js' });
+  const single = ['@@ -1,3 +1,3 @@', ' const a = 1;', '-const b = 2;', '+const b = 20;', ' const c = 3;', ''].join('\n');
+  const result = await f.call('edit_workspace_file', { path: 'p.js', operation: 'applyPatch', patch: single, expectedHash: read.hash });
+  assert.equal(result.hunks, 1);
+  assert.equal(await fs.readFile(path.join(f.root, 'p.js'), 'utf8'), 'const a = 1;\nconst b = 20;\nconst c = 3;\n');
+  const next = await f.call('read_workspace_code', { path: 'p.js' });
+  const two = ['@@ -1,2 +1,2 @@', '-const a = 1;', '+const a = 0;', ' const b = 20;', '@@ -3,1 +3,2 @@', ' const c = 3;', '+const d = 4;', ''].join('\n');
+  const applied = await f.call('edit_workspace_file', { path: 'p.js', operation: 'applyPatch', patch: two, expectedHash: next.hash });
+  assert.equal(applied.hunks, 2);
+  assert.equal(await fs.readFile(path.join(f.root, 'p.js'), 'utf8'), 'const a = 0;\nconst b = 20;\nconst c = 3;\nconst d = 4;\n');
+  const stale = await f.call('read_workspace_code', { path: 'p.js' });
+  await assert.rejects(f.call('edit_workspace_file', { path: 'p.js', operation: 'applyPatch', patch: '@@ -1,1 +1,1 @@\n-const z = 9;\n+const z = 0;\n', expectedHash: stale.hash }), /不匹配/);
+  assert.equal(await fs.readFile(path.join(f.root, 'p.js'), 'utf8'), 'const a = 0;\nconst b = 20;\nconst c = 3;\nconst d = 4;\n');
+});
+
+test('replaceLines replaces and inserts by line range', async t => {
+  const f = await fixture(t);
+  await fs.writeFile(path.join(f.root, 'l.txt'), 'one\ntwo\nthree\nfour\n');
+  const read = await f.call('read_workspace_code', { path: 'l.txt' });
+  const rep = await f.call('edit_workspace_file', { path: 'l.txt', operation: 'replaceLines', startLine: 2, endLine: 3, newText: 'TWO\nTHREE', expectedHash: read.hash });
+  assert.equal(await fs.readFile(path.join(f.root, 'l.txt'), 'utf8'), 'one\nTWO\nTHREE\nfour\n');
+  assert.equal(rep.diff.added, 2); assert.equal(rep.diff.removed, 2);
+  const ins = await f.call('edit_workspace_file', { path: 'l.txt', operation: 'replaceLines', startLine: 1, endLine: 0, newText: 'head\n', expectedHash: rep.hash });
+  assert.equal(await fs.readFile(path.join(f.root, 'l.txt'), 'utf8'), 'head\none\nTWO\nTHREE\nfour\n');
+  await assert.rejects(f.call('edit_workspace_file', { path: 'l.txt', operation: 'replaceLines', startLine: 9, endLine: 9, newText: 'x', expectedHash: ins.hash }), /startLine/);
+});
+
+test('replace occurrence targets the Nth match without requiring uniqueness', async t => {
+  const f = await fixture(t);
+  await fs.writeFile(path.join(f.root, 'o.txt'), 'x = 1;\nx = 1;\nx = 1;\n');
+  const read = await f.call('read_workspace_code', { path: 'o.txt' });
+  await assert.rejects(f.call('edit_workspace_file', { path: 'o.txt', operation: 'replace', oldText: 'x = 1', newText: 'x = 2', expectedHash: read.hash }), /仅出现一次/);
+  const second = await f.call('edit_workspace_file', { path: 'o.txt', operation: 'replace', oldText: 'x = 1', newText: 'x = 2', occurrence: 2, expectedHash: read.hash });
+  assert.equal(await fs.readFile(path.join(f.root, 'o.txt'), 'utf8'), 'x = 1;\nx = 2;\nx = 1;\n');
+  await assert.rejects(f.call('edit_workspace_file', { path: 'o.txt', operation: 'replace', oldText: 'x = 1', newText: 'x = 3', occurrence: 9, expectedHash: second.hash }), /少于/);
+});
+
+test('successful edits suggest the project checks to run next', async t => {
+  const f = await fixture(t);
+  await fs.writeFile(path.join(f.root, 'package.json'), JSON.stringify({ name: 'fixture', packageManager: 'npm@10.0.0', scripts: { lint: 'eslint .', test: 'node --test' } }));
+  await fs.writeFile(path.join(f.root, 'pkg.js'), 'const n = 1;\n');
+  const read = await f.call('read_workspace_code', { path: 'pkg.js' });
+  const result = await f.call('edit_workspace_file', { path: 'pkg.js', operation: 'replace', oldText: 'n = 1', newText: 'n = 2', expectedHash: read.hash });
+  assert.equal(result.checks.validate, 'validate_workspace_changes');
+  assert.equal(result.checks.manager, 'npm');
+  assert.equal(result.checks.cwd, f.root);
+  assert.deepEqual(result.checks.check, [{ name: 'lint', argv: ['npm', 'run', 'lint'] }]);
+  assert.deepEqual(result.checks.test, [{ name: 'test', argv: ['npm', 'run', 'test'] }]);
+  assert.match(result.checks.note, /nothing was executed/);
+});
+
+test('dryRun validates and returns a diff without writing or recording a change', async t => {
+  const f = await fixture(t);
+  await fs.writeFile(path.join(f.root, 'd.txt'), 'hello\nworld\n');
+  const read = await f.call('read_workspace_code', { path: 'd.txt' });
+  const preview = await f.call('edit_workspace_file', { path: 'd.txt', operation: 'replace', oldText: 'world', newText: 'there', expectedHash: read.hash, dryRun: true });
+  assert.equal(preview.saved, false);
+  assert.equal(preview.changed, true);
+  assert.match(preview.diff.snippet, /there/);
+  assert.notEqual(preview.beforeHash, preview.afterHash);
+  assert.equal(await fs.readFile(path.join(f.root, 'd.txt'), 'utf8'), 'hello\nworld\n');
+  assert.deepEqual(await f.call('list_workspace_changes'), []);
+});
+
+test('hash mismatches report the current hash and size for a cheap retry', async t => {
+  const f = await fixture(t);
+  await fs.writeFile(path.join(f.root, 'h.txt'), 'one\n');
+  const read = await f.call('read_workspace_code', { path: 'h.txt' });
+  await fs.writeFile(path.join(f.root, 'h.txt'), 'two\n');
+  const stale = await f.call('edit_workspace_file', { path: 'h.txt', operation: 'replace', oldText: 'two', newText: 'three', expectedHash: read.hash }).then(() => null, error => error);
+  assert(stale, 'a stale hash must reject');
+  assert.equal(stale.details.reason, 'hash_mismatch');
+  assert.equal(stale.details.currentHash, (await f.call('read_workspace_code', { path: 'h.txt' })).hash);
+  assert.equal(stale.details.currentBytes, 4);
+});
+
+test('a missing expectedHash is named as such, and edits return the next hash to chain', async t => {
+  const f = await fixture(t);
+  await fs.writeFile(path.join(f.root, 'chain.txt'), 'a\nb\n');
+  const missing = await f.call('edit_workspace_file', { path: 'chain.txt', operation: 'replace', oldText: 'a', newText: 'A' }).then(() => null, error => error);
+  assert(missing, 'an edit without expectedHash must reject');
+  assert.equal(missing.details.reason, 'missing_hash');
+  assert.match(missing.message, /缺少 expectedHash/);
+  assert.ok(missing.details.currentHash);
+  const read = await f.call('read_workspace_code', { path: 'chain.txt' });
+  const first = await f.call('edit_workspace_file', { path: 'chain.txt', operation: 'replace', oldText: 'a', newText: 'A', expectedHash: read.hash });
+  assert.equal(first.nextExpectedHash, first.hash);
+  const second = await f.call('edit_workspace_file', { path: 'chain.txt', operation: 'replace', oldText: 'b', newText: 'B', expectedHash: first.nextExpectedHash });
+  assert.equal(second.nextExpectedHash, second.hash);
+  assert.equal(await fs.readFile(path.join(f.root, 'chain.txt'), 'utf8'), 'A\nB\n');
 });
 
 test('parent creation rejects invalid content before creating directories', async t => {
@@ -526,13 +656,37 @@ test('failed save retains the original snapshot for the dirty edit', async t => 
   assert.equal((await f.call('list_workspace_changes')).length, 1);
 });
 
-test('directory junctions and oversized files are rejected', async t => {
+test('directory junctions are rejected and oversized files are readable but not editable', async t => {
   const f = await fixture(t);
   await fs.mkdir(path.join(f.root, 'actual'));
   await fs.symlink(path.join(f.root, 'actual'), path.join(f.root, 'linked'), 'junction');
   await assert.rejects(f.call('edit_workspace_file', { path: 'linked/file.txt', operation: 'create', newText: 'no' }), /符号链接/);
-  await fs.writeFile(path.join(f.root, 'large.txt'), 'a'.repeat(256 * 1024 + 1));
-  await assert.rejects(f.call('read_workspace_code', { path: 'large.txt' }), /256 KiB/);
+  // A file above the whole-file limit is still readable page by page...
+  const large = 'l'.repeat(1024 * 1024 + 10);
+  await fs.writeFile(path.join(f.root, 'large.txt'), large);
+  const first = await f.call('read_workspace_code', { path: 'large.txt', offset: 0, limit: 100 });
+  assert.equal(first.large, true); assert.equal(first.editable, false);
+  assert.equal(first.content.length, 100); assert.equal(first.totalCharacters, large.length);
+  assert.equal(first.nextOffset, 100); assert.equal(first.hashKind, 'sha256-window');
+  assert.equal(first.hash, first.hash);
+  const deep = await f.call('read_workspace_code', { path: 'large.txt', offset: 500000, limit: 32, lineNumbers: true });
+  assert.equal(deep.content, large.slice(500000, 500032));
+  assert.equal(deep.startLine, 1);
+  // ...but whole-file editing is refused.
+  await assert.rejects(f.call('edit_workspace_file', { path: 'large.txt', operation: 'replace', oldText: 'll', newText: 'x', expectedHash: first.hash }), /1 MiB/);
+});
+
+test('windowed large reads stay valid UTF-8 and never split surrogate pairs', async t => {
+  const f = await fixture(t);
+  const source = 'a'.repeat(1024 * 1024) + '😀中文';
+  await fs.writeFile(path.join(f.root, 'big.txt'), source);
+  const at = 1024 * 1024;
+  const window = await f.call('read_workspace_code', { path: 'big.txt', offset: at, limit: 4 });
+  assert.equal(window.content.isWellFormed(), true);
+  assert.equal(source.slice(window.offset, window.offset + window.content.length), window.content);
+  // Invalid UTF-8 is rejected instead of silently replaced.
+  await fs.writeFile(path.join(f.root, 'bad.txt'), Buffer.concat([Buffer.from('x'.repeat(1024 * 1024)), Buffer.from([0xff, 0xfe, 0x80])]));
+  await assert.rejects(f.call('read_workspace_code', { path: 'bad.txt', offset: 0, limit: 16 }), /UTF-8/);
 });
 
 async function journal(f, values) {
@@ -612,4 +766,205 @@ test('missing code files return exists:false without throwing', async t => {
   assert.equal(missing.content, null);
   assert.equal(missing.hash, null);
   assert.match(missing.guidance, /not a tool failure/);
+});
+
+test('withLines derives 1-based startLine and splits CRLF without disturbing offsets', async t => {
+  assert.deepEqual(withLines('a\nb\r\nc', 0, 'a\nb\r\nc'), { startLine: 1, lines: ['a', 'b', 'c'], contentWithLineNumbers: '1: a\n2: b\n3: c' });
+  assert.equal(withLines('line1\nline2\nline3', 6, 'line2\nline3').startLine, 2);
+  assert.deepEqual(withLines('line1\r\nline2\r\nline3', 7, 'line2\r\nline3').lines, ['line2', 'line3']);
+  assert.equal(withLines('line1\r\nline2', 7, 'line2').startLine, 2);
+  const emoji = 'a\uD83D\uDE00\nnext';
+  assert.deepEqual(withLines(emoji, 0, emoji).lines, ['a\uD83D\uDE00', 'next']);
+});
+
+test('read_workspace_code lineNumbers adds derived fields and keeps pagination semantics', async t => {
+  const f = await fixture(t);
+  await fs.writeFile(path.join(f.root, 'lines.txt'), 'a\nb\r\nc\n\uD83D\uDE00d');
+  const plain = await f.call('read_workspace_code', { path: 'lines.txt' });
+  assert.equal(plain.content, 'a\nb\r\nc\n\uD83D\uDE00d');
+  assert.equal(plain.truncated, false);
+  assert.equal(plain.startLine, undefined);
+  assert.equal(plain.lines, undefined);
+  assert.equal(plain.contentWithLineNumbers, undefined);
+  const numbered = await f.call('read_workspace_code', { path: 'lines.txt', lineNumbers: true });
+  assert.equal(numbered.startLine, 1);
+  assert.deepEqual(numbered.lines, ['a', 'b', 'c', '\uD83D\uDE00d']);
+  assert.equal(numbered.contentWithLineNumbers, '1: a\n2: b\n3: c\n4: \uD83D\uDE00d');
+  assert.equal(numbered.content, plain.content);
+  assert.equal(numbered.hash, plain.hash);
+  assert.equal(numbered.truncated, false);
+  let offset = 0, content = '', numberedContent = '', version;
+  do {
+    const result = await f.call('read_workspace_code', { path: 'lines.txt', offset, limit: 3, lineNumbers: true, ...(version ? { expectedHash: version } : {}) });
+    version = result.hash;
+    content += result.content;
+    numberedContent += result.contentWithLineNumbers + '|';
+    assert.equal(typeof result.startLine, 'number');
+    assert.ok(Array.isArray(result.lines));
+    assert.equal(result.offset !== undefined, true);
+    offset = result.nextOffset;
+  } while (offset !== null);
+  assert.equal(content, 'a\nb\r\nc\n\uD83D\uDE00d');
+  await assert.rejects(f.call('read_workspace_code', { path: 'lines.txt', lineNumbers: 'yes' }), /lineNumbers/);
+});
+
+test('replace tolerates CRLF/LF and trailing whitespace, and aligns the replacement EOL', async t => {
+  const f = await fixture(t);
+  await fs.writeFile(path.join(f.root, 'tol.js'), 'const a = 1;   \r\nconst b = 2;\r\n');
+  const read = await f.call('read_workspace_code', { path: 'tol.js' });
+  // LF oldText with no trailing spaces against a CRLF file with trailing spaces.
+  const result = await f.call('edit_workspace_file', { path: 'tol.js', operation: 'replace',
+    oldText: 'const a = 1;\nconst b = 2;', newText: 'const a = 10;\nconst b = 2;', expectedHash: read.hash });
+  assert.equal(result.match, 'trimEnd');
+  assert.equal(await fs.readFile(path.join(f.root, 'tol.js'), 'utf8'), 'const a = 10;\r\nconst b = 2;\r\n');
+  // LF replacement text is aligned to the file's CRLF instead of being rejected.
+  const next = await f.call('read_workspace_code', { path: 'tol.js' });
+  const aligned = await f.call('edit_workspace_file', { path: 'tol.js', operation: 'replaceLines',
+    startLine: 1, endLine: 1, newText: 'let a = 10;\nlet c = 3;', expectedHash: next.hash });
+  assert.equal(await fs.readFile(path.join(f.root, 'tol.js'), 'utf8'), 'let a = 10;\r\nlet c = 3;\r\nconst b = 2;\r\n');
+  assert.equal(aligned.saved, true);
+});
+
+test('insert after the last line works even without a trailing newline', async t => {
+  const f = await fixture(t);
+  await fs.writeFile(path.join(f.root, 'noeol.txt'), 'first');
+  const read = await f.call('read_workspace_code', { path: 'noeol.txt' });
+  await f.call('edit_workspace_file', { path: 'noeol.txt', operation: 'insert', afterLine: 1, newText: 'second\n', expectedHash: read.hash });
+  assert.equal(await fs.readFile(path.join(f.root, 'noeol.txt'), 'utf8'), 'first\nsecond\n');
+});
+
+test('replaceAll tolerates CRLF/LF and trailing whitespace when counting occurrences', async t => {
+  const f = await fixture(t);
+  // Uniform CRLF file; the first occurrence has trailing spaces and oldText is LF.
+  await fs.writeFile(path.join(f.root, 'all.js'), 'a  \r\nb\r\na\r\nb\r\n');
+  const read = await f.call('read_workspace_code', { path: 'all.js' });
+  const result = await f.call('edit_workspace_file', { path: 'all.js', operation: 'replaceAll', oldText: 'a\nb', newText: 'a\nB', expectedCount: 2, expectedHash: read.hash });
+  assert.equal(result.replacements, 2);
+  assert.equal(result.match, 'trimEnd');
+  assert.equal(await fs.readFile(path.join(f.root, 'all.js'), 'utf8'), 'a\r\nB\r\na\r\nB\r\n');
+  // Without expectedCount the tolerant sweep still replaces both occurrences.
+  const next = await f.call('read_workspace_code', { path: 'all.js' });
+  const auto = await f.call('edit_workspace_file', { path: 'all.js', operation: 'replaceAll', oldText: 'a\nB', newText: 'a\nC', expectedHash: next.hash });
+  assert.equal(auto.replacements, 2);
+  // A count that can never match explains the exact and tolerant numbers.
+  const version = (await f.call('read_workspace_code', { path: 'all.js' })).hash;
+  const failure = await f.call('edit_workspace_file', { path: 'all.js', operation: 'replaceAll', oldText: 'a\nC', newText: 'z', expectedCount: 3, expectedHash: version }).then(() => null, error => error);
+  assert(failure);
+  assert.match(failure.message, /与 expectedCount=3 不符/);
+  assert.match(failure.message, /去掉 expectedCount/);
+});
+
+test('indentation-insensitive replace and applyPatch reindent to the file', async t => {
+  const f = await fixture(t);
+  const original = 'class C {\n    run() {\n        if (x) {\n            go();\n        }\n    }\n}\n';
+  await fs.writeFile(path.join(f.root, 'ind.js'), original);
+  const read = await f.call('read_workspace_code', { path: 'ind.js' });
+  // The model writes the block with a 4-space base instead of the file's 8.
+  const replaced = await f.call('edit_workspace_file', { path: 'ind.js', operation: 'replace',
+    oldText: '    if (x) {\n        go();\n    }',
+    newText: '    if (x) {\n        go();\n        stop();\n    }',
+    expectedHash: read.hash });
+  assert.equal(replaced.match, 'trim');
+  assert.equal(await fs.readFile(path.join(f.root, 'ind.js'), 'utf8'),
+    'class C {\n    run() {\n        if (x) {\n            go();\n            stop();\n        }\n    }\n}\n');
+  // applyPatch with a uniformly under-indented hunk is re-indented too. Each body
+  // line keeps its unified-diff marker, then the 4-space base indentation.
+  const next = await f.call('read_workspace_code', { path: 'ind.js' });
+  const patch = ['@@ -3,4 +3,4 @@', '     if (x) {', '         go();', '-        stop();', '+        halt();', '     }', ''].join('\n');
+  const patched = await f.call('edit_workspace_file', { path: 'ind.js', operation: 'applyPatch', patch, expectedHash: next.hash });
+  assert.equal(patched.match, 'fuzzy');
+  assert.equal(await fs.readFile(path.join(f.root, 'ind.js'), 'utf8'),
+    'class C {\n    run() {\n        if (x) {\n            go();\n            halt();\n        }\n    }\n}\n');
+  // Indentation that differs non-uniformly is refused rather than mis-indented.
+  const version = (await f.call('read_workspace_code', { path: 'ind.js' })).hash;
+  const failure = await f.call('edit_workspace_file', { path: 'ind.js', operation: 'replace',
+    oldText: 'if (x) {\n            go();\n            halt();\n}', newText: 'if (x) {\nrun();\n}', expectedHash: version }).then(() => null, error => error);
+  assert(failure);
+  assert.match(failure.message, /缩进/);
+});
+
+test('edit results include a re-applicable unified diff', async t => {
+  const f = await fixture(t);
+  const content = 'one\ntwo\nthree\nfour\nfive\n';
+  await fs.writeFile(path.join(f.root, 'd.js'), content);
+  const read = await f.call('read_workspace_code', { path: 'd.js' });
+  const result = await f.call('edit_workspace_file', { path: 'd.js', operation: 'replace', oldText: 'three', newText: 'THREE', expectedHash: read.hash });
+  assert.match(result.diff.patch, /^@@ -1,5 \+1,5 @@/);
+  assert.match(result.diff.patch, /^-three$/m);
+  assert.match(result.diff.patch, /^\+THREE$/m);
+  // The reported patch re-applies cleanly to an identical file.
+  await fs.writeFile(path.join(f.root, 'e.js'), content);
+  const eread = await f.call('read_workspace_code', { path: 'e.js' });
+  const applied = await f.call('edit_workspace_file', { path: 'e.js', operation: 'applyPatch', patch: result.diff.patch, expectedHash: eread.hash });
+  assert.equal(applied.hunks, 1);
+  assert.equal(await fs.readFile(path.join(f.root, 'e.js'), 'utf8'), await fs.readFile(path.join(f.root, 'd.js'), 'utf8'));
+});
+
+test('an ambiguous replace reports the candidate line numbers and occurrence fixes it', async t => {
+  const f = await fixture(t);
+  await fs.writeFile(path.join(f.root, 'amb.js'), 'const v = 1;\nrun();\nconst v = 2;\nrun();\n');
+  const read = await f.call('read_workspace_code', { path: 'amb.js' });
+  const failure = await f.call('edit_workspace_file', { path: 'amb.js', operation: 'replace', oldText: 'run();', newText: 'go();', expectedHash: read.hash }).then(() => null, error => error);
+  assert(failure, 'an ambiguous replace must reject');
+  assert.match(failure.message, /匹配到 2 处：第 2、4 行/);
+  assert.equal(failure.details.reason, 'ambiguous_match');
+  assert.deepEqual(failure.details.candidates.map(item => item.line), [2, 4]);
+  // occurrence:N resolves it in a single step.
+  const fixed = await f.call('edit_workspace_file', { path: 'amb.js', operation: 'replace', oldText: 'run();', newText: 'go();', occurrence: 2, expectedHash: read.hash });
+  assert.equal(fixed.changed, true);
+  assert.equal(await fs.readFile(path.join(f.root, 'amb.js'), 'utf8'), 'const v = 1;\nrun();\nconst v = 2;\ngo();\n');
+});
+
+test('dryRun returns the complete patch without writing', async t => {
+  const f = await fixture(t);
+  const content = 'a\nb\nc\n';
+  await fs.writeFile(path.join(f.root, 'dry.js'), content);
+  const read = await f.call('read_workspace_code', { path: 'dry.js' });
+  const preview = await f.call('edit_workspace_file', { path: 'dry.js', operation: 'replace', oldText: 'b', newText: 'B', expectedHash: read.hash, dryRun: true });
+  assert.equal(preview.saved, false);
+  assert.match(preview.patch, /^@@ -1,3 \+1,3 @@/);
+  assert.match(preview.patch, /^-b$/m);
+  assert.match(preview.patch, /^\+B$/m);
+  assert.equal(await fs.readFile(path.join(f.root, 'dry.js'), 'utf8'), content);
+  // A create preview shows an all-add patch.
+  const created = await f.call('edit_workspace_file', { path: 'new.txt', operation: 'create', newText: 'x\ny\n', dryRun: true });
+  assert.match(created.patch, /^@@ -0,0 \+1,2 @@/);
+  assert.match(created.patch, /^\+x$/m);
+  assert.match(created.patch, /^\+y$/m);
+});
+
+test('applyPatch inserts at the top with no context and accepts unmarked context lines', async t => {
+  const f = await fixture(t);
+  await fs.writeFile(path.join(f.root, 'ins.js'), 'const a = 1;\n');
+  const read = await f.call('read_workspace_code', { path: 'ins.js' });
+  const insert = ['@@ -0,0 +1,2 @@', '+// header one', '+// header two', ''].join('\n');
+  const inserted = await f.call('edit_workspace_file', { path: 'ins.js', operation: 'applyPatch', patch: insert, expectedHash: read.hash });
+  assert.equal(inserted.hunks, 1);
+  assert.equal(await fs.readFile(path.join(f.root, 'ins.js'), 'utf8'), '// header one\n// header two\nconst a = 1;\n');
+  // Context lines without the leading space marker are still accepted.
+  const next = await f.call('read_workspace_code', { path: 'ins.js' });
+  const unmarked = ['@@ -2,2 +2,2 @@', '// header two', '-const a = 1;', '+const a = 2;'].join('\n');
+  const patched = await f.call('edit_workspace_file', { path: 'ins.js', operation: 'applyPatch', patch: unmarked, expectedHash: next.hash });
+  assert.equal(patched.hunks, 1);
+  assert.equal(await fs.readFile(path.join(f.root, 'ins.js'), 'utf8'), '// header one\n// header two\nconst a = 2;\n');
+});
+
+test('applyPatch reports an already-applied hunk instead of failing, and hints on a real mismatch', async t => {
+  const f = await fixture(t);
+  await fs.writeFile(path.join(f.root, 'idem.js'), 'const a = 1;\nconst b = 2;\n');
+  const read = await f.call('read_workspace_code', { path: 'idem.js' });
+  const patch = ['@@ -1,2 +1,2 @@', ' const a = 1;', '-const b = 2;', '+const b = 20;', ''].join('\n');
+  await f.call('edit_workspace_file', { path: 'idem.js', operation: 'applyPatch', patch, expectedHash: read.hash });
+  const current = await f.call('read_workspace_code', { path: 'idem.js' });
+  const again = await f.call('edit_workspace_file', { path: 'idem.js', operation: 'applyPatch', patch, expectedHash: current.hash });
+  assert.equal(again.already_applied, 1);
+  assert.equal(again.changed, false);
+  assert.equal(await fs.readFile(path.join(f.root, 'idem.js'), 'utf8'), 'const a = 1;\nconst b = 20;\n');
+  // A genuinely wrong hunk fails and points at the nearest content.
+  const version = (await f.call('read_workspace_code', { path: 'idem.js' })).hash;
+  const bad = ['@@ -1,1 +1,1 @@', '-const zzz = 9;', '+const zzz = 0;', ''].join('\n');
+  const failure = await f.call('edit_workspace_file', { path: 'idem.js', operation: 'applyPatch', patch: bad, expectedHash: version }).then(() => null, error => error);
+  assert(failure, 'a mismatched patch must reject');
+  assert.match(failure.message, /补丁上下文与当前文件不匹配/);
+  assert.match(failure.message, /第 1 行/);
 });

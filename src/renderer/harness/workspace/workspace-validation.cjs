@@ -7,7 +7,7 @@ const output = value => ({ content: [{ type: 'text', text: JSON.stringify(value)
 const inside = (root, file) => { const p = path.relative(root, file); return !p || p !== '..' && !p.startsWith('..' + path.sep) && !path.isAbsolute(p); };
 const fingerprint = item => createHash('sha256').update(JSON.stringify([item.path, item.source, item.code, item.severity, item.message])).digest('hex');
 
-function createWorkspaceValidation(vscode, context, { changes = async () => [], compiler, workspaceFolders = () => vscode.workspace.workspaceFolders ?? [] } = {}) {
+function createWorkspaceValidation(vscode, context, { changes = async () => [], compiler, unbounded = () => false, workspaceFolders = () => vscode.workspace.workspaceFolders ?? [] } = {}) {
   let revision = 0, baselineQueue = Promise.resolve();
   const lifetime = new AbortController();
   const observers = new Set();
@@ -24,21 +24,27 @@ function createWorkspaceValidation(vscode, context, { changes = async () => [], 
     severity: ['error', 'warning', 'information', 'hint'][item.severity] ?? 'information', source: item.source ?? 'editor',
     code: typeof item.code === 'object' ? item.code.value : item.code, message: item.message.slice(0, 3000) }));
   async function targets(input, sessionId) {
+    const open = unbounded(sessionId) === true;
     const folders = workspaceFolders(sessionId).filter(folder => folder.uri.scheme === 'file');
     const requested = input.paths?.map(file => ({ root: input.root ?? 0, path: file })) ?? (await changes(sessionId)).map(item => ({ root: item.root, path: item.path }));
     if (!Array.isArray(requested) || requested.length > 30) throw new Error('一次最多验证 30 个文件，请用 paths 指定范围。');
     const found = [], seen = new Set(), roots = new Map();
     for (const request of requested) {
-      if (!Number.isInteger(request.root) || request.root < 0 || !folders[request.root] || typeof request.path !== 'string' || !request.path || /[\0:]/.test(request.path) || path.isAbsolute(request.path)) throw new Error('验证文件路径或工作区索引无效。');
-      if (!roots.has(request.root)) roots.set(request.root, await fs.realpath(folders[request.root].uri.fsPath));
-      const root = roots.get(request.root), file = path.resolve(root, request.path);
-      if (!inside(root, file)) throw new Error('验证文件超出工作区。');
+      if (typeof request.path !== 'string' || !request.path || /[\0]/.test(request.path)
+        || !open && (!Number.isInteger(request.root) || request.root < 0 || !folders[request.root] || /[:]/.test(request.path) || path.isAbsolute(request.path))) throw new Error('验证文件路径或工作区索引无效。');
+      if (folders[request.root] && !roots.has(request.root)) roots.set(request.root, await fs.realpath(folders[request.root].uri.fsPath));
+      const base = roots.get(request.root);
+      if (!base && !open) throw new Error('验证文件路径或工作区索引无效。');
+      const file = path.resolve(base ?? process.cwd(), request.path);
+      if (!open && !inside(base, file)) throw new Error('验证文件超出工作区。');
       let canonical;
       try { canonical = await fs.realpath(file); } catch (error) { if (error.code !== 'ENOENT') throw error; }
-      if (canonical && !inside(root, canonical)) throw new Error('验证文件链接超出工作区。');
+      const insideRoot = Boolean(base) && inside(base, canonical ?? file);
+      if (!open && canonical && !insideRoot) throw new Error('验证文件链接超出工作区。');
       const identity = pathKey(canonical ?? file);
       if (seen.has(identity)) continue; seen.add(identity);
-      found.push({ root, rootIndex: request.root, file: canonical ?? file, relative: path.relative(root, canonical ?? file), missing: !canonical });
+      found.push({ root: insideRoot ? base : path.dirname(canonical ?? file), rootIndex: request.root, file: canonical ?? file,
+        relative: insideRoot ? path.relative(base, canonical ?? file) : (canonical ?? file), missing: !canonical });
     }
     return found;
   }

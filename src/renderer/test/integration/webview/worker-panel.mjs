@@ -106,13 +106,12 @@ test('completed workers prefer the final result over cached stream previews and 
   const worker = { id: 'cached', description: 'Saved work', status: 'running', streamText: 'Stale partial reply',
     parts: [text('intro', 'Earlier progress'), { ...tool, status: 'completed' }] };
   await f.emit(state([worker])); await f.cards.first().click();
-  await f.panel.locator('.tool-card > summary').click();
   await f.page.evaluate(() => { window.cachedWorkerTool = document.querySelector('#worker-panel .tool-card'); });
   const completed = { ...worker, status: 'completed', result: 'Final **verified result**' };
   await f.emit(state([completed]));
   assert.match(await f.cards.first().locator('.worker-card-preview').textContent(), /Final/);
   assert.equal(await f.panel.locator('.response-text strong').textContent(), 'verified result');
-  assert(await f.page.evaluate(() => cachedWorkerTool === document.querySelector('#worker-panel .tool-card') && cachedWorkerTool.open));
+  assert(await f.page.evaluate(() => cachedWorkerTool === document.querySelector('#worker-panel .tool-card')));
   assert(!(await f.panel.locator('.worker-transcript').textContent()).includes('Stale partial reply'));
   await f.emit(state([{ ...completed, parts: [...worker.parts, { ...text('answer', completed.result), status: 'completed' }] }]));
   assert.equal(await f.panel.locator('.response-text strong').count(), 1);
@@ -159,17 +158,16 @@ test('workers open independent live views and keep tool expansion, root draft an
   assert.equal(await f.panel.isVisible(), true);
   assert.match(await f.panel.textContent(), /已找到项目入口/);
   assert(!/已找到项目入口/.test(await f.page.locator('#messages').textContent()));
-  await f.panel.locator('.tool-card > summary').click();
   await f.page.evaluate(() => { window.savedWorkerTool = document.querySelector('#worker-panel .tool-card'); });
   workers[0].parts[1] = { ...tool, output: tool.output + '\nexport const tested = true;', status: 'completed', endedAt: Date.now() };
   workers[0].parts.push(text('alpha-end', '入口检查完成。'));
   await f.emit(state(workers));
-  assert(await f.page.evaluate(() => savedWorkerTool === document.querySelector('#worker-panel .tool-card') && savedWorkerTool.open));
-  assert.match(await f.panel.locator('.tool-output').textContent(), /tested/);
-  await f.panel.getByRole('button', { name: '打开文件', exact: true }).click();
-  const opened = await f.page.evaluate(() => hostMessages.findLast(message => message.action === 'openMessageLink'));
-  assert.equal(opened.href, 'src/index.mjs');
-  await f.emit({ type: 'uiResult', requestId: opened.requestId, ok: true });
+  assert(await f.page.evaluate(() => savedWorkerTool === document.querySelector('#worker-panel .tool-card')));
+  assert.equal(await f.panel.locator('.tool-card').first().getAttribute('data-readonly'), 'true');
+  assert.equal(await f.panel.locator('.tool-output').isVisible(), false, 'read tools do not echo their content');
+  assert.equal(await f.panel.locator('.tool-chevron').isVisible(), false, 'read cards stay flat');
+  // Read cards no longer expose an inline file-open action.
+  assert.equal(await f.panel.getByRole('button', { name: '打开文件', exact: true }).count(), 0);
   // Opening the right editor/file tree reduces the conversation webview width.
   await f.page.setViewportSize({ width: 820, height: 850 });
   assert.equal(await f.page.locator('#worker-picker').inputValue(), 'alpha');
@@ -263,6 +261,7 @@ test('dragging and keyboard resizing persist width, preserve drafts and clamp to
 
 test('worker can occupy the main space, stream and switch workers, then restore the sidebar width', async t => {
   const f = await fixture(t, 1280, { workerPanelWidth: 580 }), workers = initialWorkers();
+  workers[0].parts[1] = { ...tool, name: 'run_local_shell_command', args: '{"command":"echo live"}', output: 'first', status: 'running' };
   await f.emit(state(workers)); await f.page.locator('#prompt-input').fill('主空间切换时保留草稿'); await f.cards.nth(0).click();
   await f.panel.locator('.tool-card > summary').click();
   await f.page.evaluate(() => { window.savedWorkerTool = document.querySelector('#worker-panel .tool-card'); });
@@ -279,7 +278,7 @@ test('worker can occupy the main space, stream and switch workers, then restore 
   assert.equal(await f.page.locator('#main-content').evaluate(element => element.inert), true);
   assert.equal(await f.page.locator('#main-content').isVisible(), false);
   assert.equal(await f.page.locator('.topbar').isVisible(), true);
-  workers[0].parts[1] = { ...tool, output: '主空间实时工具输出', status: 'completed' };
+  workers[0].parts[1] = { ...tool, name: 'run_local_shell_command', args: '{"command":"echo live"}', output: '主空间实时工具输出', status: 'completed' };
   await f.emit(state(workers));
   assert(await f.page.evaluate(() => savedWorkerTool === document.querySelector('#worker-panel .tool-card') && savedWorkerTool.open));
   assert.match(await f.panel.locator('.tool-output').textContent(), /主空间实时工具输出/);

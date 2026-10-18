@@ -2,6 +2,15 @@
   'use strict';
   const vscode = window.UBOVMRuntime?.api ?? acquireVsCodeApi();
   const t = value => window.UBOVMi18n?.t(value) ?? value;
+  // Compact token counts for the composer's context meter (12.3K / 128K).
+  const tokenCount = value => value >= 1000000 ? (value / 1000000).toFixed(value >= 10000000 ? 0 : 1).replace(/\.0$/, '') + 'M'
+    : value >= 1000 ? (value / 1000).toFixed(value >= 10000 ? 0 : 1).replace(/\.0$/, '') + 'K' : String(value);
+  // Persisted per-conversation total; totalTokens already sums input and output.
+  const conversationTotal = usage => {
+    if (!usage) return 0;
+    if (Number.isFinite(usage.totalTokens)) return usage.totalTokens;
+    return (Number.isFinite(usage.input) ? usage.input : 0) + (Number.isFinite(usage.output) ? usage.output : 0);
+  };
   const userTextIds = new Set(['conversation-title', 'goal-objective', 'workspace-name', 'context-label', 'goal-selection-label']);
   let connectionStatus = 'connecting';
   let readyResyncTimer;
@@ -106,14 +115,33 @@
     loader.hidden = !firstContentPaint;
     document.body.dataset.switching = 'true';
     renderNavigationFeedback();
+    armRouteWatchdog();
   }
   function finishPageTransition() {
+    clearRouteWatchdog();
     routePending = false; routePaintReady = false;
     const loader = byId('route-loading');
     loader.hidden = true;
     delete loader.dataset.kind;
     document.body.dataset.switching = 'false';
     renderNavigationFeedback();
+  }
+  // The transition cover is the only full-surface mask. A dropped paint must not
+  // leave it (a blank canvas) on screen until the user resizes the window.
+  let routeWatchdog = 0;
+  function clearRouteWatchdog() { clearTimeout(routeWatchdog); routeWatchdog = 0; }
+  function armRouteWatchdog() {
+    clearRouteWatchdog();
+    routeWatchdog = setTimeout(() => {
+      routeWatchdog = 0;
+      if (!routePending || pageHidden() || !hostState) return;
+      // A route paint never committed: re-arm a full paint before surfacing recovery.
+      scheduleRender();
+      routeWatchdog = setTimeout(() => {
+        routeWatchdog = 0;
+        if (routePending && !pageHidden() && hostState) window.UBOVMRuntime?.fail('页面切换未完成。请同步最新状态或重新加载页面。');
+      }, 8000);
+    }, 8000);
   }
   function renderNavigationFeedback() {
     const navigating = navigationPending() || routePending;
@@ -163,7 +191,13 @@
     pendingThreadTeardown = undefined;
     if (!pending) return;
     for (const view of pending.views) releaseMessageView(view);
-    for (const container of pending.containers) try { container.replaceChildren(); } catch { /* Independent teardown. */ }
+    for (const container of pending.containers) {
+      // The conversation container is shared across sessions. A deferred
+      // teardown must never clear a newer view that has already remounted in
+      // the same node; doing so produces a perfectly-sized white surface.
+      if (messageViews.has(container)) continue;
+      try { container.replaceChildren(); } catch { /* Independent teardown. */ }
+    }
   }
   function queueThreadTeardown() {
     const views = [], containers = [];
@@ -176,7 +210,10 @@
     // A faster second switch must not leak the previous deferred teardown.
     if (pendingThreadTeardown) {
       for (const view of pendingThreadTeardown.views) releaseMessageView(view);
-      for (const container of pendingThreadTeardown.containers) try { container.replaceChildren(); } catch { /* Independent teardown. */ }
+      for (const container of pendingThreadTeardown.containers) {
+        if (messageViews.has(container)) continue;
+        try { container.replaceChildren(); } catch { /* Independent teardown. */ }
+      }
     }
     pendingThreadTeardown = { views, containers };
     // Without a painted route mask the old thread would flash; release immediately.
@@ -255,7 +292,7 @@
 
   let conversationOutline;
   function renderConversationOutline() {
-    if (hostState.mode === 'goal') return;
+    if (!hostState || hostState.mode === 'goal') return;
     if (!conversationOutline) conversationOutline = window.createConversationOutline({ scroller: conversation, beforeNavigate: () => {
       cancelScroll();
       forceScroll = false;
@@ -280,7 +317,7 @@
         if (!value || typeof value !== 'object') continue;
         drafts.set(id, {
           assist: typeof value.assist === 'string' ? value.assist.slice(0, 8000) : '',
-          approvalMode: ['auto', 'manual'].includes(value.approvalMode) ? value.approvalMode : undefined,
+          approvalMode: ['auto', 'manual', 'full'].includes(value.approvalMode) ? value.approvalMode : undefined,
           goalPrompt: typeof value.goalPrompt === 'string' ? value.goalPrompt.slice(0, 8000) : '',
           note: typeof value.note === 'string' ? value.note.slice(0, 2000) : '',
           goalDraft: value.goalDraft && typeof value.goalDraft.objective === 'string' && typeof value.goalDraft.criteria === 'string'
@@ -458,6 +495,26 @@
       : '提问、规划，或描述你想完成的改动…');
     const status = byId('composer-status');
     if (status) setText(status, hostState?.recovering ? '正在恢复执行记录 · 可以先写草稿' : hasPending('cancelRun') ? '正在停止…' : busy ? (liveSteer ? '执行中 · Enter 立刻引导' : '执行中 · Enter 排队') : sending ? '正在发送…' : '');
+    const meter = byId('context-usage');
+    if (meter) {
+      const { used, limit } = executionState().contextUsage ?? {};
+      const usedTokens = Number.isSafeInteger(used) && used >= 0 ? used : 0;
+      const hasLimit = Number.isSafeInteger(limit) && limit > 0;
+      const usedLabel = usedTokens === 0 ? '0K' : tokenCount(usedTokens);
+      // The meter is always visible, defaulting to 0K before the first model call.
+      const percent = hasLimit ? Math.min(100, Math.max(0, Math.round((usedTokens / limit) * 100))) : 0;
+      setProperty(meter, 'hidden', false);
+      const fill = byId('context-usage-fill');
+      if (fill) { fill.style.width = percent + '%'; setProperty(fill.dataset, 'level', percent >= 90 ? 'high' : percent >= 70 ? 'warn' : 'ok'); }
+      setText(byId('context-usage-value'), usedLabel);
+      const totalTokens = conversationTotal(hostState?.conversationUsage);
+      const totalLabel = totalTokens === 0 ? '0K' : tokenCount(totalTokens);
+      setText(byId('context-usage-total'), 'Σ ' + totalLabel);
+      const detail = t('上下文用量估算') + '：' + (hasLimit ? usedLabel + ' / ' + tokenCount(limit) + ' tokens · ' + percent + '%' : usedLabel + ' tokens')
+        + ' · ' + t('本会话累计') + '：' + totalLabel + ' tokens';
+      setProperty(meter, 'title', detail);
+      setProperty(meter, 'aria-label', detail);
+    }
     const shortcut = byId('prompt-shortcut');
     if (shortcut) setProperty(shortcut, 'hidden', busy || sending);
     const count = byId('prompt-count');
@@ -605,7 +662,16 @@
     renderConnectionStatus();
   }
   function showConversation(hasMessages) {
-    if (showingConversation === hasMessages) return;
+    // A hidden/visible transition can be interrupted while the composer is
+    // being moved between its two slots. Do not trust the boolean alone: a
+    // stale mount can leave a correctly-sized page with an empty surface.
+    const expectedSlot = byId(hasMessages ? 'composer-chat-slot' : 'composer-home-slot');
+    const mounted = byId('composer-stack').parentElement === expectedSlot;
+    const alreadyPainted = showingConversation === hasMessages &&
+      conversation.hidden === !hasMessages &&
+      byId('empty-state').hidden === hasMessages &&
+      byId('compose-dock').hidden === !hasMessages && mounted;
+    if (alreadyPainted) return;
     const hadFocus = document.activeElement === input;
     showingConversation = hasMessages;
     byId('empty-state').hidden = hasMessages;
@@ -618,7 +684,15 @@
   function sameParts(left, right) {
     if (left === right) return true;
     if (!Array.isArray(left) || !Array.isArray(right)) return !left?.length && !right?.length;
-    return left.length === right.length && left.every((part, index) => ['id', 'type', 'text', 'name', 'status', 'args', 'output', 'startedAt', 'endedAt', 'truncated', 'source', 'workerId', 'fallback', 'beforeTokens', 'afterTokens'].every(key => part[key] === right[index]?.[key]));
+    return left.length === right.length && left.every((part, index) => {
+      const other = right[index];
+      if (!other) return false;
+      return ['id', 'type', 'text', 'name', 'status', 'args', 'output', 'startedAt', 'endedAt', 'truncated', 'source', 'workerId', 'fallback', 'beforeTokens', 'afterTokens']
+        .every(key => part[key] === other[key])
+        // Summary telemetry is an object, so a body/tool kind change must not be
+        // treated as an unchanged part.
+        && JSON.stringify(part.kinds) === JSON.stringify(other.kinds);
+    });
   }
   function visibleTimelineParts(parts) {
     return window.UBOVMTimeline.visibleTimelineParts(parts);
@@ -700,6 +774,112 @@
         if (restoreFocus && record.status !== 'pending') card.header.focus({ preventScroll: true });
         changed = true;
       }
+    }
+    return changed;
+  }
+  function questionOptionId(recordId, index) { return 'question-' + recordId + '-option-' + index; }
+  function createQuestionCard(record) {
+    const element = document.createElement('article');
+    element.className = 'approval-card question-card';
+    element.dataset.kind = 'question'; element.dataset.status = 'pending';
+    const icon = document.createElement('span'); icon.className = 'approval-icon'; icon.textContent = '?'; icon.setAttribute('aria-hidden', 'true');
+    const title = document.createElement('strong'); title.textContent = t('向用户提问');
+    const target = document.createElement('span'); target.className = 'approval-target';
+    target.textContent = String(record.question || '').split(/\r?\n/, 1)[0]; target.title = record.question || '';
+    const status = document.createElement('span'); status.className = 'approval-status'; status.setAttribute('role', 'status'); status.textContent = t('等待回答');
+    const chevron = document.createElement('span'); chevron.className = 'approval-chevron'; chevron.textContent = '›'; chevron.setAttribute('aria-hidden', 'true');
+    const header = document.createElement('summary'); header.className = 'approval-header'; header.append(icon, title, target, status, chevron);
+    const disclosure = document.createElement('details'); disclosure.className = 'approval-request'; disclosure.open = true;
+    const content = document.createElement('div'); content.className = 'approval-content';
+    const question = document.createElement('p'); question.className = 'approval-description question-text'; question.textContent = record.question || '';
+    content.append(question);
+    if (record.workerId) { const worker = document.createElement('p'); worker.className = 'approval-worker'; worker.textContent = t('来自并行任务'); content.append(worker); }
+    const options = Array.isArray(record.options) ? record.options : [];
+    const multiple = record.multiple === true;
+    const fieldset = document.createElement('fieldset'); fieldset.className = 'question-options';
+    const legend = document.createElement('legend'); legend.className = 'question-legend'; legend.textContent = t(multiple ? '请选择（可多选）' : '请选择一项');
+    const inputs = [];
+    fieldset.append(legend);
+    for (const [index, option] of options.entries()) {
+      const item = document.createElement('label'); item.className = 'question-option';
+      const input = document.createElement('input'); input.type = multiple ? 'checkbox' : 'radio';
+      input.name = 'question-' + record.id; input.value = option.label; input.id = questionOptionId(record.id, index);
+      const body = document.createElement('span'); body.className = 'question-option-body';
+      const label = document.createElement('span'); label.className = 'question-option-label'; label.textContent = option.label;
+      body.append(label);
+      if (option.description) { const description = document.createElement('span'); description.className = 'question-option-desc'; description.textContent = option.description; body.append(description); }
+      item.append(input, body); fieldset.append(item); inputs.push(input);
+    }
+    content.append(fieldset);
+    let custom;
+    if (record.allowCustom !== false) {
+      const wrapper = document.createElement('label'); wrapper.className = 'question-custom';
+      const caption = document.createElement('span'); caption.className = 'question-custom-label'; caption.textContent = t('补充回答（可选）');
+      custom = document.createElement('textarea'); custom.className = 'question-custom-input'; custom.rows = 2;
+      custom.placeholder = t('也可以直接填写你的回答');
+      custom.setAttribute('aria-label', t('补充回答（可选）'));
+      wrapper.append(caption, custom); content.append(wrapper);
+    }
+    disclosure.append(header, content);
+    const feedback = document.createElement('p'); feedback.className = 'approval-feedback'; feedback.hidden = true; feedback.setAttribute('role', 'status');
+    const actions = document.createElement('div'); actions.className = 'approval-actions';
+    const hint = document.createElement('span'); hint.className = 'approval-scope'; hint.textContent = t('提交后本轮继续');
+    const cancel = document.createElement('button'); cancel.type = 'button'; cancel.className = 'approval-deny question-cancel'; cancel.textContent = t('跳过');
+    const submit = document.createElement('button'); submit.type = 'button'; submit.className = 'approval-allow question-submit'; submit.textContent = t('提交回答');
+    actions.append(hint, cancel, submit);
+    element.append(disclosure, feedback, actions);
+    messages.append(element);
+    const card = { element, disclosure, status, feedback, actions, cancel, submit, inputs, custom, sending: false };
+    const setEnabled = enabled => {
+      for (const input of inputs) input.disabled = !enabled;
+      if (custom) custom.disabled = !enabled;
+      cancel.disabled = submit.disabled = !enabled;
+      element.toggleAttribute('aria-busy', !enabled && card.sending);
+    };
+    const send = (payload, pendingText) => {
+      if (card.sending) return;
+      card.sending = true; setEnabled(false);
+      feedback.hidden = true; status.textContent = pendingText;
+      request('answerQuestion', { questionId: record.id, ...payload }, () => {
+        card.sending = false;
+        element.removeAttribute('aria-busy');
+        if (card.state === 'pending') status.textContent = t('已提交，等待同步');
+      }, () => {
+        card.sending = false; element.removeAttribute('aria-busy'); setEnabled(true);
+        status.textContent = t('等待回答'); feedback.textContent = t('提交未完成，请重试。'); feedback.hidden = false;
+      });
+    };
+    const collect = () => {
+      const selected = inputs.filter(input => input.checked).map(input => input.value);
+      const note = custom ? custom.value.trim() : '';
+      return { selected, custom: note };
+    };
+    submit.addEventListener('click', () => {
+      const { selected, custom: note } = collect();
+      if (!selected.length && !note) { feedback.textContent = t('请选择至少一个选项，或填写一条回答。'); feedback.hidden = false; return; }
+      send({ selected, custom: note }, t('正在提交…'));
+    });
+    cancel.addEventListener('click', () => send({ cancelled: true }, t('正在跳过…')));
+    card.state = 'pending';
+    card.markTerminal = () => { card.state = 'settled'; setEnabled(false); disclosure.open = false; actions.hidden = true; };
+    return card;
+  }
+  function renderQuestions(view) {
+    view.questions ??= new Map();
+    const questions = Array.isArray(hostState?.humanQuestions) ? hostState.humanQuestions : [];
+    const records = questions.filter(record => record.status === 'pending');
+    const completed = new Set(questions.filter(record => ['answered', 'cancelled'].includes(record.status)).map(record => record.id));
+    let changed = false;
+    // An omitted record is not a decision: keep unresolved cards until the host
+    // confirms a terminal status, mirroring tool approvals.
+    for (const [id, card] of view.questions) if (completed.has(id)) {
+      if (!card.sending) { card.element.remove(); view.questions.delete(id); changed = true; }
+      else { card.markTerminal?.(); changed = true; }
+    }
+    for (const record of records) {
+      if (view.questions.has(record.id)) continue;
+      view.questions.set(record.id, createQuestionCard(record));
+      changed = true;
     }
     return changed;
   }
@@ -1020,9 +1200,10 @@
       changed = updateChanges(view.changeSummary, execution.runId) || changed;
     } else if (view.changeSummary) { view.changeSummary.remove(); view.changeSummary = undefined; changed = true; }
     changed = renderApprovals(view) || changed;
+    changed = renderQuestions(view) || changed;
     view.busy = busy;
     view.source = items; view.history = safeMessages; view.firstPartId = firstPartId; view.represented = represented;
-    showConversation(safeMessages.length > 0 || hasLive || busy || Boolean(execution.error) || execution.canResume === true || execution.workers?.length > 0 || view.approvals.size > 0);
+    showConversation(safeMessages.length > 0 || hasLive || busy || Boolean(execution.error) || execution.canResume === true || execution.workers?.length > 0 || view.approvals.size > 0 || view.questions.size > 0);
     refreshLatest();
     if (!changed) return;
     cancelScroll();
@@ -1411,7 +1592,7 @@
     const middleware = execution.middleware;
     const integrations = execution.integrations || (middleware && {
       contextSummary: middleware.contextSummary ? '已启用' : '未启用',
-      mcp: Array.isArray(middleware.mcp) ? middleware.mcp.filter(server => server.connected).length + ' / ' + middleware.mcp.length + ' 个服务已加载' : undefined,
+      mcp: Array.isArray(middleware.mcp) ? mcpIntegration(middleware.mcp) : undefined,
       skills: Array.isArray(middleware.skills) ? middleware.skills.length + ' 个可用技能' : undefined
     });
     const integrationLabels = { database: '数据库', contextSummary: '上下文摘要', mcp: 'MCP', skills: 'Skills' };
@@ -1609,6 +1790,93 @@
     }
     updateAssistEvidenceActions();
   }
+  // One compact row: status counts as pills, a slim progress bar, then a single
+  // ordered list. Kept tight so the board, the parallel-task strip and the
+  // composer all fit; worker-owned rows link back to their worker panel.
+  // Show which MCP servers actually registered, so a failed server is not just a
+  // missing tool with no explanation.
+  function mcpIntegration(servers) {
+    const loaded = servers.filter(server => server.connected === true).length;
+    const failed = servers.filter(server => server.connected !== true && server.enabled !== false).map(server => server.name);
+    return `${loaded} / ${servers.length} 个服务已加载${failed.length ? `（${failed.join('、')} 未连接）` : ''}`;
+  }
+  const TODO_ORDER = ['in_progress', 'pending', 'completed'];  const TODO_STATUSES = new Set(TODO_ORDER);
+  const TODO_LABELS = { in_progress: '进行中', pending: '待做', completed: '已完成' };
+  const todoFold = new Map();
+  let todoFoldSession = '';
+  function renderAssistTodos() {
+    const panel = byId('assist-todos');
+    const goalMode = hostState?.mode === 'goal';
+    const raw = hostState?.execution?.memory?.todos;
+    const workers = Array.isArray(hostState?.execution?.workers) ? hostState.execution.workers : [];
+    // Spawned workers get the same name the parallel-task strip shows; the main
+    // agent owns everything else and stays unlabelled.
+    const ownerOf = id => {
+      if (typeof id !== 'string' || !id) return undefined;
+      const worker = workers.find(item => item.id === id);
+      if (!worker) return undefined;
+      return { id, label: String(worker.name || worker.description || '').trim() || id.split('/').pop().slice(0, 12) };
+    };
+    const items = (Array.isArray(raw) ? raw : []).flatMap(item => {
+      if (!item || typeof item.content !== 'string' || !item.content.trim()) return [];
+      return [{ id: String(item.id ?? ''), content: item.content, owner: ownerOf(item.worker_id),
+        status: TODO_STATUSES.has(item.status) ? item.status : 'pending' }];
+    });
+    if (goalMode || !items.length) { panel.hidden = true; return; }
+    // The user's fold choice belongs to the conversation, not to the DOM node.
+    // Collapsed by default: the header row alone already carries the counts and
+    // progress, and the list is one click away.
+    if (todoFoldSession !== currentSessionId) {
+      todoFoldSession = currentSessionId;
+      panel.open = todoFold.get(currentSessionId) ?? false;
+    }
+    panel.hidden = false;
+    const counts = TODO_ORDER.map(status => [status, items.filter(item => item.status === status).length]);
+    const done = counts.find(([status]) => status === 'completed')[1];
+    panel.style.setProperty('--assist-todos-progress', Math.round(done / items.length * 100) + '%');
+    const countHost = byId('assist-todos-count');
+    const countsKey = counts.map(([status, size]) => status + ':' + size).join(',');
+    if (countHost.dataset.key !== countsKey) {
+      countHost.dataset.key = countsKey;
+      countHost.replaceChildren(...counts.filter(([, size]) => size > 0).map(([status, size]) => {
+        const pill = document.createElement('span');
+        pill.className = 'assist-todos-pill';
+        pill.dataset.status = status;
+        pill.append(Object.assign(document.createElement('span'), { textContent: TODO_LABELS[status] }),
+          Object.assign(document.createElement('span'), { className: 'assist-todos-pill-count', textContent: String(size) }));
+        return pill;
+      }));
+    }
+    const ordered = [...items].sort((left, right) => TODO_ORDER.indexOf(left.status) - TODO_ORDER.indexOf(right.status));
+    const body = byId('assist-todos-groups');
+    const key = JSON.stringify(ordered.map(item => [item.id, item.status, item.content, item.owner?.id]));
+    if (body.dataset.key === key) return;
+    body.dataset.key = key;
+    const list = document.createElement('ul');
+    list.className = 'assist-todos-list';
+    list.append(...ordered.map(item => {
+      const row = document.createElement('li');
+      row.className = 'assist-todos-item';
+      row.dataset.status = item.status;
+      // The active task is the board's selected row; mark it for AT and styling.
+      if (item.status === 'in_progress') row.setAttribute('aria-current', 'true');
+      row.append(Object.assign(document.createElement('span'), { className: 'assist-todos-text', textContent: item.content }));
+      if (item.owner) {
+        const owner = document.createElement('button');
+        owner.type = 'button';
+        owner.className = 'assist-todos-owner';
+        owner.textContent = item.owner.label;
+        owner.title = '打开此任务对应的并行任务记录';
+        owner.addEventListener('click', () => workerPanel.show(item.owner.id, owner));
+        row.append(owner);
+      }
+      return row;
+    }));
+    body.replaceChildren(list);
+  }
+  byId('assist-todos').addEventListener('toggle', () => {
+    if (todoFoldSession) todoFold.set(todoFoldSession, byId('assist-todos').open);
+  });
   function sendPrompt() {
     const field = input;
     const draftKey = 'assist';
@@ -1625,6 +1893,11 @@
       persistDrafts();
     });
   }
+  byId('composer-model').addEventListener('change', event => {
+    const modelId = event.currentTarget.value;
+    if (!currentSessionId || !hostState?.modelSelection?.models?.includes(modelId)) return;
+    request('setModel', { modelId }, () => {});
+  });
   function cancelRun() {
     if (busy && !hasPending('cancelRun') && !navigationPending()) request('cancelRun');
   }
@@ -1790,7 +2063,7 @@
   }
   approvalMode.addEventListener('change', event => {
     const value = event.target.value;
-    if (approvalMode.disabled || !['auto', 'manual'].includes(value)) return;
+    if (approvalMode.disabled || !['auto', 'manual', 'full'].includes(value)) return;
     draftFor().approvalMode = value;
     persistDrafts();
   });
@@ -2078,10 +2351,12 @@
     });
   }
   function renderLiveComponents(executionOnly = false) {
+    if (!hostState) return;
     const failures = [];
     const tasks = [
       () => { if (hostState.mode !== 'goal') renderMessages(Array.isArray(hostState.messages) ? hostState.messages : []); },
       () => deliveryView.update(hostState.execution?.memory?.delivery, currentSessionId, hostState.execution?.memory?.domainInventory),
+      renderAssistTodos,
       ...(executionOnly ? [] : [renderConversationOutline, renderAssistEvidence]),
       ...(executionOnly && hostState.mode !== 'goal' ? [] : [renderGoal]),
       renderExecution,
@@ -2176,6 +2451,46 @@
     scheduleRender(true);
     scheduleInput(); refreshLatest(); queueContentReady();
   }
+  // Compositor keep-alive. When the window is occluded for a long time without
+  // any focus/visibility event, Chromium can discard the webview's own composited
+  // surface: the DOM is intact but no new frame is produced, so the page looks
+  // blank until a resize forces one. While the page is visible and idle, emit a
+  // harmless frame on an interval so the surface heals without a geometry change.
+  const keepAlive = { last: Date.now(), intervalMs: 20000, idleMs: 15000, probe: undefined, on: false };
+  function keepAliveMark() { keepAlive.last = Date.now(); }
+  function keepAliveNudge() {
+    if (!keepAlive.probe) {
+      const probe = document.createElement('div');
+      probe.setAttribute('aria-hidden', 'true');
+      probe.dataset.role = 'keep-alive';
+      // Off-screen and effectively transparent: forces a frame without touching layout.
+      probe.style.cssText = 'position:fixed;left:-4px;top:-4px;width:2px;height:2px;pointer-events:none;opacity:0;';
+      document.body.append(probe);
+      keepAlive.probe = probe;
+    }
+    keepAlive.on = !keepAlive.on;
+    keepAlive.probe.style.opacity = keepAlive.on ? '0.01' : '0';
+  }
+  setInterval(() => {
+    if (document.hidden || suspended || visualSuspended()) return;
+    if (Date.now() - keepAlive.last < keepAlive.idleMs) return;
+    keepAlive.last = Date.now();
+    keepAliveNudge();
+  }, keepAlive.intervalMs);
+  // Returning focus to the webview after an idle gap repaints the page, so a
+  // discarded surface recovers on the first click even without an OS focus event.
+  let focusRepaintAt = 0;
+  window.addEventListener('focus', () => {
+    const now = Date.now(), idle = now - keepAlive.last >= 5000;
+    keepAlive.last = now;
+    if (!idle || document.hidden || suspended || visualSuspended() || now - focusRepaintAt < 1000) return;
+    focusRepaintAt = now;
+    cancelVisualFrames();
+    resumeVisuals();
+  });
+  for (const type of ['pointerdown', 'keydown', 'wheel']) {
+    window.addEventListener(type, () => { keepAliveMark(); }, { capture: true, passive: true });
+  }
   byId('ui-render-retry').addEventListener('click', () => {
     cancelVisualFrames();
     scheduleRender();
@@ -2198,7 +2513,7 @@
     // Keep only hostState (the newest snapshot), never queue individual tokens.
     // Navigation, explicit refresh and terminal states bypass the interval.
     const streaming = executionOnly === true && !fullRenderPending && busy &&
-      !['completed', 'failed', 'interrupted'].includes(hostState.execution?.status);
+      !['completed', 'failed', 'interrupted'].includes(hostState?.execution?.status);
     if (!streaming) cancelRenderTimer();
     if (renderFrame || pageHidden()) return;
     window.UBOVMRuntime?.pending();
@@ -2209,9 +2524,20 @@
     }
     cancelRenderTimer();
     const generation = renderGeneration;
-    renderFrame = requestAnimationFrame(() => {
-      if (generation !== renderGeneration) return;
-      renderFrame = 0;
+    // Track the in-flight paint. Without assigning renderFrame, the dedup guard
+    // above never fires and cancelVisualFrames/beginPageTransition cannot cancel
+    // the pending frame: bursted snapshots each paint a full page (stutter).
+    const frame = renderFrame = requestAnimationFrame(() => {
+      // A cancelled frame may still be delivered by the browser during a
+      // resize/visibility transition. Previously this stale callback returned
+      // while leaving renderFrame truthy, permanently blocking the next paint.
+      // Treat it as a dropped frame and schedule a fresh commit instead.
+      if (renderFrame === frame) renderFrame = 0;
+      if (generation !== renderGeneration) {
+        renderPending = true;
+        if (!pageHidden() && !renderFrame) scheduleRender(executionOnly === true);
+        return;
+      }
       if (pageHidden()) {
         // Suspended paint must not leave the runtime pending clock armed.
         window.UBOVMRuntime?.cancel();
@@ -2234,6 +2560,7 @@
     });
   }
   function renderSafely(full) {
+    keepAliveMark();
     const state = hostState, epoch = viewEpoch, generation = renderGeneration;
     let succeeded = false;
     try {
@@ -2367,11 +2694,28 @@
     goalSelection.hidden = state.mode !== 'goal' || !selection;
     setText(byId('goal-selection-label'), contextLabel);
     goalSelection.title = '已添加选中代码：' + file + ' · ' + selection + '（添加时的快照）';
+    const modelPicker = byId('composer-model');
+    const choices = Array.isArray(state.modelSelection?.models) ? state.modelSelection.models : [];
+    const selected = choices.includes(state.modelSelection?.selected) ? state.modelSelection.selected : choices[0];
+    const pickerVisible = choices.length >= 2 && state.mode === 'assist';
     if (state.provider) {
-      setText(byId('provider-label'), state.provider.configured && state.ssh?.configured === false ? '配置 SSH（必需）' : state.provider.label || '未连接模型');
-      byId('provider-label').title = state.provider.error || state.ssh?.error || '配置模型与工具';
+      const providerLabel = state.provider.configured && state.ssh?.configured === false ? '配置 SSH（必需）' : state.provider.label || '未连接模型';
+      setText(byId('provider-label'), pickerVisible ? '模型配置' : providerLabel);
+      byId('provider-label').title = pickerVisible
+        ? `打开模型配置\n服务商：${state.provider.provider || '已连接'}\n默认模型：${state.provider.defaultModel || providerLabel}`
+        : state.provider.error || state.ssh?.error || '打开模型配置';
       setText(byId('connection-note'), configurationMissing() ? '先完成模型和远程连接配置，就可以开始' : '模型已就绪，直接输入即可');
     }
+    const key = JSON.stringify(choices);
+    if (modelPicker.dataset.choices !== key) {
+      modelPicker.dataset.choices = key;
+      modelPicker.replaceChildren(...choices.map(id => Object.assign(document.createElement('option'), { value: id, textContent: id })));
+    }
+    modelPicker.hidden = !pickerVisible;
+    modelPicker.title = pickerVisible
+      ? `选择本轮对话使用的模型（继承 ${state.provider?.provider || '当前配置'}）` 
+      : '选择本轮对话使用的模型';
+    if (selected && modelPicker.value !== selected) modelPicker.value = selected;
   }
   function animateCurrentPage() {
     const state = hostState;
@@ -2442,10 +2786,11 @@
     const checkpoint = stateOrder.checkpoint();
     const previous = { hostState, currentSessionId, busy };
     try { receiveHostMessage(event); }
-    catch {
+    catch (error) {
       // An exception before paint must not consume the host revision forever.
       // The next resync may resend exactly the same snapshot.
       stateOrder.restore(checkpoint);
+      try { stateOrder.discard(event.data); } catch { /* Keep recovery path independent. */ }
       hostState = previous.hostState; currentSessionId = previous.currentSessionId; busy = previous.busy;
       committedRender = undefined;
       renderPending = true; fullRenderPending = true;
@@ -2498,6 +2843,7 @@
     return false;
   }
   function receiveHostMessage(event) {
+    keepAliveMark();
     let state = event.data;
     if (projectSwitcher.handleMessage(state)) return;
     if (state?.type?.startsWith?.('openConversation') || state?.type === 'showUbomAlert' || state?.type === 'closeUbomModal') {
@@ -2506,7 +2852,10 @@
     }
     if (state?.type === 'locale') { window.UBOVMi18n?.applyHostLocale?.(state.locale); return; }
     if (state?.type === 'windowFocused') {
-      if (!document.hidden) resumeVisuals();
+      // OS focus restore must force a full paint: resumeVisuals() alone only
+      // recommits live components, so a surface the compositor discarded while
+      // the window was occluded stays blank until a resize proves it stale.
+      if (!document.hidden) { cancelVisualFrames(); resumeVisuals(); }
       return;
     }
     if (state?.type === 'selectBlackboardNode') {

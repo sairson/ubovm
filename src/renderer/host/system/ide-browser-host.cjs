@@ -56,7 +56,7 @@ const SNAPSHOT_SCRIPT = `(({ token, max, chars, offset, role, query, clear }) =>
     };
   };
   const selected = nodes.map(node => ({ node, data: describe(node) }))
-    .filter(({ data }) => (!role || data.role.toLowerCase().includes(role)) && (!query || data.name.toLowerCase().includes(query)));
+    .filter(({ data }) => (!role || data.role.toLowerCase() === role) && (!query || data.name.toLowerCase().includes(query)));
   const elements = selected.slice(offset, offset + max).map(({ node, data }, index) => {
     const ref = token + '_' + index;
     node.setAttribute('data-intools-ref', ref);
@@ -89,42 +89,93 @@ const FIND_REF_SCRIPT = `(ref => {
   return visit(document);
 })`;
 
-const CONSOLE_INSTALL_SCRIPT = `(() => {
-  if (window.__ubovmConsole) return { installed: true, existing: true };
-  const state = { entries: [], seq: 0, dropped: 0 };
-  const push = entry => {
-    state.entries.push(entry);
-    if (state.entries.length > 500) { state.entries.shift(); state.dropped++; }
-  };
-  const textOf = args => args.map(value => {
-    try { return typeof value === 'string' ? value : JSON.stringify(value); }
-    catch { return String(value); }
-  }).join(' ').slice(0, 4000);
-  for (const level of ['log', 'info', 'warn', 'error', 'debug']) {
-    const original = console[level].bind(console);
-    console[level] = (...args) => {
-      push({
-        sequence: ++state.seq, timestamp: Date.now(), kind: 'console',
-        level: level === 'warn' ? 'warning' : level, text: textOf(args)
-      });
-      return original(...args);
-    };
+const CONSOLE_LIMIT = 500;
+const CONSOLE_TEXT_LIMIT = 4000;
+const CONSOLE_ENVELOPE_BYTES = 40 * 1024;
+const PAGE_ERROR_KIND = 'pageerror';
+// CDP errors that mean the cached page session is unusable. Only these evict
+// the session so the next action reattaches; the failed action is never retried.
+const SESSION_INVALID = /session (?:with given id )?(?:closed|not found)|no session with given id|target closed|not attached|inspected target navigated or closed|execution context was destroyed|cannot find context|detached from target|browser has been closed/i;
+const isSessionInvalid = error => SESSION_INVALID.test(String(error?.message || error || ''));
+
+function safeText(value) {
+  if (typeof value === 'string') return value;
+  try { return JSON.stringify(value); } catch { return String(value); }
+}
+
+/** Render a CDP RemoteObject as a short console string. */
+function formatRemoteObject(argument) {
+  if (argument === null || argument === undefined) return '';
+  if (typeof argument !== 'object') return String(argument);
+  if (argument.value !== undefined) return safeText(argument.value);
+  if (argument.unserializableValue !== undefined) return String(argument.unserializableValue);
+  if (argument.description !== undefined) return String(argument.description);
+  return String(argument.type ?? '');
+}
+
+function recordConsole(buffer, entry) {
+  buffer.entries.push({ sequence: ++buffer.sequence, timestamp: new Date().toISOString(), ...entry });
+  if (buffer.entries.length > CONSOLE_LIMIT) buffer.droppedThrough = buffer.entries.shift().sequence;
+}
+
+/** Read the host-side console ring buffer, matching the Obscura contract. */
+function consoleResult(buffer, input) {
+  const after = Number.isSafeInteger(input.after_sequence) && input.after_sequence > 0 ? input.after_sequence : 0;
+  const level = input.level ? String(input.level) : '';
+  const query = String(input.query || '').toLowerCase();
+  const selected = buffer.entries.filter(entry => entry.sequence > after
+    && (!level || entry.level === level)
+    && (!query || String(entry.text || '').toLowerCase().includes(query)));
+  const limit = Number(input.limit) > 0 ? Math.min(200, Number(input.limit)) : 40;
+  const entries = [];
+  let bytes = 0;
+  for (const entry of selected) {
+    const size = Buffer.byteLength(JSON.stringify(entry)) + 1;
+    if (entries.length >= limit || (entries.length && bytes + size > CONSOLE_ENVELOPE_BYTES)) break;
+    entries.push(entry);
+    bytes += size;
   }
-  window.addEventListener('error', event => {
-    push({
-      sequence: ++state.seq, timestamp: Date.now(), kind: 'page_error', level: 'error',
-      text: String(event.message || event.error || 'error').slice(0, 4000)
-    });
-  });
-  window.addEventListener('unhandledrejection', event => {
-    push({
-      sequence: ++state.seq, timestamp: Date.now(), kind: 'page_error', level: 'error',
-      text: String(event.reason || 'unhandledrejection').slice(0, 4000)
-    });
-  });
-  window.__ubovmConsole = state;
-  return { installed: true, existing: false };
-})()`;
+  if (input.clear === true) {
+    const removed = new Set(entries.map(entry => entry.sequence));
+    buffer.entries = buffer.entries.filter(entry => !removed.has(entry.sequence));
+  }
+  const hasMore = entries.length < selected.length;
+  return {
+    entries,
+    has_more: hasMore,
+    next_sequence: hasMore ? entries[entries.length - 1].sequence : Math.max(after, buffer.sequence),
+    dropped_through_sequence: buffer.droppedThrough || undefined,
+    buffer_overflow: after < buffer.droppedThrough
+  };
+}
+
+/** Map a key name to CDP Input.dispatchKeyEvent fields. */
+function keyDescriptor(key) {
+  const named = {
+    Enter: { key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, text: '\r' },
+    Tab: { key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9 },
+    Backspace: { key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8 },
+    Delete: { key: 'Delete', code: 'Delete', windowsVirtualKeyCode: 46 },
+    Escape: { key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 },
+    ArrowUp: { key: 'ArrowUp', code: 'ArrowUp', windowsVirtualKeyCode: 38 },
+    ArrowDown: { key: 'ArrowDown', code: 'ArrowDown', windowsVirtualKeyCode: 40 },
+    ArrowLeft: { key: 'ArrowLeft', code: 'ArrowLeft', windowsVirtualKeyCode: 37 },
+    ArrowRight: { key: 'ArrowRight', code: 'ArrowRight', windowsVirtualKeyCode: 39 },
+    Home: { key: 'Home', code: 'Home', windowsVirtualKeyCode: 36 },
+    End: { key: 'End', code: 'End', windowsVirtualKeyCode: 35 },
+    PageUp: { key: 'PageUp', code: 'PageUp', windowsVirtualKeyCode: 33 },
+    PageDown: { key: 'PageDown', code: 'PageDown', windowsVirtualKeyCode: 34 },
+    Space: { key: ' ', code: 'Space', windowsVirtualKeyCode: 32, text: ' ' },
+    ' ': { key: ' ', code: 'Space', windowsVirtualKeyCode: 32, text: ' ' }
+  };
+  if (named[key]) return named[key];
+  if (key.length === 1) {
+    const upper = key.toUpperCase();
+    const code = /[A-Z]/.test(upper) ? `Key${upper}` : /[0-9]/.test(key) ? `Digit${key}` : undefined;
+    return { key, ...(code ? { code } : {}), text: key };
+  }
+  return { key };
+}
 
 function createIdeBrowserHost(vscode, { lockCommand = 'workbench.action.browser.setAgentControlLock' } = {}) {
   const pages = new Map();
@@ -138,7 +189,24 @@ function createIdeBrowserHost(vscode, { lockCommand = 'workbench.action.browser.
     return typeof vscode.window.browserTabs !== 'undefined' ? [...vscode.window.browserTabs] : [];
   }
 
+  function consoleBuffer(entry) {
+    if (!entry.console) entry.console = { entries: [], sequence: 0, droppedThrough: 0 };
+    return entry.console;
+  }
+
+  function disposeSession(entry) {
+    const session = entry?.session;
+    entry.session = undefined;
+    entry.sessionPromise = undefined;
+    if (!session) return;
+    for (const dispose of session.disposers) { try { dispose(); } catch { /* ignore */ } }
+    try { session.onMessage?.dispose?.(); } catch { /* ignore */ }
+    try { Promise.resolve(session.handle?.close?.()).catch(() => {}); } catch { /* ignore */ }
+  }
+
   function forgetPage(id) {
+    const entry = pages.get(id);
+    if (entry) disposeSession(entry);
     pages.delete(id);
     pageRefs.delete(id);
     if (activePageId === id) {
@@ -167,6 +235,7 @@ function createIdeBrowserHost(vscode, { lockCommand = 'workbench.action.browser.
       // Tab object may have been replaced; rebind only when a single unowned URL match remains.
       const candidates = tabs.filter(tab => !ownedTabs(entry).has(tab) && tab.url === entry.url);
       if (candidates.length === 1) {
+        disposeSession(entry);
         entry.tab = candidates[0];
         entry.url = candidates[0].url;
         entry.title = candidates[0].title;
@@ -202,6 +271,7 @@ function createIdeBrowserHost(vscode, { lockCommand = 'workbench.action.browser.
     if (preferredId && pages.has(preferredId)) {
       const entry = pages.get(preferredId);
       if (!listTabs().includes(entry.tab)) {
+        disposeSession(entry);
         entry.tab = tab;
         entry.url = tab.url;
         entry.title = tab.title;
@@ -390,13 +460,33 @@ function createIdeBrowserHost(vscode, { lockCommand = 'workbench.action.browser.
     }
   }
 
-  async function withCDP(entry, fn) {
-    if (!entry?.tab?.startCDPSession) throw new Error('当前浏览器标签不支持 CDP。');
-    const session = await entry.tab.startCDPSession();
+  function subscribeSessionEvents(entry, session) {
+    const buffer = consoleBuffer(entry);
+    session.on('Runtime.consoleAPICalled', params => {
+      const frame = params?.stackTrace?.callFrames?.[0];
+      const text = (params?.args || []).map(formatRemoteObject).join(' ');
+      recordConsole(buffer, {
+        kind: 'console', level: params?.type || 'log',
+        text: text.slice(0, CONSOLE_TEXT_LIMIT), truncated: text.length > CONSOLE_TEXT_LIMIT,
+        ...(frame ? { location: { url: String(frame.url || '').slice(0, 2000), line: frame.lineNumber, column: frame.columnNumber } } : {})
+      });
+    });
+    session.on('Runtime.exceptionThrown', params => {
+      const details = params?.exceptionDetails || {};
+      const text = String(details.exception?.description || details.text || 'Uncaught error');
+      recordConsole(buffer, { kind: PAGE_ERROR_KIND, level: 'error', text: text.slice(0, CONSOLE_TEXT_LIMIT), truncated: text.length > CONSOLE_TEXT_LIMIT });
+    });
+    // Navigation (by link, form, or history) invalidates refs; console survives.
+    session.on('Page.frameNavigated', params => { if (!params?.frame?.parentId) pageRefs.delete(entry.id); });
+  }
+
+  async function createSession(entry) {
+    if (!entry.tab?.startCDPSession) throw new Error('当前浏览器标签不支持 CDP。');
+    const handle = await entry.tab.startCDPSession();
     const pending = new Map();
     const listeners = new Map();
-    let pageSessionId;
-    const onMessage = session.onDidReceiveMessage(message => {
+    const session = { handle, pending, listeners, pageSessionId: undefined, console: consoleBuffer(entry), disposers: [] };
+    session.onMessage = handle.onDidReceiveMessage(message => {
       if (!message || typeof message !== 'object') return;
       if (message.id != null && pending.has(message.id)) {
         const { resolve, reject } = pending.get(message.id);
@@ -411,12 +501,10 @@ function createIdeBrowserHost(vscode, { lockCommand = 'workbench.action.browser.
         }
       }
     });
-    const send = async (method, params, options = {}) => {
+    session.send = async (method, params, options = {}) => {
       const id = nextCdpId++;
       const root = options.root === true || method.startsWith('Target.') || method.startsWith('Browser.');
-      const sessionId = options.sessionId !== undefined
-        ? options.sessionId
-        : (root ? undefined : pageSessionId);
+      const sessionId = options.sessionId !== undefined ? options.sessionId : (root ? undefined : session.pageSessionId);
       const result = new Promise((resolve, reject) => {
         const timer = setTimeout(() => {
           if (pending.has(id)) {
@@ -429,20 +517,42 @@ function createIdeBrowserHost(vscode, { lockCommand = 'workbench.action.browser.
           reject: error => { clearTimeout(timer); reject(error); }
         });
       });
-      await session.sendMessage(sessionId ? { id, method, params, sessionId } : { id, method, params });
+      await handle.sendMessage(sessionId ? { id, method, params, sessionId } : { id, method, params });
       return result;
     };
-    const on = (method, listener) => {
+    session.on = (method, listener) => {
       if (!listeners.has(method)) listeners.set(method, new Set());
       listeners.get(method).add(listener);
       return () => listeners.get(method)?.delete(listener);
     };
+    subscribeSessionEvents(entry, session);
+    session.pageSessionId = await attachPageSession(session.send, session.on, entry.tab?.url || entry.url);
+    // Runtime drives console/exception capture; Page drives load/frame events.
+    // Enabling here (once per session) replaces the old per-action re-injection.
+    await session.send('Runtime.enable').catch(() => {});
+    await session.send('Page.enable').catch(() => {});
+    entry.session = session;
+    return session;
+  }
+
+  function ensureSession(entry) {
+    if (entry.session) return Promise.resolve(entry.session);
+    if (!entry.sessionPromise) {
+      entry.sessionPromise = createSession(entry).catch(error => { entry.sessionPromise = undefined; throw error; });
+    }
+    return entry.sessionPromise;
+  }
+
+  // One cached CDP session per page, reused across actions. A transiently
+  // invalidated session is evicted so the next call reattaches; the failed
+  // action is never replayed (retrying could double-apply a click).
+  async function withSession(entry, fn) {
+    const session = await ensureSession(entry);
     try {
-      pageSessionId = await attachPageSession(send, on, entry.tab?.url || entry.url);
-      return await fn(send, { on, session, pageSessionId });
-    } finally {
-      onMessage.dispose?.();
-      try { await session.close(); } catch { /* session may already be closed */ }
+      return await fn(session.send, session.on, session);
+    } catch (error) {
+      if (isSessionInvalid(error)) disposeSession(entry);
+      throw error;
     }
   }
 
@@ -533,11 +643,13 @@ function createIdeBrowserHost(vscode, { lockCommand = 'workbench.action.browser.
         || 'evaluate failed';
       throw new Error(text);
     }
-    return result.result?.value;
-  }
-
-  async function installConsole(send) {
-    await evaluate(send, CONSOLE_INSTALL_SCRIPT);
+    const remote = result.result;
+    // returnByValue omits non-serializable objects (nodes, buffers). Surface a
+    // short description instead of silently returning undefined.
+    if (remote && remote.value === undefined && remote.type === 'object' && remote.subtype && remote.subtype !== 'null') {
+      return remote.description ?? `[${remote.subtype}]`;
+    }
+    return remote?.value;
   }
 
   function armLoadWait(on, timeoutMs) {
@@ -629,17 +741,14 @@ function createIdeBrowserHost(vscode, { lockCommand = 'workbench.action.browser.
     }
 
     const entry = await ensurePage(binding, input);
-    return withCDP(entry, async (send, { on }) => {
-      await send('Runtime.enable').catch(() => {});
-      await installConsole(send).catch(() => {});
-
+    return withSession(entry, async (send, on) => {
       if (action === 'navigate') {
         const url = String(input.url || '');
         if (!url) throw new Error('navigate requires url');
         const timeoutMs = Math.min(120000, Math.max(1000, Number(input.timeout_seconds || 30) * 1000));
         entry.loading = true;
         try {
-          await send('Page.enable');
+          await send('Page.enable').catch(() => {});
           const waiting = armLoadWait(on, timeoutMs);
           await send('Page.navigate', { url });
           await waiting;
@@ -654,7 +763,7 @@ function createIdeBrowserHost(vscode, { lockCommand = 'workbench.action.browser.
         const timeoutMs = Math.min(120000, Math.max(1000, Number(input.timeout_seconds || 30) * 1000));
         entry.loading = true;
         try {
-          await send('Page.enable');
+          await send('Page.enable').catch(() => {});
           const waiting = armLoadWait(on, timeoutMs);
           await send('Page.reload');
           await waiting;
@@ -664,15 +773,27 @@ function createIdeBrowserHost(vscode, { lockCommand = 'workbench.action.browser.
           entry.loading = false;
         }
       }
-      if (action === 'back') {
-        await evaluate(send, 'history.back()');
-        pageRefs.delete(entry.id);
-        return { page_id: entry.id, source: 'ide-browser' };
-      }
-      if (action === 'forward') {
-        await evaluate(send, 'history.forward()');
-        pageRefs.delete(entry.id);
-        return { page_id: entry.id, source: 'ide-browser' };
+      if (action === 'back' || action === 'forward') {
+        const timeoutMs = Math.min(120000, Math.max(1000, Number(input.timeout_seconds || 30) * 1000));
+        entry.loading = true;
+        try {
+          const history = await send('Page.getNavigationHistory').catch(() => null);
+          const index = history?.currentIndex;
+          const targetIndex = action === 'back' ? index - 1 : index + 1;
+          if (Number.isInteger(index) && history?.entries?.[targetIndex]) {
+            await send('Page.enable').catch(() => {});
+            const waiting = armLoadWait(on, timeoutMs);
+            await send('Page.navigateToHistoryEntry', { entryId: history.entries[targetIndex].id });
+            await waiting;
+          } else if (!Number.isInteger(index)) {
+            // Method unavailable: fall back to the page's own history API.
+            await evaluate(send, action === 'back' ? 'history.back()' : 'history.forward()');
+          }
+          pageRefs.delete(entry.id);
+          return { page_id: entry.id, source: 'ide-browser' };
+        } finally {
+          entry.loading = false;
+        }
       }
       if (action === 'screenshot') {
         if (input.ref && input.full_page) throw new Error('Use either ref or full_page for screenshot');
@@ -683,11 +804,13 @@ function createIdeBrowserHost(vscode, { lockCommand = 'workbench.action.browser.
             if (!el) throw new Error('Unknown or stale element ref; take a new snapshot');
             el.scrollIntoView({ block: 'center', inline: 'nearest' });
             const rect = el.getBoundingClientRect();
-            const dpr = window.devicePixelRatio || 1;
+            // captureBeyondViewport uses page coordinates; fixed elements do not scroll.
+            const fixed = getComputedStyle(el).position === 'fixed';
+            const scrollX = fixed ? 0 : (window.scrollX || 0);
+            const scrollY = fixed ? 0 : (window.scrollY || 0);
             return {
-              x: Math.max(0, rect.x * dpr), y: Math.max(0, rect.y * dpr),
-              width: Math.max(1, rect.width * dpr), height: Math.max(1, rect.height * dpr),
-              scale: 1
+              x: Math.max(0, rect.x + scrollX), y: Math.max(0, rect.y + scrollY),
+              width: Math.max(1, rect.width), height: Math.max(1, rect.height), scale: 1
             };
           })()`);
           const result = await send('Page.captureScreenshot', {
@@ -724,44 +847,43 @@ function createIdeBrowserHost(vscode, { lockCommand = 'workbench.action.browser.
         return { page_id: entry.id, result, source: 'ide-browser' };
       }
       if (action === 'wait') {
-        const ms = Math.min(120000, Math.max(0, Number(input.timeout_seconds || 1) * 1000));
-        const condition = String(input.wait_for || (input.ref ? 'attached' : 'load'));
-        const deadline = Date.now() + ms;
-        while (Date.now() < deadline) {
-          let ready = false;
-          if (input.ref) {
-            const ref = String(input.ref);
-            const present = await evaluate(send, `!!(${FIND_REF_SCRIPT}(${JSON.stringify(ref)}))`);
-            if (condition === 'attached' || condition === 'visible') {
-              if (condition === 'visible') {
-                ready = await evaluate(send, `(() => {
-                  const el = ${FIND_REF_SCRIPT}(${JSON.stringify(ref)});
-                  if (!el) return false;
-                  const rect = el.getBoundingClientRect(), style = getComputedStyle(el);
-                  return !!(rect.width && rect.height && style.visibility !== 'hidden' && style.display !== 'none');
-                })()`);
-              } else ready = present === true;
-            } else if (condition === 'detached' || condition === 'hidden') {
-              if (condition === 'hidden') {
-                ready = await evaluate(send, `(() => {
-                  const el = ${FIND_REF_SCRIPT}(${JSON.stringify(ref)});
-                  if (!el) return true;
-                  const rect = el.getBoundingClientRect(), style = getComputedStyle(el);
-                  return !(rect.width && rect.height) || style.visibility === 'hidden' || style.display === 'none';
-                })()`);
-              } else ready = present !== true;
+        const ms = Math.min(120000, Math.max(0, Number(input.timeout_seconds || 30) * 1000));
+        const condition = String(input.wait_for || (input.ref ? 'visible' : (input.query ? 'text' : 'load')));
+        // Poll in the page so a wait costs one round trip instead of one per tick.
+        const outcome = await evaluate(send, `(async () => {
+          const p = ${JSON.stringify({ ref: input.ref ? String(input.ref) : '', query: input.query ? String(input.query).toLowerCase() : '', condition, ms })};
+          const deadline = Date.now() + p.ms;
+          const find = ${FIND_REF_SCRIPT};
+          const visible = el => {
+            const rect = el.getBoundingClientRect(), style = getComputedStyle(el);
+            return !!(rect.width && rect.height && style.visibility !== 'hidden' && style.display !== 'none');
+          };
+          const body = () => (document.body?.innerText || '').toLowerCase();
+          for (;;) {
+            let ready;
+            if (p.ref) {
+              const el = find(p.ref);
+              if (p.condition === 'attached') ready = !!el;
+              else if (p.condition === 'detached') ready = !el;
+              else if (p.condition === 'visible') ready = !!el && visible(el);
+              else if (p.condition === 'hidden') ready = !el || !visible(el);
+              else throw new Error('wait_for with ref must be visible, hidden, attached or detached');
+            } else if (p.query) {
+              ready = body().includes(p.query);
+            } else if (['load', 'domcontentloaded', 'networkidle'].includes(p.condition)) {
+              ready = document.readyState === 'complete';
+            } else if (p.condition) {
+              ready = body().includes(p.condition.toLowerCase());
             } else {
-              throw new Error('wait_for with ref must be visible, hidden, attached or detached');
+              ready = document.readyState === 'complete';
             }
-          } else if (input.query) {
-            ready = await evaluate(send, `document.body?.innerText?.toLowerCase().includes(${JSON.stringify(String(input.query).toLowerCase())})`);
-          } else {
-            ready = await evaluate(send, 'document.readyState === "complete"');
+            if (ready) return { ready: true };
+            if (Date.now() >= deadline) return { ready: false };
+            await new Promise(resolve => setTimeout(resolve, 100));
           }
-          if (ready) return { page_id: entry.id, ok: true, wait_for: condition, source: 'ide-browser' };
-          await new Promise(resolve => setTimeout(resolve, 200));
-        }
-        throw new Error('wait timed out');
+        })()`, { awaitPromise: true });
+        if (!outcome?.ready) throw new Error('wait timed out');
+        return { page_id: entry.id, ok: true, wait_for: condition, source: 'ide-browser' };
       }
       if (action === 'snapshot' || action === 'accessibility') {
         const payload = {
@@ -808,34 +930,67 @@ function createIdeBrowserHost(vscode, { lockCommand = 'workbench.action.browser.
         if (!ref && action !== 'press' && action !== 'scroll') throw new Error(`${action} requires ref`);
         if (ref) requireRef(entry, ref);
         if (action === 'check' && typeof input.checked !== 'boolean') throw new Error('checked must be a boolean');
-        const payload = {
-          action, ref, value: input.value ?? '', values: input.values || null,
-          checked: input.checked, key: input.key || 'Enter',
-          deltaX: Number(input.delta_x) || 0, deltaY: Number(input.delta_y) || 0
-        };
+
+        const centerOf = async expression => evaluate(send, `(() => {
+          const el = ${expression};
+          if (!el) throw new Error('Unknown or stale element ref; take a new snapshot');
+          el.scrollIntoView({ block: 'center', inline: 'nearest' });
+          const rect = el.getBoundingClientRect();
+          return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+        })()`);
+
+        // Real input events (not synthetic DOM calls) so hover styles, pointer
+        // handlers, focus, and keyboard shortcuts behave like a user's.
+        if (action === 'click' || action === 'hover') {
+          const point = await centerOf(`${FIND_REF_SCRIPT}(${JSON.stringify(ref)})`);
+          await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: point.x, y: point.y, button: 'none' });
+          if (action === 'click') {
+            await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: point.x, y: point.y, button: 'left', buttons: 1, clickCount: 1 });
+            await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: point.x, y: point.y, button: 'left', buttons: 0, clickCount: 1 });
+          }
+          return { page_id: entry.id, ok: true, action, source: 'ide-browser' };
+        }
+        if (action === 'scroll') {
+          const point = ref
+            ? await centerOf(`${FIND_REF_SCRIPT}(${JSON.stringify(ref)})`)
+            : await evaluate(send, '({ x: Math.floor((window.innerWidth || 0) / 2), y: Math.floor((window.innerHeight || 0) / 2) })');
+          await send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: point.x, y: point.y, deltaX: Number(input.delta_x) || 0, deltaY: Number(input.delta_y) || 0 });
+          return { page_id: entry.id, ok: true, action, source: 'ide-browser' };
+        }
+        if (action === 'press') {
+          if (ref) await evaluate(send, `(() => { const el = ${FIND_REF_SCRIPT}(${JSON.stringify(ref)}); if (el) el.focus(); return true; })()`);
+          const key = String(input.key || 'Enter');
+          const descriptor = keyDescriptor(key);
+          // Printable keys carry text (keyDown + text, like Puppeteer); named keys use rawKeyDown.
+          await send('Input.dispatchKeyEvent', {
+            type: descriptor.text ? 'keyDown' : 'rawKeyDown',
+            key: descriptor.key, code: descriptor.code,
+            windowsVirtualKeyCode: descriptor.windowsVirtualKeyCode,
+            ...(descriptor.text ? { text: descriptor.text } : {})
+          });
+          await send('Input.dispatchKeyEvent', { type: 'keyUp', key: descriptor.key, code: descriptor.code, windowsVirtualKeyCode: descriptor.windowsVirtualKeyCode });
+          return { page_id: entry.id, ok: true, action, key: descriptor.key, source: 'ide-browser' };
+        }
+
+        // fill/select/check mutate the DOM directly and dispatch input/change.
+        const payload = { action, ref, value: input.value ?? '', values: input.values || null, checked: input.checked };
         const value = await evaluate(send, `(() => {
           const p = ${JSON.stringify(payload)};
           const find = ${FIND_REF_SCRIPT};
           const el = p.ref ? find(p.ref) : null;
-          if (p.action !== 'press' && p.action !== 'scroll' && !el) throw new Error('Unknown or stale element ref; take a new snapshot');
-          if (p.action === 'click') {
-            el.scrollIntoView({ block: 'center', inline: 'nearest' });
-            el.click();
-            return { ok: true };
-          }
-          if (p.action === 'hover') {
-            el.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, cancelable: true }));
-            el.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true, cancelable: true }));
-            return { ok: true };
-          }
+          if (!el) throw new Error('Unknown or stale element ref; take a new snapshot');
           if (p.action === 'fill') {
             el.focus();
             if (el.isContentEditable) el.textContent = p.value;
             else {
-              el.value = p.value;
-              el.dispatchEvent(new Event('input', { bubbles: true }));
-              el.dispatchEvent(new Event('change', { bubbles: true }));
+              // Use the native setter so React/Vue value trackers observe the change.
+              const proto = typeof HTMLTextAreaElement !== 'undefined' && el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype
+                : (typeof HTMLInputElement !== 'undefined' ? HTMLInputElement.prototype : null);
+              const setter = proto ? Object.getOwnPropertyDescriptor(proto, 'value')?.set : null;
+              if (setter) setter.call(el, p.value); else el.value = p.value;
             }
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
             return { ok: true };
           }
           if (p.action === 'select') {
@@ -847,55 +1002,22 @@ function createIdeBrowserHost(vscode, { lockCommand = 'workbench.action.browser.
             return { ok: true, values: list };
           }
           if (p.action === 'check') {
-            el.checked = p.checked === true;
-            el.dispatchEvent(new Event('input', { bubbles: true }));
-            el.dispatchEvent(new Event('change', { bubbles: true }));
-            return { ok: true, checked: el.checked };
-          }
-          if (p.action === 'press') {
-            const target = el || document.activeElement || document.body;
-            target.dispatchEvent(new KeyboardEvent('keydown', { key: p.key, bubbles: true }));
-            target.dispatchEvent(new KeyboardEvent('keypress', { key: p.key, bubbles: true }));
-            target.dispatchEvent(new KeyboardEvent('keyup', { key: p.key, bubbles: true }));
-            return { ok: true };
-          }
-          if (p.action === 'scroll') {
-            if (el) el.scrollBy(p.deltaX, p.deltaY);
-            else window.scrollBy(p.deltaX, p.deltaY);
-            return { ok: true };
+            if (el.checked !== (p.checked === true)) el.click();
+            if (el.checked !== (p.checked === true)) {
+              el.checked = p.checked === true;
+              el.dispatchEvent(new Event('input', { bubbles: true }));
+              el.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+            return { ok: true, checked: el.checked === true };
           }
           return { ok: false };
         })()`, { userGesture: true });
         return { page_id: entry.id, ...value, source: 'ide-browser' };
       }
       if (action === 'console') {
-        const after = Number(input.after_sequence) > 0 ? Number(input.after_sequence) : 0;
-        const limit = Number(input.limit) > 0 ? Math.min(100, Number(input.limit)) : 40;
-        const level = input.level ? String(input.level) : '';
-        const query = String(input.query || '').toLowerCase();
-        const result = await evaluate(send, `(() => {
-          const state = window.__ubovmConsole || { entries: [], seq: 0, dropped: 0 };
-          const all = state.entries.filter(entry => entry.sequence > ${after});
-          const matched = all.filter(entry =>
-            (!${JSON.stringify(level)} || entry.level === ${JSON.stringify(level)}) &&
-            (!${JSON.stringify(query)} || String(entry.text || '').toLowerCase().includes(${JSON.stringify(query)}))
-          );
-          const entries = matched.slice(0, ${limit});
-          if (${input.clear === true}) {
-            const remove = new Set(entries.map(entry => entry.sequence));
-            state.entries = state.entries.filter(entry => !remove.has(entry.sequence));
-          }
-          const examined = all.length ? all[all.length - 1].sequence : ${after};
-          return {
-            entries,
-            next_sequence: matched.length > entries.length
-              ? entries[entries.length - 1].sequence
-              : Math.max(examined, state.seq || 0),
-            buffer_overflow: state.dropped > 0,
-            dropped_through_sequence: state.dropped > 0 ? state.dropped : undefined
-          };
-        })()`);
-        return { page_id: entry.id, ...(result || { entries: [], next_sequence: 0 }), source: 'ide-browser' };
+        // Read the host-side ring buffer filled by Runtime.consoleAPICalled and
+        // Runtime.exceptionThrown, so logs survive navigation and CSP.
+        return { page_id: entry.id, ...consoleResult(consoleBuffer(entry), input), source: 'ide-browser' };
       }
       throw new Error(`Unsupported action: ${action}`);
     });
@@ -936,6 +1058,7 @@ function createIdeBrowserHost(vscode, { lockCommand = 'workbench.action.browser.
       try { disposable.dispose?.(); } catch { /* ignore */ }
     }
     disposables.length = 0;
+    for (const entry of pages.values()) disposeSession(entry);
     pages.clear();
     pageRefs.clear();
     if (lockDepth > 0) {

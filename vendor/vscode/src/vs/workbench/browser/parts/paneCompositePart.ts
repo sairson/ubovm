@@ -340,15 +340,9 @@ export abstract class AbstractPaneCompositePart extends CompositePart<PaneCompos
 		chooser.append(hint, actions);
 		this.emptyPaneMessageElement?.replaceChildren(chooser);
 		this._register(addDisposableListener(this.element, 'ubovm-empty-sidebar', () => {
-			this.element.dataset.ubovmEmpty = 'true';
-			this.storageService.store('ubovm.sidebar.empty', true, 1, 1);
-			this.hideActiveComposite();
-			this.layoutEmptyMessage();
-			// Keep the sidebar visible with the empty CTA; only explicit hide collapses the pane.
-			if (!this.layoutService.isVisible(this.partId)) {
-				this.layoutService.setPartHidden(false, this.partId);
-			}
-			fileButton.focus();
+			// Closing the last tab collapses the right sidebar (DSH-style); the
+			// title toggle reopens it on the last active view.
+			this.hideActivePaneComposite();
 		}));
 	}
 

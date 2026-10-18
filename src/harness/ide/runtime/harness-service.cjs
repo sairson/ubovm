@@ -41,7 +41,7 @@ function projectBoard(snapshot) {
 }
 
 /** Backend execution service. Host capabilities are injected; no IDE or browser dependencies. */
-function createHarnessService({ sdkPath, storageDirectory, workspaceRoots = [], additionalTools = () => [], requestToolApproval, readConfiguration, onChange, onMessage, ideBrowserCall } = {}) {
+function createHarnessService({ sdkPath, storageDirectory, workspaceRoots = [], additionalTools = () => [], requestToolApproval, askHuman, readConfiguration, onChange, onMessage, ideBrowserCall } = {}) {
   if (typeof sdkPath !== 'string' || typeof storageDirectory !== 'string' || typeof readConfiguration !== 'function') throw new TypeError('sdkPath, storageDirectory and readConfiguration are required');
   const liveCommands = new Set();
   const sessions = new Map(), workspaceScopes = new Map(), restores = new Map(), transitions = new Map(), root = resolve(storageDirectory);
@@ -422,6 +422,14 @@ function createHarnessService({ sdkPath, storageDirectory, workspaceRoots = [], 
   }
   function summaryEvent(entry, event) {
     if (!event?.type?.startsWith('context.')) return false;
+    if (event.type === 'context.usage') {
+      // Live projection size for the composer's context meter. `limit` is the
+      // model window when the host knows it, otherwise null (meter stays hidden).
+      if (Number.isSafeInteger(event.tokens) && event.tokens >= 0) {
+        entry.contextUsage = { used: event.tokens, limit: Number.isSafeInteger(event.limit) && event.limit > 0 ? event.limit : null };
+      }
+      return true;
+    }
     if (!['context.summary_start', 'context.summary_end'].includes(event.type)) return true;
     if (typeof event.operationId !== 'string' || !event.operationId || typeof event.scope !== 'string') return true;
     const workerId = event.scope.startsWith('worker:') ? event.scope.slice(7) : null;
@@ -436,8 +444,12 @@ function createHarnessService({ sdkPath, storageDirectory, workspaceRoots = [], 
       target.parts.push(part);
     }
     if (event.type === 'context.summary_end' && ['completed', 'failed', 'interrupted'].includes(event.status)) {
+      // Carry the per-kind breakdown so the timeline can separate the body
+      // checkpoint from tool digests and show which side fell back.
       Object.assign(part, { status: event.status, text: typeof event.text === 'string' ? event.text : '', endedAt: event.endedAt,
-        fallback: event.fallback === true, truncated: event.truncated === true, beforeTokens: event.beforeTokens, afterTokens: event.afterTokens });
+        fallback: event.fallback === true, truncated: event.truncated === true, beforeTokens: event.beforeTokens, afterTokens: event.afterTokens,
+        ...(event.kinds && typeof event.kinds === 'object' ? { kinds: copy(event.kinds) } : {}),
+        ...(event.fallbackReasons && typeof event.fallbackReasons === 'object' ? { fallbackReasons: copy(event.fallbackReasons) } : {}) });
     }
     target.parts = cleanTimelineParts(target.parts);
     if (child) queueWorkers(entry);
@@ -785,6 +797,14 @@ function createHarnessService({ sdkPath, storageDirectory, workspaceRoots = [], 
   function assistResumable(entry) {
     return Boolean(assistInput(entry.lastInput));
   }
+  // The root agent uses the session id as its worker id; only spawned workers are
+  // genuinely parallel. Drop the root identity so approval and question cards are
+  // not mislabeled as coming "from a parallel task".
+  function requestFor(entry, request) {
+    const { workerId, ...rest } = request ?? {};
+    const parallel = typeof workerId === 'string' && workerId !== entry.sessionId;
+    return { ...rest, ...(parallel ? { workerId } : {}), conversationId: entry.id };
+  }
   async function saveAssistLastInput(entry) {
     const input = assistInput(entry.lastInput);
     if (!input) return;
@@ -857,6 +877,11 @@ function createHarnessService({ sdkPath, storageDirectory, workspaceRoots = [], 
       blackboard: entry.blackboard, memory: entry.memory, error: entry.error, result: entry.result, parts: [...entry.parts.map(part => entry.residentParts?.get(part.commandId) ?? part), ...[...(entry.residentParts?.values() ?? [])].filter(part => !entry.parts.some(current => current.commandId === part.commandId))],
       streamText: entry.streamText, canResume: entry.canResume, middleware: entry.middleware,
       runId: entry.timelineRun, ...(usage ? { usage } : {}),
+      ...(entry.contextUsage ? { contextUsage: entry.contextUsage } : {}),
+      // Expose the permission mode this run started with. The IDE mirrors it so
+      // extension-side workspace tools stay consistent with harness-side tools
+      // after a resume/restore, when the per-conversation flag is rebuilt.
+      ...(entry.mode === 'assist' && typeof entry.lastInput?.approvalMode === 'string' ? { approvalMode: entry.lastInput.approvalMode } : {}),
       canSteer: entry.mode === 'assist' && entry.busy && Boolean(entry.steer) && !entry.controller?.signal.aborted });
   }
   function requestFacts(entry, input) {
@@ -952,19 +977,21 @@ function createHarnessService({ sdkPath, storageDirectory, workspaceRoots = [], 
     await atomicRecord(join(entry.directory, 'delivery.json'), { schemaVersion: 1, sessionId: entry.sessionId, revision: result.revision, deliveredAt: new Date().toISOString() });
     entry.deliveryPending = false;
   }
-  async function openGoal(entry, config) {
+  async function openGoal(entry, config, unbounded) {
     if (entry.session) return entry.session;
     const { createHarness, createWorkspaceTools } = await load();
     entry.controller.signal.throwIfAborted();
     const workspaceRoots = await roots(entry.id);
-    const tools = [...await createWorkspaceTools(workspaceRoots), ...await additionalTools(entry.id)];
+    const tools = [...await createWorkspaceTools(workspaceRoots, { unbounded }), ...await additionalTools(entry.id)];
     entry.controller.signal.throwIfAborted();
     const session = await createHarness({ ...config, sessionId: entry.sessionId, goal: entry.objective, directory: entry.directory,
       ...(config.mcp ? { mcp: { ...config.mcp, signal: entry.controller.signal } } : {}),
+      // Goal sessions run autonomously: they never wire askHuman and the shared
+      // allowlist omits ask_human, so the host-interaction tool is never exposed.
       intools: config.intools === false ? false : { allowedTools: ['note', 'todo'], ...config.intools,
         onCommand: registerCommand(entry),
         ...await ideBrowserTools(config, entry.sessionId),
-        python: config.intools?.python === false ? false : { ...config.intools?.python, cwd: workspaceRoots[0] },
+        python: config.intools?.python === false ? false : { ...config.intools?.python, cwd: workspaceRoots[0], ...(unbounded ? { unbounded: true } : {}) },
         localShell: config.intools?.localShell === false ? false : { ...config.intools?.localShell, cwd: workspaceRoots[0] } },
       tools, onEvent: runEvents(entry, goalEvent) });
     entry.session = session; entry.middleware = session.middlewareStatus();
@@ -996,11 +1023,13 @@ function createHarnessService({ sdkPath, storageDirectory, workspaceRoots = [], 
       }
       const config = await readConfiguration(); entry.controller.signal.throwIfAborted();
       const api = await load(); entry.controller.signal.throwIfAborted();
+      // 完全模式 lifts the workspace boundary for every tool in this run.
+      const unbounded = input.approvalMode === 'full';
       await mkdir(entry.directory, { recursive: true });
       entry.controller.signal.throwIfAborted();
       let answer;
       if (entry.mode === 'goal') {
-        const session = await openGoal(entry, config);
+        const session = await openGoal(entry, config, unbounded);
         if (!resume || session.status === 'idle' || entry.inputsApplied === false || entry.request?.status === 'accepted') { await addContext(entry, input); await markRequestApplied(entry); entry.inputsApplied = true; }
         entry.controller.signal.throwIfAborted();
         entry.status = 'running'; entry.phase = 'reason'; notify(entry, true);
@@ -1016,19 +1045,25 @@ function createHarnessService({ sdkPath, storageDirectory, workspaceRoots = [], 
         entry.controller.signal.throwIfAborted();
         const workspaceRoots = await roots(entry.id);
         entry.controller.signal.throwIfAborted();
-        const configuration = { ...config,
+         const selectedModel = input.modelId && config.model?.models?.includes(input.modelId) ? input.modelId : config.model?.modelId;
+         const model = selectedModel && selectedModel !== config.model?.modelId ? { ...config.model, modelId: selectedModel } : config.model;
+         const configuration = { ...config, model,
           intools: config.intools === false ? false : { ...config.intools,
             onCommand: registerCommand(entry),
             ...await ideBrowserTools(config, entry.sessionId),
-            python: config.intools?.python === false ? false : { ...config.intools?.python, cwd: workspaceRoots[0] },
+            python: config.intools?.python === false ? false : { ...config.intools?.python, cwd: workspaceRoots[0], ...(unbounded ? { unbounded: true } : {}) },
             localShell: config.intools?.localShell === false ? false : { ...config.intools?.localShell, cwd: workspaceRoots[0] } },
           tools: async binding => [...(typeof config.tools === 'function' ? await config.tools(binding) : config.tools ?? []), ...codingTools] };
-        answer = await api.runCollaboration({ configuration, requestToolApproval: (input.approvalMode === 'auto' || input.approvalMode === undefined && config.worker?.requireToolApproval === false) ? undefined : request => {
+        answer = await api.runCollaboration({ configuration, requestToolApproval: (input.approvalMode === 'auto' || input.approvalMode === 'full' || input.approvalMode === undefined && config.worker?.requireToolApproval === false) ? undefined : request => {
           if (closed || entry.eventRun !== run || entry.controller.signal.aborted) return false;
           if (!requestToolApproval) throw new Error('人工审核界面不可用，工具未执行。');
-          return requestToolApproval({ ...request, conversationId: entry.id });
+          return requestToolApproval(requestFor(entry, request));
+        }, askHuman: request => {
+          if (closed || entry.eventRun !== run || entry.controller.signal.aborted) throw new Error('会话已结束，无法向用户提问。');
+          if (!askHuman) throw new Error('人工问答界面不可用，无法向用户提问。');
+          return askHuman(requestFor(entry, request));
         }, sessionId: entry.sessionId, directory: entry.directory,
-          workspaceRoots, text: input.text, messages: input.messages, context: input.context, signal: entry.controller.signal,
+          workspaceRoots, unbounded, text: input.text, messages: input.messages, context: input.context, signal: entry.controller.signal,
           registerSteering: handler => { if (entry.eventRun === run) { entry.steer = handler; notify(entry, true); } },
           onEvent: runEvents(entry, collaborationEvent) });
       }
@@ -1102,7 +1137,7 @@ function createHarnessService({ sdkPath, storageDirectory, workspaceRoots = [], 
     entry.eventError = undefined;
     if (!reserved) entry.controller = new AbortController(); entry.activities = [];
     const deliveryOnly = resume && entry.result?.complete && (entry.deliveryPending || entry.request?.status === 'applied');
-    if (!deliveryOnly) { entry.parts = entry.parts.filter(part => part.background && entry.commands?.has(part.commandId)); entry.pendingAssistantText = undefined; entry.messageTracks = new Map(); entry.timelineRun = randomUUID(); entry.textMessageSequence = 0; entry.textMessageId = undefined; entry.textPartIds = []; entry.lastAssistantText = undefined; entry.usage = undefined; entry.usageView = undefined; }
+    if (!deliveryOnly) { entry.parts = entry.parts.filter(part => part.background && entry.commands?.has(part.commandId)); entry.pendingAssistantText = undefined; entry.messageTracks = new Map(); entry.timelineRun = randomUUID(); entry.textMessageSequence = 0; entry.textMessageId = undefined; entry.textPartIds = []; entry.lastAssistantText = undefined; entry.usage = undefined; entry.usageView = undefined; entry.contextUsage = undefined; }
     else entry.timelineRun ??= randomUUID();
     if (entry.mode === 'goal' && !deliveryOnly) void saveTimeline(entry, 'running').catch(() => {});
     if (!resume) {
@@ -1145,7 +1180,7 @@ function createHarnessService({ sdkPath, storageDirectory, workspaceRoots = [], 
   }
   async function start(input) {
     assertOpen();
-    if (input.approvalMode !== undefined && !['auto', 'manual'].includes(input.approvalMode)) throw failure('INVALID_APPROVAL_MODE', '无效的工具执行方式。');
+    if (input.approvalMode !== undefined && !['auto', 'manual', 'full'].includes(input.approvalMode)) throw failure('INVALID_APPROVAL_MODE', '无效的工具执行方式。');
     if (input.mode === 'goal') goalText(input.goal);
     if (input.mode === 'assist' && (typeof input.text !== 'string' || !input.text.trim())) throw failure('MESSAGE_REQUIRED', '请输入消息。');
     await restore(input); assertAvailable(input.conversationId); const entry = sessions.get(input.conversationId);

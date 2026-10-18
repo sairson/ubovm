@@ -9,7 +9,7 @@ import { resolvePython, normalizePythonDomains } from './policy.mjs';
 import { runPythonSandbox } from './execution.mjs';
 import { readPythonEnvironment, environmentPython, environmentMatchesBase, validatePythonEnvironmentFiles } from './environment-state.mjs';
 
-export function createPythonTool({ cwd = process.cwd(), executable, allowedDomains = ['*'], allowWorkspaceWrite = false,
+export function createPythonTool({ cwd = process.cwd(), workspaceRoots = [], executable, allowedDomains = ['*'], allowWorkspaceWrite = true, unbounded = false,
   defaultTimeoutSeconds, maxTimeoutSeconds = 600, maxOutputBytes = 1 << 20, useManagedEnvironment = true } = {}) {
   const workspace = resolve(requireText(cwd, 'cwd'));
   maxTimeoutSeconds = integer(maxTimeoutSeconds, 600, 1, 3600, 'maxTimeoutSeconds');
@@ -17,14 +17,15 @@ export function createPythonTool({ cwd = process.cwd(), executable, allowedDomai
   maxOutputBytes = integer(maxOutputBytes, 1 << 20, 1024, 10 << 20, 'maxOutputBytes');
   allowedDomains = Object.freeze(normalizePythonDomains(allowedDomains));
   if (typeof allowWorkspaceWrite !== 'boolean') throw new Error('allowWorkspaceWrite must be boolean');
+  if (!Array.isArray(workspaceRoots) || workspaceRoots.some(root => typeof root !== 'string')) throw new Error('workspaceRoots must be an array of paths');
   return withProgressiveDisclosure({
     name: 'run_python', label: 'Run Python in local sandbox',
     description: RUN_PYTHON_CATALOG.description,
     parameters: Type.Object({
       code: Type.Optional(Type.String({ minLength: 1, maxLength: 262144 })),
-      script: Type.Optional(Type.String({ minLength: 1, maxLength: 4096, description: 'Existing .py file inside this workspace; relative to cwd or absolute.' })),
+       script: Type.Optional(Type.String({ minLength: 1, maxLength: 4096, description: 'Existing .py file inside any open workspace; relative to cwd or absolute.' })),
       arguments: Type.Optional(Type.Array(Type.String({ maxLength: 4096 }), { maxItems: 64 })),
-      cwd: Type.Optional(Type.String({ maxLength: 4096, description: 'Directory inside this workspace.' })),
+       cwd: Type.Optional(Type.String({ maxLength: 4096, description: 'Directory inside any open workspace; absolute paths may target another open workspace.' })),
       reason: Type.Optional(Type.String({ minLength: 1, maxLength: 2048 })),
       timeout_seconds: Type.Optional(Type.Integer({ minimum: 1, maximum: maxTimeoutSeconds })),
       ...flagHelpProperties()
@@ -42,13 +43,18 @@ export function createPythonTool({ cwd = process.cwd(), executable, allowedDomai
       const code = input.code, scriptInput = input.script, cwdInput = input.cwd, argumentsSnapshot = [...args];
       const timeout = integer(input.timeout_seconds, defaultTimeoutSeconds, 1, maxTimeoutSeconds, 'timeout_seconds');
       for (const [key, value] of [['script', scriptInput], ['cwd', cwdInput]]) if (value !== undefined && (typeof value !== 'string' || value.length > 4096)) throw new Error(`${key} exceeds path limit`);
-      const root = await realpath(workspace);
-      const directory = await realpath(cwdInput === undefined ? root : resolve(root, requireText(cwdInput, 'cwd')));
-      if (!contained(root, directory) || !(await stat(directory)).isDirectory()) throw new Error('Python cwd must be inside this workspace');
+       const configuredRoots = [workspace, ...workspaceRoots.map(root => resolve(requireText(root, 'workspaceRoot')))].filter((root, index, all) => all.indexOf(root) === index);
+       const roots = await Promise.all(configuredRoots.map(root => realpath(root)));
+       const root = roots[0];
+       const directory = await realpath(cwdInput === undefined ? root : resolve(root, requireText(cwdInput, 'cwd')));
+       if (!(await stat(directory)).isDirectory()) throw new Error('Python cwd must be a directory');
+       // 完全模式 accepts any cwd; the confined modes keep it inside an open workspace.
+       if (!unbounded && !roots.some(candidate => contained(candidate, directory))) throw new Error('Python cwd must be inside an open workspace');
       let script;
       if (scriptInput !== undefined) {
         script = await realpath(resolve(directory, requireText(scriptInput, 'script')));
-        if (!contained(root, script) || !/\.py$/i.test(script) || !(await stat(script)).isFile()) throw new Error('Python script must be a .py file inside this workspace');
+         if (!/\.py$/i.test(script) || !(await stat(script)).isFile()) throw new Error('Python script must be a .py file');
+         if (!unbounded && !roots.some(candidate => contained(candidate, script))) throw new Error('Python script must be a .py file inside an open workspace');
       }
       let python = await resolvePython(executable, process.env, signal), environmentIdentity;
       if (useManagedEnvironment) {
@@ -60,7 +66,7 @@ export function createPythonTool({ cwd = process.cwd(), executable, allowedDomai
       }
       signal?.throwIfAborted();
       const outputDirectory = join(root, '.ubovm-python-output', `run-${randomUUID()}`);
-      return runPythonSandbox({ workspace: root, cwd: directory, script, code, arguments: argumentsSnapshot, reason,
+       return runPythonSandbox({ workspace: root, workspaceRoots: roots, cwd: directory, script, code, arguments: argumentsSnapshot, reason, unbounded,
         outputDirectory, ...python, environmentIdentity, allowedDomains: [...allowedDomains], allowWorkspaceWrite, timeout, maxOutputBytes }, signal, onUpdate);
     }
   }, { ...RUN_PYTHON_CATALOG, mode: 'flag' });

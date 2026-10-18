@@ -76,3 +76,26 @@ test('missing directories and files are observations, not tool failures', async 
   assert.equal(present.details.exists, true);
   assert.match(present.details.content, /1: ok/);
 });
+
+test('完全模式 lifts the workspace boundary while the default mode still rejects escapes', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'workspace-full-'));
+  const outside = await mkdtemp(join(tmpdir(), 'workspace-outside-'));
+  t.after(() => Promise.all([rm(root, { recursive: true, force: true }), rm(outside, { recursive: true, force: true })]));
+  await writeFile(join(outside, 'far.txt'), 'outside the workspace root');
+
+  // Default (人工/自动) keeps the boundary contract.
+  const confined = await createWorkspaceTools([root]);
+  await assert.rejects(confined[1].execute('read', { path: '..' + join('/', 'escape.txt') }), error => error.code === 'WORKSPACE_BOUNDARY');
+  await assert.rejects(confined[1].execute('read', { path: join(outside, 'far.txt') }), error => error.code === 'WORKSPACE_BOUNDARY');
+
+  // 完全模式 reads any absolute path on the machine.
+  const open = await createWorkspaceTools([root], { unbounded: true });
+  const far = await open[1].execute('read', { path: join(outside, 'far.txt') });
+  assert.equal(far.details.exists, true);
+  assert.match(far.details.content, /outside the workspace root/);
+  // A workspace-relative read still resolves against the open root.
+  await writeFile(join(root, 'near.txt'), 'inside');
+  const near = await open[1].execute('read', { path: 'near.txt' });
+  assert.equal(near.details.exists, true);
+  assert.match(near.details.content, /1: inside/);
+});

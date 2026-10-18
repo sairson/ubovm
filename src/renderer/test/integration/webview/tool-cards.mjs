@@ -634,7 +634,7 @@ test('process cards stream while collapsed and preserve manual expansion and rea
   }
 });
 
-for (const name of ['run_local_shell_command', 'read_workspace_file', 'search_workspace', 'mcp_large_result']) test(`a thousand folded ${name} updates leave hidden DOM untouched and opening renders the latest result`, async t => {
+for (const [name, echoes] of [['run_local_shell_command', true], ['read_workspace_file', false], ['search_workspace', false], ['mcp_large_result', true]]) test(`a thousand folded ${name} updates leave hidden DOM untouched and opening renders the latest result`, async t => {
   const f = await fixture(t);
   const result = await f.page.evaluate(name => {
     const target = document.createElement('div'); target.id = 'folded-burst'; document.body.append(target);
@@ -652,7 +652,13 @@ for (const name of ['run_local_shell_command', 'read_workspace_file', 'search_wo
   }, name);
   assert.deepEqual(result, { mutations: 0, foldedText: '' });
   await f.frames();
-  assert.match(await f.page.locator('#folded-burst .tool-output').textContent(), /latest-999$/);
+  if (echoes) assert.match(await f.page.locator('#folded-burst .tool-output').textContent(), /latest-999$/);
+  else {
+    // Read-only cards stay flat whether or not something tries to open them.
+    assert.equal(await f.page.locator('#folded-burst .tool-card').getAttribute('data-readonly'), 'true');
+    assert.equal(await f.page.locator('#folded-burst .tool-card').evaluate(node => node.open), false);
+    assert.equal(await f.page.locator('#folded-burst .tool-chevron').isVisible(), false);
+  }
   assert.equal(await f.page.locator('#folded-burst .tool-card').getAttribute('data-status'), 'completed');
   await f.page.evaluate(() => { const target = document.querySelector('#folded-burst'); UBOVMMessage.release(target); target.remove(); });
 });
@@ -736,7 +742,7 @@ test('tool output counts survive append and replacement, and identical payload r
   const f = await fixture(t);
   const result = await f.page.evaluate(() => {
     const body = document.createElement('div'); document.body.append(body);
-    const part = { id: 'retry', type: 'tool', name: 'read_workspace_file', args: '{}', status: 'running', output: 'one' };
+    const part = { id: 'retry', type: 'tool', name: 'run_local_shell_command', args: '{}', status: 'running', output: 'one' };
     const draw = () => UBOVMMessage.update(body, '', { role: 'assistant', parts: [part], onCopy: () => false });
     draw(); body.querySelector('.tool-card').open = true; draw();
     const output = body.querySelector('.tool-output'), counts = [];
@@ -787,8 +793,8 @@ test('thinking and summary retry identical content after formatting errors and c
 
 test('history insertion and trimming keep message identity and expanded tool content', async t => {
   const f = await fixture(t);
-  const first = { id: 'first', role: 'assistant', text: 'First', parts: [tool('first-tool')] };
-  const kept = { role: 'assistant', text: 'Kept', parts: [tool('kept-tool')] };
+  const first = { id: 'first', role: 'assistant', text: 'First', parts: [tool('first-tool', { name: 'run_local_shell_command', args: '{"command":"echo first"}' })] };
+  const kept = { role: 'assistant', text: 'Kept', parts: [tool('kept-tool', { name: 'run_local_shell_command', args: '{"command":"echo kept"}' })] };
   const publish = messages => f.emit(state([], { busy: false, execution: { status: 'idle' }, messages }));
   await publish([first, kept]); await f.toggle(1);
   await f.page.evaluate(() => {
@@ -801,7 +807,7 @@ test('history insertion and trimming keep message identity and expanded tool con
   await publish([kept]);
   assert(await f.page.evaluate(() => keptTool === document.querySelector('#messages .tool-card') && keptTool.open && keptArticle === document.querySelector('#messages article')));
   assert(await f.page.evaluate(() => keptSelection.length > 0 && getSelection().toString() === keptSelection));
-  await publish([{ ...kept, parts: [tool('kept-tool', { output: 'Refreshed history' })] }]);
+  await publish([{ ...kept, parts: [tool('kept-tool', { name: 'run_local_shell_command', args: '{"command":"echo kept"}', output: 'Refreshed history' })] }]);
   assert.match(await f.card(0).textContent(), /Refreshed history/);
 });
 
@@ -869,7 +875,8 @@ test('incomplete historical timelines retain their final body and reconcile late
 
 test('tool expansion keeps the trigger stable and reverses rapid toggles with keyboard access', async t => {
   const f = await fixture(t);
-  await f.emit(state([read]));
+  const expandable = tool('expandable', { name: 'run_local_shell_command', args: '{}' });
+  await f.emit(state([expandable]));
   const card = f.card(0), summary = card.locator(':scope > summary');
   const measure = () => summary.evaluate(element => {
     const bounds = element.getBoundingClientRect();
@@ -883,7 +890,7 @@ test('tool expansion keeps the trigger stable and reverses rapid toggles with ke
   assert.equal(await card.evaluate(element => element.open), true);
   await f.page.waitForTimeout(220);
   assert(await card.locator('.tool-output').isVisible());
-  assert.equal(await card.locator('.tool-output').textContent(), read.output);
+  assert.equal(await card.locator('.tool-output').textContent(), expandable.output);
   await summary.focus();
   await summary.press('Enter');
   assert.equal(await card.evaluate(element => element.open), false);
@@ -891,6 +898,36 @@ test('tool expansion keeps the trigger stable and reverses rapid toggles with ke
   assert.equal(await card.evaluate(element => element.open), true);
   assert.deepEqual(await measure(), before);
   await f.page.screenshot({ path: screenshotDirectory + '/tool-card-interaction.png' });
+});
+
+test('read-only tool cards stay a flat row that cannot expand', async t => {
+  const f = await fixture(t);
+  await f.emit(state([read]));
+  const card = f.card(0);
+  assert.equal(await card.getAttribute('data-readonly'), 'true');
+  assert.equal(await card.locator('.tool-chevron').isVisible(), false, 'no disclosure chevron');
+  assert.equal(await card.evaluate(element => element.open), false);
+  // Flat, but the row still says what it read and roughly how much.
+  assert.match(await card.locator('.tool-path').textContent(), /src\/harness\/worker\/index\.mjs/);
+  assert.match(await card.locator('.tool-path').textContent(), /\d+ 行/);
+  await card.locator(':scope > summary').evaluate(element => element.click());
+  await f.frames();
+  assert.equal(await card.evaluate(element => element.open), false, 'a read-only card must not expand');
+  assert.equal(await card.locator('.tool-output').isVisible(), false);
+  // Read cards no longer expose an inline file-open action.
+  assert.equal(await card.getByRole('button', { name: '打开文件', exact: true }).count(), 0);
+});
+
+test('read cards never expose a file-open action', async t => {
+  const f = await fixture(t);
+  const rooted = tool('rooted', { name: 'read_workspace_file', args: '{"path":"src/x.js"}',
+    output: JSON.stringify({ exists: true, path: 'src/x.js', root: 2, startLine: 1, endLine: 3 }) });
+  const missing = tool('missing', { name: 'read_workspace_file', args: '{"path":"src/gone.js"}',
+    output: JSON.stringify({ exists: false, path: 'src/gone.js', root: 0, content: null }) });
+  // Separate groups keep both cards visible without a folded tool batch.
+  await f.emit(state([rooted, text('gap', '接着确认文件是否存在。'), missing]));
+  assert.equal(await f.card(0).getByRole('button', { name: '打开文件', exact: true }).count(), 0, 'a read file has no open action');
+  assert.equal(await f.card(1).getByRole('button', { name: '打开文件', exact: true }).count(), 0, 'a missing file has no open action');
 });
 
 test('long tool batches fold completed history while preserving active, failed and open logs', async t => {
@@ -931,7 +968,8 @@ test('long tool batches fold completed history while preserving active, failed a
 
 test('tool groups remain inline with prose and retain expanded nodes through streaming and history promotion', async t => {
   const f = await fixture(t);
-  await f.emit(state([intro, read, listing, explanation, command]));
+  const expandable = tool('group-expandable', { name: 'run_local_shell_command', args: '{}' });
+  await f.emit(state([intro, expandable, listing, explanation, command]));
   const timeline = f.page.locator('#messages .message-timeline');
   assert.deepEqual(await timeline.locator(':scope > *').evaluateAll(nodes => nodes.map(node => node.classList.contains('tool-group') ? 'tools' : 'text')), ['text', 'tools', 'text', 'tools']);
   assert.deepEqual(await f.page.locator('#messages .tool-group').evaluateAll(nodes => nodes.map(node => node.querySelectorAll(':scope > .tool-card').length)), [2, 1]);
@@ -950,7 +988,7 @@ test('tool groups remain inline with prose and retain expanded nodes through str
   });
   const extra = tool('second-read', { args: '{"path":"src/harness/reason/index.mjs"}', output: 'export function createReason() {}' });
   const progressed = { ...command, output: command.output + '\nok 3 - cards retain their state' };
-  const parts = [intro, read, listing, extra, explanation, progressed];
+  const parts = [intro, expandable, listing, extra, explanation, progressed];
   await f.emit(state(parts));
   assert.deepEqual(await f.page.evaluate(() => ({
     tool: savedTool === document.querySelector('#messages .tool-card'), group: savedToolGroup === savedTool.parentElement,
@@ -968,7 +1006,7 @@ test('tool groups remain inline with prose and retain expanded nodes through str
 
 test('running, completed, failed and interrupted calls expose real state without automatic expansion', async t => {
   const f = await fixture(t);
-  let parts = [tool('changing', { status: 'running', endedAt: undefined, output: '' }), tool('done'), tool('stopped', { status: 'interrupted', output: '', endedAt: start + 800 })];
+  let parts = [tool('changing', { name: 'run_local_shell_command', args: '{}', status: 'running', endedAt: undefined, output: '' }), tool('done', { name: 'run_local_shell_command', args: '{}' }), tool('stopped', { name: 'run_local_shell_command', args: '{}', status: 'interrupted', output: '', endedAt: start + 800 })];
   await f.emit(state(parts));
   assert.deepEqual(await f.page.locator('#messages .tool-card').evaluateAll(nodes => nodes.map(node => node.dataset.status)), ['running', 'completed', 'interrupted']);
   const spinner = await f.card(0).evaluate(card => {
@@ -1066,23 +1104,16 @@ test('web_search results render as readable links instead of raw JSON dumps', as
   });
   await f.emit(state([search, empty]));
   assert.match(await f.card(0).locator('.tool-path').textContent(), /CVE-2024-1234 advisory · 2 条结果/);
-  await f.toggle(0);
   const card = f.card(0);
-  assert.equal(await card.locator('.tool-search').isVisible(), true);
+  // Web search is a read operation: a flat row that keeps target/status and
+  // never echoes results.
+  assert.equal(await card.getAttribute('data-readonly'), 'true');
+  assert.equal(await card.locator('.tool-chevron').isVisible(), false);
+  assert.equal(await card.locator('.tool-search').isVisible(), false);
   assert.equal(await card.locator('.tool-output').isVisible(), false);
-  assert.equal(await card.locator('.tool-search-list .tool-search-item').count(), 2);
-  assert.equal(await card.locator('.tool-search-link').first().textContent(), '<script>alert(1)</script> Advisory');
+  assert.equal(await card.locator('.tool-search-link').count(), 0);
   assert.equal(await card.locator('.tool-search script').count(), 0);
-  assert.equal(await card.locator('.tool-search-host').first().textContent(), 'example.com');
-  assert.match(await card.locator('.tool-result-info').textContent(), /2 条结果 · tavily/);
-  await card.locator('.tool-search-link').first().click();
-  const opened = await f.ack('openMessageLink');
-  assert.equal(opened.href, 'https://example.com/advisory');
-  await card.getByRole('button', { name: '复制输出', exact: true }).click();
-  assert.equal((await f.ack('copyText')).text, search.output);
-  await f.toggle(1);
-  assert.match(await f.card(1).locator('.tool-search-status').textContent(), /不可用/);
-  assert.match(await f.card(1).locator('.tool-search-empty').textContent(), /All search providers were unavailable/);
+  assert.equal(await f.card(1).locator('.tool-search-link').count(), 0);
   assert.equal(await f.page.evaluate(() => document.querySelectorAll('#messages .tool-search-link[href^="javascript:"]').length), 0);
 });
 
@@ -1100,21 +1131,23 @@ test('tool actions await copy receipts, open explicit file paths and isolate HTM
   assert(review?.sessionId, 'diff review must carry the originating conversation');
   await f.page.locator('#validate-code-changes').click();
   assert.equal((await f.sent('validateCodeChanges')).at(-1).sessionId, review.sessionId);
-  await f.toggle(0);
-  const copy = f.card(0).getByRole('button', { name: '复制输出', exact: true });
+  const readCard = f.card(0);
+  assert.equal(await readCard.getAttribute('data-readonly'), 'true');
+  assert.equal(await readCard.locator('.tool-chevron').isVisible(), false, 'read cards disclose nothing');
+  await readCard.locator(':scope > summary').evaluate(element => element.click());
+  await f.frames();
+  assert.equal(await readCard.evaluate(element => element.open), false, 'read cards never expand');
+  assert.equal(await readCard.getByRole('button', { name: '打开文件', exact: true }).count(), 0, 'read cards expose no file-open action');
+  assert.equal(f.page.url(), 'http://tool-cards.test/');
+  // A command card still exposes copy and file actions from its toolbar.
+  await f.toggle(1);
+  const copy = f.card(1).getByRole('button', { name: '复制输出', exact: true });
   await copy.click();
   assert.equal(await copy.isDisabled(), true, 'copy remains pending until the host responds');
-  assert.equal((await f.ack('copyText')).text, read.output);
-  assert.equal(await f.card(0).getByRole('button', { name: '已复制', exact: true }).count(), 1);
-  await f.card(0).getByRole('button', { name: '打开文件', exact: true }).click();
-  const openedFile = await f.ack('openMessageLink');
-  assert.equal(openedFile.href, 'src/harness/worker/index.mjs');
-  assert.equal(openedFile.rootIndex, 0);
-  assert.equal(f.page.url(), 'http://tool-cards.test/');
-  await f.toggle(1);
+  assert.equal((await f.ack('copyText')).text, accidentalPath.output);
+  assert.equal(await f.card(1).getByRole('button', { name: '已复制', exact: true }).count(), 1);
   assert.equal(await f.card(1).getByRole('button', { name: '打开文件', exact: true }).count(), 0, 'a command containing a path never becomes a file action');
   assert.equal((await f.sent('runCommand')).length, 0);
-  await f.toggle(2);
   assert.equal(await f.card(2).getByRole('button', { name: '打开文件', exact: true }).count(), 0, 'truncated JSON must not invent a file action');
   await f.toggle(3);
   assert.equal(await f.card(3).locator('.tool-output').textContent(), rawHtml);
@@ -1131,11 +1164,8 @@ test('tool actions await copy receipts, open explicit file paths and isolate HTM
   await f.card(3).getByRole('button', { name: '复制输出', exact: true }).click();
   assert.equal((await f.ack('copyText', false)).text, rawHtml);
   assert.equal(await f.card(3).getByRole('button', { name: '复制失败', exact: true }).count(), 1);
-  await f.toggle(4);
-  await f.card(4).getByRole('button', { name: '打开文件', exact: true }).click();
-  const rootedFile = await f.ack('openMessageLink');
-  assert.equal(rootedFile.rootIndex, 1, 'file actions retain the selected workspace root');
-  assert.equal(rootedFile.href, 'src/special%25file%23draft%3F.mjs', 'path punctuation remains a literal filename at the host boundary');
+  // A second-root read card exposes no file-open action either.
+  assert.equal(await f.card(4).getByRole('button', { name: '打开文件', exact: true }).count(), 0);
 });
 
 test('embedded cards stay compact and readable at 320px, including dark mode and reduced motion', async t => {
@@ -1212,6 +1242,44 @@ test('approval cards remain safe and usable on narrow dark surfaces with indepen
   await f.emit(state([], { toolApprovals: [records[0], { ...records[1], status: 'approved' }] }));
   assert.equal(await cards.count(), 1);
   assert.equal(await cards.first().locator('.approval-preview').textContent(), JSON.parse(args).command);
+});
+
+test('question cards collect a single choice or a custom answer and clear after the host confirms', async t => {
+  const f = await fixture(t);
+  const record = { id: 'question-one', workerId: 'worker-1', question: '选择目标环境', status: 'pending', multiple: false, allowCustom: true,
+    options: [{ label: '开发环境', description: 'isolated' }, { label: '生产环境' }] };
+  const publish = records => f.emit(state([], { humanQuestions: records, viewRevision: ++publish.revision }));
+  publish.revision = 0;
+  await publish([record]);
+  const card = f.page.locator('.question-card');
+  assert(await card.isVisible());
+  assert.equal(await card.locator('.question-text').textContent(), '选择目标环境');
+  assert.equal(await card.locator('.question-option').count(), 2);
+  assert.equal(await card.locator('input[type="radio"]').count(), 2);
+  await card.getByRole('button', { name: '提交回答', exact: true }).click();
+  assert.equal((await f.sent('answerQuestion')).length, 0, 'an empty submission stays local');
+  assert(await card.locator('.approval-feedback').isVisible());
+  await card.locator('input[type="radio"]').nth(1).check();
+  await card.locator('.question-custom-input').fill('避开维护窗口');
+  await card.getByRole('button', { name: '提交回答', exact: true }).click();
+  const first = (await f.sent('answerQuestion')).at(-1);
+  assert.deepEqual(first.selected, ['生产环境']);
+  assert.equal(first.custom, '避开维护窗口');
+  await f.ack('answerQuestion', false);
+  assert(await card.locator('.approval-feedback').isVisible());
+  assert.equal(await card.getByRole('button', { name: '提交回答', exact: true }).isDisabled(), false);
+  await card.getByRole('button', { name: '提交回答', exact: true }).click();
+  assert.equal((await f.sent('answerQuestion')).length, 2);
+  await f.ack('answerQuestion');
+  await publish([{ ...record, status: 'answered' }]);
+  assert.equal(await card.count(), 0);
+  await publish([{ ...record, id: 'question-two', status: 'pending' }]);
+  const second = f.page.locator('.question-card');
+  await second.getByRole('button', { name: '跳过', exact: true }).click();
+  assert.equal((await f.sent('answerQuestion')).at(-1).cancelled, true);
+  await f.ack('answerQuestion');
+  await publish([{ ...record, id: 'question-two', status: 'cancelled' }]);
+  assert.equal(await second.count(), 0);
 });
 
 test('unreviewed approvals persist through missing snapshots and idle empty history until explicitly resolved', async t => {

@@ -53,6 +53,27 @@ function redactDisplayObject(value, depth = 0) {
   if (Array.isArray(value)) return value.slice(0, 500).map(item => redactDisplayObject(item, depth + 1));
   return Object.fromEntries(Object.entries(value).slice(0, 200).filter(([key]) => !['thinking', 'thoughtSignature', 'thinkingSignature'].includes(key)).map(([key, item]) => [key, secretField(key) ? REDACTED : redactDisplayObject(item, depth + 1)]));
 }
+// Summary telemetry is host-authored, but it still crosses into persisted UI
+// state, so only the known kinds/reasons and bounded counters survive.
+const SUMMARY_KINDS = ['transcript', 'tool-result', 'tool-arguments', 'blackboard-fact'];
+const SUMMARY_FALLBACK_REASONS = ['summary_output_limit', 'source_call_limit', 'timeout', 'summary_unavailable'];
+function sanitizeSummaryKinds(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const out = {};
+  for (const key of SUMMARY_KINDS) {
+    const stat = value[key];
+    if (!stat || typeof stat !== 'object' || Array.isArray(stat)) continue;
+    out[key] = { summaries: Number.isSafeInteger(stat.summaries) && stat.summaries > 0 ? Math.min(stat.summaries, 1000) : 0,
+      fallback: stat.fallback === true, truncated: stat.truncated === true };
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+function sanitizeSummaryFallbackReasons(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const out = {};
+  for (const key of SUMMARY_FALLBACK_REASONS) if (Number.isSafeInteger(value[key]) && value[key] > 0) out[key] = Math.min(value[key], 1000);
+  return Object.keys(out).length ? out : undefined;
+}
 /** Bounded, detached and credential-redacted UI projections only; never model context. */
 function cleanTimelineParts(value) {
   if (!Array.isArray(value)) return [];
@@ -66,11 +87,15 @@ function cleanTimelineParts(value) {
         ...(startedAt !== undefined ? { startedAt } : {}) });
     } else if (['thinking', 'summary'].includes(part.type) && typeof part.text === 'string' && (part.text.trim() || part.type === 'summary') && part.redacted !== true && (part.type === 'summary' ? ['running', 'completed', 'interrupted', 'failed'] : ['running', 'completed', 'interrupted']).includes(part.status) && ['assistant', 'reason', 'worker'].includes(part.source)) {
       const text = redactText(part.text), startedAt = Number.isFinite(part.startedAt) && part.startedAt >= 0 ? part.startedAt : 0;
+      const kinds = part.type === 'summary' ? sanitizeSummaryKinds(part.kinds) : undefined;
+      const fallbackReasons = part.type === 'summary' ? sanitizeSummaryFallbackReasons(part.fallbackReasons) : undefined;
       // This whitelist persists only the provider's displayable plaintext.
       // Provider signatures and encrypted/redacted blocks never enter the UI.
       parts.push({ id: part.id, type: part.type, text: clipped(text, 12000), status: part.status, source: part.source, startedAt,
         ...(part.type === 'summary' ? { fallback: part.fallback === true,
-          ...Object.fromEntries(['beforeTokens', 'afterTokens'].filter(key => Number.isSafeInteger(part[key]) && part[key] >= 0).map(key => [key, part[key]])) } : {}),
+          ...Object.fromEntries(['beforeTokens', 'afterTokens'].filter(key => Number.isSafeInteger(part[key]) && part[key] >= 0).map(key => [key, part[key]])),
+          ...(kinds ? { kinds } : {}),
+          ...(fallbackReasons ? { fallbackReasons } : {}) } : {}),
         ...(Number.isFinite(part.endedAt) && part.endedAt >= startedAt ? { endedAt: part.endedAt } : {}),
         ...(typeof part.workerId === 'string' && part.workerId ? { workerId: part.workerId.slice(0, 200) } : {}),
         ...(part.truncated || text.length > 12000 ? { truncated: true } : {}) });

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, realpath, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, realpath, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createLocalShellTool } from '../index.mjs';
@@ -40,6 +40,20 @@ test('rejects unsupported purposes and missing reasons before execution', async 
   await assert.rejects(tool.execute('invalid', { ...input('exit 0'), reason: '' }), /reason/);
   const result = await tool.execute('env', { ...input('exit 0'), purpose: 'environment_setup' });
   assert.equal(result.details.purpose, 'environment_setup');
+});
+
+test('cmd-style syntax on Windows is retried through cmd.exe with UTF-8 output', { skip: !win }, async () => {
+  const cwd = await realpath(await mkdtemp(join(tmpdir(), 'ubovm-shell-cmd-')));
+  try {
+    await mkdir(join(cwd, 'server'));
+    await writeFile(join(cwd, 'server', 'main.go'), 'package main');
+    // `&&` and `dir /s /b` are cmd syntax; PowerShell 5.1 rejects both.
+    const result = await createLocalShellTool({ cwd }).execute('cmd', input('dir /s /b server && echo --- && echo 中文输出'));
+    assert.equal(result.details.exit_code, 0);
+    assert.equal(result.details.shell_fallback, 'cmd');
+    assert.match(result.content[0].text, /server[\\/]main\.go/);
+    assert.match(result.content[0].text, /中文输出/);
+  } finally { await rm(cwd, { recursive: true, force: true }); }
 });
 
 test('reports nonzero exit and PowerShell errors with retained output', async () => {

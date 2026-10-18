@@ -1,30 +1,30 @@
 /* Shared floating surfaces, loaded after component styles. */
 body {
-  --overlay-selection-background: var(--vscode-list-activeSelectionBackground, var(--accent-wash));
-  --overlay-selection-foreground: var(--vscode-list-activeSelectionForeground, var(--ink));
+  --overlay-selection-background: var(--selection-bg);
+  --overlay-selection-foreground: var(--selection-ink, var(--ink));
   --overlay-hover-background: var(--vscode-list-hoverBackground, var(--hover));
   --overlay-hover-foreground: var(--vscode-list-hoverForeground, var(--ink));
-  --overlay-surface: var(--canvas);
-  --overlay-border: color-mix(in srgb, var(--ink) 16%, var(--canvas));
-  --overlay-shadow: 0 12px 36px #18251d18, 0 2px 6px #18251d0a;
-  --modal-shadow: 0 24px 72px #18251d28, 0 4px 12px #18251d10;
-  --overlay-backdrop: #18251d45;
-  --overlay-radius: 12px;
-  --overlay-item-radius: 7px;
+  /* DSH surfaces: solid layers for panels/modals, the translucent menu material
+     is applied per menu below. Elevation carries a 0.5px hairline stroke. */
+  --overlay-surface: var(--dsw-alias-bg-layer-1);
+  --overlay-border: var(--dsw-alias-border-l2);
+  --overlay-shadow: var(--dsw-elevation-panel);
+  --modal-shadow: var(--dsw-elevation-prominent);
+  --overlay-backdrop: var(--dsw-alias-bg-mask-1);
+  --overlay-radius: var(--dsw-radius-md);
+  --overlay-item-radius: var(--dsw-radius-sm);
 }
 body.vscode-dark {
-  --overlay-selection-background: var(--vscode-list-activeSelectionBackground, #304239);
-  --overlay-selection-foreground: var(--vscode-list-activeSelectionForeground, #e4eee7);
-  --overlay-surface: var(--surface-raised, var(--canvas));
-  --overlay-border: color-mix(in srgb, var(--ink) 20%, var(--canvas));
-  --overlay-shadow: 0 12px 36px #0006, 0 2px 6px #0003;
-  --modal-shadow: 0 24px 72px #0008, 0 4px 12px #0004;
-  --overlay-backdrop: #080b1099;
+  --overlay-selection-foreground: var(--vscode-list-activeSelectionForeground, var(--ink));
 }
+/* DSH menu material: translucent fill + backdrop blur, hairline stroke in the
+   elevation shadow, no real border. */
 body :is(.goal-tabs, .exploration-runs-popover, .worker-options-menu, .new-create-menu, #settings-discard) {
   color: var(--ink);
-  background: var(--overlay-surface);
-  border: 1px solid var(--overlay-border);
+  background: var(--dsw-menu-surface-fill);
+  backdrop-filter: var(--dsw-menu-backdrop-filter);
+  -webkit-backdrop-filter: var(--dsw-menu-backdrop-filter);
+  border: 0;
   border-radius: var(--overlay-radius);
   box-shadow: var(--overlay-shadow);
 }
@@ -36,9 +36,9 @@ body :is(.goal-tabs, .worker-options-menu, .new-create-menu) button {
 }
 body :is(.goal-tabs, .worker-options-menu, .new-create-menu) button:hover:enabled { background: var(--hover); color: var(--ink); }
 body :is(.goal-tabs, .worker-options-menu, .new-create-menu) button:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
-body .goal-tabs button[aria-selected="true"] { background: var(--accent-wash); color: var(--ink); }
+body .goal-tabs button[aria-selected="true"] { background: var(--selection-bg); color: var(--ink); }
 body :is(.goal-view-switcher, .exploration-runs) > summary { border-radius: 8px; transition: background 120ms, border-color 120ms; }
-body :is(.goal-view-switcher, .exploration-runs)[open] > summary { border-color: var(--focus); background: var(--accent-wash); }
+body :is(.goal-view-switcher, .exploration-runs)[open] > summary { border-color: var(--focus); background: var(--selection-bg); }
 .exploration-runs > summary::after { content: ''; width: 5px; height: 5px; margin: -3px 2px 0 4px; border: solid currentColor; border-width: 0 1.5px 1.5px 0; transform: rotate(45deg); }
 .exploration-runs[open] > summary::after { transform: rotate(225deg); margin-top: 3px; }
 .exploration-runs-popover h2 { padding: 2px 4px 10px; color: var(--muted); font-size: 11px; font-weight: 500; }

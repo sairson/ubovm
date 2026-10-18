@@ -4,6 +4,17 @@
   const timestamp = value => typeof value === 'number' ? value : Date.parse(value);
   const equal = (left, right) => left?.length === right.length && right.every((value, index) => Object.is(value, left[index]));
   const partFields = ['id', 'type', 'text', 'name', 'args', 'output', 'status', 'source', 'workerId', 'startedAt', 'endedAt', 'truncated', 'fallback', 'beforeTokens', 'afterTokens'];
+  // Dispatch activities read as three families: planning, task dispatch, and
+  // retrieval. The log colors each family's timeline dot so the schedule stays
+  // scannable even when many tool labels collapse into "工具调用".
+  const PLAN_LABELS = new Set(['Reason', 'todo']);
+  const DISPATCH_LABELS = new Set(['spawn_worker', 'manage_workers', 'cancel_workers', 'wait_workers']);
+  const SEARCH_PREFIXES = ['search_', 'inspect_', 'read_', 'list_', 'get_', 'scan_', 'inventory_', 'analyze_', 'navigate_'];
+  const SEARCH_LABELS = new Set(['web_search', 'fetch_web_content']);
+  const activityKind = label => PLAN_LABELS.has(label) ? 'plan'
+    : DISPATCH_LABELS.has(label) ? 'dispatch'
+      : (SEARCH_LABELS.has(label) || (typeof label === 'string' && SEARCH_PREFIXES.some(prefix => label.startsWith(prefix)))) ? 'search'
+        : '';
   window.createGoalExecutionLog = (container, { actions, statusText, openWorker }) => {
     const pageSize = 120, rows = new Map();
     let session = '', latestExecution, start = null, firstId;
@@ -85,7 +96,7 @@
       window.UBOVMTimeline.eachToolPart({ execution }, part => { if (part.type === 'tool' && part.name) toolNames.add(part.name); });
       for (const part of inline) if (part.source !== 'worker' && ['text', 'thinking', 'tool', 'summary'].includes(part.type)) entries.push({
         id: 'part:' + part.id, time: timestamp(part.startedAt), kind: part.type, part,
-        label: part.type === 'thinking' ? '思考' : part.type === 'tool' ? '工具' : part.type === 'summary' ? '上下文摘要' : part.source === 'reason' ? '结论' : '输出', status: part.status
+        label: part.type === 'thinking' ? '思考' : part.type === 'tool' ? '工具' : part.type === 'summary' ? (window.UBOVMMessage?.summaryScopeLabel?.(part.kinds) ?? '上下文摘要') : part.source === 'reason' ? '结论' : '输出', status: part.status
       });
       for (const worker of execution.workers || []) {
         entries.push({ id: 'worker:' + worker.id, time: timestamp(worker.createdAt ?? worker.startedAt), kind: 'worker', label: '分派任务', worker, status: 'created' });
@@ -94,7 +105,7 @@
       for (const [index, activity] of (execution.activities || []).entries()) {
         if (activity.label === 'skill.loaded' && activity.status === 'completed') continue;
         if (toolNames.has(activity.label)) continue;
-        entries.push({ id: 'activity:' + (activity.key || index), time: timestamp(activity.timestamp), kind: 'activity', label: activity.label === 'Reason' ? '调度' : window.UBOVMTimeline.displayActivityLabel(activity.label), status: activity.status });
+        entries.push({ id: 'activity:' + (activity.key || index), time: timestamp(activity.timestamp), kind: 'activity', label: activity.label === 'Reason' ? '调度' : window.UBOVMTimeline.displayActivityLabel(activity.label), status: activity.status, activityKind: activityKind(activity.label) });
       }
       if (!parts.some(part => part.type === 'text') && execution.streamText) entries.push({ id: 'stream', kind: 'text', label: '规划 · 输出', text: execution.streamText });
       if (execution.status === 'completed' && execution.result?.summary) entries.push({ id: 'result', kind: 'result', label: '执行总结', text: execution.result.summary, status: 'completed' });
@@ -118,9 +129,10 @@
         }
         // Compare scalar render inputs, not serialized historical tool outputs.
         // Keep heading updates separate so each token does not recreate them.
-        const heading = [entry.kind, entry.label, entry.status, entry.time];
+        const heading = [entry.kind, entry.label, entry.status, entry.time, entry.activityKind];
         if (!equal(row.heading, heading)) {
           row.root.dataset.kind = entry.kind; row.root.dataset.logId = entry.id;
+          row.root.dataset.activity = entry.activityKind || '';
           row.label.textContent = window.UBOVMi18n?.t(entry.label) ?? entry.label; row.state.textContent = entry.status === 'created' ? (window.UBOVMi18n?.t('已派发') ?? '已派发') : entry.status ? statusText(entry.status) : '';
           row.root.dataset.status = entry.status || '';
           row.time.textContent = Number.isFinite(entry.time) ? new Date(entry.time).toLocaleTimeString('zh-CN', { hour12: false }) : '—';

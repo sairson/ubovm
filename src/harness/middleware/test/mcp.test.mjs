@@ -29,3 +29,25 @@ test('MCP close attempts every client even when one close throws synchronously',
   assert.ok(mcp.diagnostics().every(server => !server.connected));
   await assert.rejects(mcp.tools[0].execute('call', {}), { code: 'MCP_CLOSED' });
 });
+test('MCP instruction provider tells the agent which servers are connected', async t => {
+  clients(t);
+  const mcp = await createMcpMiddleware({ servers: [{ name: 'local', command: 'unused' }] });
+  try {
+    const status = mcp.instructionProvider();
+    assert.match(status, /MCP servers/);
+    assert.match(status, /local \(stdio\): connected; tools: mcp_local_read/);
+    assert.match(status, /connected from the next turn/);
+  } finally { await mcp.close(); }
+});
+test('MCP instruction provider names an unreachable server and explains the gap', async t => {
+  const mcp = await createMcpMiddleware({ servers: [{ name: 'dead', command: 'unused', required: false }] });
+  try {
+    const status = mcp.instructionProvider();
+    assert.match(status, /dead \(stdio\): NOT connected/);
+  } finally { await mcp.close().catch(() => {}); }
+});
+test('MCP instruction provider is empty without configured servers', async () => {
+  const mcp = await createMcpMiddleware({ servers: [] });
+  assert.equal(mcp.instructionProvider(), '');
+  await mcp.close();
+});

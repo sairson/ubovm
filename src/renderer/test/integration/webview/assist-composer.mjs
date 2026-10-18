@@ -230,8 +230,26 @@ test('composer chrome keeps a fade into the dock and a product send control', as
     });
     assert.equal(chrome.fade, '28px');
     assert.equal(chrome.dockFade, 'none');
-    assert.equal(chrome.radius, '14px');
+    assert.equal(chrome.radius, '16px');
     assert.notEqual(chrome.sendFill, 'rgba(0, 0, 0, 0)');
+  } finally { await f.close(); }
+});
+
+test('composer shows a live context-window meter when the host reports usage', async () => {
+  const f = await fixture();
+  try {
+    await f.emit(state('composer-meter', { conversationUsage: { input: 900000, output: 300000, totalTokens: 1200000 } }));
+    assert.equal(await f.page.locator('#context-usage').isVisible(), true, 'the meter is visible by default');
+    assert.equal((await f.page.locator('#context-usage-value').textContent()).trim(), '0K');
+    assert.equal(await f.page.locator('#context-usage-fill').evaluate(element => element.style.width), '0%');
+    assert.equal((await f.page.locator('#context-usage-total').textContent()).trim(), 'Σ 1.2M', 'the persisted conversation total is shown');
+    await f.emit({ type: 'executionState', conversationId: 'composer-meter', busy: false,
+      execution: { status: 'idle', busy: false, contextUsage: { used: 64000, limit: 128000 } } });
+    assert.equal((await f.page.locator('#context-usage-value').textContent()).trim(), '64K');
+    assert.equal(await f.page.locator('#context-usage-fill').evaluate(element => element.style.width), '50%');
+    const meterTitle = await f.page.locator('#context-usage').getAttribute('title');
+    assert.match(meterTitle, /64K \/ 128K tokens/);
+    assert.match(meterTitle, /1.2M tokens/, 'the tooltip also carries the conversation total');
   } finally { await f.close(); }
 });
 

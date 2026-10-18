@@ -18,6 +18,10 @@ test('assembled page includes all components and a syntactically valid browser e
   assert(scripts[0][2].includes('UBOVMRuntime'), 'recovery must execute before application dependencies');
   for (const script of scripts) assert.doesNotThrow(() => new Script(script[2]));
   assert(html.includes('id="settings-dialog"'), 'Settings HTML fragment must be assembled');
+  for (const id of ['composer-model', 'provider-label', 'tool-approval-mode']) {
+    assert.equal([...html.matchAll(new RegExp(`id="${id}"`, 'g'))].length, 1, `${id} must exist exactly once before app startup binds its controls`);
+  }
+  assert(!html.includes('id="composer-default-model"'), 'Composer must not show a separate default model label');
   assert(html.includes('id="open-browser"') && html.includes('data-action="browser"'), 'Conversation must expose a browser entry');
   assert(html.includes('打开浏览器'), 'Home shortcuts must include the browser entry');
 });

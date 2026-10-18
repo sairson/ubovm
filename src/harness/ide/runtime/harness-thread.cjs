@@ -64,6 +64,7 @@ const service = createHarnessService({
   workspaceRoots: id => rpc.call('roots', [id]),
   readConfiguration: () => rpc.call('configuration'),
   requestToolApproval: ({ signal, ...request }) => rpc.call('approval', [request], signal),
+  askHuman: ({ signal, ...request }) => rpc.call('question', [request], signal),
   additionalTools: async id => (await rpc.call('tools', [id])).map(tool => ({ ...tool,
     execute: (callId, input, signal) => rpc.call('execute', [id, tool.name, callId, input], signal)
   })),

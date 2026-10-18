@@ -94,6 +94,8 @@ test('real Chromium browser interactions', { skip: !executablePath && 'Set BROWS
     const snapshot = await call({ action: 'snapshot', query: 'Shadow action' });
     const ref = snapshot.elements[0].ref;
     await call({ action: 'wait', ref, wait_for: 'visible' });
+    await call({ action: 'wait', query: 'Shadow action' });
+    await call({ action: 'press', key: 'Tab' });
     await assert.rejects(call({ action: 'wait', ref, wait_for: 'networkidle' }), /wait_for with ref/);
     await assert.rejects(call({ action: 'screenshot', ref, full_page: true }), /either ref or full_page/);
     const [tool] = createBrowserTools({ manager, ...binding });

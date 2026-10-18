@@ -50,7 +50,11 @@ export function createTodoTool({ store, sessionId, workerId = 'worker' } = {}) {
             if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw new TypeError('Todo item must be an object');
             for (const key of Object.keys(entry)) if (!['id', 'content', 'status'].includes(key)) throw new Error(`Unknown todo item field: ${key}`);
             const old = previous.find(item => item.id === entry.id);
-            const id = old && !seen.has(old.id) ? old.id : `todo-${randomUUID()}`;
+            // Keep a caller-supplied id so the agent can update an item it just
+            // wrote without first re-listing the board. `plan-` stays host-owned.
+            const supplied = typeof entry.id === 'string' ? entry.id.trim() : '';
+            const usable = supplied && !supplied.startsWith('plan-') && /^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/.test(supplied) && !seen.has(supplied);
+            const id = old && !seen.has(old.id) ? old.id : usable ? supplied : `todo-${randomUUID()}`;
             seen.add(id);
             const item = { id, worker_id: workerId, content: text(entry.content), status: status(entry.status), created_at: old?.created_at ?? now, updated_at: now };
             if (old && old.status === item.status && old.content === item.content) item.updated_at = old.updated_at;
@@ -100,7 +104,13 @@ export function createTodoTool({ store, sessionId, workerId = 'worker' } = {}) {
       const line = item => `- [${item.status}] (${item.worker_id === owner ? 'you' : item.worker_id}) ${item.content} #${item.id}`;
       const active = items.filter(item => item.status !== 'completed').slice(0, 40).map(line);
       const done = items.filter(item => item.status === 'completed').slice(-8).map(line);
-      return ['# Session Todo Board', 'Shared progress memory refreshed at each model boundary. plan- items are host-managed. Reuse completed work and coordinate with other owners.', ...active, ...(done.length ? ['Recently completed:', ...done] : [])].join('\n');
+      const open = items.filter(item => item.status !== 'completed').length;
+      // The board reminds the agent to maintain it, so progress is not left stale
+      // until the final answer.
+      const directive = open
+        ? `Maintain this board as you work: keep exactly ONE item in_progress, and mark an item completed with todo action=update todo_id=<id> status=completed the moment its outcome is verified. Do not defer updates to the end. ${open} item(s) still open.`
+        : 'Every item is completed. Add or reopen items with action=write if more steps remain.';
+      return ['# Session Todo Board', 'Shared progress memory refreshed at each model boundary. plan- items are host-managed. Reuse completed work and coordinate with other owners.', directive, ...active, ...(done.length ? ['Recently completed:', ...done] : [])].join('\n');
     }
   };
   tool.promptSummary = tool.summary;

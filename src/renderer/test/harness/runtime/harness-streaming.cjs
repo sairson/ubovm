@@ -957,6 +957,22 @@ test('context summary reminders keep their identity, content and estimates in th
   assert.deepEqual(cleanTimelineParts(parts), parts);
 });
 
+test('summary parts carry the body/tool kind breakdown and stay sanitised', async t => {
+  const f = await fixture(t);
+  f.event({ type: 'context.summary_start', scope: 'chat:fixture', operationId: 'kinded', startedAt: 100 });
+  f.event({ type: 'context.summary_end', scope: 'chat:fixture', operationId: 'kinded', startedAt: 100, endedAt: 200, status: 'completed',
+    text: 'Mixed summary', beforeTokens: 12000, afterTokens: 4000, fallback: true,
+    kinds: { transcript: { summaries: 1, fallback: false, truncated: false }, 'tool-result': { summaries: 2, fallback: true, truncated: false }, injected: { summaries: 9 } },
+    fallbackReasons: { summary_unavailable: 1, injected: 3 } });
+  const part = f.service.state('current').parts.find(entry => entry.type === 'summary');
+  assert.deepEqual(part.kinds, {
+    transcript: { summaries: 1, fallback: false, truncated: false },
+    'tool-result': { summaries: 2, fallback: true, truncated: false },
+  });
+  assert.deepEqual(part.fallbackReasons, { summary_unavailable: 1 });
+  assert.deepEqual(cleanTimelineParts(f.service.state('current').parts), f.service.state('current').parts);
+});
+
 test('summary reminders remain scoped to worker views and cancelled root summaries stop', async t => {
   const f = await fixture(t);
   f.event({ type: 'context.summary_start', scope: 'worker:child', operationId: 'child-summary', startedAt: 100 });
@@ -998,9 +1014,18 @@ test('desktop assistance installs fail-closed approval by default, switch disabl
 test('composer mode overrides settings for each submitted assistance turn', async t => {
   const automatic = await fixture(t, 'assist', '', { worker: { requireToolApproval: true } }, 'auto');
   assert.equal(automatic.running.requestToolApproval, undefined);
+  assert.equal(automatic.service.state('current').approvalMode, 'auto');
   automatic.complete('done'); await automatic.completion;
   const manual = await fixture(t, 'assist', '', { worker: { requireToolApproval: false } }, 'manual');
   assert.equal(typeof manual.running.requestToolApproval, 'function');
+  assert.equal(manual.service.state('current').approvalMode, 'manual');
   manual.complete('done'); await manual.completion;
   await assert.rejects(manual.service.start({ conversationId: 'bad', mode: 'assist', text: 'test', approvalMode: 'invalid' }), /无效的工具执行方式/);
+  // 完全模式 must start: it lifts the workspace boundary and skips approval, and
+  // the effective mode is published so the IDE can mirror it on resume/restore.
+  const full = await fixture(t, 'assist', '', { worker: { requireToolApproval: true } }, 'full');
+  assert.equal(full.running.requestToolApproval, undefined);
+  assert.equal(full.running.unbounded, true);
+  assert.equal(full.service.state('current').approvalMode, 'full');
+  full.complete('done'); await full.completion;
 });

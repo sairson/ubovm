@@ -94,6 +94,20 @@ test('resolved model selection is passed to dispatch and survives journal recove
   } finally { await swarm.close(); }
 });
 
+test('truncated worker results expose mandatory recovery metadata', async () => {
+  const full = 'verified-observation\n' + 'x'.repeat(20000);
+  const swarm = createSwarm({ sessionId: 'root', runWorker: async () => full });
+  try {
+    await invoke(swarm, 'spawn_worker', { task: 'produce a long report' });
+    const waited = await invoke(swarm, 'wait_workers');
+    const worker = waited.workers[0];
+    assert.equal(worker.resultTruncated, true);
+    assert.equal(worker.resultLength, full.length);
+    assert.equal(worker.resultRecovery.required, true);
+    assert.equal(worker.resultRecovery.tool, 'read_worker_result');
+  } finally { await swarm.close(); }
+});
+
 test('cancelling a parent queued for reentry does not wait for an unrelated occupied slot', { timeout: 3000 }, async () => {
   const parentStarted = deferred(), beginWait = deferred(), blockerStarted = deferred(), blockerFinish = deferred(), parentExited = deferred();
   let swarm, childCalls = 0;
@@ -948,4 +962,3 @@ test('nested workers can receive a subset without the ancestor counting as a sec
     assert.deepEqual(grandchild.writes, ['src/b.js']);
   } finally { hold.resolve(); await swarm.close(); }
 });
-

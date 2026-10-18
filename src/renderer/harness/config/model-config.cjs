@@ -3,7 +3,7 @@
 const { createHash } = require('node:crypto');
 const copy = value => value === undefined ? undefined : structuredClone(value);
 const APIS = ['openai-completions', 'openai-responses', 'anthropic-messages', 'google-generative-ai', 'azure-openai-responses', 'google-vertex', 'mistral-conversations', 'bedrock-converse-stream', 'pi-messages', 'openai-codex-responses'];
-const MODEL_KEYS = new Set(['backend', 'provider', 'modelId', 'api', 'baseUrl', 'contextWindow', 'maxTokens', 'reasoning', 'input', 'compat', 'streamOptions']);
+const MODEL_KEYS = new Set(['backend', 'provider', 'modelId', 'models', 'api', 'baseUrl', 'contextWindow', 'maxTokens', 'reasoning', 'input', 'compat', 'streamOptions']);
 const configurationStates = new WeakMap();
 // Both configuration entry points share a transaction queue and revision. A
 // credential-only update must invalidate an already open settings form too.
@@ -65,6 +65,17 @@ function modelConfig(value) {
   for (const key of Object.keys(model)) if (!MODEL_KEYS.has(key)) throw new Error(`不支持模型配置 ${key}；API Key 请通过“配置模型”保存在凭据库中。`);
   for (const key of ['provider', 'modelId']) if (typeof model[key] !== 'string' || !model[key].trim()) throw new Error('请先配置模型的服务商和模型名称。');
   model.provider = model.provider.trim(); model.modelId = model.modelId.trim();
+  if (model.models !== undefined) {
+    // An empty list is the form's "use only the default model" state.
+    // Treat it as omitted so a freshly opened default configuration can be saved.
+    if (!Array.isArray(model.models)) throw new Error('可选模型必须是 1–100 个非空名称。');
+    if (!model.models.length) delete model.models;
+    else {
+      if (model.models.length > 100 || model.models.some(value => typeof value !== 'string' || !value.trim())) throw new Error('可选模型必须是 1–100 个非空名称。');
+      model.models = [...new Set(model.models.map(value => value.trim()))];
+      if (!model.models.includes(model.modelId)) model.models.unshift(model.modelId);
+    }
+  }
   if (model.api !== undefined && !APIS.includes(model.api)) throw new Error('模型协议不受支持。');
   if (model.api !== undefined && model.baseUrl === undefined) throw new Error('自定义模型协议必须配置 API 地址。');
   if (model.baseUrl !== undefined) {
@@ -94,7 +105,7 @@ function createModelConfiguration(vscode, context) {
   function status() {
     try {
       const model = modelConfig(setting('model', {}));
-      return { connected: true, configured: true, label: `${model.backend ?? 'pi'} · ${model.modelId} · 已配置`, provider: model.provider, backend: model.backend ?? 'pi' };
+      return { connected: true, configured: true, label: `${model.backend ?? 'pi'} · ${model.modelId} · 已配置`, provider: model.provider, backend: model.backend ?? 'pi', defaultModel: model.modelId, models: model.models || [model.modelId] };
     } catch (error) { return { connected: false, configured: false, label: '配置模型', error: error.message }; }
   }
   function assertHttpSecret(key, label = 'API Key') {

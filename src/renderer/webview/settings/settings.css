@@ -280,7 +280,7 @@ summary.settings-extension-header:focus-visible { outline: 2px solid var(--focus
 .settings-provider-select::picker(select) { max-height: min(360px, 65vh); overflow: auto; padding: 5px; border: 1px solid var(--border); border-radius: 9px; background: var(--canvas); color: var(--ink); box-shadow: 0 8px 24px #00000015; }
 .settings-provider-select option { display: flex; align-items: center; gap: 9px; padding: 9px 10px; border-radius: 5px; font: 12px/1.7 'Segoe UI', 'Microsoft YaHei UI', sans-serif; }
 .settings-provider-select option:hover, .settings-provider-select option:focus { background: var(--wash); }
-.settings-provider-select option:checked { background: var(--accent-wash); color: var(--ink); font-weight: 600; }
+.settings-provider-select option:checked { background: var(--selection-bg); color: var(--ink); font-weight: 600; }
 .settings-provider-select option::checkmark { order: 1; margin-left: auto; }
 .settings-provider-fallback { display: flex; align-items: center; position: relative; min-width: 0; }
 .settings-provider-fallback > svg { position: absolute; left: 10px; pointer-events: none; }

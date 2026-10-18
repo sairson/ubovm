@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { setTimeout as delay } from 'node:timers/promises';
 import test from 'node:test';
 import { createContextSummaryMiddleware, estimateContextTokens } from '../context-summary.mjs';
+import { createModelClient } from '../../model.mjs';
 
 const user = (content, timestamp = 1) => ({ role: 'user', content, timestamp });
 const assistant = (text, timestamp = 2) => ({ role: 'assistant', content: [{ type: 'text', text }], timestamp });
@@ -400,6 +401,35 @@ test('failed auxiliary summaries finish the reminder with truthful fallback exce
   assert(end.text.length <= 12000);
 });
 
+for (const [stopReason, content, fallback] of [
+  ['length', [{ type: 'text', text: 'Verified partial summary: inspection found a failed check.' }], false],
+  ['length', [], true],
+  ['error', [{ type: 'text', text: 'Incomplete provider error output' }], true],
+  ['toolUse', [{ type: 'toolCall', id: 'unexpected', name: 'inspect', arguments: {} }], true],
+]) test(`provider summary ${stopReason} with ${content[0]?.type ?? 'empty'} content preserves truthful coverage`, async t => {
+  const events = [];
+  const runtime = createContextSummaryMiddleware({ triggerTokens: 1000, targetTokens: 500,
+    model: { provider: 'summary-regression', modelId: 'offline', api: 'openai-completions',
+      baseUrl: 'https://offline.invalid/v1', apiKey: 'unused',
+      streamFn: () => ({ result: async () => ({ stopReason, content }) }) },
+    onEvent: event => events.push(event) });
+  t.after(() => runtime.close());
+  const context = { messages: [user('Inspect'),
+    { role: 'toolResult', toolCallId: 'read', content: [{ type: 'text', text: 'source evidence\n'.repeat(900) }] },
+    user('Continue')] };
+  const output = await runtime.transform({ scope: 'provider-regression', context });
+  const summary = events.find(event => event.type === 'context.summary');
+  assert.equal(summary.fallback, fallback);
+  assert.equal(summary.partial, true);
+  assert.equal(summary.coverage[0].state, fallback ? 'excerpt' : 'truncated');
+  if (!fallback) {
+    assert.equal(summary.coverage[0].reason, 'summary_output_limit');
+    assert.match(textOf(output.messages[1]), /Verified partial summary/);
+    assert.match(textOf(output.messages[1]), /Incomplete summary/);
+    assert.equal(events.find(event => event.type === 'context.summary_end').truncated, true);
+  }
+});
+
 test('large evidence is summarized contiguously including its middle and reuses the durable result', async t => {
   const source = '前'.repeat(2200) + 'MIDDLE_FAILURE: src/main.js test failed' + '😀'.repeat(2200);
   const options = { triggerTokens: 1000, targetTokens: 500, maxSummaryInputTokens: 1200, maxSummaryTokens: 1024,
@@ -417,7 +447,10 @@ test('large evidence is summarized contiguously including its middle and reuses 
     assert.equal(call.sourceOffset, offset);
     assert.equal(call.sourceLength, source.length);
     assert.equal(call.text.isWellFormed(), true);
-    assert.match(call.instructions, /Open work and next action/);
+    // A tool result is digested with the tool contract, not the body checkpoint.
+    assert.match(call.instructions, /Summarize one tool result/);
+    assert.match(call.instructions, /Observed:/);
+    assert.doesNotMatch(call.instructions, /Open work and next action/);
     assert.ok(estimateContextTokens({ messages: [
       { role: 'system', content: call.instructions, timestamp: 0 }, { role: 'user', content: call.text, timestamp: 0 }
     ] }) <= options.maxSummaryInputTokens);
@@ -431,7 +464,8 @@ test('large evidence is summarized contiguously including its middle and reuses 
 
 test('unreviewed source after a segment call limit is explicitly marked and still recoverable', async t => {
   const source = 'x'.repeat(18000) + 'TAIL_EVIDENCE';
-  const { transform, calls, runtime } = fixture(t, { triggerTokens: 1000, targetTokens: 500, maxSummaryInputTokens: 1200, maxSummaryCalls: 1 });
+  // Tool digests have their own per-round ceiling, independent of the body budget.
+  const { transform, calls, runtime } = fixture(t, { triggerTokens: 1000, targetTokens: 500, maxSummaryInputTokens: 1200, maxToolSummaryCalls: 1 });
   const result = await transform({ messages: [
     { role: 'assistant', content: [{ type: 'toolCall', id: 'limited', name: 'inspect', arguments: {} }] },
     { role: 'toolResult', toolCallId: 'limited', content: [{ type: 'text', text: source }] }, user('Continue')
@@ -577,6 +611,68 @@ test('constraint discovery stays bounded even when every word is a restriction',
   assert.ok(anchors[0].constraintExcerpts.every(range => range.text.length <= 258));
 });
 
+test('a single transform issues at most maxSummaryCallsPerTransform auxiliary summary calls', async t => {
+  const { transform, calls } = fixture(t, { triggerTokens: 1000, targetTokens: 500, maxSummaryInputTokens: 1200,
+    maxSummaryCallsPerTransform: 2, maxSummaryTokens: 1024 });
+  const source = 'x'.repeat(18000) + 'TAIL_EVIDENCE';
+  const context = { messages: [
+    { role: 'assistant', content: [{ type: 'toolCall', id: 'throttled', name: 'inspect', arguments: {} }] },
+    { role: 'toolResult', toolCallId: 'throttled', content: [{ type: 'text', text: source }] }, user('Continue')
+  ] };
+  const output = await transform(context);
+  assert.ok(calls.length <= 2, `one transform must not exceed its per-transform summary call ceiling; ${calls.length} calls`);
+  assert.equal(textOf(output.messages.at(-1)), 'Continue');
+  assert.match(textOf(output.messages[1]), /\S/, 'the projection must stay usable after throttling');
+});
+
+test('a repeated transform over an unchanged history does not summarize again', async t => {
+  const { transform, calls } = fixture(t);
+  const context = history();
+  const first = await transform(context);
+  const callCount = calls.length;
+  assert.ok(callCount > 0, 'fixture must actually run a summary');
+  await transform(context);
+  assert.equal(calls.length, callCount, 'an unchanged history must not spend another summary call');
+  assert.ok(callCount <= 2);
+  assert.deepEqual(await transform(context), first);
+  assert.equal(calls.length, callCount);
+});
+
+test('an already-built model client is accepted where a configuration is expected', async t => {
+  const client = createModelClient({ provider: 'summary-shared-client', modelId: 'offline', api: 'openai-completions',
+    baseUrl: 'https://offline.invalid/v1', apiKey: 'unused', streamFn: () => 'ok' });
+  // Passing the built client (it carries sourceKind/fromCatalog) must not raise
+  // "Unknown model configuration field".
+  assert.doesNotThrow(() => createContextSummaryMiddleware({ client }));
+  const runtime = createContextSummaryMiddleware({ client, triggerTokens: 2500, targetTokens: 1100, triggerMessages: 12,
+    keepRecentMessages: 4, maxSummaryTokens: 128, summarize: async () => 'Summary' });
+  t.after(() => runtime.close());
+  const output = await runtime.transform({ scope: 'shared-client', context: history() });
+  assert.ok(estimateContextTokens(output) < estimateContextTokens(history()));
+  await runtime.close();
+});
+
+test('a transform below the trigger threshold performs no summary call at all', async t => {
+  const { transform, calls } = fixture(t);
+  const context = { messages: [user('Short request.', 1), assistant('Short reply.', 2), user('CURRENT REQUEST: answer.', 3)] };
+  const original = structuredClone(context);
+  const output = await transform(context);
+  assert.equal(calls.length, 0, 'a context below the trigger threshold is not summarization work');
+  assert.deepEqual(output.messages, original.messages);
+  assert.deepEqual(context, original);
+});
+
+test('a large model context window raises the trigger so mid-size history is not compacted', async t => {
+  const context = history(14, 3000);
+  const small = fixture(t);
+  await small.transform(context);
+  assert.ok(small.calls.length > 0, 'the small window must compact this history');
+  const large = fixture(t);
+  const output = await large.transform(context, { model: { contextWindow: 400000, maxTokens: 8192 } });
+  assert.equal(large.calls.length, 0, 'a larger model window must not compact the same mid-size history');
+  assert.deepEqual(output.messages, context.messages);
+});
+
 test('failed durable budget reservation degrades without spending a model call or aborting', async t => {
   const store = new Map(), events = [];
   let calls = 0;
@@ -597,4 +693,146 @@ test('failed durable budget reservation degrades without spending a model call o
   assert.equal(end.error?.code, 'CONTEXT_STORAGE_FAILED');
   assert.equal(events.some(event => event.type === 'context.summary_degraded'), true);
   assert.equal(events.some(event => event.type === 'context.compacted'), false);
+});
+
+test('a failed auxiliary summary reports its reason without masquerading raw source as a summary', async t => {
+  const source = 'RAW VERBATIM SOURCE LINE: ' + 'unique-source-marker '.repeat(700);
+  const { transform, events, runtime } = fixture(t, {
+    triggerTokens: 1000, targetTokens: 500, maxSummaryInputTokens: 1600,
+    summarize: async () => { throw new Error('Provider unavailable'); },
+  });
+  const output = await transform({ messages: [
+    { role: 'assistant', content: [{ type: 'toolCall', id: 'fallback', name: 'inspect', arguments: {} }] },
+    { role: 'toolResult', toolCallId: 'fallback', content: [{ type: 'text', text: source }] }, user('Continue'),
+  ] });
+  const fallback = events.find(event => event.type === 'context.summary_fallback');
+  assert.ok(fallback, 'a fallback must raise a first-class event with its reason');
+  assert.equal(fallback.reason, 'summary_unavailable');
+  assert.ok(fallback.excerptSegments >= 1);
+  const body = textOf(output.messages[1]);
+  assert.match(body, /Summary unavailable \(summary_unavailable\)/);
+  assert.match(body, /read_context_evidence/);
+  assert.equal(body.includes('unique-source-marker unique-source-marker'), false,
+    'the fallback must not paste raw source that reads like a produced summary');
+  const artifactId = /artifact:?\s*([a-f0-9]{64})/.exec(body)?.[1];
+  assert.ok(artifactId);
+  assert.equal((await runtime.readEvidence(artifactId, { scope: 'chat:regression', limit: 32768 })).text, source);
+});
+
+test('a modest thread below the window trigger is not compacted by message count alone', async t => {
+  const context = history(14, 3000);
+  const small = fixture(t);
+  await small.transform(context);
+  assert.ok(small.calls.length > 0, 'the configured trigger must still compact this history');
+  const large = fixture(t);
+  const output = await large.transform(context, { model: { contextWindow: 400000, maxTokens: 8192 } });
+  assert.equal(large.calls.length, 0, 'a known large window raises the trigger above this history');
+  assert.deepEqual(output.messages, context.messages);
+});
+
+test('a large context window keeps history until near its limit instead of a fixed 96K ceiling', async t => {
+  const context = history(20, 20000);
+  const tokens = estimateContextTokens(context);
+  assert.ok(tokens > 98304, `fixture must exceed the old fixed ceiling (got ${tokens})`);
+  // ~130K tokens is far below 90% of a 1M window, so the history must survive.
+  const large = fixture(t, { triggerTokens: 2500, targetTokens: 1100 });
+  const output = await large.transform(context, { model: { contextWindow: 1000000, maxTokens: 8192 } });
+  assert.equal(large.calls.length, 0, 'a 1M window must not compact a 130K-token history');
+  assert.deepEqual(output.messages, context.messages);
+  // The same history is past the trigger for a window whose 90% is below it.
+  const small = fixture(t, { triggerTokens: 2500, targetTokens: 1100 });
+  await small.transform(context, { model: { contextWindow: 131072, maxTokens: 8192 } });
+  assert.ok(small.calls.length > 0, 'a smaller window compacts the same history');
+  // The share is configurable: a lower percentage compacts the same 1M window sooner.
+  const narrow = fixture(t, { triggerTokens: 2500, targetTokens: 1100, triggerPercent: 10 });
+  await narrow.transform(context, { model: { contextWindow: 1000000, maxTokens: 8192 } });
+  assert.ok(narrow.calls.length > 0, 'a lower triggerPercent compacts sooner on the same window');
+});
+
+test('triggerPercent must be an integer share between 1 and 100', () => {
+  for (const triggerPercent of [0, 101, 2.5, '90']) {
+    assert.throws(() => createContextSummaryMiddleware({ triggerPercent }), /triggerPercent/);
+  }
+});
+
+test('a long low-token thread is not compacted by message count on a large window', async t => {
+  const context = history(40, 80);
+  assert.ok(estimateContextTokens(context) < 50000, 'the fixture must stay far below the trigger');
+  const large = fixture(t, { triggerTokens: 2500, targetTokens: 1100 });
+  await large.transform(context, { model: { contextWindow: 1000000, maxTokens: 8192 } });
+  assert.equal(large.calls.length, 0, 'many short messages must not compact a nearly-empty large window');
+  // An unknown window keeps the message-count fallback.
+  const unknown = fixture(t, { triggerTokens: 100000, targetTokens: 40000 });
+  await unknown.transform(context);
+  assert.ok(unknown.calls.length > 0, 'an unknown window still relieves a long short-message thread');
+});
+
+test('a compaction that barely lowered the projection does not re-trigger on the next turn', async t => {
+  // A protected system message dominates the budget, so the removable history is
+  // a sliver and the projection stays above the trigger after compaction.
+  const context = {
+    messages: [
+      { role: 'system', content: 'Follow the current request. ' + 'guard '.repeat(2500), timestamp: 0 },
+      ...Array.from({ length: 12 }, (_, index) => index % 2
+        ? assistant(`record-${index}: ` + 'observation '.repeat(Math.ceil(200 / 12)), index + 1)
+        : user(`record-${index}: ` + 'request '.repeat(Math.ceil(200 / 8)), index + 1)),
+      user('CURRENT REQUEST: continue.', 13),
+    ],
+  };
+  const { transform, calls } = fixture(t, { triggerTokens: 2500, targetTokens: 1100 });
+  const first = await transform(context);
+  assert.ok(calls.length > 0, 'the first transform compacts');
+  assert.ok(first.messages.length < context.messages.length, 'the first transform replaces history with a summary');
+  calls.length = 0;
+  const second = await transform(context);
+  assert.equal(calls.length, 0, 'the next turn must not re-summarize the same history');
+  assert.deepEqual(second.messages, context.messages, 'the hysteresis floor returns the projection unchanged');
+});
+
+test('message-count pressure still relieves histories far past the message trigger', async t => {
+  const { transform, calls } = fixture(t, { triggerTokens: 100000, targetTokens: 40000 });
+  const context = history(40, 80);
+  assert.ok(estimateContextTokens(context) < 100000, 'tokens must stay below the trigger so only message count applies');
+  const first = await transform(context);
+  assert.ok(calls.length > 0, 'a long low-token thread must still be relieved by message count');
+  assert.ok(first.messages.length < context.messages.length);
+});
+
+test('body checkpoints and tool digests use different contracts and budgets', async t => {
+  const calls = [], events = [];
+  const runtime = createContextSummaryMiddleware({
+    triggerTokens: 1000, targetTokens: 500, maxSummaryInputTokens: 1200, maxSummaryTokens: 1024,
+    maxSummaryCalls: 1, maxToolSummaryCalls: 4,
+    summarize: async request => { calls.push(request); return `${request.kind} digest`; },
+    load: async () => undefined, save: async () => {}, onEvent: event => events.push(event),
+  });
+  t.after(() => runtime.close());
+
+  // A tool result is digested with the tool contract, under the tool ceiling
+  // (4), never the body ceiling (1).
+  await runtime.transform({ scope: 'contracts:tool', context: { messages: [
+    { role: 'assistant', content: [{ type: 'toolCall', id: 'dig', name: 'inspect', arguments: {} }] },
+    { role: 'toolResult', toolCallId: 'dig', content: [{ type: 'text', text: 'x'.repeat(9000) + 'TOOL_TAIL' }] }, user('Continue'),
+  ] } });
+  const toolCalls = calls.filter(call => call.kind === 'tool-result');
+  assert.ok(toolCalls.length > 1, 'tool digests are not throttled by the body summary budget');
+  assert.ok(toolCalls.every(call => /Summarize one tool result/.test(call.instructions)));
+  assert.ok(toolCalls.every(call => /Observed:/.test(call.instructions)));
+  assert.ok(toolCalls.every(call => !/Open work and next action/.test(call.instructions)));
+  const toolEnd = events.findLast(event => event.type === 'context.summary_end');
+  // Telemetry counts compressed artifacts (one tool result), not segments.
+  assert.deepEqual(toolEnd.kinds, { 'tool-result': { summaries: 1, fallback: false, truncated: false } });
+
+  // A transcript is summarized with the body checkpoint contract instead.
+  calls.length = 0;
+  events.length = 0;
+  await runtime.transform({ scope: 'contracts:body', context: history(14, 3000) });
+  const bodyCalls = calls.filter(call => call.kind === 'transcript');
+  assert.ok(bodyCalls.length > 0, 'the transcript must still produce a body checkpoint');
+  assert.ok(bodyCalls.every(call => /Open work and next action/.test(call.instructions)));
+  assert.ok(bodyCalls.every(call => /proposals are not authorization/.test(call.instructions)));
+  assert.ok(bodyCalls.every(call => !/Summarize one tool result/.test(call.instructions)));
+  const bodyEnd = events.findLast(event => event.type === 'context.summary_end');
+  assert.equal(Object.keys(bodyEnd.kinds).join(), 'transcript');
+  assert.ok(bodyEnd.kinds.transcript.summaries >= 1, 'the transcript compaction must be attributed to the body kind');
 });

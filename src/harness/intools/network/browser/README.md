@@ -83,10 +83,20 @@ roots and iframe documents are not traversed. Password input values are omitted.
 
 Use `check` with `ref` and a required boolean `checked` to set a checkbox/radio state idempotently.
 `select` accepts either a single `value` or a `values` array (empty array clears a multi-select).
-`wait` with `ref` accepts `wait_for: visible | hidden | attached | detached`; without `ref`, it retains
-load-state/text waiting. `screenshot` accepts a `ref` for an element (including shadow controls), or
+`wait` accepts one shared contract on both backends: with `ref`, `wait_for: visible | hidden | attached | detached`
+(defaults to `visible`); without `ref`, `query` waits for matching visible text, otherwise `wait_for` takes a load state
+(`load | domcontentloaded | networkidle`, default `load`) or literal text. The IDE backend polls inside the page, so a
+wait costs one round trip. `screenshot` accepts a `ref` for an element (including shadow controls), or
 `full_page: true` for the whole page; these options cannot be combined. Default screenshots capture
-the viewport. All operations retain Worker/page isolation and bounded timeouts.
+the viewport; element clips use page coordinates including scroll offset. All operations retain Worker/page isolation
+and bounded timeouts.
+
+IDE interactions are dispatched as real input through CDP (`Input.dispatchMouseEvent` / `Input.dispatchKeyEvent`):
+click and hover move to the element center and press/release the left button, wheel scroll uses viewport coordinates, and
+keyboard events target the focused element, so hover-only menus, pointer handlers and shortcuts behave like a user.
+`fill` writes through the native `value` setter so React/Vue value trackers observe the change. One CDP session is cached
+per page and reused across actions; it is evicted only when the target detaches and reattached on the next action, and
+navigation invalidates refs through `Page.frameNavigated`.
 
 For a flow that opens a new window, call `popup_policy` with the opener's `page_id` and
 `allow_popups: true` before interacting. `tabs` reports `active_page_id`, each popup's `opener_page_id`,
@@ -98,7 +108,9 @@ popup may already have started its initial request, so this policy is not a netw
 Popup instrumentation attaches after creation; initial traffic/logs may precede capture.
 
 `console` reads console messages and uncaught page errors automatically captured per page,
-independently of CDP/network capture. Filter by exact `level` (e.g. `log`, `warning`, `error`) or
+independently of CDP/network capture. The IDE backend captures them in the extension host from
+`Runtime.consoleAPICalled` / `Runtime.exceptionThrown`, so entries — including their `location` — survive
+navigation; entries use `kind: console | pageerror` and an ISO `timestamp`. Filter by exact `level` (e.g. `log`, `warning`, `error`) or
 case-insensitive `query`; paginate with `after_sequence` / `limit`. Entries have sequence, timestamp,
 kind, level and text, plus source location for console messages (zero-based line/column).
 `clear: true` removes only the entries returned in that call. The buffer retains 500 entries,

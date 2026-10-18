@@ -86,6 +86,29 @@ test('todo and skill resource tools expose progressive catalogs', async () => {
   assert.match(skill.description, /help=true/);
 });
 
+test('todo board prompts proactive lifecycle management', async () => {
+  const store = new MemoryStore({ sessionId: 'todo-proactive' });
+  const todo = createTodoTool({ store, sessionId: 'todo-proactive', workerId: 'w1' });
+  assert.match(TODO_CATALOG.description, /proactively/i);
+  assert.match(TODO_CATALOG.description, /exactly one item in_progress/i);
+  assert.match(TODO_CATALOG.description, /completed with update/i);
+  assert.equal(todo.summary(), '', 'an empty board adds no prompt noise');
+  await todo.execute('t', { action: 'write', items: [
+    { id: 'step-1', content: 'Create the module', status: 'completed' },
+    { id: 'step-2', content: 'Wire it up', status: 'in_progress' },
+    { id: 'step-3', content: 'Add tests' }
+  ] });
+  const summary = todo.summary('w1');
+  assert.match(summary, /# Session Todo Board/);
+  assert.match(summary, /Maintain this board as you work/);
+  assert.match(summary, /todo action=update todo_id=<id> status=completed/);
+  assert.match(summary, /2 item\(s\) still open/);
+  assert.match(summary, /\[in_progress\] \(you\) Wire it up #step-2/);
+  await todo.execute('t', { action: 'update', todo_id: 'step-2', status: 'completed' });
+  await todo.execute('t', { action: 'update', todo_id: 'step-3', status: 'completed' });
+  assert.match(todo.summary('w1'), /Every item is completed/);
+});
+
 test('workspace and collaboration tools serve help catalogs', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'disclosure-ws-'));
   t.after(() => rm(root, { recursive: true, force: true }));

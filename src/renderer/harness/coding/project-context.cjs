@@ -6,11 +6,8 @@ const lockManagers = { 'pnpm-lock.yaml': 'pnpm', 'yarn.lock': 'yarn', 'package-l
 const clip = (value, maximum) => typeof value === 'string' ? value.slice(0, maximum) : null;
 
 function createProjectContext({ locate, read, stat, hash, assertClean }) {
-  return sessionId => ({
-    name: 'inspect_workspace_project', recovery: 'retry-read-only', label: '识别项目与检查入口',
-    description: 'Inspect package.json and build/config markers from a workspace-relative FILE path up to the workspace root. Finds nested package scripts, package-manager evidence and lifecycle hooks without executing code. With no path, inspects the root package.json. Commands are argv arrays, not shell strings; use an enabled execution tool with correct shell quoting, purpose and reason. Script names only suggest intent: inspect commands and project instructions before running. Does not discover sibling packages or recursively scan the repository.',
-    parameters: { type: 'object', properties: { root: { type: 'integer', minimum: 0 }, path: { type: 'string' } }, additionalProperties: false },
-    async execute(_id, input, signal) {
+  // Shared inspector: the tool wrapper and post-edit check suggestions both use it.
+  async function inspect(input, sessionId, signal) {
       signal?.throwIfAborted();
       const target = await locate({ ...input, path: input.path ?? 'package.json' }, sessionId);
       let directory = path.dirname(target.path), depth = 0;
@@ -76,8 +73,17 @@ function createProjectContext({ locate, read, stat, hash, assertClean }) {
         largest.tasks.pop(); largest.omittedTasks++;
       }
       signal?.throwIfAborted();
+      return value;
+  }
+  const tool = sessionId => ({
+    name: 'inspect_workspace_project', recovery: 'retry-read-only', label: '识别项目与检查入口',
+    description: 'Inspect package.json and build/config markers from a workspace-relative FILE path up to the workspace root. Finds nested package scripts, package-manager evidence and lifecycle hooks without executing code. With no path, inspects the root package.json. Commands are argv arrays, not shell strings; use an enabled execution tool with correct shell quoting, purpose and reason. Script names only suggest intent: inspect commands and project instructions before running. Does not discover sibling packages or recursively scan the repository.',
+    parameters: { type: 'object', properties: { root: { type: 'integer', minimum: 0 }, path: { type: 'string' } }, additionalProperties: false },
+    async execute(_id, input, signal) {
+      const value = await inspect(input, sessionId, signal);
       return { content: [{ type: 'text', text: JSON.stringify(value) }], details: value };
     }
   });
+  return { tool, inspect };
 }
 module.exports = { createProjectContext };

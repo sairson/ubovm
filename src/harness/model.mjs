@@ -9,7 +9,7 @@ const APIS = new Set([
 ]);
 const OPTIONS = new Set([
   'model', 'provider', 'modelId', 'api', 'baseUrl', 'contextWindow', 'maxTokens', 'reasoning',
-  'input', 'compat', 'headers', 'apiKey', 'getApiKey', 'streamFn', 'streamOptions', 'backend',
+  'input', 'models', 'compat', 'headers', 'apiKey', 'getApiKey', 'streamFn', 'streamOptions', 'backend',
 ]);
 const STREAM_OPTIONS = new Set([
   'temperature', 'maxTokens', 'timeoutMs', 'maxRetries', 'maxRetryDelayMs', 'websocketConnectTimeoutMs',
@@ -160,7 +160,14 @@ function deepFreeze(value) {
  */
 export function createModelClient(configuration = {}) {
   object(configuration, 'configuration');
+  // A model client is not a configuration. Return it unchanged so callers that
+  // forward a shared client (sourceKind/fromCatalog/... are client-only fields)
+  // do not trip configuration-field validation.
+  if (configuration.sourceKind !== undefined && configuration.model && typeof configuration.streamFn === 'function') return configuration;
   for (const key of Object.keys(configuration)) if (!OPTIONS.has(key)) throw new TypeError(`Unknown model configuration field: ${key}`);
+  const sourceKind = configuration.model !== undefined
+    ? 'complete'
+    : configuration.api === undefined ? 'fromCatalog' : 'fromCustomEndpoint';
   const legacyBackend = configuration.backend ?? 'pi';
   const backend = 'pi';
   if (!['pi', 'claude', 'codex'].includes(legacyBackend)) throw new TypeError('Only Pi Agent is supported');
@@ -175,6 +182,7 @@ export function createModelClient(configuration = {}) {
       modelId: legacyBackend === 'claude' ? configuration.modelId?.replace(/\[1m\]$/i, '') : configuration.modelId };
   }
   const { apiKey, getApiKey, streamFn } = configuration;
+  const selectableModels = Array.isArray(configuration.models) ? [...new Set(configuration.models.filter(value => typeof value === 'string' && value.trim()).map(value => value.trim()))] : [];
   if (apiKey !== undefined) byteString(apiKey, 'apiKey');
   if (getApiKey !== undefined && typeof getApiKey !== 'function') throw new TypeError('getApiKey must be a function');
   if (streamFn !== undefined && typeof streamFn !== 'function') throw new TypeError('streamFn must be a function');
@@ -186,6 +194,8 @@ export function createModelClient(configuration = {}) {
       if (configuration[key] !== undefined) throw new TypeError(`Do not combine model with ${key}`);
     }
     source = { ...object(configuration.model, 'model') };
+    if (Array.isArray(source.models)) for (const value of source.models) if (typeof value === 'string' && value.trim() && !selectableModels.includes(value.trim())) selectableModels.push(value.trim());
+    delete source.models;
   } else {
     const provider = string(configuration.provider, 'provider');
     const modelId = string(configuration.modelId, 'modelId');
@@ -247,11 +257,16 @@ export function createModelClient(configuration = {}) {
   };
   const client = {
     backend,
+    sourceKind,
+    fromCatalog: sourceKind === 'fromCatalog',
+    fromCustomEndpoint: sourceKind === 'fromCustomEndpoint',
     model,
     async streamFn(selected, context, options = {}) {
       if (!selected || selected.id !== model.id || selected.provider !== model.provider || selected.api !== model.api || selected.baseUrl !== model.baseUrl) {
         throw new TypeError('Model client must be used with its configured model');
       }
+      const requestedId = typeof options.modelId === 'string' && selectableModels.includes(options.modelId) ? options.modelId : model.id;
+      const requestModel = requestedId === model.id ? model : { ...model, id: requestedId, name: requestedId, ...(requestedId.includes('muse-spark') ? { api: 'openai-responses' } : {}) };
       const requestDefaults = Object.fromEntries(Object.entries(defaults).map(([key, value]) => [
         key, typeof value === 'function' ? value : structuredClone(value),
       ]));
@@ -262,7 +277,7 @@ export function createModelClient(configuration = {}) {
       // Agent resolves getApiKey before calling streamFn. Direct stream consumers
       // receive the same behavior without resolving a rotating key twice.
       if (merged.apiKey === undefined && resolveKey && options.getApiKey !== resolveKey) merged.apiKey = await resolveKey(model.provider);
-      return withTransientStreamRetry(transport, model, context, merged);
+      return withTransientStreamRetry(transport, requestModel, context, merged);
     },
     ...(resolveKey ? { getApiKey: resolveKey } : {}),
   };

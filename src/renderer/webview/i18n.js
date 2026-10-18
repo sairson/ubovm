@@ -4,7 +4,7 @@
   'use strict';
   const STORAGE_KEY = 'ubovm.locale';
   const USER_TEXT_IDS = new Set(['conversation-title', 'goal-objective', 'workspace-name', 'context-label', 'goal-selection-label']);
-  const SKIP = '#messages, #goal-output-content, #note-reader-body, #blackboard-nodes, #assist-activities, #collaboration-worker-list, #goal-workers-list, #goal-notes-list, #agent-notes-list, #outline-list, #exploration-run-list, #assist-evidence-list, #criteria-list, #project-switcher-list, #ubovm-modal-list, #settings-fields, .settings-locale-options, #ui-error-detail, pre, code, textarea, script, style';
+  const SKIP = '#messages, #goal-output-content, #note-reader-body, #blackboard-nodes, #assist-activities, #collaboration-worker-list, #goal-workers-list, #goal-notes-list, #agent-notes-list, #outline-list, #exploration-run-list, #assist-evidence-list, #assist-todos-groups, #criteria-list, #project-switcher-list, #ubovm-modal-list, #settings-fields, .settings-locale-options, #ui-error-detail, pre, code, textarea, script, style';
   const catalog = { ...(root.UBOVM_I18N_EN || {}), ...(root.UBOVM_I18N_EN_MORE || {}) };
   const patterns = [
     [/^(\d[\d,]*) 条笔记$/, '$1 notes'],
@@ -27,7 +27,8 @@
     [/^(\d+) 个连接$/, '$1 connections'],
     [/^(\d+) 个技能$/, '$1 skills'],
     [/^(\d+) 个配置$/, '$1 profiles'],
-    [/^(\d+) 个服务已加载$/, '$1 services loaded'],
+    [/^(\d+) \/ (\d+) 个服务已加载$/, '$1 / $2 services loaded'],
+    [/^(\d+) \/ (\d+) 个服务已加载（(.+) 未连接）$/, '$1 / $2 services loaded ($3 not connected)'],
     [/^(\d+) 个可用技能$/, '$1 skills available'],
     [/^(\d+) 条待发送输入$/, '$1 queued inputs'],
     [/^(\d+) 条结果$/, '$1 results'],

@@ -590,6 +590,24 @@ test('switching assist and goal modes preserves busy sessions and background rep
   assert.equal((await reloaded.store.setMode('assist')).id, assist);
 });
 
+test('per-conversation usage accumulates once and survives reload', async () => {
+  const f = harness(); await f.store.ready;
+  const id = f.store.current().id;
+  const usage = (input, output, totalTokens) => ({ input, output, cacheRead: 0, cacheWrite: 0, totalTokens });
+  await f.store.appendMessage(id, { id: 'user-one', role: 'user', text: 'ask' });
+  await f.store.appendMessage(id, { id: 'assist:one', role: 'assistant', text: 'first', usage: usage(1000, 200, 1200) });
+  await f.store.appendMessage(id, { id: 'assist:two', role: 'assistant', text: 'second', usage: usage(3000, 500, 3500) });
+  assert.equal(f.store.current().usage.totalTokens, 4700);
+  // A redelivered reply (same id and body) must not be counted twice.
+  await f.store.appendMessage(id, { id: 'assist:two', role: 'assistant', text: 'second', usage: usage(3000, 500, 3500) });
+  assert.equal(f.store.current().usage.totalTokens, 4700);
+  const reloaded = harness(Object.fromEntries(f.persisted)); await reloaded.store.ready;
+  assert.equal(reloaded.store.current().usage.totalTokens, 4700);
+  // Rewinding the replies drops their usage from the running total.
+  await reloaded.store.rewindInput(id, 'user-one');
+  assert.equal(reloaded.store.current().usage.totalTokens, 0);
+});
+
 function harness(initial = {}, options) {
   const persisted = new Map(Object.entries(initial));
   const publications = [];

@@ -159,7 +159,7 @@ async function walkManifests(root, signal, { maxFiles = 200, maxBytes = 512 * 10
   return { found, truncated };
 }
 
-function createWorkspaceAudit(vscode, { workspaceFolders = () => vscode.workspace.workspaceFolders ?? [],
+function createWorkspaceAudit(vscode, { workspaceFolders = () => vscode.workspace.workspaceFolders ?? [], unbounded = () => false,
   executable, spawnProcess = spawn, timeoutMs = 15000, stopTimeoutMs = 1000 } = {}) {
   if (typeof workspaceFolders !== 'function' || typeof spawnProcess !== 'function') throw new TypeError('Invalid audit callbacks');
   for (const value of [timeoutMs, stopTimeoutMs]) if (!Number.isSafeInteger(value) || value < 1 || value > 2147483647) throw new TypeError('Invalid audit timeout');
@@ -170,7 +170,14 @@ function createWorkspaceAudit(vscode, { workspaceFolders = () => vscode.workspac
     if (!Number.isInteger(rootIndex) || rootIndex < 0 || !folders[rootIndex]) throw new Error('请选择工作区。');
     const requestedRoot = path.resolve(folders[rootIndex].uri.fsPath);
     const root = await fs.realpath(requestedRoot);
-    return { root, rootIndex, requestedRoot };
+    // 完全模式 scans any directory; the confined modes keep the scan inside the root.
+    if (input.path === undefined) return { root, rootIndex, requestedRoot };
+    if (typeof input.path !== 'string' || !input.path || input.path.includes('\0')) throw new Error('扫描目录无效。');
+    const real = await fs.realpath(path.resolve(root, input.path)).catch(() => null);
+    const info = real ? await fs.stat(real).catch(() => null) : null;
+    if (!info?.isDirectory()) throw new Error('扫描目录不存在，或不是目录。');
+    if (unbounded(sessionId) !== true && !inside(root, real)) throw new Error('扫描目录超出工作区。');
+    return { root: real, rootIndex, requestedRoot };
   }
 
   async function binary() {
@@ -324,15 +331,15 @@ function createWorkspaceAudit(vscode, { workspaceFolders = () => vscode.workspac
     tools: sessionId => [
       {
         name: 'inventory_workspace_dependencies', recovery: 'retry-read-only', label: '盘点工作区依赖清单',
-        description: 'Read-only inventory of declared dependencies from common manifests (package.json, Cargo.toml, go.mod, pyproject.toml, requirements*.txt) under the session workspace root. Skips .git/node_modules and similar directories. Paginate with offset/limit. truncated/partial means discovery was capped; this is not a resolved install graph and executes no package manager.',
-        parameters: { type: 'object', properties: { root: { type: 'integer', minimum: 0 }, offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 200 } }, additionalProperties: false },
+        description: 'Read-only inventory of declared dependencies from common manifests (package.json, Cargo.toml, go.mod, pyproject.toml, requirements*.txt) under the session workspace root. Skips .git/node_modules and similar directories. path narrows the scan to another directory (absolute allowed only in 完全模式; otherwise it must stay inside the selected root); it does not change the reported root. Paginate with offset/limit. truncated/partial means discovery was capped; this is not a resolved install graph and executes no package manager.',
+        parameters: { type: 'object', properties: { root: { type: 'integer', minimum: 0 }, path: { type: 'string', maxLength: 4096 }, offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 200 } }, additionalProperties: false },
         execute: (_id, input, signal) => inventory(sessionId, input ?? {}, signal)
       },
       {
         name: 'scan_workspace_secrets', recovery: 'retry-read-only', label: '扫描疑似密钥与凭据',
-        description: 'Read-only heuristic ripgrep scan for common secret patterns (private keys, cloud tokens, generic api_key assignments, JWT-like strings). Mandatory ignores for .git/dependency/cache dirs. Results include path, line, patternId and severityHint. truncated/partial means incomplete; never treat an empty result as proof that secrets are absent.',
+        description: 'Read-only heuristic ripgrep scan for common secret patterns (private keys, cloud tokens, generic api_key assignments, JWT-like strings). Mandatory ignores for .git/dependency/cache dirs. path narrows the scan to another directory (absolute allowed only in 完全模式; otherwise it must stay inside the selected root). Results include path, line, patternId and severityHint. truncated/partial means incomplete; never treat an empty result as proof that secrets are absent.',
         parameters: { type: 'object', properties: {
-          root: { type: 'integer', minimum: 0 }, offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 200 },
+          root: { type: 'integer', minimum: 0 }, path: { type: 'string', maxLength: 4096 }, offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 200 },
           patternIds: { type: 'array', items: { type: 'string', enum: SECRET_PATTERNS.map(item => item.id) }, minItems: 1, maxItems: SECRET_PATTERNS.length }
         }, additionalProperties: false },
         execute: (_id, input, signal) => scanSecrets(sessionId, input ?? {}, signal)

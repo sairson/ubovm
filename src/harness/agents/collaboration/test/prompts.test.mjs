@@ -13,6 +13,14 @@ test('assist chat prompt defaults to Swarm for assisting tasks', () => {
   assert.doesNotMatch(chatSystemPrompt, /coordinate Swarm Workers when useful/);
 });
 
+test('assist chat prompt defaults to acting instead of asking for options', () => {
+  assert.match(chatSystemPrompt, /default to doing the work/);
+  assert.match(chatSystemPrompt, /choose the best reasonable interpretation/);
+  assert.match(chatSystemPrompt, /Ask only when a decision is genuinely the user's/);
+  assert.match(chatSystemPrompt, /Never trade work for a menu of options or opinions/);
+  assert.match(chatSystemPrompt, /Do not close with an options menu/);
+});
+
 test('assist prompts require matching the user language', () => {
   assert.match(chatSystemPrompt, /Always reply in the same language the user is using in their messages/);
   assert.match(chatSystemPrompt, /including thinking\/reasoning/);
@@ -54,4 +62,37 @@ test('assist worker prompt stays bounded and may spawn descendants', () => {
   assert.match(chatSystemPrompt, /Do not extend one context to think longer/);
   assert.match(chatSystemPrompt, /remote sha256 and an IDE read/);
   assert.match(workerSystemPrompt, /workers do not inherit this transcript/i);
+});
+
+test('assist coding prompt keeps the structured coding discipline', () => {
+  // The coding discipline must stay a scannable, structured block: a single
+  // run-on paragraph cannot be followed selectively or asserted precisely.
+  assert.match(chatSystemPrompt, /## Coding and workspace tools/);
+  assert.match(chatSystemPrompt, /### Locate before editing/);
+  assert.match(chatSystemPrompt, /### Read fully before editing/);
+  assert.match(chatSystemPrompt, /### One writer per file \/ ownership/);
+  assert.match(chatSystemPrompt, /### Smallest correct edit/);
+  assert.match(chatSystemPrompt, /### Verify after editing/);
+  assert.match(chatSystemPrompt, /### Report honestly/);
+
+  // Both the coordinator and the worker must receive the same discipline.
+  assert.match(workerSystemPrompt, /### Locate before editing/);
+  assert.match(workerSystemPrompt, /### Verify after editing/);
+
+  // Load-bearing tool/API identifiers must survive any future rewrite.
+  assert.match(chatSystemPrompt, /expectedHash/);
+  assert.match(chatSystemPrompt, /edit_workspace_files/);
+  assert.match(chatSystemPrompt, /edit_workspace_file/);
+  assert.match(chatSystemPrompt, /read_workspace_code/);
+  assert.match(chatSystemPrompt, /read_workspace_change/);
+  assert.match(chatSystemPrompt, /recover_workspace_changes/);
+  assert.match(chatSystemPrompt, /retrieval/);
+
+  // The acceptance discipline must stay word-for-word, and honest reporting
+  // must be present so "wrote the file" is never equated with "tests passed".
+  assert.match(
+    chatSystemPrompt,
+    /For implementation requests, carry the work through investigation, edits and appropriate verification instead of stopping at advice or a plan\./,
+  );
+  assert.match(chatSystemPrompt, /Write completion is not test passing/);
 });

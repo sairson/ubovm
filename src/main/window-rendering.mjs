@@ -65,8 +65,10 @@ export function installWindowRendering({
       recover();
     };
     const gone = (_event, details) => log.error('[UBOVM] Renderer exited.', { windowId: window.id, ...details });
-    const unresponsive = () => log.warn('[UBOVM] Window renderer unresponsive.', { windowId: window.id });
-    const recoverEvents = ['show', 'restore', 'focus', 'responsive'];
+    // An unresponsive renderer can drop its committed surface. Repaint so the
+    // window is not left blank if it recovers without a resize.
+    const unresponsive = () => { log.warn('[UBOVM] Window renderer unresponsive.', { windowId: window.id }); recover(); };
+    const recoverEvents = ['show', 'restore', 'focus', 'responsive', 'resized'];
     const pauseEvents = ['hide', 'minimize'];
     for (const event of recoverEvents) window.on(event, recover);
     for (const event of pauseEvents) window.on(event, pause);

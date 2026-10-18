@@ -78,6 +78,9 @@ function createHarnessService(options) {
         case 'approval':
           if (!options.requestToolApproval) throw new Error('人工审核界面不可用，工具未执行。');
           return options.requestToolApproval({ ...id, signal });
+        case 'question':
+          if (!options.askHuman) throw new Error('人工问答界面不可用，无法向用户提问。');
+          return options.askHuman({ ...id, signal });
         case 'message': return options.onMessage?.(...args);
         case 'tools': {
           const list = await options.additionalTools?.(id) ?? [];

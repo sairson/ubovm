@@ -7,27 +7,28 @@ import { fillIntentSlots, intentCapacity } from './intent-capacity.mjs';
 // may be concurrent with another worker, but a board has only one scheduler.
 const runningBoards = new WeakSet();
 const priorityRank = { high: 0, medium: 1, low: 2 };
+const frontierRank = { gap: 0, review: 1, unrelated: 2 };
 
 /** Lower rank launches first: gap closure before unrelated pending work. */
 export function frontierLaunchRank(node, context) {
   const exploration = context?.data?.exploration;
-  if (!exploration || !node?.id) return 3;
+  if (!exploration || !node?.id) return frontierRank.unrelated;
   const alias = context.aliasFor(node.id);
-  let rank = 3;
+  let rank = frontierRank.unrelated;
   for (const entry of exploration.frontier ?? []) {
     const linked = entry.activeRefs?.includes(alias)
       || exploration.gaps?.some(gap => gap.ref === entry.sourceRef && gap.followUpRefs?.includes(alias));
     if (!linked) continue;
-    if (entry.status === 'unassigned' || entry.status === 'needs_replan' || entry.failedRefs?.length) rank = Math.min(rank, 0);
-    else if (entry.status === 'review_results' || entry.resultRefs?.length) rank = Math.min(rank, 1);
-    else rank = Math.min(rank, 0);
+    if (entry.status === 'unassigned' || entry.status === 'needs_replan' || entry.failedRefs?.length) rank = Math.min(rank, frontierRank.gap);
+    else if (entry.status === 'review_results' || entry.resultRefs?.length) rank = Math.min(rank, frontierRank.review);
+    else rank = Math.min(rank, frontierRank.gap);
   }
-  if (rank === 3) {
+  if (rank === frontierRank.unrelated) {
     const gapRefs = new Set((exploration.gaps ?? []).map(gap => gap.ref));
     for (const parentId of node.parentIds ?? []) {
       const parentAlias = context.aliasFor(parentId);
       const parent = context.data.nodes.find(item => item.ref === parentAlias);
-      if (gapRefs.has(parentAlias) || (parent?.result && gapRefs.has(parent.result))) rank = Math.min(rank, 0);
+      if (gapRefs.has(parentAlias) || (parent?.result && gapRefs.has(parent.result))) rank = Math.min(rank, frontierRank.gap);
     }
   }
   return rank;
@@ -210,11 +211,11 @@ export class BlackboardCoordinator {
     let reviewedState;
     let wake;
     const launch = async () => {
-      while (retryIds.length && intentCapacity(this.blackboard.snapshot().nodes, this.blackboard.openIntents).available > 0) {
+      while (retryIds.length && intentCapacity(this.blackboard.snapshot({ clone: false }).nodes, this.blackboard.openIntents).available > 0) {
         checkAbort(signal);
         await this.blackboard.retryIntent(retryIds.shift());
       }
-      const pending = orderPendingIntents(this.blackboard.pendingIntents(), this.blackboard.snapshot());
+      const pending = orderPendingIntents(this.blackboard.pendingIntents({ clone: false }), this.blackboard.snapshot({ clone: false }));
       for (const node of pending) {
         if (active.size >= this.maxConcurrency) break;
         if (active.has(node.id)) continue;
@@ -235,7 +236,7 @@ export class BlackboardCoordinator {
     try {
       if (resume) {
         await this.blackboard.recoverInterrupted();
-        for (const node of this.blackboard.snapshot().nodes) {
+        for (const node of this.blackboard.snapshot({ clone: false }).nodes) {
           checkAbort(signal);
           if (node.intent && node.intent.status !== 'completed' && node.attempts.length > 0 &&
               ['failed', 'interrupted'].includes(node.intent.status)) {
@@ -248,7 +249,7 @@ export class BlackboardCoordinator {
       if (active.size) await waitForWorker();
       for (let round = 1; this.maxRounds === 0 || round <= this.maxRounds;) {
         checkAbort(signal);
-        let snapshot = this.blackboard.snapshot();
+        let snapshot = this.blackboard.snapshot({ clone: false });
         const context = buildBlackboardContext(snapshot);
         const { revision: _revision, ...state } = context.data;
         const stateKey = JSON.stringify(state);
@@ -270,7 +271,7 @@ export class BlackboardCoordinator {
           throw failure('REASON_FAILED', `Reason callback failed: ${cause?.message ?? cause}`, cause);
         }
         checkAbort(signal);
-        const latest = this.blackboard.snapshot();
+        const latest = this.blackboard.snapshot({ clone: false });
         if (latest.revision !== snapshot.revision) {
           // Checkpoint-only writes do not change the facts Reason evaluated.
           const { revision: _oldRevision, ...before } = context.data;
@@ -296,7 +297,7 @@ export class BlackboardCoordinator {
           const errors = settled.filter(item => item.error && item.error.code !== 'ABORT_ERR').map(item => item.error);
           if (errors.length) throw new AggregateError(errors, 'Failed to persist remaining workers.');
           checkAbort(signal);
-          return { ...complete, revision: this.blackboard.snapshot().revision };
+          return { ...complete, revision: this.blackboard.snapshot({ clone: false }).revision };
         }
         if (decision.complete !== undefined && decision.complete !== false) {
           throw failure('INVALID_DECISION', 'complete must be a boolean.');
@@ -430,7 +431,7 @@ export class BlackboardCoordinator {
         },
         getContext: () => {
           requireActive();
-          return buildBlackboardContext(this.blackboard.snapshot(), { focusId: node.id });
+          return buildBlackboardContext(this.blackboard.snapshot({ clone: false }), { focusId: node.id });
         },
         saveCheckpoint: (data) => {
           let write;

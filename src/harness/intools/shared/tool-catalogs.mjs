@@ -4,14 +4,14 @@ const helpMeta = (summary = 'Progressive catalog. Omit topic for core; topic=<ti
   ({ action: 'help', tier: 'core', summary, params: ['topic?'] });
 
 export const TODO_CATALOG = {
-  description: 'Shared session progress board. Core: write (replace your manual items) or list. plan-* items are host mirrors—ignored updates must not be retried. Call action=help for update/clear_completed details.',
+  description: 'Shared session progress board. Use it proactively for multi-step work: once the steps are clear, call write with the whole plan, set exactly one item in_progress before you start it, and mark it completed with update the moment its outcome is verified—never batch updates at the end. Core: write (replace your manual items) or list. plan-* items are host mirrors—ignored updates must not be retried. Call action=help for update/clear_completed details.',
   tiers: ['core', 'manage'],
   tierBlurbs: { core: 'write and list', manage: 'update one item or clear your completed notes' },
   docs: [
     helpMeta(),
-    { action: 'write', tier: 'core', summary: 'Replace your manual todos (1–100 items).', params: ['items'] },
+    { action: 'write', tier: 'core', summary: 'Replace your manual todos (1–100 items). Send the full list; each item is {id?, content, status?} with status pending|in_progress|completed. An id you supply is kept (must not start with plan-) so update can address it later.', params: ['items'] },
     { action: 'list', tier: 'core', summary: 'List session todos; optional status filter.', params: ['status?'] },
-    { action: 'update', tier: 'manage', summary: 'Patch one of your todos by todo_id.', params: ['todo_id', 'content?', 'status?'] },
+    { action: 'update', tier: 'manage', summary: 'Patch one of your todos by todo_id (content? and/or status?); use it to move an item to in_progress or completed as work proceeds.', params: ['todo_id', 'content?', 'status?'] },
     { action: 'clear_completed', tier: 'manage', summary: 'Remove only your completed manual notes.', params: [] },
   ],
 };
@@ -131,7 +131,7 @@ export const FETCH_CATALOG = {
 };
 
 export const LOCAL_SHELL_CATALOG = {
-  description: 'Local shell for code/environment_setup only (state purpose+reason). Prefer workspace edit tools for tracked edits. Set help=true for session/retain/timeout. Not a remote/SSH bypass.',
+  description: 'Local shell for code/environment_setup only (state purpose+reason). Prefer workspace edit tools for tracked edits. Set help=true for session/retain/timeout. Not a remote/SSH bypass. Windows runs PowerShell 5.1: separate statements with ";" and use Get-ChildItem -Recurse/-Name instead of "&&" and "dir /s /b"; cmd-style commands are retried through cmd.exe automatically, but writing PowerShell avoids the retry.',
   tiers: ['core', 'session', 'policy'],
   tierBlurbs: { core: 'command + purpose + reason', session: 'named shell, retain, cwd, timeout', policy: 'allowed purposes and anti-patterns' },
   docs: [
@@ -182,14 +182,14 @@ export const DEPLOY_CATALOG = {
 };
 
 export const RUN_PYTHON_CATALOG = {
-  description: 'Run sandboxed CPython (code XOR script) with reason. The sandbox cwd is this workspace and can read it (secrets still denied). Writes go to UBOVM_PYTHON_OUTPUT unless workspace writes enabled. Set help=true for argv/cwd/timeout. Use manage_python_environment for deps.',
+  description: 'Run sandboxed CPython (code XOR script) with reason. Network and all opened workspaces are available by default; credentials remain denied. Missing modules, required argv, and missing files return recovery guidance. Use manage_python_environment for deps.',
   tiers: ['core', 'io', 'limits'],
   tierBlurbs: { core: 'code|script + reason', io: 'arguments, cwd, output_directory', limits: 'sandbox/network/size caps' },
   docs: [
     { action: 'code', tier: 'core', field: 'code', summary: 'Inline Python source (≤256 KiB).', params: ['code|script', 'reason'] },
-    { action: 'script', tier: 'core', field: 'script', summary: 'Existing .py inside workspace.', params: ['code|script', 'reason'] },
+    { action: 'script', tier: 'core', field: 'script', summary: 'Existing .py inside any opened workspace.', params: ['code|script', 'reason'] },
     { action: 'arguments', tier: 'io', field: 'arguments', summary: 'sys.argv[1:].', params: ['arguments?', 'cwd?', 'timeout_seconds?'] },
-    { action: 'limits', tier: 'limits', summary: 'Host-configured network/interpreter; do not bypass via shell/skills. Workspace files are readable at their real paths; secrets remain denied.', params: [] },
+    { action: 'limits', tier: 'limits', summary: 'Network is enabled by default; opened workspace files are readable/writable, while secrets remain denied. Missing dependency/argument diagnostics are included in failures.', params: [] },
   ],
 };
 
@@ -224,7 +224,7 @@ export const WORKSPACE_LIST_CATALOG = {
 };
 
 export const WORKSPACE_READ_CATALOG = {
-  description: 'Read UTF-8 workspace file by 1-based lines (≤400 lines / 128 KiB / first 4 MiB). Follow nextLine. Missing files return exists:false without a tool error. Set help=true for truncation flags.',
+  description: 'Read UTF-8 workspace file by 1-based lines (≤400 lines / 128 KiB / first 4 MiB). Follow nextLine. Missing files return exists:false without a tool error. Set help=true for truncation flags. Path: ubovm/src/renderer/workbench/ and ubovm/src/renderer/webview/ are siblings; startup.html/workbench.css live under workbench/, not webview/ (did-you-mean if a webview/... lookup misses). Large files (workbench.css ~1715 lines / message-view.css 300+ lines): page read_workspace_file via nextLine loop; code to edit pages via read_workspace_code nextOffset loop; on tool_defect re-read with the other read tool instead of repeating the same call.',
   tiers: ['core', 'page'],
   tierBlurbs: { core: 'path + root', page: 'startLine/lineCount/nextLine/truncation' },
   docs: [
@@ -323,6 +323,19 @@ export const READ_WORKER_EVIDENCE_CATALOG = {
   tierBlurbs: { core: 'worker_id + paging' },
   docs: [
     { action: 'worker_id', tier: 'core', field: 'worker_id', summary: 'Descendant only; running calls may have unknown effects.', params: ['worker_id', 'offset?', 'limit?'] },
+  ],
+};
+
+export const ASK_HUMAN_CATALOG = {
+  description: '向用户提问并从给定选项中获得选择（可多选），也允许用户补充自定义回答。只在用户本人才能决定、且会实质改变结果时使用：不可逆或破坏性操作、授权或范围界定、真实个人偏好。默认先按最合理的解释动手并说明假设；不要用它征求许可、确认常规步骤、或在你能自行评估的方案之间让用户挑选，也不要用它代替工具审批。Set help=true for limits.',
+  tiers: ['core', 'limits'],
+  tierBlurbs: { core: 'question, options, multiple, allow_custom', limits: 'count and length caps' },
+  docs: [
+    { action: 'question', tier: 'core', field: 'question', summary: '要问用户的问题；只问用户本人能决定的事。', params: ['question'] },
+    { action: 'options', tier: 'core', field: 'options', summary: '1–8 个候选项；能自行判断的取舍不要交回用户。', params: ['options'] },
+    { action: 'multiple', tier: 'core', field: 'multiple', summary: '允许用户多选（默认单选）。', params: ['multiple?'] },
+    { action: 'allow_custom', tier: 'core', field: 'allow_custom', summary: '允许用户补充自定义回答（默认允许）。', params: ['allow_custom?'] },
+    { action: 'limits', tier: 'limits', summary: '最多 8 个选项；问题≤2000，label≤120，description≤400。用户取消时返回未选择。', params: [] },
   ],
 };
 

@@ -4,7 +4,7 @@ const path = require('node:path');
 const { bounded } = require('./code-navigation.cjs');
 const inside = (root, file) => { const p = path.relative(root, file); return !p || p !== '..' && !p.startsWith('..' + path.sep) && !path.isAbsolute(p); };
 
-function createRenamePreview(vscode, { locate, read, assertClean, workspaceFolders, hash }) {
+function createRenamePreview(vscode, { locate, read, assertClean, workspaceFolders, unbounded = () => false, hash }) {
   return sessionId => ({
     name: 'preview_workspace_rename', recovery: 'retry-read-only', label: '预览符号重命名',
     description: 'Ask the installed language provider for cross-file symbol rename TEXT edits without applying them. Returns versioned ranges suitable for preview_workspace_edits then edit_workspace_files. Read affected files and project instructions before applying. Only text edits are represented; resource/file operations are not applied or represented. This is not a file rename tool or a guarantee of exhaustive references. Fails if any returned text edit is outside the session workspace, dirty, stale or too large; never returns a silently filtered text-edit subset.',
@@ -32,8 +32,9 @@ function createRenamePreview(vscode, { locate, read, assertClean, workspaceFolde
         signal?.throwIfAborted();
         if (uri.scheme !== 'file') throw new Error('重命名方案包含非工作区文件。');
         const file = await fs.realpath(uri.fsPath), root = roots.findIndex(r => inside(r, file));
-        if (root < 0) throw new Error('重命名方案超出会话工作区。');
-        const resolved = await locate({ root, path: path.relative(roots[root], uri.fsPath) }, sessionId);
+        // 完全模式 accepts a rename plan that reaches files outside every workspace root.
+        if (root < 0 && unbounded(sessionId) !== true) throw new Error('重命名方案超出会话工作区。');
+        const resolved = await locate(root >= 0 ? { root, path: path.relative(roots[root], uri.fsPath) } : { root: -1, path: file }, sessionId);
         const key = process.platform === 'win32' ? resolved.file.toLowerCase() : resolved.file;
         if (seen.has(key)) throw new Error('重命名方案包含重复文件。');
         seen.add(key);

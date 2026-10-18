@@ -4,12 +4,14 @@ import { contained } from '../../shared/common.mjs';
 import { validatePythonEnvironmentFiles } from './environment-state.mjs';
 
 export async function validatePythonPaths(request, { requireOutput = false } = {}) {
+  const roots = [request.workspace, ...(request.workspaceRoots || [])];
   for (const [key, isDirectory] of [['workspace', true], ['cwd', true], ['script', false]]) {
     if (!request[key]) continue;
     const actual = await realpath(request[key]);
     const info = await stat(actual);
-    if (actual !== request[key] || !contained(request.workspace, actual) || !(isDirectory ? info.isDirectory() : info.isFile()))
-      throw Object.assign(new Error(`Python ${key} changed or escaped the workspace while queued`), { code: 'PYTHON_PATH_CHANGED' });
+    if (actual !== request[key] || !(isDirectory ? info.isDirectory() : info.isFile())
+      || !request.unbounded && !roots.some(root => contained(root, actual)))
+      throw Object.assign(new Error(`Python ${key} changed or escaped the open workspaces while queued`), { code: 'PYTHON_PATH_CHANGED' });
   }
   if (request.executableTarget && await realpath(request.executable) !== request.executableTarget)
     throw Object.assign(new Error('Python executable changed while queued'), { code: 'PYTHON_PATH_CHANGED' });

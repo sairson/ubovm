@@ -9,6 +9,7 @@ export {
 } from './terminals/ssh-terminal/deployment.mjs';
 export { MemoryStore } from './shared/store/memory-store.mjs';
 export { createTodoTool } from './todo/index.mjs';
+export { createAskHumanTool, normalizeAskHumanInput, ASK_HUMAN_LIMITS } from './ask-human/index.mjs';
 export { createNoteTool } from './note/index.mjs';
 export { createDomainInventoryTool, assertCoverageComplete, coverageSummary, normalizeHostname } from './domain-inventory/index.mjs';
 export {
@@ -20,7 +21,7 @@ export { SkillRegistry, createSkillResourceTool } from './skills/resources.mjs';
 export { createSkillScriptTool } from './skills/scripts.mjs';
 export { SSHCommandsPool } from './terminals/ssh-terminal/pool.mjs';
 export { SSHCommands, createSSHTool, buildRemoteCommand, shellQuote, knownHostsVerifier } from './terminals/ssh-terminal/commands.mjs';
-export { createInternalTools, INTERNAL_TOOL_NAMES } from './runtime.mjs';
+export { createInternalTools, INTERNAL_TOOL_NAMES, HOST_INTERACTION_TOOL_NAMES } from './runtime.mjs';
 export {
   buildHelpCatalog, withProgressiveDisclosure, withActionHelp, flagHelpProperties,
   isHelpRequest, helpTopicOf, stripHelpFields,

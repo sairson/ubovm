@@ -12,6 +12,7 @@ import { createLocalShellTool } from './terminals/local-shell/index.mjs';
 import { createPythonTool } from './terminals/python/index.mjs';
 import { createPythonEnvironmentTool } from './terminals/python/environment.mjs';
 import { createTodoTool } from './todo/index.mjs';
+import { createAskHumanTool } from './ask-human/index.mjs';
 import { createDeliveryTool } from './delivery/index.mjs';
 import { createNoteTool } from './note/index.mjs';
 import { createDomainInventoryTool } from './domain-inventory/index.mjs';
@@ -25,17 +26,26 @@ import { createSFTPUploadTool, createRemoteDeployTool } from './terminals/ssh-te
 
 export const INTERNAL_TOOL_NAMES = Object.freeze(['delivery_workflow', 'browser_action', 'browser_connection_status', 'fetch_web_content', 'note', 'todo', 'domain_inventory', 'web_search', 'read_skills_resource', 'run_local_skill_script', 'run_linux_ssh_command', 'run_local_shell_command', 'run_python', 'manage_python_environment', 'upload_sftp', 'deploy_remote_service', 'learn_capability']);
 
+/**
+ * Tools that only exist when a human is present: they require the host
+ * `askHuman` hook and are never part of an autonomous (goal) session's tool
+ * surface. Hosts enable them explicitly through `allowedTools`.
+ */
+export const HOST_INTERACTION_TOOL_NAMES = Object.freeze(['ask_human']);
+
+const KNOWN_TOOL_NAMES = Object.freeze([...INTERNAL_TOOL_NAMES, ...HOST_INTERACTION_TOOL_NAMES]);
+
 /** Build one session's services and the reliable hooks consumed by createPiWorker. */
 export async function createInternalTools({
   sessionId, blackboard, memoryFile, store, knowledge = {}, learningSource,
   browser = {}, browserManager, ssh, sshPool,
   webSearch = {}, fetchContent = {}, localShell = {}, python = {},
-  skills = [], skillResource = {}, skillScript = {},
+  skills = [], skillResource = {}, skillScript = {}, askHuman,
   target = '', allowedTools = INTERNAL_TOOL_NAMES.filter(name => name !== 'learn_capability'), canPromote = true, onCommand
 } = {}) {
   sessionId = requireText(sessionId ?? blackboard?.snapshot().sessionId, 'sessionId');
   if (blackboard && blackboard.snapshot().sessionId !== sessionId) throw new Error('Blackboard belongs to another session');
-  if (!Array.isArray(allowedTools) || allowedTools.some(name => !INTERNAL_TOOL_NAMES.includes(name))) throw new Error('allowedTools must contain known internal tool names');
+  if (!Array.isArray(allowedTools) || allowedTools.some(name => !KNOWN_TOOL_NAMES.includes(name))) throw new Error('allowedTools must contain known internal tool names');
   const allowed = new Set(allowedTools);
   if (store && memoryFile) throw new Error('Provide store or memoryFile, not both');
   store ??= memoryFile ? await MemoryStore.open({ filePath: memoryFile, sessionId }) : new MemoryStore({ sessionId });
@@ -122,12 +132,13 @@ export async function createInternalTools({
       const delivery = createDeliveryTool({ store, sessionId, workerId });
       const note = createNoteTool({ store, sessionId, workerId, blackboard, canPromote, evidenceProvider });
       const domains = createDomainInventoryTool({ store, sessionId, workerId });
+      const ask = typeof askHuman === 'function' ? createAskHumanTool({ askHuman, sessionId, workerId }) : undefined;
       const shells = [
         ...(localShell !== false && allowed.has('run_local_shell_command') ? [createLocalShellTool(localShell)] : []),
         ...(pool?.get() && allowed.has('run_linux_ssh_command') ? [pool.require().tool()] : [])
       ];
       workers.set(workerId, { todo, note, delivery, domains, tools: [
-        ...shared, ...shells, todo, note, delivery, domains, ...(learning ? [learning.tool(workerId)] : []),
+        ...shared, ...shells, todo, note, delivery, domains, ...(ask ? [ask] : []), ...(learning ? [learning.tool(workerId)] : []),
         ...(manager ? createBrowserTools({ manager, sessionId, workerId, target }) : [])
       ].filter(tool => allowed.has(tool.name)).map(tool => managed(controlledCommand(tool, workerId, onCommand), workerId)) });
     }

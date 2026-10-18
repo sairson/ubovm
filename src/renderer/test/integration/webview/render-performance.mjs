@@ -401,14 +401,14 @@ test('released message actions cannot revive timers or mutate replacement conten
   const result = await page.evaluate(async () => {
     const element = document.createElement('div'); document.body.append(element);
     const original = window.setTimeout;
-    let resets = 0, resolveCopy, rejectOpen;
+    let resets = 0, resolveCopy;
     window.setTimeout = (fn, delay, ...args) => { if ([1400, 1600].includes(delay)) resets++; return original(fn, delay, ...args); };
     try {
       UBOVMMessage.update(element, '', { parts: [{ id: 'tool', type: 'tool', name: 'read_workspace_file', args: '{"path":"a.txt"}', output: 'hello', status: 'completed' }],
-        onCopy: () => new Promise(resolve => { resolveCopy = resolve; }), onOpenLink: () => new Promise((_, reject) => { rejectOpen = reject; }) });
-      element.querySelectorAll('.tool-action').forEach(button => { if (['复制输出', '打开文件'].includes(button.textContent)) button.click(); });
+        onCopy: () => new Promise(resolve => { resolveCopy = resolve; }) });
+      element.querySelectorAll('.tool-action').forEach(button => { if (button.textContent === '复制输出') button.click(); });
       UBOVMMessage.release(element);
-      resolveCopy(true); rejectOpen(Error('late failure'));
+      resolveCopy(true);
       await Promise.resolve(); await Promise.resolve();
       const toolResets = resets;
       UBOVMMessage.update(element, '```js\noriginal\n```', { onCopy: () => new Promise(resolve => { resolveCopy = resolve; }) });
@@ -1643,7 +1643,7 @@ test('loading and page switches remain opaque from their first animation frame',
   await send(page, { type: 'settingsLoading', requestId: 'slow-settings', page: 'skills' });
   await assertPainted('#settings-skeleton');
   assert.equal(await page.locator('#settings-dialog').evaluate(n => getComputedStyle(n).transform), 'none', 'fullscreen settings must cover the viewport without moving its background');
-  for (const [theme, expected] of [['vscode-dark', 'rgb(27, 30, 34)'], ['vscode-light', 'rgb(255, 255, 255)']]) {
+  for (const [theme, expected] of [['vscode-dark', 'rgb(21, 21, 23)'], ['vscode-light', 'rgb(255, 255, 255)']]) {
     await page.evaluate(theme => { document.body.classList.remove('vscode-dark', 'vscode-light'); document.body.classList.add(theme); }, theme);
     assert.equal(await page.locator('html').evaluate(n => getComputedStyle(n).backgroundColor), expected, 'root surface follows theme instead of exposing the browser default');
     await assertPainted('#settings-skeleton');

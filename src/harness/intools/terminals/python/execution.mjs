@@ -7,6 +7,7 @@ import { pythonQueue } from './queue.mjs';
 import { terminateProcessTree } from '../../shared/process/process-tree.mjs';
 import { setupPythonSandbox } from './setup.mjs';
 import { waitForPythonSetup } from './setup-core.mjs';
+import { diagnosePythonFailure } from './diagnostics.mjs';
 
 const failure = (code, message) => Object.assign(new Error(message), { code });
 const phases = new Set(['queued', 'preflight', 'preparing', 'running', 'cleanup']);
@@ -63,13 +64,15 @@ function execute(request, signal, onUpdate, runner, started, { stopGraceMs = 100
       const error = problem ?? (status?.error ? failure(status.errorCode ?? 'PYTHON_EXECUTION_FAILED', status.error)
         : code !== 0 || !status || status.exitCode !== 0 ? failure('PYTHON_RUNNER_LOST', 'Python sandbox runner exited without a successful result')
         : status.cleanupConfirmed !== true ? failure('PYTHON_CLEANUP_FAILED', 'Python sandbox cleanup was not confirmed') : undefined);
+      const diagnostic = error ? diagnosePythonFailure(`${error.message}\n${text}`) : undefined;
       const details = { cwd: request.cwd, output_directory: status ? status.outputDirectory ?? null : outputDirectory,
         sandbox: 'anthropic-sandbox-runtime', python: request.executable, script: request.script, reason: request.reason,
         exit_code: status?.exitCode ?? null, phase: status?.phase ?? phase, duration_ms: Math.round(performance.now() - started),
-        output_bytes: output.bytes, output_truncated: output.truncated, forced_termination: forced, cleanup_confirmed: cleanupConfirmed && !forced && Boolean(status?.cleanupConfirmed) };
+        output_bytes: output.bytes, output_truncated: output.truncated, forced_termination: forced, cleanup_confirmed: cleanupConfirmed && !forced && Boolean(status?.cleanupConfirmed),
+        ...(diagnostic ? { diagnostic } : {}) };
       if (error) {
         const errorCode = error.code ?? (signal.aborted ? 'PYTHON_CANCELLED' : 'PYTHON_RUNNER_ERROR');
-        const message = `[${errorCode}] ${error.message}${text ? `\n${text}` : ''}${details.output_directory ? `\noutput_directory: ${details.output_directory}` : ''}`;
+        const message = `[${errorCode}] ${error.message}${text ? `\n${text}` : ''}${diagnostic ? `\n诊断：${diagnostic.summary}\n建议：${diagnostic.recovery}` : ''}${details.output_directory ? `\noutput_directory: ${details.output_directory}` : ''}`;
         const wrapped = new Error(message, { cause: error }); wrapped.name = error.name; wrapped.code = errorCode;
         wrapped.details = { ...details, error_code: errorCode }; reject(wrapped);
       } else resolve(textResult(`${text}\nexit_code: 0${details.output_directory ? `\noutput_directory: ${details.output_directory}` : ''}`, details));

@@ -124,6 +124,26 @@ function scrub(value) {
   if (Array.isArray(value)) return value.map(scrub);
   return Object.fromEntries(Object.entries(value).filter(([key]) => !['apiKey', 'password', 'privateKey', 'private_key_passphrase', 'headers', 'env', 'authorization'].includes(key)).map(([key, entry]) => [key, scrub(entry)]));
 }
+// Shared by the settings form and by the agent-facing install path so an
+// installed server is validated exactly like one entered by hand.
+function validateMcpServer(server, names) {
+  if (!plain(server) || typeof server.name !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$/.test(server.name) || names.has(server.name)) throw new Error('每个 MCP 服务需要唯一名称（1–64 位字母、数字、点、下划线或连字符，且以字母或数字开头）。');
+  names.add(server.name);
+  const transport = server.transport ?? 'stdio';
+  if (!['stdio', 'sse', 'streamable_http', 'streamable-http'].includes(transport)) throw new Error('MCP 传输协议不受支持。');
+  if (transport === 'stdio') { if (typeof server.command !== 'string' || !server.command.trim()) throw new Error('stdio 服务需要启动命令。'); }
+  else url(server.url, 'MCP 地址');
+  if (server.args !== undefined && (!Array.isArray(server.args) || server.args.some(arg => typeof arg !== 'string' || arg.includes('\0')))) throw new Error('MCP 参数必须是不含 NUL 的字符串数组。');
+  if (server.cwd !== undefined && (typeof server.cwd !== 'string' || !server.cwd.trim() || server.cwd.includes('\0'))) throw new Error('MCP 工作目录无效。');
+  if (server.tools !== undefined && (!Array.isArray(server.tools) || server.tools.some(tool => typeof tool !== 'string' || !tool || tool.includes('\0')) || new Set(server.tools).size !== server.tools.length)) throw new Error('MCP 允许工具必须是不重复的非空名称数组。');
+  if (server.toolNamePrefix !== undefined && (typeof server.toolNamePrefix !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$/.test(server.toolNamePrefix))) throw new Error('MCP 工具名称前缀无效。');
+  return server;
+}
+function stringMap(value, label) {
+  if (value === undefined) return undefined;
+  if (!plain(value) || Object.values(value).some(entry => typeof entry !== 'string')) throw new Error(`${label} 必须是字符串映射。`);
+  return value;
+}
 
 function createSettingsConfiguration(vscode, context) {
   const state = configurationState(context);
@@ -133,6 +153,7 @@ function createSettingsConfiguration(vscode, context) {
   const revision = () => digest([raw(), state.generation]);
   async function snapshot({ includeSkills = true } = {}) {
     const source = raw(), stamp = digest([source, state.generation]), values = {}, secretState = {};
+    const availableModelPresets = clone(modelPresets);
     // Vault calls cross the extension-host boundary. Read unique keys with a
     // bounded pool once per snapshot instead of serializing every saved profile.
     const models = Object.entries(modelSections).map(([section, setting]) => section === 'model' ? source.model : source[setting]?.model);
@@ -180,7 +201,7 @@ function createSettingsConfiguration(vscode, context) {
         ? { ...stored, ...modelConfig(Object.fromEntries(Object.entries(stored).filter(([key]) => key !== 'inherit'))) } : stored;
       const defaults = Object.fromEntries(spec.fields.filter(field => field.type !== 'secret').map(field => [field.key, clone(field.default)]));
       if (Object.hasOwn(modelSections, section)) {
-        const { label, ...preset } = modelPresets[value.provider] ?? (value.provider ? modelPresets.custom : modelPresets.openai);
+        const { label, ...preset } = availableModelPresets[value.provider] ?? (value.provider ? availableModelPresets.custom : availableModelPresets.openai);
         Object.assign(defaults, preset);
       }
       // An explicit empty string / false / zero is a user choice, not a missing value.
@@ -195,7 +216,7 @@ function createSettingsConfiguration(vscode, context) {
     try { modelConfig(source.model); modelConfigured = true; } catch { /* Form defaults are not saved configuration. */ }
     const initialization = { model: modelConfigured, ssh: sshConfigurationStatus(sourceTools.ssh).configured };
     initialization.complete = initialization.model && initialization.ssh;
-    return { revision: stamp, values, secretState, sections, sshFields, mcpFields, modelPresets, skillsCatalog, modelProfiles, initialization };
+    return { revision: stamp, values, secretState, sections, sshFields, mcpFields, modelPresets: availableModelPresets, skillsCatalog, modelProfiles, initialization };
   }
   async function commit(section, input, expectedRevision) {
     if (typeof expectedRevision !== 'string' || expectedRevision !== revision()) throw new Error('配置已发生变化，请重新载入后再保存。');
@@ -378,12 +399,7 @@ function createSettingsConfiguration(vscode, context) {
       let supplied = {}; if (credentials) { try { supplied = JSON.parse(credentials); } catch { throw new Error('MCP 凭据必须是有效的 JSON 对象。'); } if (!plain(supplied)) throw new Error('MCP 凭据必须是对象。'); }
       const names = new Set();
       for (const server of value.servers) {
-        if (!plain(server) || typeof server.name !== 'string' || !server.name.trim() || names.has(server.name)) throw new Error('每个 MCP 服务需要唯一名称。');
-        names.add(server.name);
-        if (!['stdio', 'sse', 'streamable_http', 'streamable-http'].includes(server.transport ?? 'stdio')) throw new Error('MCP 传输协议不受支持。');
-        if ((server.transport ?? 'stdio') === 'stdio') { if (typeof server.command !== 'string' || !server.command.trim()) throw new Error('stdio 服务需要启动命令。'); }
-        else url(server.url, 'MCP 地址');
-        if (server.args !== undefined && (!Array.isArray(server.args) || server.args.some(a => typeof a !== 'string'))) throw new Error('MCP 参数必须是字符串数组。');
+        validateMcpServer(server, names);
         const previous = old.mcp?.servers?.find(s => mcpKey(s) === mcpKey(server));
         let secret = credentials === null ? {} : { ...(previous?.env ? { env: previous.env } : {}), ...(previous?.headers ? { headers: previous.headers } : {}), ...await readVault(context, mcpKey(server)) };
         if (Object.hasOwn(supplied, server.name)) {
@@ -412,6 +428,40 @@ function createSettingsConfiguration(vscode, context) {
     return snapshot({ includeSkills: section === 'skills' });
   }
   function save(section, value, expectedRevision) { return state.run(() => commit(section, value, expectedRevision)); }
-  return { snapshot: options => state.run(() => snapshot(options)), save };
+  // Agent-facing install path: add or replace a single MCP server without
+  // round-tripping the whole form. Credentials live only in SecretStorage.
+  async function addMcpServer({ server, credentials = {}, overwrite = false } = {}) {
+    if (!plain(server)) throw new Error('MCP 服务配置必须是对象。');
+    if (!plain(credentials)) throw new Error('MCP 凭据必须是对象。');
+    if (typeof overwrite !== 'boolean') throw new Error('overwrite 必须是布尔值。');
+    const env = stringMap(credentials.env, 'MCP env');
+    const headers = stringMap(credentials.headers, 'MCP headers');
+    if (Object.keys(credentials).some(key => !['env', 'headers'].includes(key))) throw new Error('MCP 凭据仅支持 env 和 headers。');
+    return state.run(async () => {
+      const old = raw();
+      const stamp = revision();
+      const existing = clone(old.mcp?.servers ?? []);
+      const normalized = clone(server);
+      rejectSecrets(normalized);
+      const names = new Set(existing.filter(entry => entry.name !== normalized.name).map(entry => entry.name));
+      validateMcpServer(normalized, names);
+      const previous = existing.find(entry => entry.name === normalized.name);
+      if (previous && !overwrite) throw new Error(`MCP 服务 ${normalized.name} 已存在；如需替换请设置 overwrite 为 true。`);
+      const next = existing.filter(entry => entry.name !== normalized.name);
+      if (next.length >= 50) throw new Error('MCP 服务器列表最多支持 50 项。');
+      next.push(normalized);
+      const inherited = previous && mcpKey(previous) === mcpKey(normalized) ? await readVault(context, mcpKey(previous)) : {};
+      const secret = { ...inherited };
+      if (env !== undefined) secret.env = env;
+      if (headers !== undefined) secret.headers = headers;
+      const secrets = new Map();
+      secrets.set(mcpKey(normalized), Object.keys(secret).length ? JSON.stringify(secret) : undefined);
+      if (previous && mcpKey(previous) !== mcpKey(normalized)) secrets.set(mcpKey(previous), undefined);
+      if (stamp !== revision()) throw new Error('配置已发生变化，请重试安装。');
+      await updateConfiguration(vscode, context, new Map([['mcp', { ...object(old.mcp), servers: next }]]), secrets);
+      return { name: normalized.name, transport: normalized.transport ?? 'stdio', enabled: normalized.enabled !== false, replaced: Boolean(previous), credentials: Object.keys(secret).length > 0 };
+    });
+  }
+  return { snapshot: options => state.run(() => snapshot(options)), save, addMcpServer };
 }
 module.exports = { createSettingsConfiguration, hydrateRuntime, readSSHConfiguration, resolveSSHTestProfile, sshConfigurationStatus, readSSHStatus };

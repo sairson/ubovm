@@ -164,6 +164,10 @@ function pageEvalCdp(message, helpers) {
     sandbox.window = sandbox;
     sandbox.window.devicePixelRatio = 1;
     sandbox.window.scrollBy = () => {};
+    sandbox.window.scrollX = 40;
+    sandbox.window.scrollY = 100;
+    sandbox.window.innerWidth = 1280;
+    sandbox.window.innerHeight = 720;
     sandbox.window.addEventListener = () => {};
     globalThis.__ideDom = sandbox.document;
     // eslint-disable-next-line no-new-func
@@ -433,5 +437,113 @@ describe('ide-browser-host', () => {
     });
     assert.equal(shot.source, 'ide-browser');
     assert.equal(shot.image.mimeType, 'image/jpeg');
+  });
+
+  it('reuses one CDP session per page across actions', async () => {
+    globalThis.__ideDom = undefined;
+    let attaches = 0;
+    const vscode = fakeVscode({
+      cdp(message, helpers) {
+        if (message.method === 'Target.setDiscoverTargets') return {};
+        if (message.method === 'Target.getTargets') return { targetInfos: [{ targetId: 'p1', type: 'page', url: helpers.tab.url }] };
+        if (message.method === 'Target.attachToTarget') { attaches++; return { sessionId: 'sess-1' }; }
+        return pageEvalCdp(message, helpers);
+      }
+    });
+    const host = createIdeBrowserHost(vscode);
+    await host.open('https://example.com');
+    await host.call({ sessionId: 's', workerId: 'w' }, { action: 'snapshot', role: 'button' });
+    await host.call({ sessionId: 's', workerId: 'w' }, { action: 'snapshot', role: 'button' });
+    assert.equal(attaches, 1);
+  });
+
+  it('dispatches real input events for click, hover, press and scroll', async () => {
+    globalThis.__ideDom = undefined;
+    const input = [];
+    const vscode = fakeVscode({
+      cdp(message, helpers) {
+        if (message.method.startsWith('Input.')) { input.push(message.params); return {}; }
+        return pageEvalCdp(message, helpers);
+      }
+    });
+    const host = createIdeBrowserHost(vscode);
+    await host.open('https://example.com');
+    const snapshot = await host.call({ sessionId: 's', workerId: 'w' }, { action: 'snapshot', role: 'button', query: 'shadow' });
+    const ref = snapshot.elements[0].ref;
+    await host.call({ sessionId: 's', workerId: 'w' }, { action: 'click', ref });
+    await host.call({ sessionId: 's', workerId: 'w' }, { action: 'hover', ref });
+    await host.call({ sessionId: 's', workerId: 'w' }, { action: 'press', key: 'a' });
+    await host.call({ sessionId: 's', workerId: 'w' }, { action: 'scroll', delta_y: 300 });
+    assert.deepEqual(input.map(item => item.type),
+      ['mouseMoved', 'mousePressed', 'mouseReleased', 'mouseMoved', 'keyDown', 'keyUp', 'mouseWheel']);
+    assert.equal(input.find(item => item.type === 'mousePressed').buttons, 1);
+    assert.equal(input.find(item => item.type === 'keyDown').text, 'a');
+    assert.equal(input.find(item => item.type === 'mouseWheel').deltaY, 300);
+  });
+
+  it('captures console and page errors host-side and keeps them across navigation', async () => {
+    globalThis.__ideDom = undefined;
+    const binding = { sessionId: 's', workerId: 'w' };
+    const vscode = fakeVscode({
+      cdp(message, helpers) {
+        if (message.method === 'Runtime.enable') {
+          helpers.emit('Runtime.consoleAPICalled', { type: 'log', args: [{ type: 'string', value: 'hello' }], stackTrace: { callFrames: [{ url: 'https://example.com/app.js', lineNumber: 3, columnNumber: 7 }] } });
+          helpers.emit('Runtime.consoleAPICalled', { type: 'warning', args: [{ type: 'string', value: 'careful' }] });
+          helpers.emit('Runtime.exceptionThrown', { exceptionDetails: { exception: { description: 'Error: boom' } } });
+          return {};
+        }
+        return pageEvalCdp(message, helpers);
+      }
+    });
+    const host = createIdeBrowserHost(vscode);
+    await host.call(binding, { action: 'navigate', url: 'https://example.com/one' });
+    const all = await host.call(binding, { action: 'console' });
+    assert.deepEqual(all.entries.map(entry => [entry.kind, entry.level, entry.text]),
+      [['console', 'log', 'hello'], ['console', 'warning', 'careful'], ['pageerror', 'error', 'Error: boom']]);
+    assert.deepEqual(all.entries[0].location, { url: 'https://example.com/app.js', line: 3, column: 7 });
+    assert.equal((await host.call(binding, { action: 'console', level: 'warning' })).entries.length, 1);
+    await host.call(binding, { action: 'navigate', url: 'https://example.com/two' });
+    assert.equal((await host.call(binding, { action: 'console' })).entries.length, 3, 'console survives navigation');
+    const cleared = await host.call(binding, { action: 'console', clear: true, limit: 1 });
+    assert.equal(cleared.entries.length, 1);
+    assert.equal(cleared.has_more, true);
+    assert.equal((await host.call(binding, { action: 'console' })).entries.length, 2);
+  });
+
+  it('element screenshots use page coordinates that include the scroll offset', async () => {
+    globalThis.__ideDom = undefined;
+    let clip;
+    const vscode = fakeVscode({
+      cdp(message, helpers) {
+        if (message.method === 'Page.captureScreenshot') { clip = message.params.clip; return { data: Buffer.from('jpeg').toString('base64') }; }
+        return pageEvalCdp(message, helpers);
+      }
+    });
+    const host = createIdeBrowserHost(vscode);
+    await host.open('https://example.com');
+    const snapshot = await host.call({ sessionId: 's', workerId: 'w' }, { action: 'snapshot', role: 'button', query: 'shadow' });
+    await host.call({ sessionId: 's', workerId: 'w' }, { action: 'screenshot', ref: snapshot.elements[0].ref });
+    assert.deepEqual(clip, { x: 41, y: 101, width: 20, height: 12, scale: 1 });
+  });
+
+  it('wait polls inside the page with a single evaluate round trip', async () => {
+    globalThis.__ideDom = undefined;
+    let evaluates = 0;
+    const vscode = fakeVscode({
+      cdp(message, helpers) {
+        if (message.method === 'Runtime.evaluate' && /deadline/.test(message.params.expression)) {
+          evaluates++;
+          assert.equal(message.params.awaitPromise, true);
+          return { result: { value: { ready: true } } };
+        }
+        return pageEvalCdp(message, helpers);
+      }
+    });
+    const host = createIdeBrowserHost(vscode);
+    await host.open('https://example.com');
+    const waited = await host.call({ sessionId: 's', workerId: 'w' }, { action: 'wait', query: 'Shadow' });
+    assert.equal(waited.ok, true);
+    assert.equal(waited.wait_for, 'text');
+    assert.equal(evaluates, 1);
   });
 });

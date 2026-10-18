@@ -98,7 +98,7 @@ test('integrated browser chrome keeps toolbar actions and a taller address bar',
     };
   });
   assert.ok(url.height >= 32, `address bar height ${url.height}`);
-  assert.equal(url.radius, '4px');
+  assert.equal(url.radius, '8px');
   assert.equal(url.padding, '6px');
 
   const share = await page.locator('.browser-share-toggle.checked').evaluate(el => {
@@ -115,7 +115,7 @@ test('integrated browser chrome keeps toolbar actions and a taller address bar',
   });
   assert.equal(welcome.width, 52);
   assert.equal(welcome.height, 52);
-  assert.equal(welcome.radius, '6px');
+  assert.equal(welcome.radius, '12px');
 
   const title = await page.locator('.browser-welcome-title').evaluate(el => getComputedStyle(el).fontSize);
   assert.equal(title, '16px');

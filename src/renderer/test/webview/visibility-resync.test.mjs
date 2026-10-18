@@ -12,11 +12,30 @@ test('conversation page forces full paint and ready resync after visibility rest
   assert.match(app, /if \(firstContentPaint\) beginPageTransition\('正在加载会话…', 'session'\)/);
   assert.match(app, /const pageHidden = \(\) => suspended \|\| document\.hidden;/);
   assert.match(app, /if \(renderFrame \|\| pageHidden\(\)\) return;/);
+  // The pending paint frame must be tracked, or bursted snapshots each paint the
+  // whole page and cancelVisualFrames cannot cancel an in-flight frame.
+  assert.match(app, /const frame = renderFrame = requestAnimationFrame/);
+  // A transition cover must never outlive a committed paint.
+  assert.match(app, /function armRouteWatchdog\(\)/);
+  assert.match(app, /armRouteWatchdog\(\);/);
+  assert.match(app, /function clearRouteWatchdog\(\)/);
+  assert.match(app, /clearRouteWatchdog\(\);/);
   assert.match(app, /function resumeVisuals\(\) \{\s*if \(visualSuspended\(\)\) return;\s*scheduleRender\(true\);/s);
   assert.match(app, /function requestReadyResync\(\)/);
   assert.match(app, /window\.addEventListener\('pageshow', \(\) => \{\s*suspended = false;\s*resumeVisuals\(\);\s*requestReadyResync\(\);/s);
   assert.match(app, /else \{\s*resumeVisuals\(\);\s*requestReadyResync\(\);/s);
   assert.match(app, /state\?\.type === 'windowFocused'/);
+  // Focus restore forces a full paint; a live-components-only resume leaves a
+  // compositor-discarded surface blank until a resize.
+  assert.match(app, /state\?\.type === 'windowFocused'\) \{[\s\S]{0,400}?cancelVisualFrames\(\);\s*resumeVisuals\(\);/s);
+  // Occlusion without focus/visibility events heals via an idle compositor keep-alive.
+  assert.match(app, /const keepAlive = \{ last: Date\.now\(\), intervalMs: 20000, idleMs: 15000/);
+  assert.match(app, /if \(Date\.now\(\) - keepAlive\.last < keepAlive\.idleMs\) return;/);
+  assert.match(app, /function keepAliveNudge\(\)/);
+  assert.match(app, /setInterval\(\(\) => \{[\s\S]{0,240}?keepAliveNudge\(\);/s);
+  assert.match(app, /window\.addEventListener\('focus', \(\) => \{[\s\S]{0,320}?cancelVisualFrames\(\);\s*resumeVisuals\(\);/s);
+  assert.match(app, /function renderSafely\(full\) \{\s*keepAliveMark\(\);/s);
+  assert.match(app, /function receiveHostMessage\(event\) \{\s*keepAliveMark\(\);/s);
   assert.match(app, /\['disconnected', 'backend-disconnected'\]\.includes\(connectionStatus\)/);
   assert.doesNotMatch(app, /queueControlsBlocked[\s\S]{0,200}'reconnecting'/);
   const extension = fs.readFileSync(path.join(root, 'extension.cjs'), 'utf8');
@@ -73,6 +92,9 @@ test('native window recovery schedules staggered invalidates', () => {
   assert.match(rendering, /const delayMs = Object.freeze\(\[0, 250, 1000\]\)/);
   assert.match(rendering, /keepAliveMs = 20000/);
   assert.match(rendering, /before-input-event/);
+  // Resizes and unresponsive renderers must repaint rather than leave a blank surface.
+  assert.match(rendering, /recoverEvents = \['show', 'restore', 'focus', 'responsive', 'resized'\]/);
+  assert.match(rendering, /Window renderer unresponsive\.[\s\S]{0,80}recover\(\)/);
   const index = fs.readFileSync(path.join(root, '../main/index.mjs'), 'utf8');
   assert.match(index, /disable-renderer-backgrounding/);
   assert.match(index, /disable-backgrounding-occluded-windows/);

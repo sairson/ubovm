@@ -52,7 +52,7 @@
     onCopy: text => request('copyText', { text }),
     onOpenLink: (href, options = {}) => {
       const origin = sessionId, worker = panel.selected, epoch = actionEpoch;
-      return request('openMessageLink', { href, rootIndex: options.rootIndex }).catch(error => {
+      return request('openMessageLink', { href, ...(Number.isSafeInteger(options.rootIndex) ? { rootIndex: options.rootIndex } : {}) }).catch(error => {
         if (epoch === actionEpoch && !renderBlocked() && origin === sessionId && worker === panel.selected) notify(error.message);
         return false;
       });
