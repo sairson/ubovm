@@ -9,11 +9,11 @@ const path = require('node:path');
 const assets = Object.freeze({
   styles: Object.freeze([
     'styles.css', 'theme.css', 'settings/settings.css', 'delivery/delivery-view.css', 'messages/message-markdown.css',
-    'messages/message-view.css', 'messages/background-tasks.css', 'messages/code-changes.css', 'workers/worker-panel.css', 'goal/blackboard-graph.css', 'preview/html-preview.css', 'motion.css', 'overlays.css', 'ui/modal-dialog.css', 'project/project-switcher.css'
+    'messages/message-view.css', 'messages/background-tasks.css', 'messages/code-changes.css', 'workers/worker-panel.css', 'team/team-panel.css', 'team/team-member-view.css', 'goal/blackboard-graph.css', 'goal/agenda.css', 'preview/html-preview.css', 'motion.css', 'overlays.css', 'ui/modal-dialog.css', 'project/project-switcher.css'
   ]),
   scripts: Object.freeze([
     'runtime-guard.js', 'i18n-en.js', 'i18n-en-more.js', 'i18n.js', 'errors.js', 'connection-monitor.js', 'state-order.js', 'settings/settings-ui.js', 'delivery/delivery-view.js', 'vendor/marked.umd.js', 'messages/message-markdown.js',
-    'messages/timeline-parts.js', 'messages/message-view.js', 'messages/background-tasks.js', 'messages/code-changes.js', 'messages/conversation-outline.js', 'workers/worker-panel.js', 'goal/execution-log.js', 'goal/exploration-model.js', 'goal/blackboard-graph.js', 'preview/html-preview.js', 'ui/modal-dialog.js', 'project/project-switcher.js', 'app.js'
+    'messages/timeline-parts.js', 'messages/message-view.js', 'messages/background-tasks.js', 'messages/code-changes.js', 'messages/conversation-outline.js', 'workers/worker-panel.js', 'goal/execution-log.js', 'goal/exploration-model.js', 'goal/blackboard-graph.js', 'preview/html-preview.js', 'ui/modal-dialog.js', 'project/project-switcher.js', 'team/team-panel.js', 'team/team-member-view.js', 'app.js'
   ])
 });
 const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]);

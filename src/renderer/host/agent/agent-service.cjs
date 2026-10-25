@@ -283,6 +283,7 @@ function createHarnessService(options) {
       catch (error) { return Promise.reject(error); }
     },
     restore: input => sessionRequest('restore', input),
+    watchTeamMember: input => sessionRequest('watchTeamMember', input),
     resume: id => launch('resume', [id], id),
     interruptCommand: (id, commandId) => {
       if (typeof commandId !== 'string' || !/^[a-f0-9-]{36}$/.test(commandId)) return Promise.reject(new Error('命令标识无效。'));

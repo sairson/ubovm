@@ -21,6 +21,10 @@ subscription, lease and database release and reports collected failures together
   admission, cancellation/preemption, durable dispatch and result summaries.
   Waiting dependencies consume no slot. Coordinators set `spawn_worker.priority`
   (0–9) and call `manage_workers` to reorder or interrupt descendants.
+- `team.mjs`: durable Agent Team Lead roster, named teammate runs, peer inboxes
+  and steering, wait-for-change, and the persisted compare-and-set task board.
+  Teammates are spawned through `runMember`, which `chat_agent.mjs` implements
+  with the same conversational loop and shared middleware as Swarm workers.
 - `conversation.mjs`: model/tool loop, per-worker limits, call-ID deduplication,
   approval, task-context protection and execution evidence.
 - `history.mjs`: persisted conversation history limits. Message sizes are measured
@@ -154,3 +158,125 @@ combine them with `depends_on` for staged workflows and `read_worker_result`
 for handoffs. Environment access still comes from host-configured workspace,
 MCP, shell and skills tools. This is a declarative execution-project facility,
 not a mechanism for loading arbitrary JavaScript or replacing the backend.
+
+## Agent Teams
+
+Agent Teams is available during assist (chat) collaboration runs. The running
+assist conversation is the durable **Team Lead** (`lead`); named **teammates**
+are durable members with their own conversational tool loops that share the same
+working directory and filesystem. Team state survives turns and page reloads in
+the session database, so the roster and shared task board are restored before
+the next turn starts.
+
+Disable the feature per collaboration configuration with:
+
+```json
+{ "collaboration": { "team": false } }
+```
+
+Default-enabled limits are configured under `collaboration.team`:
+
+| Field | Default | Meaning |
+|---|---|---|
+| `maxMembers` | `16` | Maximum teammate records, including failed creations. Names are permanent and never reused. |
+| `maxTasks` | `256` | Maximum non-deleted tasks on the shared board. |
+| `maxMessageBytes` | `65536` | Maximum UTF-8 size of one framed `Team message from <name>:\n<text>` delivery. |
+
+Teammate transcripts use the parent run's chat options and shared runtime
+budgets, but teammates do not receive Swarm, `read_worker_result`,
+`read_worker_evidence`, `inspect_harness` or `manage_harness_project` tools. Only
+the Lead spawns, reassigns and interrupts teammates; there are no nested teams.
+
+### Model-facing tools (`team.toolsFor(actor)`)
+
+`spawn_teammate`, `send_message`, `list_agents`, `wait_agent`, `interrupt_agent`
+(Lead only), `team_task_create`, `team_task_list`, `team_task_get` and
+`team_task_update`. Every tool is registered with `executionMode: 'sequential'`
+and returns compact JSON: `{content:[{type:'text',text:JSON.stringify(value)}],
+details:value}`. Tool errors are ordinary `Error`s with a stable `code` (for
+example `TEAM_TASK_STALE_REVISION`, `TEAM_TASK_NOT_FOUND`,
+`TEAM_MEMBER_NAME_TAKEN`, `TEAM_MEMBER_LIMIT`, `TEAM_TASK_LIMIT`,
+`TEAM_SELF_MESSAGE`, `TEAM_MESSAGE_TOO_LARGE`, `TEAM_LEAD_REQUIRED`,
+`TEAM_MEMBER_NOT_FOUND`, `TEAM_WAIT_ABORTED`, `TEAM_DISABLED`/`TEAM_CLOSED`).
+
+Roster rows are `{name, role, status, description?, context?, error?, activity?,
+createdAt, updatedAt}` with the Lead first. `inactive` means no turn is
+executing; it does not describe task completion. `provisioning`/`failed`
+describe member creation. Model-facing rows also expose `target` (the member
+name used by `send_message`/`interrupt_agent`).
+
+### Message delivery
+
+`send_message` frames the text as `Team message from <sender>:\n<text>`, appends
+it to the target's durable inbox, then attempts immediate delivery:
+
+- running teammate with a registered steering handler: delivered at its nearest
+  step boundary and removed from the inbox;
+- inactive teammate: the queued messages become the prompt of a new run;
+- Lead running with a registered steering handler: delivered as Lead steering;
+- otherwise the message stays queued for the next Lead turn. Before a Lead turn
+  starts, `chat_agent.mjs` calls `consumeLeadInbox()` and prepends the framed
+  messages to the user prompt.
+
+A successful send means inbox admission only, never that the recipient processed
+or completed the message. Interrupting a teammate preserves its undelivered
+inbox and task ownership; the next send resumes it with the queued messages.
+
+### Task board
+
+Tasks are full versioned snapshots:
+`{id:'task-<n>', revision, subject, description, status, ownerName?, blockedBy,
+writeScopes, ready, writeScopeWarnings}`. Every `team_task_update` requires the
+current `expected_revision`; stale writes fail with
+`TEAM_TASK_STALE_REVISION`, and readiness requires every blocker to be
+`completed`. Deleted tasks keep an internal tombstone and id (never reused) but
+disappear from `snapshot().tasks`. `writeScopeWarnings` are advisory overlaps
+with other `in_progress` tasks and never block a claim.
+
+### Events (for `harness-service.cjs`)
+
+`onEvent` receives, already audited by the collaboration `report()` hook:
+
+- `{type:'team.status', team:{revision, roster, tasks}}` — emitted on every
+  durable change and on roster activity/status changes.
+- `{type:'team.member.activity', member:<name>, activity:{label,status,at}}` —
+  the compact teammate step record; the same value is stored on the roster row
+  as `activity` (streaming partials and tool args/results are never duplicated
+  into this event).
+- `{type:'team.member.run', member:<name>, phase:'start'}` — emitted immediately
+  before a teammate `runMember` invocation.
+- `{type:'team.member.run', member:<name>, phase:'end', status}` — emitted after
+  that run settles, with `status` set to the settled member status (`inactive`
+  or `failed`). Every inbox-drain iteration/wake-up emits its own start/end pair
+  (`start` always precedes its `end`); interrupt and close paths still end their
+  run.
+
+`onLiveEvent` is a separate **un-audited** channel. It receives every raw
+`runConversation` event (including `message_start`, `message_update`,
+`message_end` and `tool_execution_start/update/end`) as
+`{type:'team.member.event', member:<name>, event:<raw event>}`, forwarded after
+the compact activity bookkeeping. Streaming partials are presentation-only:
+they reach live observers but are never audited or persisted, and a slow,
+throwing or rejecting live observer can never delay or fail the teammate.
+`chat_agent.mjs` wires `onLiveEvent: event => observe(onEvent, event)` and keeps
+teammate `audit: () => {}`, so the SQLite event log does not grow with streaming
+deltas.
+
+### Persistence keys
+
+- `team:state` — `{version, sessionId, revision, nextTaskNumber, roster, tasks,
+  tombstones, inbox}`; `roster`/`tasks` are the host projection fields and
+  `tombstones`/`inbox` retain internal state. `projection.cjs#projectTeam`
+  consumes the saved value directly.
+- `team:member:<name>:transcript` — bounded teammate conversation history.
+- `team:member:<name>:pending-turn` — unresolved tool evidence for the teammate.
+
+### Lifecycle
+
+`createTeam` is created for each assist turn when the Team is enabled, using the
+turn `AbortSignal`. `close()` interrupts every live teammate run, awaits bounded
+settlement, persists the final inactive roster, resolves all `wait_agent`
+waiters and is idempotent. `chat_agent.mjs` awaits `team.close()` before
+`swarm.close()`, middlewares and the database, so teammates stop using tools
+before storage closes. Aborting the turn signal starts the same close path; no
+raw abort rejections escape to the caller.

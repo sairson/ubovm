@@ -30,6 +30,10 @@ body[data-mode="assist"] .background-tasks { bottom: 108px; }
 .background-tasks-body:not([hidden]) { animation: background-tasks-reveal 140ms ease-out; }
 @keyframes background-tasks-reveal { from { opacity: 0; } to { opacity: 1; } }
 .background-task-main { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 1px; }
+.background-task-head { display: flex; align-items: center; gap: 5px; min-width: 0; }
+.background-task-kind { flex: 0 0 auto; padding: 0 4px; border: 1px solid color-mix(in srgb, currentColor 22%, transparent); border-radius: 4px; color: var(--muted); font-size: 9px; font-weight: 500; line-height: 14px; letter-spacing: .02em; }
+.background-task-kind[data-kind="ssh"] { color: var(--dsw-alias-state-business-primary); border-color: color-mix(in srgb, var(--dsw-alias-state-business-primary) 32%, transparent); }
+.background-task-kind[hidden] { display: none; }
 .background-task-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 11px/1.6 var(--vscode-editor-font-family, Consolas, monospace); }
 .background-task-owner { color: var(--muted); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .background-task-info { display: flex; flex-shrink: 0; align-items: flex-end; flex-direction: column; gap: 1px; font-size: 10px; color: var(--muted); }

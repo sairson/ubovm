@@ -107,12 +107,20 @@ function validateLedger(ledger, retryableReadTools = []) {
     if (Object.hasOwn(entry, 'executedArgs')) check(object(entry.executedArgs), 'ledger executedArgs must be an object');
     check(entry.status === 'running' || entry.status === 'completed', 'invalid ledger status');
     if (entry.status === 'running') {
-      if (!safeReads.has(entry.toolName)) throw Object.assign(new Error(`Cannot safely resume tool ${entry.toolName} (${entry.toolCallId}): it started without a durable result; execution may already have had side effects.`), { code: 'UNSAFE_TOOL_REPLAY' });
-      // Only current host tool definitions authorize this repair, never saved
-      // metadata. Do not fabricate observations or execute during restoration.
+      // A process can die between reserving a tool call and persisting its
+      // result. Never execute that call again during restoration: replaying a
+      // side-effecting command could repeat it. Close the ledger entry with an
+      // explicit error observation instead, so the worker can resume and the
+      // model can inspect the current state before deciding to retry with a new
+      // tool call id. Current host tool definitions are the only source of the
+      // read-only retry policy; saved metadata is ignored.
+      const retryableRead = safeReads.has(entry.toolName);
       entry.status = 'completed';
       entry.isError = true;
-      entry.result = { content: [{ type: 'text', text: 'This read-only tool was interrupted before its result was durably saved. No result is available. Call it again with a new tool call ID to read the latest state before continuing; do not infer file contents or hashes from this interrupted call.' }] };
+      entry.result = { content: [{ type: 'text', text: retryableRead
+        ? 'This read-only tool was interrupted before its result was durably saved. No result is available. Call it again with a new tool call ID to read the latest state before continuing; do not infer file contents or hashes from this interrupted call.'
+        : 'This tool call was interrupted before its result was durably saved. Its side effects are unknown: it may have completed fully, partially, or not at all, and it was not re-executed during recovery. Inspect the current workspace or service state before deciding what to do next; if a retry is needed, use a new tool call ID so this interrupted call is not replayed.' }] };
+      entry.interrupted = true;
     }
     check(typeof entry.isError === 'boolean', 'completed ledger entry needs isError');
     check(object(entry.result), 'completed ledger entry needs its result');

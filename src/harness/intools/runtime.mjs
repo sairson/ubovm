@@ -23,8 +23,10 @@ import { SkillRegistry, createSkillResourceTool } from './skills/resources.mjs';
 import { createSkillScriptTool } from './skills/scripts.mjs';
 import { SSHCommandsPool } from './terminals/ssh-terminal/pool.mjs';
 import { createSFTPUploadTool, createRemoteDeployTool } from './terminals/ssh-terminal/deployment.mjs';
+import { createBackgroundTaskRegistry } from './shared/process/background-tasks.mjs';
+import { createBackgroundCommandsTool } from './background/index.mjs';
 
-export const INTERNAL_TOOL_NAMES = Object.freeze(['delivery_workflow', 'browser_action', 'browser_connection_status', 'fetch_web_content', 'note', 'todo', 'domain_inventory', 'web_search', 'read_skills_resource', 'run_local_skill_script', 'run_linux_ssh_command', 'run_local_shell_command', 'run_python', 'manage_python_environment', 'upload_sftp', 'deploy_remote_service', 'learn_capability']);
+export const INTERNAL_TOOL_NAMES = Object.freeze(['delivery_workflow', 'browser_action', 'browser_connection_status', 'fetch_web_content', 'note', 'todo', 'domain_inventory', 'web_search', 'read_skills_resource', 'run_local_skill_script', 'run_linux_ssh_command', 'run_local_shell_command', 'run_python', 'manage_python_environment', 'upload_sftp', 'deploy_remote_service', 'background_commands', 'learn_capability']);
 
 /**
  * Tools that only exist when a human is present: they require the host
@@ -91,6 +93,23 @@ export async function createInternalTools({
   const workers = new Map();
   const lifetime = new AbortController();
   const activeCalls = new Set();
+  // Agent-facing mirror of retained background shell commands. The host still
+  // owns the processes; this registry feeds the background_commands tool and the
+  // per-boundary context hint for BOTH local shell and SSH.
+  const backgroundTasks = createBackgroundTaskRegistry();
+  const hostCommand = typeof onCommand === 'function' ? onCommand : undefined;
+  const registerCommand = command => {
+    let release;
+    if (hostCommand) {
+      try { release = hostCommand(command); }
+      catch (error) { throw error; }
+    }
+    const untrack = backgroundTasks.track(command);
+    return () => { try { release?.(); } finally { untrack(); } };
+  };
+  registerCommand.retainBackground = hostCommand?.retainBackground === true;
+  registerCommand.canRetain = typeof hostCommand?.canRetain === 'function' ? () => hostCommand.canRetain() : undefined;
+  const backgroundTool = allowed.has('background_commands') ? createBackgroundCommandsTool({ registry: backgroundTasks }) : undefined;
   let closed = false;
   let closing;
   function assertOpen() { if (closed) throw new Error('Internal tools runtime is closed'); }
@@ -139,8 +158,9 @@ export async function createInternalTools({
       ];
       workers.set(workerId, { todo, note, delivery, domains, tools: [
         ...shared, ...shells, todo, note, delivery, domains, ...(ask ? [ask] : []), ...(learning ? [learning.tool(workerId)] : []),
+        ...(backgroundTool ? [backgroundTool] : []),
         ...(manager ? createBrowserTools({ manager, sessionId, workerId, target }) : [])
-      ].filter(tool => allowed.has(tool.name)).map(tool => managed(controlledCommand(tool, workerId, onCommand), workerId)) });
+      ].filter(tool => allowed.has(tool.name)).map(tool => managed(controlledCommand(tool, workerId, registerCommand), workerId)) });
     }
     const worker = workers.get(workerId);
     if (blackboard) await worker.note.recoverPromotions();
@@ -156,7 +176,13 @@ export async function createInternalTools({
       let learned;
       try { learned = await learning?.context({ query: (node.intent?.description ?? '').slice(0, 4096), signal }); }
       catch { checkLifetime(signal); reportLearningFailure(); }
-      return [worker.todo.summary(node.id), allowed.has('delivery_workflow') ? worker.delivery.summary() : '', allowed.has('domain_inventory') ? worker.domains.summary() : '', learned].filter(Boolean).join('\n\n');
+      return [
+        worker.todo.summary(node.id),
+        allowed.has('delivery_workflow') ? worker.delivery.summary() : '',
+        allowed.has('domain_inventory') ? worker.domains.summary() : '',
+        allowed.has('background_commands') ? backgroundTasks.summary() : '',
+        learned
+      ].filter(Boolean).join('\n\n');
     },
     async onProgress({ node, phase, plan, completed, signal }) {
       const worker = await forWorker(node.id, { signal });
@@ -199,7 +225,7 @@ export async function createInternalTools({
     event => managedOperation(event?.signal, signal => operation({ ...event, signal }))
   ]));
   return {
-    sessionId, store, browserManager: manager, sshPool: pool, library, ...hooks,
+    sessionId, store, browserManager: manager, sshPool: pool, library, backgroundTasks, ...hooks,
     learningStatus: () => background?.status(),
     flushLearning: async () => { await background?.flush(); },
     /** Spread into createPiWorker; tool execution, progress and evidence stay connected. */
@@ -219,6 +245,7 @@ export async function createInternalTools({
         // A started cross-file promotion must settle before releasing session
         // ownership. Interrupting its await would leave late persistent writes.
         await Promise.allSettled([...activeCalls]);
+        try { backgroundTasks.close(); } catch { /* Mirror cleanup must not block shutdown. */ }
         const learningClosed = await Promise.allSettled([Promise.resolve().then(() => background?.close())]);
         // Retained SSH tools still hold pool refs; pool.close soft-returns until they finish.
         const settled = await Promise.allSettled([

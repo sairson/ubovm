@@ -2,6 +2,7 @@ import { buildBlackboardContext } from './context.mjs';
 import { normalizeKeyPoints } from './blackboard.mjs';
 import { workerEvidence, completionEvidenceIssue } from './evidence.mjs';
 import { fillIntentSlots, intentCapacity } from './intent-capacity.mjs';
+import { EXPLORATION_STOP_MARKER } from './agenda.mjs';
 
 // All coordinators in this process share the lease. An isolated worker runtime
 // may be concurrent with another worker, but a board has only one scheduler.
@@ -123,7 +124,7 @@ function intentKey(intent, parentIds) {
   ]);
 }
 
-function prepareIntent(intent, snapshot, context, seen, byId) {
+function prepareIntent(intent, snapshot, context, seen, byId, descriptions, extraDuplicates) {
   const canonicalParents = ids => [...new Set(ids.map(id => byId.get(id)?.resultId || id))];
   if (!intent || typeof intent !== 'object' || Array.isArray(intent)) {
     throw failure('INVALID_DECISION', 'Each intent must be an object.');
@@ -133,6 +134,18 @@ function prepareIntent(intent, snapshot, context, seen, byId) {
   }
   if (typeof intent.description !== 'string' || !intent.description.trim()) {
     throw failure('INVALID_DECISION', 'Each intent requires a nonempty description.');
+  }
+  // Two intents that describe the same content would run the same investigation
+  // twice. Compare normalized descriptions across every existing intent and any
+  // Reason-authored agenda direction before creating another one.
+  const descriptionKey = normalizeIntentText(intent.description);
+  const existing = descriptions?.get(descriptionKey);
+  if (existing) {
+    throw failure('INVALID_DECISION', `The proposed intent duplicates ${existing.ref ?? 'existing work'} (${existing.status}): "${intent.description.trim().slice(0, 160)}". Reuse its result or extend its remaining gaps with a materially different method and description.`);
+  }
+  const duplicate = extraDuplicates?.get(descriptionKey);
+  if (duplicate) {
+    throw failure('INVALID_DECISION', `The proposed intent is already recorded on the shared agenda${duplicate.label ? ` as ${duplicate.label}` : ''}: "${intent.description.trim().slice(0, 160)}". Adopt or update that agenda item instead of dispatching a duplicate.`);
   }
   let parentIds = intent.parentIds === undefined
     ? [snapshot.rootId] : resolveReferences(intent.parentIds, context, 'parentIds');
@@ -167,16 +180,18 @@ export class BlackboardCoordinator {
   #listeners = new Set();
 
   constructor({ blackboard, reason, worker, maxConcurrency = 3, maxRounds = 0,
-    workerTimeoutMs = 0, maxWorkerRetries = 0 } = {}) {
+    workerTimeoutMs = 0, maxWorkerRetries = 0, duplicateTexts } = {}) {
     if (!blackboard || typeof blackboard.snapshot !== 'function') {
       throw new TypeError('blackboard is required.');
     }
     if (typeof reason !== 'function' || typeof worker !== 'function') {
       throw new TypeError('reason and worker callbacks are required.');
     }
+    if (duplicateTexts !== undefined && typeof duplicateTexts !== 'function') throw new TypeError('duplicateTexts must be a function returning agenda texts');
     this.blackboard = blackboard;
     this.reason = reason;
     this.worker = worker;
+    this.duplicateTexts = duplicateTexts;
     this.maxConcurrency = positiveInteger(maxConcurrency, 'maxConcurrency');
     this.maxRounds = nonnegativeInteger(maxRounds, 'maxRounds');
     this.workerTimeoutMs = nonnegativeInteger(workerTimeoutMs, 'workerTimeoutMs');
@@ -208,8 +223,15 @@ export class BlackboardCoordinator {
     const active = new Map();
     const settled = [];
     const retryIds = [];
+    // Reason-directed worker control stays inside the coordinator. Directives are
+    // in-memory steering text injected into the next attempt's task description;
+    // intentionalStops separates a host-requested interruption from a failure.
+    const directives = new Map();
+    const intentionalStops = new Set();
+    const controlState = { directives, intentionalStops };
     let reviewedState;
     let wake;
+    const drainActive = () => Promise.all([...active.values()].map(entry => entry.operation));
     const launch = async () => {
       while (retryIds.length && intentCapacity(this.blackboard.snapshot({ clone: false }).nodes, this.blackboard.openIntents).available > 0) {
         checkAbort(signal);
@@ -219,19 +241,140 @@ export class BlackboardCoordinator {
       for (const node of pending) {
         if (active.size >= this.maxConcurrency) break;
         if (active.has(node.id)) continue;
-        const operation = this.#execute(node, workerSignal, id => { retryIds.push(id); }).then(
-          () => settled.push({ id: node.id }),
-          error => settled.push({ id: node.id, error })
+        const entry = { operation: undefined, abort: undefined, startedAt: Date.now(), markReady: undefined };
+        entry.ready = new Promise(resolve => { entry.markReady = resolve; });
+        entry.operation = this.#execute(node, workerSignal, id => { retryIds.push(id); }, handle => {
+          entry.handle = handle;
+          entry.abort = handle.abort;
+          entry.attemptId = handle.attemptId;
+          entry.markReady();
+        }, controlState).then(
+          () => settled.push({ id: node.id, entry }),
+          error => settled.push({ id: node.id, entry, error })
         ).then(() => { wake?.(); });
-        active.set(node.id, operation);
+        active.set(node.id, entry);
+        entry.operation.finally(() => {
+          // A retried node may already have a newer entry; never delete it.
+          if (active.get(node.id) === entry) active.delete(node.id);
+        }).catch(() => {});
       }
     };
     const waitForWorker = async () => {
       if (!settled.length) await interruptible(() => new Promise(resolve => { if (settled.length) resolve(); else wake = resolve; }), signal);
       wake = undefined;
       const result = settled.shift();
-      active.delete(result.id);
+      // Only retire the attempt that actually settled: a Reason action may have
+      // already opened a newer attempt for the same intent while an older
+      // notification was queued.
+      if (active.get(result.id) === result.entry) active.delete(result.id);
       if (result.error) throw result.error;
+    };
+    // Reason can control its own Workers through these callbacks. They only
+    // accept aliases from the evidence snapshot that Reason is reviewing, so a
+    // decision cannot address nodes it has not observed.
+    const reasonControl = context => {
+      const idOf = ref => {
+        if (typeof ref !== 'string' || !/^n[1-9]\d*$/.test(ref.trim())) throw new TypeError('worker must be a node alias from the current context, such as n3.');
+        try { return context.resolveId(ref.trim()); } catch { throw new Error(`Unknown worker alias ${ref.trim()}; call list_workers to see current aliases.`); }
+      };
+      const text = (value, name, limit) => {
+        if (value === undefined || value === null) return '';
+        if (typeof value !== 'string') throw new TypeError(`${name} must be a string.`);
+        if (value.trim().length > limit) throw new RangeError(`${name} must contain at most ${limit} characters.`);
+        return value.trim();
+      };
+      const describe = id => {
+        const node = this.blackboard.node(id);
+        if (!node?.intent) throw new Error(`Node ${id} is not a worker intent.`);
+        const latest = node.attempts.at(-1);
+        const checkpoint = latest?.status === 'running' ? latest.checkpoint : undefined;
+        const result = node.resultId ? context.aliasFor(node.resultId) : undefined;
+        return {
+          worker: context.aliasFor(id), status: node.intent.status, description: node.intent.description, priority: node.intent.priority,
+          attempts: node.attempts.length,
+          ...(latest ? { latest_attempt: latest.status } : {}),
+          ...(node.attempts.some(attempt => attempt.status === 'failed' || attempt.status === 'interrupted') ? {
+            failures: node.attempts.filter(attempt => ['failed', 'interrupted'].includes(attempt.status)).slice(-3)
+              .map(attempt => ({ status: attempt.status, error: String(attempt.error ?? '').replace(/\s+/gu, ' ').trim().slice(0, 320) }))
+          } : {}),
+          ...(checkpoint && ['plan', 'execute', 'replan', 'conclude', 'done'].includes(checkpoint.phase) ? {
+            progress: {
+              phase: checkpoint.phase,
+              completed_steps: Array.isArray(checkpoint.completed) ? checkpoint.completed.length : 0,
+              remaining_steps: Array.isArray(checkpoint.plan) ? checkpoint.plan.length : 0
+            }
+          } : {}),
+          ...(result ? { result } : {})
+        };
+      };
+      const list = () => context.data.nodes.filter(node => node.intent).map(node => {
+        try { return describe(context.resolveId(node.ref)); } catch { return undefined; }
+      }).filter(Boolean);
+      const stop = async (ref, reason) => {
+        const id = idOf(ref);
+        const why = text(reason, 'reason', 1024) || 'Worker stopped by Reason';
+        let node = this.blackboard.node(id);
+        if (!node?.intent) throw new Error(`Node ${ref} is not a worker intent.`);
+        if (node.intent.status === 'running') {
+          const entry = active.get(id);
+          if (!entry) throw new Error(`Worker ${ref} is already finishing; stop it after it settles.`);
+          await entry.ready;
+          node = this.blackboard.node(id);
+          if (!node?.intent || node.intent.status !== 'running') return { ...describe(id), status: node?.intent?.status ?? 'unknown', stopped: false, note: 'The worker finished before the stop request was applied.' };
+          intentionalStops.add(id);
+          entry.abort(failure('WORKER_STOPPED', why));
+          return { ...describe(id), status: 'stopping', stopped: true, note: 'The current attempt is interrupted; its slot is released after cleanup and the board records an interrupted attempt. Tool effects are not rolled back.' };
+        }
+        if (node.intent.status === 'pending') {
+          await this.blackboard.cancelIntent(id, EXPLORATION_STOP_MARKER + why);
+          await launch();
+          return { ...describe(id), stopped: true, note: 'The queued intent was marked interrupted before it started.' };
+        }
+        throw new Error(`Worker ${ref} is ${node.intent.status}; only running or pending workers can be stopped.`);
+      };
+      const start = async ref => {
+        const id = idOf(ref);
+        let node = this.blackboard.node(id);
+        if (!node?.intent) throw new Error(`Node ${ref} is not a worker intent.`);
+        if (node.intent.status === 'running') throw new Error(`Worker ${ref} is already running.`);
+        if (node.intent.status === 'completed') throw new Error(`Worker ${ref} already completed; create a new intent for additional work.`);
+        if (node.intent.status === 'pending') {
+          await launch();
+          return { ...describe(id), started: this.blackboard.node(id).intent.status === 'running' };
+        }
+        // Reopen through the launch queue so capacity checks and persistence stay
+        // in one place; retrying twice (here and in launch) would fail the commit.
+        retryIds.push(id);
+        await launch();
+        return { ...describe(id), started: true, note: 'The intent was reopened and resumes from its latest checkpoint when a slot is available.' };
+      };
+      const prompt = async (ref, message) => {
+        const id = idOf(ref);
+        const direction = text(message, 'message', 1024);
+        if (!direction) throw new TypeError('message must be a nonempty direction for the worker.');
+        let node = this.blackboard.node(id);
+        if (!node?.intent) throw new Error(`Node ${ref} is not a worker intent.`);
+        if (node.intent.status === 'completed') throw new Error(`Worker ${ref} already completed; create a new intent instead of steering it.`);
+        directives.set(id, direction);
+        if (node.intent.status === 'pending') {
+          await launch();
+          return { ...describe(id), directed: true, note: 'The direction is queued and will be included when the worker starts.' };
+        }
+        if (node.intent.status === 'running') {
+          const entry = active.get(id);
+          if (!entry) throw new Error(`Worker ${ref} is already finishing; steer it after it settles.`);
+          await entry.ready;
+          node = this.blackboard.node(id);
+          if (!node?.intent || node.intent.status !== 'running') return { ...describe(id), directed: false, note: 'The worker finished before the new direction was applied.' };
+          intentionalStops.add(id);
+          entry.abort(failure('WORKER_STEERED', 'Worker restarted by Reason with a new direction.'));
+          return { ...describe(id), status: 'restarting', directed: true, note: 'Restarting from its checkpoint with the new direction; earlier tool effects are preserved.' };
+        }
+        retryIds.push(id);
+        await launch();
+        return { ...describe(id), directed: true, note: 'The intent was reopened with the new direction and resumes from its latest checkpoint.' };
+      };
+      return { list, stop, start, prompt };
     };
     try {
       if (resume) {
@@ -265,7 +408,7 @@ export class BlackboardCoordinator {
         const currentRound = round++;
         let decision;
         try {
-          decision = await interruptible(() => this.reason({ context, signal }), signal);
+          decision = await interruptible(() => this.reason({ context, signal, control: reasonControl(context) }), signal);
         } catch (cause) {
           if (signal?.aborted) throw abortError(signal);
           throw failure('REASON_FAILED', `Reason callback failed: ${cause?.message ?? cause}`, cause);
@@ -293,7 +436,7 @@ export class BlackboardCoordinator {
           for (const listener of this.#listeners) { try { listener(structuredClone(this.#completion)); } catch {} }
           // Delivery is advisory: do not abort tools or override worker decisions.
           // Keep ownership until the running workers finish their own wrap-up.
-          await Promise.all(active.values());
+          await drainActive();
           const errors = settled.filter(item => item.error && item.error.code !== 'ABORT_ERR').map(item => item.error);
           if (errors.length) throw new AggregateError(errors, 'Failed to persist remaining workers.');
           checkAbort(signal);
@@ -318,9 +461,35 @@ export class BlackboardCoordinator {
         const canonicalParents = ids => [...new Set(ids.map(id => byId.get(id)?.resultId || id))];
         const seen = new Set(snapshot.nodes.filter(node => node.intent)
           .map(node => intentKey(node.intent, canonicalParents(node.parentIds))));
+        const descriptions = new Map();
+        for (const node of snapshot.nodes) {
+          if (!node.intent) continue;
+          const key = normalizeIntentText(node.intent.description);
+          if (!descriptions.has(key)) descriptions.set(key, { ref: context.aliasFor(node.id), status: node.intent.status });
+        }
+        let extraDuplicates = new Map();
+        if (this.duplicateTexts) {
+          try {
+            const entries = await interruptible(() => this.duplicateTexts({ snapshot, context }), signal);
+            if (Array.isArray(entries)) for (const entry of entries) {
+              const text = typeof entry === 'string' ? entry : entry?.text ?? entry?.dedupeKey;
+              if (typeof text !== 'string' || !text.trim()) continue;
+              const key = normalizeIntentText(text);
+              if (!extraDuplicates.has(key)) extraDuplicates.set(key, { label: typeof entry === 'object' && typeof entry?.label === 'string' ? entry.label : 'recorded direction' });
+            }
+          } catch (error) {
+            if (error?.code === 'ABORT_ERR' || error?.name === 'AbortError' || error?.code === 'COORDINATOR_STOPPED') throw error;
+            // Agenda hints are advisory; a stale or unavailable board must not stop planning.
+          }
+        }
         const { admitted, wait, errors } = fillIntentSlots(decision.intents, {
           available: capacity.available,
-          tryPrepare: item => prepareIntent(item, snapshot, context, seen, byId)
+          tryPrepare: item => {
+            const prepared = prepareIntent(item, snapshot, context, seen, byId, descriptions, extraDuplicates);
+            const key = normalizeIntentText(prepared.description);
+            if (!descriptions.has(key)) descriptions.set(key, { ref: 'the current decision', status: 'planned' });
+            return prepared;
+          }
         });
         if (wait) {
           reviewedState = stateKey;
@@ -355,7 +524,9 @@ export class BlackboardCoordinator {
         : 'Blackboard execution ended before the goal was completed.');
     } finally {
       controller.abort(failure('COORDINATOR_STOPPED', 'Coordinator stopped; no further work is authorized.'));
-      await Promise.all(active.values());
+      await drainActive();
+      directives.clear();
+      intentionalStops.clear();
       this.#listeners.clear();
       this.#running = false;
       runningBoards.delete(this.blackboard);
@@ -385,10 +556,9 @@ export class BlackboardCoordinator {
     return { complete: true, evidenceIds, summary: decision.summary.trim(), rounds: round, revision: snapshot.revision };
   }
 
-  async #execute(node, signal, retry) {
+  async #execute(node, signal, retry, onAttempt, controlState = {}) {
     checkAbort(signal);
     const previous = [...node.attempts].reverse().find((item) => item.checkpoint !== undefined);
-    const attempt = await this.blackboard.beginAttempt(node.id);
     // One attempt owns one signal: coordinator stop propagates through it, and
     // an optional per-attempt deadline converts a hung worker into a failed
     // attempt instead of blocking the run's drain forever.
@@ -402,6 +572,13 @@ export class BlackboardCoordinator {
         `Worker attempt exceeded ${this.workerTimeoutMs}ms and was stopped.`)), this.workerTimeoutMs);
       deadline.unref?.();
     }
+    let attempt;
+    // Register the interrupt handle before the attempt commit so a Reason action
+    // can never race an in-flight beginAttempt and leave an unstoppable Worker.
+    const handle = { attemptId: undefined, abort: reason => { if (!attemptController.signal.aborted) attemptController.abort(reason); } };
+    onAttempt?.(handle);
+    attempt = await this.blackboard.beginAttempt(node.id);
+    handle.attemptId = attempt.id;
     const attemptSignal = attemptController.signal;
     let active = true;
     const subscriptions = new Set();
@@ -411,13 +588,20 @@ export class BlackboardCoordinator {
       checkAbort(attemptSignal);
       if (!active) throw failure('ATTEMPT_CLOSED', `Worker attempt ${attempt.id} is no longer active.`);
     };
+    // Reason's steering direction is host text attached to this attempt only; it
+    // never rewrites the durable intent, so the board keeps the original plan.
+    const directive = controlState.directives?.get(node.id);
+    const current = this.blackboard.node(node.id);
+    const workerNode = directive
+      ? { ...current, intent: { ...current.intent, description: `${current.intent.description}\n\nReason direction (apply it to this attempt; it refines the task and never replaces the goal):\n${directive}` } }
+      : current;
     let result;
     try {
       result = await interruptible(() => {
         let returned;
         try {
           returned = this.worker({
-        node: this.blackboard.node(node.id),
+        node: workerNode,
         attempt: structuredClone(attempt),
         checkpoint: previous ? structuredClone(previous.checkpoint) : undefined,
         signal: attemptSignal,
@@ -483,11 +667,19 @@ export class BlackboardCoordinator {
       // interruptible rejection when only this attempt was stopped.
       const reason = attemptSignal.aborted && !signal?.aborted && attemptSignal.reason instanceof Error
         ? attemptSignal.reason : error;
-      await this.blackboard.failAttempt(node.id, attempt.id, String(reason?.message ?? reason) || 'Worker failed without an error message.', {
-        interrupted: Boolean(signal?.aborted),
+      const intentional = controlState.intentionalStops?.delete(node.id) === true;
+      const detail = String(reason?.message ?? reason) || 'Worker failed without an error message.';
+      await this.blackboard.failAttempt(node.id, attempt.id, intentional ? EXPLORATION_STOP_MARKER + detail : detail, {
+        interrupted: Boolean(signal?.aborted) || intentional,
       });
       if (checkpointFailure) throw checkpointFailure;
       if (signal?.aborted) throw abortError(signal);
+      // A Reason-directed stop stays interrupted for Reason to restart. A steer
+      // restarts immediately so the queued direction reaches the next attempt.
+      if (intentional) {
+        if (controlState.directives?.has(node.id) && typeof retry === 'function') retry(node.id);
+        return;
+      }
       // Transient worker failures earn one in-run requeue per budget slot; the
       // attempt history stays on the board for Reason to review either way.
       if (this.maxWorkerRetries > 0 && typeof retry === 'function') {
@@ -500,12 +692,14 @@ export class BlackboardCoordinator {
       active = false;
       if (deadline !== null) clearTimeout(deadline);
       signal.removeEventListener('abort', propagate);
+      controlState.intentionalStops?.delete(node.id);
       for (const listener of subscriptions) this.#listeners.delete(listener);
     }
     try {
       await this.blackboard.completeAttempt(node.id, attempt.id, typeof result === 'string' ? result : result.content, {
         provenance: typeof result === 'object' && result ? result.provenance : undefined,
       });
+      controlState.directives?.delete(node.id);
     } catch (error) {
       try {
         await this.blackboard.failAttempt(node.id, attempt.id, String(error?.message ?? error) || 'Fact writeback failed.', {

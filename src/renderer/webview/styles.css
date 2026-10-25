@@ -335,36 +335,56 @@ textarea::placeholder { color: var(--vscode-input-placeholderForeground, #92958f
 .provider { position: relative; min-width: 0; min-height: 30px; max-width: 260px; padding: 4px 18px 4px 7px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); font-size: 12px; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .provider::after { content: ''; position: absolute; top: 12px; right: 7px; width: 5px; height: 5px; border-right: 1px solid currentColor; border-bottom: 1px solid currentColor; transform: rotate(45deg); opacity: .7; }
 .provider:hover:enabled { color: var(--ink); background: var(--hover); }
+/* With the model menu next to it, the settings entry is a link, not a second
+   menu: drop its chevron so only the model chip advertises a dropdown. */
+.composer-options:has(#composer-model:not([hidden])) .provider { padding-right: 7px; }
+.composer-options:has(#composer-model:not([hidden])) .provider::after { display: none; }
 .composer-default-model { min-width: 0; max-width: 190px; overflow: hidden; color: var(--muted); font-size: 11px; white-space: nowrap; text-overflow: ellipsis; }
 .composer-model-label { flex-shrink: 0; color: var(--muted); font-size: 11px; white-space: nowrap; }
-.composer-model { box-sizing: border-box; flex: 0 1 auto; min-width: 148px; max-width: 240px; height: 30px; margin: 0; padding: 3px 24px 3px 9px; border: 1px solid var(--border); border-radius: 7px; appearance: auto; background: var(--canvas); color: var(--ink); font: 12px/1.5 'Segoe UI', 'Microsoft YaHei UI', sans-serif; text-overflow: ellipsis; cursor: pointer; transition: border-color 120ms ease, background 120ms ease, box-shadow 120ms ease; }
-.composer-model:hover:enabled { border-color: color-mix(in srgb, var(--ink) 25%, var(--border)); background: var(--hover); }
-.composer-model:focus-visible { border-color: var(--focus, var(--accent)); box-shadow: 0 0 0 1px var(--focus, var(--accent)); }
-.composer-model:focus-visible { outline: 2px solid var(--focus, var(--accent)); outline-offset: 2px; }
+/* Composer model picker: a compact DSH chip. Native <select> semantics stay
+   intact; the chip carries the provider mark, a single-line model name and a
+   chevron that turns over while the menu is open. */
+.composer-model { box-sizing: border-box; flex: 0 1 auto; min-width: 132px; max-width: 232px; height: 30px; margin: 0; padding: 0 23px 0 8px; border: 1px solid var(--border); border-radius: var(--dsw-radius-sm); appearance: auto; background: color-mix(in srgb, var(--ink) 4%, var(--canvas)); color: var(--ink); font: 500 12px/1.5 'Segoe UI', 'Microsoft YaHei UI', sans-serif; text-overflow: ellipsis; cursor: pointer; transition: border-color 140ms var(--dsw-ease), background 140ms var(--dsw-ease), box-shadow 140ms var(--dsw-ease); }
+.composer-model:hover:enabled { border-color: color-mix(in srgb, var(--ink) 24%, var(--border)); background: var(--hover); }
+.composer-model:focus-visible { outline: 2px solid var(--focus, var(--accent)); outline-offset: 2px; border-color: var(--focus, var(--accent)); }
 .composer-model:disabled { opacity: .5; cursor: default; }
 @supports (appearance: base-select) {
-  #composer-model { gap: 8px; }
-  #composer-model::picker-icon { flex-shrink: 0; font-size: 10px; color: var(--muted); }
-  #composer-model::picker(select) { min-width: 220px; max-width: min(360px, calc(100vw - 32px)); max-height: min(280px, 50vh); padding: 4px; border: 1px solid var(--border); border-radius: 8px; background: var(--canvas); box-shadow: 0 6px 20px #00000018; }
-  #composer-model option { min-height: 32px; padding: 7px 10px; border-radius: 5px; font: 12px/1.5 'Segoe UI', 'Microsoft YaHei UI', sans-serif; overflow-wrap: anywhere; }
-  #composer-model option:checked { background: var(--wash); font-weight: 600; }
+  #composer-model { display: inline-flex; align-items: center; gap: 6px; padding-inline: 8px 21px; }
+  #composer-model > button { display: contents; padding: 0; border: 0; background: transparent; }
+  #composer-model .model-provider-icon { flex: 0 0 15px; width: 15px; height: 15px; fill: currentColor; stroke: none; }
+  #composer-model selectedcontent { display: flex; align-items: center; min-width: 0; overflow: hidden; }
+  #composer-model selectedcontent .model-option-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #composer-model selectedcontent .model-option-tag { display: none; }
+  #composer-model::picker-icon { content: ''; flex: 0 0 7px; width: 7px; height: 7px; margin-inline-start: 2px; border-right: 1.5px solid var(--muted); border-bottom: 1.5px solid var(--muted); transform: rotate(45deg) translate(-1px, -1px); transition: transform var(--dsw-duration) var(--dsw-ease), border-color var(--dsw-duration-fast) var(--dsw-ease); }
+  #composer-model:hover:enabled::picker-icon { border-color: var(--ink); }
+  #composer-model:open { border-color: color-mix(in srgb, var(--focus, var(--accent)) 45%, var(--border)); background: var(--canvas); box-shadow: 0 0 0 2px color-mix(in srgb, var(--focus, var(--accent)) 13%, transparent); }
+  #composer-model:open::picker-icon { transform: rotate(225deg) translate(-1px, -1px); border-color: var(--focus, var(--accent)); }
+  #composer-model::picker(select) { min-width: 216px; min-inline-size: max(216px, anchor-size(width)); max-width: min(360px, calc(100vw - 28px)); max-height: min(320px, 46vh); margin-block: 6px; padding: 5px; overflow: auto; border: 1px solid var(--border); border-radius: var(--dsw-radius-md); background: var(--surface-raised, var(--canvas)); color: var(--ink); box-shadow: var(--dsw-elevation-panel, 0 8px 24px #00000020); overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--ink) 24%, transparent) transparent; }
+  #composer-model option { display: flex; align-items: center; gap: 8px; min-height: 32px; padding: 6px 9px; border-radius: 6px; color: var(--ink); font: 12px/1.5 'Segoe UI', 'Microsoft YaHei UI', sans-serif; overflow-wrap: anywhere; }
+  #composer-model option:hover, #composer-model option:focus { background: var(--hover); }
+  #composer-model option:checked { background: var(--selection-bg); font-weight: 600; }
+  #composer-model option::checkmark { order: 1; margin-left: auto; color: var(--accent); font-size: 12px; }
+  #composer-model .model-option-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #composer-model .model-option-tag { flex: 0 0 auto; padding: 1px 5px; border-radius: 999px; background: var(--wash); color: var(--muted); font-size: 9.5px; font-weight: 500; line-height: 1.6; letter-spacing: .02em; }
+  #composer-model option:checked .model-option-tag { font-weight: 500; }
 }
 @media (max-width: 1320px) { .prompt-shortcut { display: none; } }
 @media (max-width: 980px) { .composer-default-model { display: none; } }
-@media (max-width: 700px) { .composer-model { min-width: 96px; max-width: min(42vw, 180px); } }
+@media (max-width: 700px) { .composer-model { min-width: 104px; max-width: min(42vw, 184px); } }
 @media (max-width: 480px) {
   .mode { display: none; }
   .context-usage { display: none; }
   .approval-mode span { padding: 4px 7px; }
-  .composer-model { min-width: 88px; max-width: 120px; }
+  .composer-model { min-width: 92px; max-width: 128px; }
   .composer-toolbar { gap: 8px; }
 }
 @media (max-width: 380px) {
   .context-add > span:last-child { display: none; }
-  .composer-model { min-width: 78px; max-width: 104px; }
+  .composer-model { min-width: 84px; max-width: 112px; }
+  #composer-model .model-provider-icon { display: none; }
   .composer { padding-inline: 9px; }
 }
-@media (prefers-reduced-motion: reduce) { .composer-model { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .composer-model, #composer-model::picker-icon { transition: none; } }
 .composer-send { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 .prompt-shortcut { color: var(--muted); font-size: 11px; line-height: 1.5; white-space: nowrap; }
 .prompt-count { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
@@ -460,6 +480,38 @@ textarea::placeholder { color: var(--vscode-input-placeholderForeground, #92958f
 .messages { padding: 36px var(--gutter) 28px; }
 .message { margin-bottom: 36px; }
 .message:last-child { margin-bottom: 4px; }
+/* Progressive history load. The indicator explains the gap above the newest
+   paint while older turns stream in; the batch fade keeps prepends from popping.
+   The global prefers-reduced-motion rules in motion.css disable both. */
+#messages .history-loading {
+  display: flex; align-items: center; gap: 8px;
+  margin: 0 0 30px; padding: 2px; color: var(--muted); font-size: 12px; line-height: 1.6;
+}
+#messages .history-loading[hidden] { display: none; }
+#messages .history-loading::before {
+  content: ''; flex: 0 0 auto; width: 6px; height: 6px; border-radius: 50%;
+  background: currentColor; opacity: .35; animation: history-loading-pulse 1.6s ease-in-out infinite;
+}
+@keyframes history-loading-pulse { 0%, 100% { opacity: .2; } 50% { opacity: .6; } }
+/* Inline hint under a progressively mounted message while its remaining parts
+   (typically tool records) hydrate. Removed as soon as the message is complete. */
+#messages .message-hydrating {
+  display: flex; align-items: center; gap: 6px;
+  margin-top: 10px; color: var(--muted); font-size: 11.5px; line-height: 1.6;
+}
+#messages .message-hydrating::before {
+  content: ''; flex: 0 0 auto; width: 5px; height: 5px; border-radius: 50%;
+  background: currentColor; opacity: .35; animation: history-loading-pulse 1.6s ease-in-out infinite;
+}
+@keyframes history-enter { from { opacity: .01; } to { opacity: 1; } }
+.message.history-enter { animation: history-enter 110ms ease-out both; }
+/* Long histories skip layout/paint for messages far outside the viewport while
+   scrolling. The remembered intrinsic size keeps the scrollbar range stable, and
+   the marker is decided from the published length so it never flips mid-fill. */
+#messages.history-heavy > .message:not(.streaming-message) {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 180px;
+}
 .message-heading { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; color: var(--muted); font-size: 12px; line-height: 1.6; font-weight: 500; }
 .message.assistant .message-heading::before { content: 'U'; display: grid; place-items: center; width: 22px; height: 22px; border: 1px solid transparent; border-radius: 7px; font-size: 10px; line-height: 1; color: var(--muted); background: var(--wash); }
 .message-text { margin: 0; font-size: 15.5px; line-height: 1.85; white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -1289,7 +1341,7 @@ body.vscode-high-contrast .approval-mode input[value="full"]:checked + span { ba
 }
 @media (max-width: 380px) {
   .composer .submit { width: 28px; height: 28px; }
-  .composer-model { min-width: 74px; max-width: 96px; }
+  .composer-model { min-width: 84px; max-width: 112px; }
 }
 .goal-log-pager [role="status"] { margin-right: auto; font-variant-numeric: tabular-nums; }
 .goal-overview-columns { grid-template-columns: minmax(0, 1fr); }
@@ -1641,4 +1693,791 @@ body[data-mode="goal"] .notebook-empty { padding: 40px 16px; }
 }
 @media (prefers-reduced-motion: reduce) {
   body[data-mode="goal"] :is(.goal-view-switcher > summary, .goal-tabs button, .goal-textarea, .criterion, .goal-workers-list .worker-card) { transition: none; }
+}
+
+/* ---------------------------------------------------------------------------
+ * DSH component polish (assist): quiet header actions, and state accents for
+ * tool/thinking cards that come from the shared alias tokens instead of the VS
+ * Code error color. Colors only; no component structure changes.
+ * ------------------------------------------------------------------------- */
+.topbar .text-button:not(.primary-button) {
+  min-height: 30px;
+  padding: 4px 9px;
+  border-color: transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  line-height: 16px;
+}
+.topbar .text-button:not(.primary-button):hover:enabled {
+  border-color: transparent;
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
+}
+.topbar .text-button:not(.primary-button):active:enabled { transform: none; }
+.topbar .text-button:not(.primary-button):focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+.topbar .text-button:not(.primary-button):disabled { background: transparent; color: var(--dsw-alias-label-caption); }
+
+body #messages .tool-card[data-status="running"],
+body #messages .tool-card[data-status="running"][open] {
+  background: color-mix(in srgb, var(--dsw-alias-state-business-primary) 4%, transparent);
+}
+body #messages .tool-card[data-status="failed"],
+body #messages .tool-card[data-status="failed"][open] {
+  background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 6%, transparent);
+}
+body #messages .tool-card[data-status="failed"] .tool-title,
+body #messages .tool-card[data-status="failed"] .tool-path,
+body #messages .tool-card[data-status="failed"] .tool-status,
+body #messages .tool-card[data-status="failed"] .tool-kind-icon { color: var(--dsw-alias-state-error-primary); }
+body #messages .tool-card[data-status="failed"] .tool-kind-icon {
+  background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 12%, var(--canvas));
+}
+body #messages .tool-card[data-status="running"] .tool-status,
+body #messages .tool-card[data-status="running"] .tool-kind-icon { color: var(--dsw-alias-state-business-primary); }
+body #messages .tool-card[data-status="running"] .tool-kind-icon {
+  background: color-mix(in srgb, var(--dsw-alias-state-business-primary) 10%, var(--canvas));
+}
+body #messages .summary-card[data-status="failed"] > .thinking-summary,
+body #messages .maintenance-group[data-status="failed"] > .maintenance-toggle { color: var(--dsw-alias-state-error-primary); }
+body #messages .tool-card-summary:hover,
+body #messages .thinking-summary:hover,
+body #messages .tool-arguments > summary:hover { background: var(--dsw-alias-interactive-bg-hover); }
+
+/* Main card: thinking & scheduling log. The panel reads as one elevated card;
+ * Reason's plan and conclusion are the primary entries, tool rows stay quiet. */
+.goal-output-panel {
+  border-color: color-mix(in srgb, var(--border) 82%, transparent);
+  border-radius: 14px;
+  background: var(--canvas);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--ink) 5%, transparent), 0 14px 30px -24px color-mix(in srgb, var(--ink) 28%, transparent);
+}
+.goal-output-heading {
+  min-height: 64px;
+  padding: 13px 16px;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 4.5%, var(--canvas)), var(--canvas));
+  border-bottom-color: color-mix(in srgb, var(--border) 78%, transparent);
+}
+.goal-log-heading-copy { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.goal-output-icon {
+  display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto;
+  width: 32px; height: 32px; border-radius: 9px; color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 9%, var(--canvas));
+  border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--border));
+}
+.goal-output-icon svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.goal-output-copy { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.goal-output-copy h2 { margin: 0; font-size: 14.5px; line-height: 20px; letter-spacing: .01em; color: var(--ink); }
+.goal-output-subtitle { margin: 0; color: var(--muted); font-size: 10.5px; line-height: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.goal-output-actions { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 0 1 auto; }
+#goal-output-status { padding: 3px 9px; border: 1px solid transparent; background: var(--wash); }
+#goal-output-status[data-phase="running"], #goal-output-status[data-phase="starting"] { border-color: color-mix(in srgb, var(--accent) 22%, transparent); }
+#goal-log-bottom { min-height: 26px; padding: 0 9px; border: 1px solid color-mix(in srgb, var(--border) 85%, transparent); border-radius: 7px; background: var(--canvas); color: var(--muted); font-size: 11px; transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease; }
+#goal-log-bottom:hover:not(:disabled) { background: var(--hover); color: var(--ink); border-color: var(--focus); }
+#goal-log-bottom:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+#goal-output-content {
+  padding: 8px 14px 12px;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--ink) 1.4%, var(--canvas)), var(--canvas) 220px);
+}
+/* Primary reasoning rows: the live dispatch plan and Reason's conclusion get a
+ * light card surface; every other row keeps the compact timeline treatment. */
+.goal-log-entry[data-kind="activity"][data-activity="plan"],
+.goal-log-entry[data-kind="text"][data-source="reason"] {
+  border: 1px solid color-mix(in srgb, var(--accent) 17%, var(--border));
+  border-radius: 10px;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 7%, var(--canvas)), color-mix(in srgb, var(--accent) 2%, var(--canvas)) 58%, var(--canvas));
+  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--accent) 48%, transparent);
+}
+.goal-log-entry[data-kind="activity"][data-activity="plan"] {
+  padding-top: 11px; padding-bottom: 11px;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 8%, var(--canvas)), color-mix(in srgb, var(--accent) 2%, var(--canvas)) 55%, var(--canvas));
+}
+.goal-log-entry[data-kind="text"][data-source="reason"] { padding-top: 10px; padding-bottom: 11px; }
+.goal-log-entry[data-kind="text"][data-source="reason"] .goal-log-heading strong { color: var(--accent); }
+.goal-log-entry[data-kind="text"][data-source="reason"] .goal-log-body { color: var(--ink); font-weight: 450; }
+.goal-log-entry[data-kind="activity"][data-activity="plan"] .goal-log-heading strong { color: var(--ink); font-weight: 600; }
+/* Keep the live surface feeling alive without a heavy card per record. */
+.goal-log-entry:is([data-status="running"], [data-status="streaming"]) { background: color-mix(in srgb, var(--accent) 4.5%, var(--canvas)); }
+.goal-log-entry:is([data-status="running"], [data-status="streaming"]) .goal-log-state { color: var(--accent); background: color-mix(in srgb, var(--accent) 9%, var(--canvas)); }
+.goal-log-state { box-shadow: none; border: 1px solid color-mix(in srgb, var(--border) 86%, transparent); background: color-mix(in srgb, var(--canvas) 92%, var(--ink) 2%); }
+.goal-log-entry + .goal-log-entry { margin-top: 2px; }
+@media (max-width: 640px) {
+  .goal-output-heading { min-height: 58px; padding: 11px 12px; }
+  .goal-output-icon { width: 28px; height: 28px; border-radius: 8px; }
+  .goal-output-subtitle { display: none; }
+  .goal-output-copy h2 { font-size: 13.5px; }
+  .goal-output-actions { gap: 6px; }
+  #goal-output-status { max-width: 48%; padding: 2px 7px; }
+  #goal-log-bottom { padding: 0 7px; }
+  #goal-output-content { padding: 6px 10px 10px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  #goal-log-bottom { transition: none; }
+}@media (max-width: 640px) {
+  .goal-output-heading { flex-wrap: wrap; row-gap: 8px; }
+  .goal-log-heading-copy { flex: 1 1 100%; }
+  .goal-output-actions { width: 100%; justify-content: flex-end; }
+}
+@media (max-width: 460px) {
+  #goal-log-bottom { width: 28px; min-width: 28px; padding: 0; font-size: 0; }
+  #goal-log-bottom::before { content: '↓'; font-size: 12px; line-height: 1; }
+}@media (max-width: 640px) {
+  .goal-overview-columns .goal-output-heading { flex-wrap: wrap; row-gap: 8px; }
+  .goal-overview-columns .goal-log-heading-copy { flex: 1 1 100%; }
+  .goal-overview-columns .goal-output-actions { width: 100%; justify-content: flex-end; }
+}/* Align the log master card with the goal surface tokens; keep the new masthead
+ * and Reason emphasis while deferring radius/surfaces to the DSH goal theme. */
+body[data-mode="goal"] .goal-output-panel {
+  border-radius: var(--goal-radius, 12px);
+  border-color: var(--goal-line);
+  background: var(--goal-surface-raised);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--ink) 5%, transparent), 0 16px 34px -26px color-mix(in srgb, var(--ink) 32%, transparent);
+}
+body[data-mode="goal"] .goal-overview-columns .goal-output-heading {
+  min-height: 64px;
+  padding: 12px 16px;
+  border-bottom-color: var(--goal-line-soft);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--goal-accent) 5.5%, var(--goal-surface-raised)), var(--goal-surface-raised));
+}
+body[data-mode="goal"] .goal-output-copy h2 { font-size: 13.5px; letter-spacing: -.01em; }
+body[data-mode="goal"] .goal-output-subtitle { color: color-mix(in srgb, var(--muted) 82%, var(--goal-accent)); }
+@media (max-width: 640px) {
+  body[data-mode="goal"] .goal-overview-columns .goal-output-heading { min-height: 58px; padding: 11px 12px; }
+}/* The log card stays flat (no drop shadow) and its empty state is a quiet
+ * message, not a second dashed card nested inside the main card. */
+body[data-mode="goal"] .goal-output-panel { box-shadow: none; }
+body[data-mode="goal"] #goal-output-empty {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+  padding: 46px 24px;
+}
+body[data-mode="goal"] #goal-output-empty::before {
+  border-color: var(--goal-line-soft);
+  background-color: var(--goal-surface-muted);
+  opacity: .9;
+}@media (min-width: 641px) {
+  .goal-output-actions #goal-output-status { max-width: 280px; }
+}/* One card language across exploration tabs: same surface, border, radius and
+ * flat elevation as the thinking log; status is communicated by tint, not by a
+ * different card shape. */
+body[data-mode="goal"] {
+  --goal-card-radius: var(--goal-radius, 12px);
+  --goal-card-line: var(--goal-line);
+  --goal-card-surface: var(--goal-surface-raised);
+}
+/* Page mastheads match across agenda / board / tasks / notes. */
+body[data-mode="goal"] #goal-agenda > .goal-page-heading,
+body[data-mode="goal"] #goal-workers > .goal-page-heading,
+body[data-mode="goal"] #goal-board > .goal-page-heading,
+body[data-mode="goal"] #goal-notes > .notebook-heading {
+  display: block; margin: 0 0 14px; padding: 0 0 14px; border-bottom: 1px solid var(--goal-line);
+}
+body[data-mode="goal"] #goal-board > .goal-page-heading h2,
+body[data-mode="goal"] #goal-agenda > .goal-page-heading h2,
+body[data-mode="goal"] #goal-notes > .notebook-heading h2 {
+  display: block; margin: 0; color: var(--ink); font-size: 20px; line-height: 1.25; font-weight: 600; letter-spacing: -.025em;
+}
+body[data-mode="goal"] #goal-board > .goal-page-heading p,
+body[data-mode="goal"] #goal-agenda > .goal-page-heading p,
+body[data-mode="goal"] #goal-notes > .notebook-heading p {
+  display: block; margin: 5px 0 0; color: var(--muted); font-size: 12px; line-height: 1.6;
+}
+body[data-mode="goal"] #goal-agenda .goal-agenda-heading { display: block; }
+body[data-mode="goal"] #goal-agenda .goal-agenda-heading h2 { font-size: 20px; letter-spacing: -.025em; }
+body[data-mode="goal"] #goal-board > .goal-page-heading p { font-size: 12px; }
+/* Card surfaces. */
+body[data-mode="goal"] #goal-agenda .goal-agenda-row,
+body[data-mode="goal"] #goal-workers .worker-card,
+body[data-mode="goal"] #goal-board .graph-node:not(.graph-goal-badge),
+body[data-mode="goal"] #goal-notes .notebook-layout {
+  border: 1px solid var(--goal-card-line);
+  border-radius: var(--goal-card-radius);
+  background: var(--goal-card-surface);
+  box-shadow: none;
+}
+body[data-mode="goal"] #goal-agenda .goal-agenda-row { padding: 11px 12px; }
+body[data-mode="goal"] #goal-agenda .goal-agenda-row[data-status="active"] {
+  border-color: color-mix(in srgb, var(--focus) 34%, var(--goal-card-line));
+  background: color-mix(in srgb, var(--focus) 5%, var(--goal-card-surface));
+}
+body[data-mode="goal"] #goal-agenda .goal-agenda-row[data-status="blocked"] {
+  border-color: color-mix(in srgb, var(--vscode-errorForeground, #b7554b) 34%, var(--goal-card-line));
+}
+body[data-mode="goal"] #goal-agenda .goal-agenda-row[data-status="done"] { opacity: .86; }
+body[data-mode="goal"] #goal-agenda .goal-agenda-row:hover { border-color: color-mix(in srgb, var(--focus) 30%, var(--goal-card-line)); }
+/* Hover is a border tint, never a lifted shadow. */
+body[data-mode="goal"] #goal-workers .worker-card:hover,
+body[data-mode="goal"] #goal-board .graph-node:not(.graph-goal-badge):hover {
+  transform: none; box-shadow: none;
+  border-color: color-mix(in srgb, var(--focus) 34%, var(--goal-card-line));
+  background: var(--goal-card-surface);
+}
+body[data-mode="goal"] #goal-workers .worker-card:active { transform: none; }
+body[data-mode="goal"] #goal-board .graph-detail {
+  border: 1px solid var(--goal-card-line);
+  border-radius: var(--goal-card-radius);
+  background: var(--goal-card-surface);
+  box-shadow: none;
+}
+/* Notes: list rows are the same rounded surface as every other exploration card. */
+body[data-mode="goal"] #goal-notes .notebook-layout { border-radius: var(--goal-card-radius); }
+body[data-mode="goal"] #goal-notes .note-select {
+  border: 1px solid transparent; border-radius: var(--goal-card-radius);
+  background: transparent; box-shadow: none; padding: 11px 12px;
+}
+body[data-mode="goal"] #goal-notes .note-select:hover { background: var(--goal-surface-muted); border-color: var(--goal-line-soft); }
+body[data-mode="goal"] #goal-notes .note-select[aria-pressed="true"] {
+  border-radius: var(--goal-card-radius);
+  border-color: color-mix(in srgb, var(--goal-selection-icon) 45%, var(--goal-line));
+  background: var(--goal-selection); color: var(--goal-selection-ink);
+  box-shadow: none;
+}
+/* Empty states are quiet messages inside a card, never a nested dashed card. */
+body[data-mode="goal"] :is(#goal-agenda-empty, #goal-workers-empty, #blackboard-empty, #criteria-empty, #goal-output-empty) {
+  border: 0; border-radius: 0; background: transparent; box-shadow: none;
+  padding: 34px 20px; color: var(--muted); text-align: center;
+}
+body[data-mode="goal"] #goal-workers-empty { margin: 0; min-height: 0; }
+body[data-mode="goal"] #blackboard-empty { margin: 0; padding: 46px 20px; }
+/* Shared status pill used by agenda rows, worker cards and the log. */
+body[data-mode="goal"] :is(.goal-agenda-chip, .worker-status, .goal-log-state) {
+  border: 1px solid var(--goal-line-soft);
+  border-radius: 999px;
+  background: var(--goal-surface-muted);
+  color: var(--muted);
+  box-shadow: none;
+}
+body[data-mode="goal"] :is(.goal-agenda-chip, .worker-status, .goal-log-state)[data-status="running"],
+body[data-mode="goal"] .goal-agenda-row[data-status="active"] .goal-agenda-chip {
+  color: var(--goal-accent-ink); border-color: color-mix(in srgb, var(--focus) 26%, var(--goal-line));
+  background: color-mix(in srgb, var(--focus) 6%, var(--goal-surface-raised));
+}
+@media (max-width: 640px) {
+  body[data-mode="goal"] #goal-agenda > .goal-page-heading,
+  body[data-mode="goal"] #goal-workers > .goal-page-heading,
+  body[data-mode="goal"] #goal-board > .goal-page-heading,
+  body[data-mode="goal"] #goal-notes > .notebook-heading { margin-bottom: 10px; padding-bottom: 10px; }
+  body[data-mode="goal"] :is(#goal-board > .goal-page-heading h2, #goal-agenda > .goal-page-heading h2, #goal-notes > .notebook-heading h2) { font-size: 18px; }
+}body[data-mode="goal"] #goal-workers > .goal-page-heading,
+body[data-mode="goal"] #goal-notes > .notebook-heading {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;
+}
+body[data-mode="goal"] #goal-workers .goal-workers-heading-copy { flex: 1 1 auto; min-width: 0; }
+body[data-mode="goal"] #goal-workers .goal-runtime-details { flex: 0 0 auto; margin-top: 2px; }
+body[data-mode="goal"] #goal-notes > .notebook-heading > div { flex: 1 1 auto; min-width: 0; }/* The root target stays a pill; every other graph node is a standard card. */
+body[data-mode="goal"] #goal-board .graph-node:not(.graph-goal-badge):not([data-kind="root"]),
+body[data-mode="goal"] #goal-board .graph-node:not(.graph-goal-badge):not([data-kind="root"]):hover {
+  background: var(--goal-card-surface);
+}
+body[data-mode="goal"] #goal-board .graph-node:not(.graph-goal-badge):not([data-kind="root"]):hover {
+  transform: none; box-shadow: none;
+  border-color: color-mix(in srgb, var(--focus) 34%, var(--goal-card-line));
+}
+body[data-mode="goal"] #goal-board .graph-node[data-kind="root"] {
+  border-radius: 999px;
+  box-shadow: none;
+}
+/* Notes rows are cards like agenda/worker cards; selection is a tint, not a
+ * different gray block. */
+body[data-mode="goal"] #goal-notes .goal-note + .goal-note { margin-top: 8px; }
+body[data-mode="goal"] #goal-notes .note-select {
+  border: 1px solid var(--goal-line-soft);
+  border-radius: var(--goal-card-radius);
+  background: var(--goal-card-surface);
+  padding: 11px 12px;
+}
+body[data-mode="goal"] #goal-notes .note-select:hover {
+  border-color: color-mix(in srgb, var(--focus) 30%, var(--goal-line));
+  background: var(--goal-card-surface);
+}
+body[data-mode="goal"] #goal-notes .note-select[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--focus) 42%, var(--goal-line));
+  background: color-mix(in srgb, var(--focus) 5%, var(--goal-card-surface));
+  color: var(--ink);
+}
+body[data-mode="goal"] #goal-notes .note-select[aria-pressed="true"] time { color: var(--muted); }body[data-mode="goal"] #goal-board .graph-node[data-kind="root"] {
+  background: var(--graph-accent);
+  border-color: var(--graph-accent);
+  color: var(--canvas);
+  box-shadow: none;
+}
+body[data-mode="goal"] #goal-board .graph-node[data-kind="root"]:hover {
+  background: var(--graph-accent); border-color: var(--graph-accent); box-shadow: none;
+}/* The board keeps its full-height canvas: its context is the graph itself. */
+body[data-mode="goal"] #goal-board > .goal-page-heading { display: none; }/* Neutral dark palette for exploration: layered grays, white hairlines and a
+ * near-white accent. State colors stay green/amber/red; no decorative blue. */
+body.vscode-dark[data-mode="goal"] {
+  --goal-canvas: var(--vscode-editor-background, #1e1e1e);
+  --goal-surface-muted: color-mix(in srgb, #000000 12%, var(--goal-canvas));
+  --goal-surface-raised: color-mix(in srgb, var(--ink) 7%, var(--goal-canvas));
+  --goal-line: color-mix(in srgb, var(--ink) 15%, var(--goal-canvas));
+  --goal-line-soft: color-mix(in srgb, var(--ink) 9%, transparent);
+  --goal-form-surface: var(--goal-surface-raised);
+  --goal-field-surface: color-mix(in srgb, var(--ink) 3%, var(--goal-canvas));
+  --goal-accent: var(--ink);
+  --goal-accent-ink: var(--ink);
+  --goal-progress: var(--ink);
+  --goal-selection: color-mix(in srgb, var(--ink) 10%, var(--goal-canvas));
+  --goal-selection-ink: var(--ink);
+  --goal-selection-icon: var(--ink);
+  --goal-shadow: none;
+}
+body.vscode-dark[data-mode="goal"] .goal-mode {
+  background:
+    radial-gradient(900px 420px at 12% -12%, color-mix(in srgb, var(--ink) 3%, transparent), transparent 70%),
+    var(--goal-canvas);
+}
+/* Reading surfaces sit below the page surface; cards sit above it. */
+body.vscode-dark[data-mode="goal"] #goal-output-content { background: var(--goal-surface-muted); }
+body.vscode-dark[data-mode="goal"] #goal-output-panel,
+body.vscode-dark[data-mode="goal"] #goal-workers .worker-card,
+body.vscode-dark[data-mode="goal"] #goal-notes .notebook-layout,
+body.vscode-dark[data-mode="goal"] #goal-board .graph-workspace { border-color: var(--goal-line); }
+body.vscode-dark[data-mode="goal"] .goal-log-entry[data-kind="activity"][data-activity="plan"],
+body.vscode-dark[data-mode="goal"] .goal-log-entry[data-kind="text"][data-source="reason"] {
+  border-color: color-mix(in srgb, var(--ink) 19%, var(--goal-line));
+  background: linear-gradient(90deg, color-mix(in srgb, var(--ink) 5%, var(--goal-surface-raised)), color-mix(in srgb, var(--ink) 1.5%, var(--goal-surface-raised)) 58%, var(--goal-surface-raised));
+  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--ink) 42%, transparent);
+}
+body.vscode-dark[data-mode="goal"] .goal-log-entry[data-kind="text"][data-source="reason"] .goal-log-heading strong { color: var(--ink); }
+body.vscode-dark[data-mode="goal"] .goal-log-entry[data-kind="activity"][data-activity="plan"] .goal-log-heading strong { color: var(--ink); }
+body.vscode-dark[data-mode="goal"] #goal-agenda .goal-agenda-row { border-color: var(--goal-line); background: var(--goal-surface-raised); }
+body.vscode-dark[data-mode="goal"] #goal-agenda .goal-agenda-row[data-status="active"] {
+  border-color: color-mix(in srgb, var(--ink) 24%, var(--goal-line));
+  background: color-mix(in srgb, var(--ink) 6%, var(--goal-surface-raised));
+}
+body.vscode-dark[data-mode="goal"] #goal-agenda .goal-agenda-row[data-status="blocked"] {
+  border-color: color-mix(in srgb, #f25a5a 28%, var(--goal-line));
+  background: color-mix(in srgb, #f25a5a 4%, var(--goal-surface-raised));
+}
+body.vscode-dark[data-mode="goal"] #goal-agenda .goal-agenda-row[data-status="done"] { opacity: .78; }
+body.vscode-dark[data-mode="goal"] #goal-agenda .goal-agenda-row:hover {
+  border-color: color-mix(in srgb, var(--ink) 22%, var(--goal-line));
+}
+body.vscode-dark[data-mode="goal"] #goal-notes .notebook-layout { background: var(--goal-surface-raised); }
+body.vscode-dark[data-mode="goal"] #goal-notes .notebook-library { background: var(--goal-surface-muted); }
+body.vscode-dark[data-mode="goal"] #goal-notes .note-select { background: var(--goal-surface-raised); border-color: var(--goal-line-soft); }
+body.vscode-dark[data-mode="goal"] #goal-notes .note-select:hover { border-color: color-mix(in srgb, var(--ink) 22%, var(--goal-line)); }
+body.vscode-dark[data-mode="goal"] #goal-notes .note-select[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--ink) 24%, var(--goal-line));
+  background: color-mix(in srgb, var(--ink) 8%, var(--goal-surface-raised));
+  color: var(--ink);
+}
+body.vscode-dark[data-mode="goal"] #goal-notes .note-select[aria-pressed="true"] time { color: var(--muted); }
+body.vscode-dark[data-mode="goal"] #goal-board .graph-workspace {
+  --graph-node-surface: var(--goal-surface-raised);
+  --graph-node-border: var(--goal-line);
+  --graph-node-shadow: none;
+  --graph-accent: var(--ink);
+  --graph-line: color-mix(in srgb, var(--ink) 15%, transparent);
+}
+body.vscode-dark[data-mode="goal"] #goal-board .graph-viewport { background-color: var(--goal-surface-muted); }
+body.vscode-dark[data-mode="goal"] #goal-board .graph-node[data-kind="root"] {
+  background: color-mix(in srgb, var(--ink) 14%, var(--goal-surface-raised));
+  border-color: color-mix(in srgb, var(--ink) 28%, var(--goal-line));
+  color: var(--ink);
+  box-shadow: none;
+}
+body.vscode-dark[data-mode="goal"] #goal-board .graph-goal-badge {
+  background: color-mix(in srgb, var(--ink) 5%, var(--goal-surface-raised));
+  border-color: color-mix(in srgb, var(--ink) 18%, var(--goal-line));
+}
+/* Status pills: neutral by default, tinted only for success / warning / error. */
+body.vscode-dark[data-mode="goal"] :is(.goal-agenda-chip, .worker-status, .goal-log-state) {
+  color: var(--muted);
+  border-color: color-mix(in srgb, var(--ink) 11%, transparent);
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+}
+body.vscode-dark[data-mode="goal"] #goal-agenda .goal-agenda-row[data-status="active"] .goal-agenda-chip,
+body.vscode-dark[data-mode="goal"] #goal-workers .worker-status[data-status="running"],
+body.vscode-dark[data-mode="goal"] .goal-log-entry:is([data-status="running"], [data-status="streaming"]) .goal-log-state {
+  color: var(--ink);
+  border-color: color-mix(in srgb, var(--ink) 24%, transparent);
+  background: color-mix(in srgb, var(--ink) 10%, transparent);
+}
+body.vscode-dark[data-mode="goal"] #goal-agenda .goal-agenda-row[data-status="done"] .goal-agenda-chip,
+body.vscode-dark[data-mode="goal"] #goal-workers .worker-status[data-status="completed"] {
+  color: #a7e3ba; border-color: color-mix(in srgb, #4ed17e 24%, transparent); background: color-mix(in srgb, #4ed17e 9%, transparent);
+}
+body.vscode-dark[data-mode="goal"] #goal-agenda .goal-agenda-row[data-status="blocked"] .goal-agenda-chip,
+body.vscode-dark[data-mode="goal"] #goal-workers .worker-status[data-status="failed"] {
+  color: #ffb4b4; border-color: color-mix(in srgb, #f25a5a 26%, transparent); background: color-mix(in srgb, #f25a5a 11%, transparent);
+}
+body.vscode-dark[data-mode="goal"] #goal-workers .worker-status:is([data-status="queued"], [data-status="waiting"]),
+body.vscode-dark[data-mode="goal"] #goal-agenda .goal-agenda-row[data-kind="suggestion"] .goal-agenda-chip {
+  color: #f0cd8d; border-color: color-mix(in srgb, #f7ad31 24%, transparent); background: color-mix(in srgb, #f7ad31 9%, transparent);
+}
+body.vscode-dark[data-mode="goal"] .goal-agenda-blocker { color: #ffb4b4; }
+body.vscode-dark[data-mode="goal"] #goal-output-status {
+  color: var(--muted); border-color: color-mix(in srgb, var(--ink) 11%, transparent); background: color-mix(in srgb, var(--ink) 6%, transparent);
+}
+body.vscode-dark[data-mode="goal"] #goal-output-status:is([data-phase="running"], [data-phase="starting"]) {
+  color: var(--ink); border-color: color-mix(in srgb, var(--ink) 22%, transparent); background: color-mix(in srgb, var(--ink) 9%, transparent);
+}
+body.vscode-dark[data-mode="goal"] .goal-graph-status {
+  color: var(--muted); border-color: color-mix(in srgb, var(--ink) 12%, transparent); background: color-mix(in srgb, var(--ink) 5%, transparent);
+}
+body.vscode-dark[data-mode="goal"] #goal-notes #notes-search,
+body.vscode-dark[data-mode="goal"] #goal-workers #goal-workers-search,
+body.vscode-dark[data-mode="goal"] #goal-workers #goal-workers-filter {
+  background: color-mix(in srgb, var(--ink) 3%, var(--goal-canvas));
+  border-color: var(--goal-line);
+}
+body.vscode-dark[data-mode="goal"] .goal-agenda-step {
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+  color: var(--muted);
+}
+body.vscode-dark[data-mode="goal"] .goal-agenda-step[data-current="true"] {
+  background: color-mix(in srgb, var(--ink) 10%, transparent);
+  color: var(--ink);
+}
+body.vscode-dark[data-mode="goal"] #goal-workers .worker-priority { color: var(--muted); }
+body.vscode-dark[data-mode="goal"] .goal-log-entry[data-status="failed"] .goal-log-state {
+  color: #ffb4b4; border-color: color-mix(in srgb, #f25a5a 26%, transparent); background: color-mix(in srgb, #f25a5a 11%, transparent);
+}
+body.vscode-dark[data-mode="goal"] .goal-log-entry[data-status="interrupted"] .goal-log-state {
+  color: #f0cd8d; border-color: color-mix(in srgb, #f7ad31 24%, transparent); background: color-mix(in srgb, #f7ad31 9%, transparent);
+}
+body.vscode-dark[data-mode="goal"] #goal-workers .worker-card[data-status="failed"] { border-color: color-mix(in srgb, #f25a5a 26%, var(--goal-line)); }
+body.vscode-dark[data-mode="goal"] #goal-workers .worker-card[data-status="running"] {
+  border-color: color-mix(in srgb, var(--ink) 22%, var(--goal-line));
+  background: color-mix(in srgb, var(--ink) 4%, var(--goal-surface-raised));
+}
+/* No decorative blue in dark exploration: primary actions and live spinners are
+ * neutral ink, selection uses a brighter white hairline. */
+body.vscode-dark[data-mode="goal"] {
+  --goal-button-bg: var(--ink);
+  --goal-button-ink: #1b1b1c;
+  --goal-button-hover: color-mix(in srgb, var(--ink) 86%, var(--goal-canvas));
+}
+body.vscode-dark[data-mode="goal"] .header-execution-status::before,
+body.vscode-dark[data-mode="goal"] .goal-header-actions .run-status:is([data-status="running"], [data-status="starting"])::before {
+  border-top-color: var(--ink);
+  border-right-color: color-mix(in srgb, var(--ink) 42%, transparent);
+}
+body.vscode-dark[data-mode="goal"] .goal-log-entry[data-kind="worker"] { --log-accent: var(--muted); }
+body.vscode-dark[data-mode="goal"] #goal-notes .note-select[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--ink) 38%, var(--goal-line));
+  background: color-mix(in srgb, var(--ink) 11%, var(--goal-surface-raised));
+  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--ink) 70%, transparent);
+}/* Goal dark follows the monochrome DSH brand instead of VS Code's blue button
+ * and selection colors; blue is reserved for real links only. */
+body.vscode-dark[data-mode="goal"] {
+  --accent: var(--ink);
+  --accent-wash: color-mix(in srgb, var(--ink) 10%, var(--goal-canvas));
+  --selection-bg: color-mix(in srgb, var(--ink) 10%, var(--goal-canvas));
+  --selection-ink: var(--ink);
+  --focus: var(--ink);
+  --goal-button-bg: var(--ink);
+  --goal-button-ink: #1b1b1c;
+  --goal-button-hover: color-mix(in srgb, var(--ink) 86%, var(--goal-canvas));
+}/* Compact IDE-native log card: a panel header, a dense timeline and inline
+ * reasoning bands instead of large dashboard cards. */
+#goal-output-panel { border-radius: var(--goal-radius, 12px); }
+#goal-output-panel .goal-output-heading {
+  min-height: 38px; padding: 7px 12px; gap: 8px;
+  background: var(--canvas); border-bottom: 1px solid var(--border);
+}
+#goal-output-panel .goal-log-heading-copy { gap: 7px; }
+#goal-output-panel .goal-output-icon {
+  width: 20px; height: 20px; border: 0; border-radius: 4px;
+  background: transparent; color: var(--muted);
+}
+#goal-output-panel .goal-output-icon svg { width: 14px; height: 14px; stroke-width: 1.5; }
+#goal-output-panel .goal-output-copy { flex-direction: row; align-items: baseline; gap: 8px; }
+#goal-output-panel .goal-output-copy h2 { font-size: 12.5px; line-height: 18px; letter-spacing: 0; }
+#goal-output-panel .goal-output-subtitle {
+  margin: 0; font-size: 10.5px; line-height: 16px; color: var(--muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+#goal-output-panel .goal-output-actions { gap: 6px; }
+#goal-output-panel #goal-output-status {
+  max-width: 280px; padding: 0 5px; border: 0; border-radius: 0;
+  background: transparent; color: var(--muted); font-size: 10px; line-height: 16px;
+}
+#goal-output-panel #goal-output-status:is([data-phase="running"], [data-phase="starting"]) {
+  color: var(--ink); background: transparent; border: 0;
+}
+#goal-output-panel #goal-output-status:is([data-phase="running"], [data-phase="starting"])::before { width: 5px; height: 5px; }
+#goal-output-panel #goal-log-bottom {
+  min-height: 22px; padding: 0 5px; border: 0; border-radius: 4px;
+  background: transparent; color: var(--muted); font-size: 10.5px;
+}
+#goal-output-panel #goal-log-bottom:hover:not(:disabled) { background: var(--hover); color: var(--ink); border: 0; }
+#goal-output-panel #goal-output-content { padding: 4px 8px 6px; }
+#goal-output-panel .goal-log-entry { padding: 6px 8px 6px 26px; }
+#goal-output-panel .goal-log-entry + .goal-log-entry { margin-top: 0; }
+#goal-output-panel .goal-log-entry::after { left: 12px; }
+#goal-output-panel .goal-log-entry::before { left: 10px; top: 12px; width: 4px; height: 4px; }
+#goal-output-panel .goal-log-entry:first-child::after { top: 14px; }
+#goal-output-panel .goal-log-entry:last-child::after { bottom: auto; height: 14px; }
+#goal-output-panel .goal-log-heading { gap: 4px 6px; margin-bottom: 1px; font-size: 11px; line-height: 16px; }
+#goal-output-panel .goal-log-time { font: 10px/16px var(--font-code); color: var(--muted); }
+#goal-output-panel .goal-log-heading strong { font-size: 11.5px; font-weight: 600; }
+#goal-output-panel .goal-log-state {
+  margin-left: auto; padding: 0; border: 0; border-radius: 0; box-shadow: none;
+  background: transparent; color: var(--muted); font-size: 9.5px; line-height: 16px;
+}
+#goal-output-panel .goal-log-state::before {
+  content: ''; display: inline-block; width: 4px; height: 4px; margin-right: 4px;
+  border-radius: 50%; background: currentColor; vertical-align: 1px; opacity: .7;
+}
+#goal-output-panel .goal-log-entry:is([data-status="running"], [data-status="streaming"]) .goal-log-state { color: var(--ink); }
+#goal-output-panel .goal-log-body { font-size: 12.5px; line-height: 1.6; }
+#goal-output-panel .goal-log-body > p { margin: 0; }
+/* Reasoning bands stay in the timeline; no full card around them. */
+#goal-output-panel .goal-log-entry[data-kind="activity"][data-activity="plan"],
+#goal-output-panel .goal-log-entry[data-kind="text"][data-source="reason"] {
+  margin: 2px 0; padding: 6px 8px 6px 26px;
+  border: 0; border-radius: 0; box-shadow: none;
+  background: color-mix(in srgb, var(--ink) 2.5%, transparent);
+}
+#goal-output-panel .goal-log-entry[data-kind="activity"][data-activity="plan"] .goal-log-heading strong,
+#goal-output-panel .goal-log-entry[data-kind="text"][data-source="reason"] .goal-log-heading strong { color: var(--ink); font-weight: 600; }
+#goal-output-panel .goal-log-entry[data-kind="text"][data-source="reason"] .goal-log-body { color: var(--ink); font-weight: 400; }
+#goal-output-panel .goal-log-worker { padding: 0 5px; border-color: var(--border); border-radius: 4px; background: var(--wash); font-size: 10.5px; line-height: 18px; }
+#goal-output-panel .goal-log-body p { margin: 1px 0 0; }
+#goal-output-panel .goal-log-body small { font-size: 10px; }
+#goal-output-panel .goal-log-entry .goal-log-worker + p { margin-top: 2px; }
+#goal-output-panel #goal-output-content .tool-card { margin: 2px 0; }
+#goal-output-panel #goal-output-content .tool-card-summary { min-height: 30px; }
+#goal-output-panel #goal-output-content .thinking-card { margin: 1px 0; }
+#goal-output-panel #goal-output-content .thinking-summary { padding-top: 2px; padding-bottom: 2px; }
+@media (max-width: 640px) {
+  #goal-output-panel .goal-output-heading { padding: 6px 10px; }
+  #goal-output-panel .goal-output-subtitle { display: none; }
+  #goal-output-panel .goal-output-copy h2 { font-size: 12px; }
+  #goal-output-panel #goal-output-status { max-width: 46%; }
+  #goal-output-panel #goal-output-content { padding: 3px 6px 5px; }
+  #goal-output-panel .goal-log-entry,
+  #goal-output-panel .goal-log-entry[data-kind="activity"][data-activity="plan"],
+  #goal-output-panel .goal-log-entry[data-kind="text"][data-source="reason"] { padding-left: 23px; }
+  #goal-output-panel .goal-log-entry::after { left: 10px; }
+  #goal-output-panel .goal-log-entry::before { left: 8px; }
+  #goal-output-panel .goal-log-body { font-size: 12px; }
+}
+body.vscode-dark[data-mode="goal"] #goal-output-panel .goal-output-heading { background: var(--goal-canvas); border-bottom-color: var(--goal-line); }
+body.vscode-dark[data-mode="goal"] #goal-output-panel .goal-output-icon { color: var(--muted); }
+body.vscode-dark[data-mode="goal"] #goal-output-panel #goal-output-content { background: var(--goal-surface-muted); }
+body.vscode-dark[data-mode="goal"] #goal-output-panel .goal-log-entry[data-kind="activity"][data-activity="plan"],
+body.vscode-dark[data-mode="goal"] #goal-output-panel .goal-log-entry[data-kind="text"][data-source="reason"] {
+  border: 0; box-shadow: none;
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
+}@media (max-width: 460px) {
+  #goal-output-panel #goal-log-bottom { width: 24px; min-width: 24px; padding: 0; font-size: 0; }
+  #goal-output-panel #goal-log-bottom::before { content: '↓'; font-size: 12px; line-height: 1; }
+  #goal-output-panel #goal-output-status { max-width: 44%; }
+}#goal-output-panel #goal-output-status[data-phase="failed"],
+#goal-output-panel .goal-log-entry[data-status="failed"] .goal-log-state { color: var(--vscode-errorForeground, #b7554b); }
+#goal-output-panel #goal-output-status[data-phase="interrupted"],
+#goal-output-panel .goal-log-entry[data-status="interrupted"] .goal-log-state { color: var(--vscode-editorWarning-foreground, #976b30); }/* Task-card labels are square IDE tags: no pill radius, one hairline, compact
+ * monospaced priority and state text. */
+body[data-mode="goal"] #goal-workers .worker-card-heading { align-items: center; }
+body[data-mode="goal"] #goal-workers .worker-priority {
+  padding: 0 5px; border: 1px solid var(--goal-line); border-radius: 0;
+  background: var(--goal-surface-muted); color: var(--muted);
+  font: 600 9.5px/16px var(--font-code); letter-spacing: .05em;
+}
+body[data-mode="goal"] #goal-workers .worker-status {
+  gap: 5px; padding: 0 6px; border: 1px solid var(--goal-line); border-radius: 0;
+  background: var(--goal-surface-muted); color: var(--muted);
+  font-size: 9.5px; line-height: 16px; font-weight: 500; letter-spacing: .02em;
+}
+body[data-mode="goal"] #goal-workers .worker-status::before { width: 5px; height: 5px; }
+body[data-mode="goal"] #goal-workers .worker-status[data-status="running"] {
+  color: var(--ink);
+  border-color: color-mix(in srgb, var(--ink) 24%, var(--goal-line));
+  background: color-mix(in srgb, var(--ink) 6%, var(--goal-surface-muted));
+}
+body[data-mode="goal"] #goal-workers .worker-status[data-status="completed"] {
+  color: color-mix(in srgb, var(--dsw-static-green-500, #22c55e) 72%, var(--ink));
+  border-color: color-mix(in srgb, var(--dsw-static-green-500, #22c55e) 30%, var(--goal-line));
+  background: color-mix(in srgb, var(--dsw-static-green-500, #22c55e) 8%, var(--goal-surface-muted));
+}
+body[data-mode="goal"] #goal-workers .worker-status:is([data-status="queued"], [data-status="waiting"]) {
+  color: var(--vscode-editorWarning-foreground, #976b30);
+  border-color: color-mix(in srgb, var(--dsw-static-amber-500, #f59e0b) 28%, var(--goal-line));
+  background: color-mix(in srgb, var(--dsw-static-amber-500, #f59e0b) 7%, var(--goal-surface-muted));
+}
+body[data-mode="goal"] #goal-workers .worker-status[data-status="failed"] {
+  color: var(--vscode-errorForeground, #b7554b);
+  border-color: color-mix(in srgb, var(--dsw-static-red-500, #ef4444) 30%, var(--goal-line));
+  background: color-mix(in srgb, var(--dsw-static-red-500, #ef4444) 8%, var(--goal-surface-muted));
+}
+body.vscode-dark[data-mode="goal"] #goal-workers .worker-status {
+  color: var(--muted); border-color: var(--goal-line); background: var(--goal-surface-muted);
+}
+body.vscode-dark[data-mode="goal"] #goal-workers .worker-status[data-status="running"] {
+  color: var(--ink); border-color: color-mix(in srgb, var(--ink) 24%, var(--goal-line)); background: color-mix(in srgb, var(--ink) 6%, var(--goal-surface-muted));
+}
+body.vscode-dark[data-mode="goal"] #goal-workers .worker-status[data-status="completed"] {
+  color: #a7e3ba; border-color: color-mix(in srgb, #4ed17e 26%, var(--goal-line)); background: color-mix(in srgb, #4ed17e 8%, var(--goal-surface-muted));
+}
+body.vscode-dark[data-mode="goal"] #goal-workers .worker-status:is([data-status="queued"], [data-status="waiting"]) {
+  color: #f0cd8d; border-color: color-mix(in srgb, #f7ad31 26%, var(--goal-line)); background: color-mix(in srgb, #f7ad31 8%, var(--goal-surface-muted));
+}
+body.vscode-dark[data-mode="goal"] #goal-workers .worker-status[data-status="failed"] {
+  color: #ffb4b4; border-color: color-mix(in srgb, #f25a5a 28%, var(--goal-line)); background: color-mix(in srgb, #f25a5a 9%, var(--goal-surface-muted));
+}
+body.vscode-dark[data-mode="goal"] #goal-workers .worker-priority { color: var(--muted); border-color: var(--goal-line); background: var(--goal-surface-muted); }
+
+/* ============================================================================
+ * v2: readable reasoning cards + scannable scheduling log (探索模式).
+ * Quiet IDE-native rows: no chat-card surfaces, 6px hover/focus radii, DSH
+ * tokens only. Scoped under #goal-output-panel so the rest of the page is
+ * untouched.
+ * ========================================================================== */
+/* Header action: expand/collapse all reasoning (only when reasoning exists). */
+#goal-output-panel #goal-log-reason-toggle {
+  min-height: 22px; max-width: 160px; padding: 0 6px;
+  border: 0; border-radius: 4px; background: transparent;
+  color: var(--muted); font: inherit; font-size: 10.5px; line-height: 22px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer;
+}
+#goal-output-panel #goal-log-reason-toggle:hover { background: var(--hover); color: var(--ink); }
+#goal-output-panel #goal-log-reason-toggle:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+#goal-output-panel #goal-log-reason-toggle[hidden] { display: none !important; }
+
+/* Reasoning entry: the row carries the timeline dot; the card inside stays flat. */
+#goal-output-panel .goal-log-entry[data-kind="reasoning"] { padding-top: 3px; padding-bottom: 4px; background: transparent; --log-accent: var(--accent); }
+#goal-output-panel .goal-log-entry[data-kind="reasoning"] .goal-log-heading { display: none; }
+#goal-output-panel .goal-log-reasoning { margin: 0; padding: 0; border: 0; border-radius: 0; color: var(--muted); font-size: 12.5px; }
+#goal-output-panel .goal-log-reasoning-summary {
+  display: grid; grid-template-columns: minmax(0, 1fr); gap: 1px;
+  min-width: 0; min-height: 20px; padding: 2px 5px; border-radius: 6px;
+}
+#goal-output-panel .goal-log-reasoning-head { display: flex; align-items: center; flex-wrap: wrap; gap: 2px 6px; min-width: 0; }
+#goal-output-panel .goal-log-reasoning-icon { flex: 0 0 auto; width: 11px; height: 11px; color: var(--muted); }
+#goal-output-panel .goal-log-entry[data-status="running"] .goal-log-reasoning-icon { color: var(--ink); }
+#goal-output-panel .goal-log-reasoning-head .thinking-title { flex: 0 0 auto; color: var(--ink); font-size: 11.5px; font-weight: 600; }
+#goal-output-panel .goal-log-reasoning-status { flex: 0 0 auto; color: var(--muted); font-size: 10px; line-height: 16px; }
+#goal-output-panel .goal-log-entry[data-status="running"] .goal-log-reasoning-status { color: var(--ink); }
+#goal-output-panel .goal-log-reasoning-duration { flex: 0 0 auto; color: var(--muted); font-size: 10px; line-height: 16px; font-variant-numeric: tabular-nums; }
+#goal-output-panel .goal-log-reasoning-time { flex: 0 0 auto; margin-left: auto; color: var(--muted); font: 10px/16px var(--font-code); }
+#goal-output-panel .goal-log-reasoning-head .thinking-chevron { flex: 0 0 auto; color: var(--muted); font-size: 11px; transition: transform 120ms ease; }
+#goal-output-panel .goal-log-reasoning[open] > .goal-log-reasoning-summary .thinking-chevron { transform: rotate(90deg); }
+#goal-output-panel .goal-log-reasoning-preview {
+  display: -webkit-box; min-width: 0; overflow: hidden;
+  color: var(--muted); font-size: 11.5px; line-height: 17px;
+  overflow-wrap: anywhere; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+}
+#goal-output-panel .goal-log-reasoning[open] .goal-log-reasoning-preview { display: none; }
+#goal-output-panel .goal-log-reasoning-more { margin-left: 6px; color: color-mix(in srgb, var(--ink) 48%, transparent); white-space: nowrap; }
+/* Long reasoning keeps its own bounded scroll so the log stays scannable. */
+#goal-output-panel .goal-log-reasoning-body {
+  max-height: min(52vh, 460px); margin: 3px 0 1px;
+  padding: 7px 10px 9px; border: 0; border-left: 1px solid var(--border); border-radius: 0 6px 6px 0;
+  background: color-mix(in srgb, var(--ink) 2.5%, transparent);
+  font-size: 14px; line-height: 1.75; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin;
+}
+#goal-output-panel .goal-log-reasoning-body:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+#goal-output-panel .goal-log-reasoning-body .thinking-content { color: var(--ink); font-size: 14px; line-height: 1.75; }
+#goal-output-panel .goal-log-reasoning-body .md-content p { margin: 0 0 8px; }
+#goal-output-panel .goal-log-reasoning-body .md-content p:last-child { margin-bottom: 0; }
+#goal-output-panel .goal-log-reasoning-body .md-content h1,
+#goal-output-panel .goal-log-reasoning-body .md-content h2,
+#goal-output-panel .goal-log-reasoning-body .md-content h3,
+#goal-output-panel .goal-log-reasoning-body .md-content h4,
+#goal-output-panel .goal-log-reasoning-body .md-content h5,
+#goal-output-panel .goal-log-reasoning-body .md-content h6 { margin: 12px 0 6px; font-size: 14px; line-height: 1.5; }
+#goal-output-panel .goal-log-reasoning-body .md-content ul,
+#goal-output-panel .goal-log-reasoning-body .md-content ol { margin: 6px 0 8px; padding-left: 20px; }
+#goal-output-panel .goal-log-reasoning-body .md-content li + li { margin-top: 3px; }
+#goal-output-panel .goal-log-reasoning-body .md-content blockquote {
+  margin: 8px 0; padding: 2px 0 2px 10px;
+  border-left: 2px solid color-mix(in srgb, var(--ink) 22%, transparent); color: var(--muted);
+}
+#goal-output-panel .goal-log-reasoning-body .md-content code { font-size: 12px; }
+#goal-output-panel .goal-log-reasoning-body .md-content pre { margin: 8px 0; padding: 8px 10px; border-radius: 6px; }
+#goal-output-panel .goal-log-reasoning-body .md-content .md-code-card { margin: 8px 0; border-radius: 6px; }
+
+/* Phase dividers: a quiet label + count, separated by a hairline. */
+#goal-output-panel .goal-log-phase {
+  display: flex; align-items: center; gap: 6px;
+  margin: 6px 0 1px; padding: 0 8px 0 26px;
+  color: var(--muted); font-size: 10px; line-height: 16px;
+}
+#goal-output-panel .goal-log-phase:first-child { margin-top: 2px; }
+#goal-output-panel .goal-log-phase-label { flex: 0 0 auto; font-weight: 600; letter-spacing: .03em; }
+#goal-output-panel .goal-log-phase::before {
+  content: ''; flex: 1 1 auto; order: 2; height: 1px;
+  background: color-mix(in srgb, var(--border) 72%, transparent);
+}
+#goal-output-panel .goal-log-phase-count {
+  order: 3; flex: 0 0 auto; padding: 0 5px;
+  border: 1px solid color-mix(in srgb, var(--border) 80%, transparent); border-radius: 999px;
+  font-size: 9.5px; font-variant-numeric: tabular-nums;
+}
+#goal-output-panel .goal-log-phase[data-phase="result"] .goal-log-phase-label { color: var(--ink); }
+
+/* Compact activity rows: one single-line row, no empty body gap. */
+#goal-output-panel .goal-log-row-icon { flex: 0 0 auto; color: var(--muted); font-size: 10px; line-height: 16px; }
+#goal-output-panel .goal-log-entry[data-kind="activity"] { padding-top: 4px; padding-bottom: 4px; }
+#goal-output-panel .goal-log-entry[data-kind="activity"] .goal-log-heading { align-items: center; margin-bottom: 0; min-height: 16px; }
+#goal-output-panel .goal-log-entry[data-kind="activity"] .goal-log-body { display: none; }
+#goal-output-panel .goal-log-body:empty { display: none; }
+#goal-output-panel .goal-log-entry[data-kind="activity"] .goal-log-state { font-size: 9.5px; }
+
+/* Merged worker lifecycle: one row, compact meta line, result or error below. */
+#goal-output-panel .goal-log-entry[data-kind="worker"] { padding-top: 4px; padding-bottom: 5px; }
+#goal-output-panel .goal-log-entry[data-kind="worker"] .goal-log-body { display: block; }
+#goal-output-panel .goal-log-worker-line { display: flex; align-items: center; flex-wrap: wrap; gap: 2px 6px; min-width: 0; }
+#goal-output-panel .goal-log-worker-status {
+  display: inline-flex; align-items: center; gap: 4px; flex: 0 0 auto;
+  padding: 0 5px; border: 1px solid color-mix(in srgb, var(--border) 86%, transparent); border-radius: 999px;
+  color: var(--muted); font-size: 9.5px; line-height: 16px;
+}
+#goal-output-panel .goal-log-worker-status::before {
+  content: ''; width: 4px; height: 4px; border-radius: 50%; background: currentColor; opacity: .7;
+}
+#goal-output-panel .goal-log-entry[data-status="running"] .goal-log-worker-status,
+#goal-output-panel .goal-log-entry[data-status="waiting"] .goal-log-worker-status { color: var(--ink); }
+#goal-output-panel .goal-log-entry[data-status="failed"] .goal-log-worker-status { color: var(--vscode-errorForeground, #b7554b); border-color: color-mix(in srgb, var(--vscode-errorForeground, #b7554b) 32%, transparent); }
+#goal-output-panel .goal-log-entry[data-status="completed"] .goal-log-worker-status { color: var(--dsw-alias-state-success-primary); border-color: color-mix(in srgb, var(--dsw-alias-state-success-primary) 32%, transparent); }
+#goal-output-panel .goal-log-worker-duration { flex: 0 0 auto; color: var(--muted); font-size: 10px; line-height: 16px; font-variant-numeric: tabular-nums; }
+#goal-output-panel .goal-log-worker-description { color: var(--muted); font-size: 11px; line-height: 17px; overflow-wrap: anywhere; }
+#goal-output-panel .goal-log-worker-result {
+  color: color-mix(in srgb, var(--ink) 78%, transparent);
+  font-size: 11.5px; line-height: 17px; overflow-wrap: anywhere;
+}
+#goal-output-panel .goal-log-worker-error { margin: 1px 0 0; font-size: 11px; line-height: 17px; }
+#goal-output-panel .goal-log-worker-parent { color: var(--muted); }
+
+/* Compact tool rows: the shared tool card keeps its behavior, one flat level. */
+#goal-output-panel .goal-log-entry[data-kind="tool"] { padding-top: 2px; padding-bottom: 2px; }
+#goal-output-panel .goal-log-entry[data-kind="tool"] .goal-log-body { font-size: 12px; }
+#goal-output-panel .goal-log-entry[data-kind="tool"] .tool-card { margin: 1px 0; border-radius: 6px; }
+#goal-output-panel .goal-log-entry[data-kind="tool"] .tool-card-summary { min-height: 26px; padding-top: 1px; padding-bottom: 1px; border-radius: 6px; }
+#goal-output-panel .goal-log-entry[data-kind="tool"] .tool-card-summary:hover { border-radius: 6px; }
+
+/* Pager follows the compact row rhythm. */
+#goal-output-panel .goal-log-pager { padding: 5px 8px; gap: 4px; }
+#goal-output-panel .goal-log-pager button { border-radius: 4px; }
+
+@media (max-width: 640px) {
+  #goal-output-panel .goal-log-phase { padding-left: 23px; }
+  #goal-output-panel .goal-log-reasoning-time { display: none; }
+  #goal-output-panel .goal-log-reasoning-summary { padding-left: 2px; padding-right: 2px; }
+  #goal-output-panel .goal-log-reasoning-body { padding: 6px 8px 8px; font-size: 13.5px; }
+  #goal-output-panel .goal-log-reasoning-body .thinking-content { font-size: 13.5px; }
+  #goal-output-panel #goal-log-reason-toggle { max-width: 84px; }
+}
+body.vscode-dark[data-mode="goal"] #goal-output-panel .goal-log-reasoning-body { background: color-mix(in srgb, var(--ink) 4%, transparent); }
+body.vscode-dark[data-mode="goal"] #goal-output-panel .goal-log-reasoning-summary:hover { background: color-mix(in srgb, var(--ink) 6%, transparent); }
+body.vscode-dark[data-mode="goal"] #goal-output-panel .goal-log-worker-status { color: var(--muted); border-color: var(--goal-line); }
+body.vscode-dark[data-mode="goal"] #goal-output-panel .goal-log-entry[data-status="running"] .goal-log-worker-status,
+body.vscode-dark[data-mode="goal"] #goal-output-panel .goal-log-entry[data-status="waiting"] .goal-log-worker-status { color: var(--ink); border-color: color-mix(in srgb, var(--ink) 24%, var(--goal-line)); }
+body.vscode-dark[data-mode="goal"] #goal-output-panel .goal-log-entry[data-status="completed"] .goal-log-worker-status { color: var(--dsw-static-green-400, #4ed17e); border-color: color-mix(in srgb, var(--dsw-static-green-400, #4ed17e) 26%, var(--goal-line)); }
+body.vscode-dark[data-mode="goal"] #goal-output-panel .goal-log-entry[data-status="failed"] .goal-log-worker-status { color: var(--dsw-static-red-400, #f25a5a); border-color: color-mix(in srgb, var(--dsw-static-red-400, #f25a5a) 28%, var(--goal-line)); }
+
+/* The merged worker row reports its live lifecycle in .goal-log-worker-status;
+ * hide the legacy dispatch pill so the row never shows two different states. */
+#goal-output-panel .goal-log-entry[data-kind="worker"] > .goal-log-heading .goal-log-state { display: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  #goal-output-panel .goal-log-entry[data-status="running"] .goal-log-reasoning-icon { animation: none; }
+  #goal-output-panel .goal-log-reasoning-head .thinking-chevron { transition: none; }
 }

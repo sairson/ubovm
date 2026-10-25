@@ -96,4 +96,30 @@ body[data-mode="goal"] {
   --dsw-alias-link: var(--vscode-textLink-foreground, var(--dsw-static-deepseek-400));
   --surface-raised: var(--vscode-editorWidget-background, var(--vscode-sideBar-background, var(--canvas)));
 }
+/* Dark exploration stays monochrome like the rest of the goal chrome. This
+ * block intentionally follows the host-palette block above so the bundled dark
+ * theme's green button/focus/selection colors cannot leak into exploration
+ * headers (notes reader toolbar, filters, focus rings, primary actions). State
+ * colors (done/blocked/warning) remain semantic green/amber/red. */
+body.vscode-dark[data-mode="goal"] {
+  --accent: var(--ink);
+  --accent-wash: color-mix(in srgb, var(--ink) 10%, var(--goal-surface-muted, var(--canvas)));
+  --focus: var(--ink);
+  --wash: var(--goal-surface-muted, color-mix(in srgb, var(--ink) 5%, var(--canvas)));
+  --hover: color-mix(in srgb, var(--ink) 8%, var(--goal-surface-muted, var(--canvas)));
+  --selection-bg: color-mix(in srgb, var(--ink) 10%, var(--goal-canvas, var(--canvas)));
+  --selection-ink: var(--ink);
+}
+/* The reading toolbar is a page header, not a host list selection: keep it on
+ * the goal surface instead of the theme's greenish inactive-selection fill. */
+body.vscode-dark[data-mode="goal"] .note-reader-toolbar { background: var(--goal-surface-muted); }
+body.vscode-dark[data-mode="goal"] .notebook-filters button[aria-pressed="true"] { color: var(--ink); }
+body.vscode-dark[data-mode="goal"] :is(.primary-button, .submit):not(.composer *) {
+  background: var(--goal-button-bg, var(--ink));
+  color: var(--goal-button-ink, #1b1b1c);
+}
+body.vscode-dark[data-mode="goal"] :is(.primary-button, .submit):not(.composer *):hover:enabled {
+  background: var(--goal-button-hover, color-mix(in srgb, var(--ink) 86%, var(--goal-canvas, var(--canvas))));
+  color: var(--goal-button-ink, #1b1b1c);
+}
 body.vscode-high-contrast[data-mode="goal"] { --border: var(--vscode-contrastBorder, #fff); }

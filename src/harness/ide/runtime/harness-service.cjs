@@ -4,7 +4,7 @@ const { createHash, randomUUID } = require('node:crypto');
 const { access, mkdir, open, readFile, rename, unlink, rm } = require('node:fs/promises');
 const { dirname, join, resolve } = require('node:path');
 const { pathToFileURL } = require('node:url');
-const { cleanTimelineParts, formatToolValue, redactDisplayObject, workerDisplayText, reasonConclusion, sanitizeUsage, accumulateUsage, STREAMING_TOOLS } = require('./projection.cjs');
+const { cleanTimelineParts, formatToolValue, redactDisplayObject, projectTeam, teamTranscriptConversation, workerDisplayText, reasonConclusion, sanitizeUsage, accumulateUsage, STREAMING_TOOLS } = require('./projection.cjs');
 const { createLatestWrite } = require('./latest-write.cjs');
 const { workerRecord, WORKER_RECORD_LIMIT, WORKER_RECORD_COUNT } = require('./worker-record.cjs');
 const { formatAssistSourceEvidenceSeed } = require('../../assist-evidence.cjs');
@@ -307,6 +307,8 @@ function createHarnessService({ sdkPath, storageDirectory, workspaceRoots = [], 
   function updateBoard(entry, snapshot) {
     entry.omittedWorkers = 0;
     entry.blackboard = projectBoard(snapshot);
+    entry.agenda = typeof entry.session?.agenda === 'function' ? entry.session.agenda() : entry.agenda;
+    entry.graph = typeof entry.session?.graphInfo === 'function' ? entry.session.graphInfo() : entry.graph;
     const old = new Map(entry.workers.map(worker => [worker.id, worker]));
     entry.workers = snapshot.nodes.filter(node => node.kind === 'intent').map(node => ({ id: node.id, description: node.intent.description, status: node.intent.status, phase: old.get(node.id)?.phase ?? null, attemptId: node.attempts.at(-1)?.id ?? null }));
   }
@@ -659,16 +661,119 @@ function createHarnessService({ sdkPath, storageDirectory, workspaceRoots = [], 
     if (event.type === 'middleware.event' && !summaryEvent(entry, event.event)) activity(entry, event.event.type, 'completed');
     if (entry.session) {
       if (event.type === 'blackboard.changed' || event.type === 'session.state') updateBoard(entry, entry.session.snapshot());
-      if (event.type === 'memory.changed' || event.type === 'worker.result' || event.type === 'session.state') entry.memory = entry.session.memory();
+      if (event.type === 'memory.changed' || event.type === 'worker.result' || event.type === 'session.state') {
+        entry.memory = entry.session.memory();
+        if (typeof entry.session.agenda === 'function') entry.agenda = entry.session.agenda();
+      }
     }
     notify(entry);
+  }
+  // Team events carry the Lead roster, the shared task board and — for the
+  // selected member — a live conversation projection. The page never receives
+  // every teammate transcript at once.
+  function teamView(entry, name) {
+    const views = entry.teamViews ??= new Map();
+    let view = views.get(name);
+    if (!view) {
+      view = { ...idle(), mode: 'assist', timelineRun: `${entry.timelineRun ?? 'restored'}:team:${hash(name)}`, textMessageSequence: 0 };
+      views.set(name, view);
+    }
+    return view;
+  }
+  function teamPiEvent(entry, name, event) {
+    if (typeof name !== 'string' || !name || !event || typeof event !== 'object') return;
+    piEvent(teamView(entry, name), event, `team:${name}`, true, {});
+  }
+  function applyTeamActivity(entry, event) {
+    const name = typeof event?.member === 'string' ? event.member : '';
+    const activity = event?.activity && typeof event.activity === 'object' && !Array.isArray(event.activity) ? event.activity : undefined;
+    if (!name || !activity || !entry.team) return;
+    const label = typeof activity.label === 'string' && activity.label ? activity.label.slice(0, 200) : '';
+    if (!label) return;
+    const status = typeof activity.status === 'string' ? activity.status.slice(0, 40) : '';
+    const at = Number.isSafeInteger(activity.at) && activity.at >= 0 ? activity.at : Date.now();
+    entry.team = { ...entry.team, roster: entry.team.roster.map(row => row.name === name ? { ...row, activity: { label, status, at } } : row) };
+  }
+  async function readTeamHistory(entry, name) {
+    const fallback = { entries: [], omitted: 0 };
+    try {
+      const filePath = join(entry.directory, 'assist.sqlite');
+      try { await access(filePath); } catch (error) { if (error.code === 'ENOENT') return fallback; throw error; }
+      const { HarnessDatabase } = await load();
+      let database;
+      try {
+        database = await HarnessDatabase.open({ filePath, busyTimeoutMs: 5000 });
+        const transcript = database.loadContext(entry.sessionId, `team:member:${name}:transcript`);
+        const converted = teamTranscriptConversation(transcript?.messages ?? []);
+        return { ...converted, omitted: Math.max(converted.omitted, Number.isSafeInteger(transcript?.omitted) && transcript.omitted > 0 ? transcript.omitted : 0) };
+      } finally { database?.close(); }
+    } catch (error) {
+      return { ...fallback, error: errorData(error).message };
+    }
+  }
+  function nextTeamHistoryToken(entry, name) {
+    const tokens = entry.teamHistoryTokens ??= new Map();
+    const token = (tokens.get(name) ?? 0) + 1;
+    tokens.set(name, token);
+    return token;
+  }
+  async function refreshTeamHistory(entry, name) {
+    const token = nextTeamHistoryToken(entry, name);
+    const history = await readTeamHistory(entry, name);
+    if (closed || entry.teamHistoryTokens?.get(name) !== token) return;
+    (entry.teamHistory ??= new Map()).set(name, history);
+    if (entry.teamWatch === name) notify(entry);
+  }
+  function handleTeamRun(entry, event) {
+    const name = typeof event?.member === 'string' ? event.member : '';
+    if (!name) return;
+    // A new run starts a fresh live timeline; its settled transcript is the
+    // authoritative history for the next read. Only the selected member is read
+    // back eagerly; other members load lazily when their view is opened.
+    entry.teamViews?.delete(name);
+    entry.teamHistory?.delete(name);
+    if (entry.teamWatch === name) void refreshTeamHistory(entry, name).catch(() => {});
+  }
+  function teamWatchView(entry) {
+    const name = entry.teamWatch;
+    if (!name) return undefined;
+    const member = entry.team?.roster?.find(row => row.name === name);
+    const view = entry.teamViews?.get(name);
+    if (view) flushAssistantText(view);
+    const history = entry.teamHistory?.get(name);
+    return {
+      name,
+      role: member?.role === 'lead' ? 'lead' : 'teammate',
+      status: member?.status ?? 'inactive',
+      ...(member?.description ? { description: member.description } : {}),
+      ...(member?.error ? { error: member.error } : {}),
+      ...(member?.activity ? { activity: { ...member.activity } } : {}),
+      running: Boolean(view) && ['running', 'provisioning'].includes(member?.status),
+      history: history
+        ? { entries: history.entries, omitted: history.omitted, ...(history.error ? { error: history.error } : {}) }
+        : { entries: [], omitted: 0, loading: true },
+      // The page only shows the latest slice of the live run; keep each
+      // published snapshot bounded even when a teammate floods tool output.
+      live: { parts: view ? cleanTimelineParts(view.parts).slice(-400) : [], streamText: typeof view?.streamText === 'string' ? view.streamText.slice(0, 32000) : '' },
+      updatedAt: Date.now()
+    };
   }
   function collaborationEvent(entry, event) {
     if (closed || entry.controller?.signal.aborted) return;
     if (summaryEvent(entry, event)) { notify(entry); return; }
     if (event.type === 'middleware.status') entry.middleware = event.status;
     else if (event.type === 'memory.status') entry.memory = event.memory;
-    else if (event.type === 'swarm.status') {
+    else if (event.type === 'team.status') {
+      // projectTeam keeps only the bounded fields the page can present and
+      // hides a Team that has neither teammates nor tasks yet.
+      entry.team = projectTeam(event.team ?? event);
+    } else if (event.type === 'team.member.activity') {
+      applyTeamActivity(entry, event);
+    } else if (event.type === 'team.member.event') {
+      teamPiEvent(entry, event.member, event.event);
+    } else if (event.type === 'team.member.run') {
+      handleTeamRun(entry, event);
+    } else if (event.type === 'swarm.status') {
       entry.omittedWorkers = 0;
       entry.workers = event.workers.map(worker => {
         const metadata = { id: worker.id, parentId: worker.parentId, name: worker.name, description: worker.task,
@@ -745,6 +850,13 @@ function createHarnessService({ sdkPath, storageDirectory, workspaceRoots = [], 
         const { HarnessDatabase } = await load();
         database = await HarnessDatabase.open({ filePath });
         entry.memory = database.loadSession(entry.sessionId)?.memory;
+        // Restore the durable Team roster/task board even before the next turn
+        // starts, so the panel reflects the last saved team instead of vanishing.
+        try {
+          const savedTeam = projectTeam(database.loadContext(entry.sessionId, 'team:state'));
+          if (savedTeam) entry.team = { ...savedTeam, roster: savedTeam.roster.map(member =>
+            ['running', 'provisioning'].includes(member.status) ? { ...member, status: 'inactive' } : member) };
+        } catch { /* A damaged Team projection must not block assist history recovery. */ }
         notify(entry, true);
       } finally { database?.close(); }
       return;
@@ -876,8 +988,10 @@ function createHarnessService({ sdkPath, storageDirectory, workspaceRoots = [], 
     // Redaction already creates a detached object at every level. Cloning its
     // result again doubles the allocation for each streamed UI publication.
     return redactDisplayObject({ status: entry.status, busy: entry.busy, phase: entry.phase, workers: projectWorkers(entry).map(worker => ({ ...worker, parts: worker.parts?.map(part => entry.residentParts?.get(part.commandId) ?? part) })), activities: entry.activities, workerViewError: entry.workerViewError,
-      blackboard: entry.blackboard, memory: entry.memory, error: entry.error, result: entry.result, parts: [...entry.parts.map(part => entry.residentParts?.get(part.commandId) ?? part), ...[...(entry.residentParts?.values() ?? [])].filter(part => !entry.parts.some(current => current.commandId === part.commandId))],
+      blackboard: entry.blackboard, memory: entry.memory, ...(entry.agenda ? { agenda: entry.agenda } : {}), ...(entry.graph ? { graph: entry.graph } : {}), error: entry.error, result: entry.result, parts: [...entry.parts.map(part => entry.residentParts?.get(part.commandId) ?? part), ...[...(entry.residentParts?.values() ?? [])].filter(part => !entry.parts.some(current => current.commandId === part.commandId))],
       streamText: entry.streamText, canResume: entry.canResume, middleware: entry.middleware,
+      ...(entry.team ? { team: entry.team } : {}),
+      ...(entry.teamWatch ? { teamWatch: teamWatchView(entry) } : {}),
       runId: entry.timelineRun, ...(usage ? { usage } : {}),
       ...(entry.contextUsage ? { contextUsage: entry.contextUsage } : {}),
       // Expose the permission mode this run started with. The IDE mirrors it so
@@ -1113,6 +1227,17 @@ function createHarnessService({ sdkPath, storageDirectory, workspaceRoots = [], 
         const item = entry.activities.find(item => item.key === `swarm:${worker.id}`);
         if (item) item.status = worker.status;
       }
+      // A settled turn cannot leave a teammate marked as running: the backend
+      // interrupts live teammates on close, but a hard failure may skip its
+      // final status event. Never show a phantom live member after a run ends.
+      if (entry.team) entry.team = { ...entry.team, roster: entry.team.roster.map(member =>
+        ['running', 'provisioning'].includes(member.status) ? { ...member, status: 'inactive' } : member) };
+      // Live teammate timelines belong to this turn. Freeze them so an open
+      // member view does not keep a spinner, then reload the selected member's
+      // durable transcript for the settled history.
+      for (const view of entry.teamViews?.values() ?? []) finishParts(view);
+      entry.teamViews?.clear(); entry.teamHistory?.clear(); entry.teamHistoryTokens?.clear();
+      if (entry.teamWatch && entry.mode === 'assist') void refreshTeamHistory(entry, entry.teamWatch).catch(() => {});
       const backgrounded = item => entry.backgroundKeys?.has(item.key) || entry.backgroundNames?.has(item.label)
         || (entry.parts || []).some(part => part.type === 'tool' && part.name === item.label && part.background === true)
         || [...(entry.residentParts?.values() ?? [])].some(part => part.name === item.label && part.background === true);
@@ -1301,7 +1426,37 @@ function createHarnessService({ sdkPath, storageDirectory, workspaceRoots = [], 
     entry.steeringInputs.set(input.id, fingerprint);
     return true;
   }
-  return Object.freeze({ state, runtimeSummary, isBusy: id => sessions.get(id)?.busy === true, start, steer, resume, cancel, interruptCommand, backgroundCommand, restore, releaseWorkspace, remove, close });
+  /**
+   * Select (or clear) the teammate whose conversation the page is viewing.
+   * History is read from the durable teammate transcript; live parts arrive
+   * through the normal collaboration event stream and `state()` publication.
+   * This is presentation state: it never starts, wakes or mutates a member.
+   */
+  async function watchTeamMember(input = {}) {
+    assertOpen();
+    const conversationId = typeof input?.conversationId === 'string' ? input.conversationId : '';
+    if (!conversationId.trim()) throw new TypeError('conversationId is required');
+    if (!sessions.has(conversationId)) await restore({ conversationId, mode: 'assist' });
+    assertAvailable(conversationId);
+    const entry = sessions.get(conversationId);
+    if (!entry || entry.mode !== 'assist') throw failure('TEAM_UNAVAILABLE', '团队会话不可用。');
+    const requested = input.name;
+    if (requested === null || requested === undefined || requested === '') {
+      if (entry.teamWatch) { entry.teamWatch = undefined; notify(entry, true); }
+      return { watching: null };
+    }
+    if (typeof requested !== 'string' || !requested.trim() || requested.length > 80) throw failure('INVALID_TEAM_MEMBER', '成员标识无效。');
+    const name = requested.trim();
+    const member = (entry.team?.roster ?? []).find(row => row.name === name);
+    if (!member) throw failure('TEAM_MEMBER_NOT_FOUND', '该成员不在当前团队中。');
+    entry.teamWatch = name;
+    const token = nextTeamHistoryToken(entry, name);
+    const history = await readTeamHistory(entry, name);
+    if (!closed && entry.teamHistoryTokens?.get(name) === token) (entry.teamHistory ??= new Map()).set(name, history);
+    notify(entry, true);
+    return { watching: name };
+  }
+  return Object.freeze({ state, runtimeSummary, isBusy: id => sessions.get(id)?.busy === true, start, steer, resume, cancel, interruptCommand, backgroundCommand, restore, watchTeamMember, releaseWorkspace, remove, close });
 }
 
 module.exports = { createHarnessService };

@@ -233,6 +233,35 @@ test('background task dock aggregates commands, streams selected logs and stops 
   assert.equal(await dock.isVisible(), false);
 });
 
+test('background dock labels local and SSH background commands by transport', async t => {
+  const f = await fixture(t);
+  const local = tool('dock-local', { name: 'run_local_shell_command', args: JSON.stringify({ command: 'npm run dev' }),
+    background: true, commandId: 'local-transport', status: 'running', endedAt: undefined, output: 'ready on 5173' });
+  const ssh = tool('dock-ssh', { name: 'run_linux_ssh_command', args: JSON.stringify({ command: 'uvicorn app.main:app --port 8000' }),
+    background: true, commandId: 'ssh-transport', status: 'running', endedAt: undefined, output: 'uvicorn running' });
+  await f.emit(state([local, ssh]));
+  const dock = f.page.locator('#background-tasks');
+  await dock.locator('.background-tasks-toggle').click();
+  assert.deepEqual(await dock.locator('.background-task-kind').allTextContents(), ['本地', 'SSH']);
+  assert.equal(await dock.locator('.background-task-kind[data-kind="ssh"]').count(), 1);
+  await dock.locator('.background-task-select').filter({ hasText: 'uvicorn' }).click();
+  assert.match(await dock.locator('.background-task-detail-meta').textContent(), /SSH/);
+  assert.match(await dock.locator('.background-task-detail-meta').textContent(), /运行中/);
+});
+
+test('reason worker control cards keep their label and worker alias on narrow screens', async t => {
+  const f = await fixture(t);
+  const part = tool('worker-control', { name: 'stop_worker', args: JSON.stringify({ worker: 'n7', reason: 'redundant branch' }),
+    output: '{"worker":"n7","status":"stopping","stopped":true}' });
+  await f.emit(state([part]));
+  await f.page.setViewportSize({ width: 430, height: 760 });
+  await f.frames();
+  const card = f.page.locator('#messages .tool-card').first();
+  assert.equal(await card.locator('.tool-title').isVisible(), true);
+  assert.equal(await card.locator('.tool-title').textContent(), '停止 Worker');
+  assert.match(await card.locator('.tool-path').textContent(), /n7/);
+});
+
 test('background task bursts defer folded logs, preserve append selection and avoid unchanged DOM writes', async t => {
   const f = await fixture(t);
   const result = await f.page.evaluate(() => {
@@ -988,6 +1017,34 @@ test('long tool batches fold completed history while preserving active, failed a
   await f.page.setViewportSize({ width: 1000, height: 1000 });
   await f.page.evaluate(() => document.body.classList.remove('vscode-dark'));
   await f.page.screenshot({ path: screenshotDirectory + '/tool-batch.png' });
+});
+
+test('short tool batches stay headerless and long batches summarise counts, status and duration', async t => {
+  const f = await fixture(t);
+  await f.emit(state([tool('short-a'), tool('short-b', { name: 'list_workspace_files', args: '{"path":"src"}' })]));
+  const first = f.page.locator('#messages .tool-group');
+  assert.equal(await first.locator('.tool-group-toggle').isVisible(), false, 'two calls need no summary header');
+  assert.equal(await first.locator('.tool-card:visible').count(), 2);
+  assert.equal(await first.getAttribute('data-status'), 'completed');
+  const calls = Array.from({ length: 6 }, (_, index) => tool('summary-' + index, {
+    name: 'run_local_shell_command', args: JSON.stringify({ command: 'npm run check:' + index }),
+    output: 'ok ' + index, startedAt: start + 1300 * index, endedAt: start + 1300 * index + 1200
+  }));
+  await f.emit(state(calls));
+  const batch = f.page.locator('#messages .tool-group');
+  const toggle = batch.locator('.tool-group-toggle');
+  assert.equal(await toggle.isVisible(), true, 'longer batches expose the summary header');
+  assert.match(await toggle.textContent(), /^6 个工具调用 · 展开 3 条历史$/);
+  assert.equal(await batch.locator('.tool-card:visible').count(), 3);
+  assert.equal(await batch.getAttribute('data-status'), 'completed');
+  const duration = await batch.locator('.tool-group-duration').getAttribute('data-value');
+  assert.match(duration, /^\d+(\.\d)?s$/, 'the header reports the batch wall time');
+  await toggle.click();
+  assert.equal(await batch.locator('.tool-card:visible').count(), 6);
+  assert.match(await toggle.textContent(), /· 收起历史$/);
+  await f.page.setViewportSize({ width: 320, height: 800 });
+  await f.frames();
+  assert(await f.page.evaluate(() => document.documentElement.scrollWidth <= 320));
 });
 
 test('tool groups remain inline with prose and retain expanded nodes through streaming and history promotion', async t => {

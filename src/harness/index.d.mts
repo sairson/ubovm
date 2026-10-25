@@ -133,6 +133,8 @@ export class Blackboard {
   failAttempt(id: string, attemptId: string, error: string | Error, options?: { interrupted?: boolean }): Promise<IntentNode>;
   saveCheckpoint(id: string, attemptId: string, data: JsonValue): Promise<Attempt>;
   retryIntent(id: string): Promise<IntentNode>;
+  /** Stop a queued intent before it starts; records a synthetic interrupted attempt. */
+  cancelIntent(id: string, reason?: string): Promise<IntentNode>;
   recoverInterrupted(): Promise<IntentNode[]>;
 }
 export function buildBlackboardContext(snapshot: BlackboardSnapshot, options?: { focusId?: string }): BlackboardContext;
@@ -145,7 +147,25 @@ export type ReasonDecision =
   | { wait: true }
   | { complete: true; summary: string; evidenceIds: string[]; intents?: [] }
   | { complete?: false; intents: ReasonIntent[] };
-export interface ReasonInput { context: BlackboardContext; signal?: AbortSignal }
+/** Worker aliases use the current evidence snapshot's node refs (n1, n2, ...). */
+export interface ReasonWorkerSummary {
+  worker: string;
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'interrupted';
+  description: string;
+  priority: 'high' | 'medium' | 'low';
+  attempts: number;
+  latest_attempt?: string;
+  failures?: Array<{ status: string; error: string }>;
+  progress?: { phase: string; completed_steps: number; remaining_steps: number };
+  result?: string;
+}
+export interface ReasonWorkerControl {
+  list(): ReasonWorkerSummary[];
+  stop(worker: string, reason?: string): Promise<ReasonWorkerSummary & { stopped: boolean; note?: string }>;
+  start(worker: string): Promise<ReasonWorkerSummary & { started: boolean; note?: string }>;
+  prompt(worker: string, message: string): Promise<ReasonWorkerSummary & { directed: boolean; note?: string }>;
+}
+export interface ReasonInput { context: BlackboardContext; signal?: AbortSignal; control?: ReasonWorkerControl }
 export type ReasonCallback = (input: ReasonInput) => Awaitable<ReasonDecision>;
 export interface WorkerInput {
   node: IntentNode;
@@ -168,7 +188,9 @@ export class BlackboardCoordinator {
     /** Per-attempt deadline in ms; 0 (default) disables the watchdog. */
     workerTimeoutMs?: number;
     /** In-run requeues per intent after a failed attempt; 0 (default) keeps failures on the board for Reason. */
-    maxWorkerRetries?: number });
+    maxWorkerRetries?: number;
+    /** Optional shared-agenda texts that block a duplicate intent description. */
+    duplicateTexts?: () => Awaitable<Array<{ text: string; label?: string }>> });
   readonly blackboard: Blackboard;
   readonly reason: ReasonCallback;
   readonly worker: WorkerCallback;
@@ -308,6 +330,8 @@ export interface ReasonAdapterOptions {
   maxIntents?: number;
   maxResponseBytes?: number;
   maxRepairs?: number;
+  /** Worker management actions allowed per review; default 12. */
+  maxWorkerActions?: number;
   onEvent?: (event: ReasonEvent) => unknown;
   beforeModel?: (request: ReasonModelRequest) => Awaitable<Context>;
 }
@@ -318,7 +342,17 @@ export type ReasonEvent = { revision: number } & (
   | { type: 'reason_decision'; decision: ReasonDecision; modelCalls: number }
   | { type: 'pi_event'; attempt: number; event: AgentEvent }
 );
-export interface PiReasonOptions extends ReasonAdapterOptions { model: Model<Api>; streamFn: StreamFn; getApiKey?: GetApiKey }
+export interface PiReasonOptions extends ReasonAdapterOptions {
+  model: Model<Api>;
+  streamFn: StreamFn;
+  getApiKey?: GetApiKey;
+  /** Reason-only tools appended beside the worker-control tools (for example exploration_todo). */
+  extraTools?: AgentTool[];
+  /** Extra evidence text regenerated for every review, appended to the Blackboard Evidence message. */
+  contextProvider?: (input: { context: BlackboardContext }) => Awaitable<string | undefined | null>;
+  /** When set, replaces the JSON board evidence with a rendered complete-topology graph. */
+  evidenceProvider?: (input: { context: BlackboardContext }) => Awaitable<string | undefined | null>;
+}
 export interface ReasonOptions extends ReasonAdapterOptions { model?: ModelClientOptions }
 export function createPiReason(options: PiReasonOptions): ReasonCallback;
 export function parseReasonDecision(text: string, options: { context: BlackboardContext; maxIntents?: number; maxResponseBytes?: number }): ReasonDecision;
@@ -390,6 +424,8 @@ export class HarnessSession {
   subscribe(listener: (event: HarnessEvent) => unknown): () => boolean;
   snapshot(): BlackboardSnapshot;
   memory(): MemorySnapshot | undefined;
+  agenda(): ExplorationAgenda;
+  graphInfo(): ExplorationGraphStats;
   getContext(options?: { focusId?: string }): BlackboardContext;
   getState(): HarnessState;
   events(options?: { afterSequence?: number; limit?: number }): HarnessEvent[];
@@ -830,6 +866,55 @@ export interface ToolEvidence {
   learningFingerprint?: string;
   learningRequestFingerprint?: string;
 }
+/** Host-projected shared exploration agenda; Worker plan steps are execution detail, never evidence. */
+export interface ExplorationAgendaItem {
+  id: string;
+  kind: 'intent' | 'direction' | 'suggestion';
+  status: 'planned' | 'active' | 'blocked' | 'done' | 'dropped';
+  title: string;
+  source: 'blackboard' | 'reason' | 'failure' | 'gap';
+  intentId?: string;
+  directionId?: string;
+  ref?: string;
+  priority?: 'high' | 'medium' | 'low';
+  dedupeKey?: string;
+  method?: string;
+  acceptance?: string;
+  attempts?: number;
+  currentStep?: string;
+  planSteps?: string[];
+  blocker?: string;
+  evidenceRef?: string;
+  gaps?: { point: string; status: string; note?: string }[];
+}
+export interface ExplorationAgendaDirection {
+  id: string;
+  worker_id: 'reason';
+  content: string;
+  status: 'planned' | 'active' | 'done' | 'dropped';
+  dedupe_key?: string;
+  method?: string;
+  acceptance?: string;
+  created_at: string;
+  updated_at: string;
+}
+export interface ExplorationAgenda {
+  items: ExplorationAgendaItem[];
+  counts: { planned: number; active: number; blocked: number; done: number; dropped: number; total: number };
+  gaps: ExplorationAgendaItem[];
+  lastUpdated: string | null;
+}
+export interface ExplorationGraphStats {
+  revision: number;
+  nodes: number;
+  intents: number;
+  facts: number;
+  edges: number;
+  root: string;
+  detail: 'full' | 'summary' | 'topology-only';
+  omittedFacts: number;
+  overBudget: boolean;
+}
 export interface MemorySnapshot {
   schemaVersion: 1;
   sessionId: string;
@@ -839,6 +924,7 @@ export interface MemorySnapshot {
   promotions: { note_id: string; session_id: string; kind: 'fact' | 'intent'; node_id: string; status: 'pending' | 'completed'; spec: FactSpec | IntentSpec; created_at: string; updated_at: string; promoted_at?: string }[];
   workers: { worker_id: string; root_worker_id: string }[];
   audit: { type: string; note_id: string; note_type: string; source_worker: string; deleted_by: string; reason: string; created_at: string }[];
+  agenda?: ExplorationAgendaDirection[];
   toolEvidence?: ToolEvidence[];
   delivery?: DeliveryRecord;
   agentKnowledge?: { version: 1; lessons: KnowledgeLesson[]; reflectionKeys?: string[]; queue?: LearningQueueState };
@@ -1149,7 +1235,7 @@ export class BrowserManager implements BrowserBackend {
 }
 export function createBrowserTools(options: BrowserBinding & { manager?: Pick<BrowserBackend, 'status' | 'call'> }): AgentTool[];
 
-export type InternalToolName = 'delivery_workflow' | 'browser_action' | 'browser_connection_status' | 'fetch_web_content' | 'note' | 'todo' | 'web_search' | 'read_skills_resource' | 'run_local_skill_script' | 'run_linux_ssh_command' | 'run_local_shell_command' | 'run_python' | 'manage_python_environment' | 'upload_sftp' | 'deploy_remote_service' | 'learn_capability';
+export type InternalToolName = 'delivery_workflow' | 'browser_action' | 'browser_connection_status' | 'fetch_web_content' | 'note' | 'todo' | 'web_search' | 'read_skills_resource' | 'run_local_skill_script' | 'run_linux_ssh_command' | 'run_local_shell_command' | 'run_python' | 'manage_python_environment' | 'upload_sftp' | 'deploy_remote_service' | 'background_commands' | 'learn_capability';
 /** Tools that exist only when the host supplies an interactive hook (a human is present); never in goal sessions. */
 export type HostInteractionToolName = 'ask_human';
 export const INTERNAL_TOOL_NAMES: readonly InternalToolName[];

@@ -14,8 +14,8 @@
   window.addEventListener('ubovm-settings-visibility', () => { tick(); syncClock(); });
   const labels = { running: '运行中', completed: '完成', failed: '失败', interrupted: '已停止' };
   const executionLabels = { queued: '排队中', starting: '准备中', running: '运行中', stopping: '正在停止' };
-  const tools = { delivery_workflow: '交付闭环', search_workspace: '搜索项目代码', inventory_workspace_dependencies: '盘点工作区依赖', scan_workspace_secrets: '扫描疑似密钥', analyze_workspace_call_chain: '分析代码调用链', navigate_workspace_code: '代码符号导航', get_workspace_diagnostics: '读取代码诊断', validate_workspace_changes: '验证代码修改', recover_workspace_changes: '恢复代码修改状态', read_workspace_code: '读取待编辑代码', edit_workspace_file: '编辑代码', list_workspace_changes: '查看代码更改', wait_workers: '等待并行任务', spawn_worker: '分派并行任务', manage_workers: '调度并行任务', cancel_workers: '中断并行任务', list_workers: '检查协作进展', read_worker_evidence: '查看任务记录', read_workspace_file: '读取文件', read_image: '读取图片', list_workspace_files: '查看目录', run_local_shell_command: '运行本地命令', run_python: '运行 Python 沙箱', manage_python_environment: '管理 Python 依赖', run_linux_ssh_command: '运行命令', upload_sftp: 'SFTP 上传', deploy_remote_service: '部署远程服务', fetch_web_content: '读取网页', web_search: '搜索网页', load_skill: '加载技能', read_skills_resource: '读取技能资源', run_local_skill_script: '执行技能脚本', note: '更新笔记', todo: '更新任务', browser_action: '浏览器操作', read_context_evidence: '读取上下文证据', install_skill: '安装技能', install_mcp_server: '安装 MCP 服务', browser_connection_status: '检查浏览器状态', domain_inventory: '登记域名资产', learn_capability: '记录能力', inspect_harness: '查看运行预算', manage_harness_project: '管理任务配置', read_worker_result: '读取任务结果', read_workspace_change: '读取代码改动快照', preview_workspace_edits: '预览代码修改', preview_workspace_rename: '预览符号重命名', edit_workspace_files: '批量编辑代码', inspect_workspace_project: '检查项目配置', list_assist_evidence: '查看已记录证据', record_assist_evidence: '记录证据', attach_assist_evidence: '关联证据', list_linked_goals: '查看关联目标', create_linked_goal: '创建关联目标', ask_human: '询问用户' };
-  const kinds = { delivery_workflow: 'memory', search_workspace: 'search', inventory_workspace_dependencies: 'search', scan_workspace_secrets: 'search', analyze_workspace_call_chain: 'search', navigate_workspace_code: 'search', get_workspace_diagnostics: 'search', validate_workspace_changes: 'tool', recover_workspace_changes: 'file', read_workspace_code: 'file', edit_workspace_file: 'file', list_workspace_changes: 'folder', read_workspace_file: 'file', read_image: 'file', list_workspace_files: 'folder', run_local_shell_command: 'terminal', run_python: 'terminal', manage_python_environment: 'terminal', run_linux_ssh_command: 'terminal', upload_sftp: 'file', deploy_remote_service: 'terminal', fetch_web_content: 'browser', web_search: 'search', load_skill: 'skill', read_skills_resource: 'skill', run_local_skill_script: 'terminal', note: 'memory', todo: 'memory', browser_action: 'browser', read_context_evidence: 'search', install_skill: 'skill', install_mcp_server: 'mcp', browser_connection_status: 'browser', domain_inventory: 'memory', learn_capability: 'memory', inspect_harness: 'tool', manage_harness_project: 'tool', read_worker_result: 'tool', read_workspace_change: 'file', preview_workspace_edits: 'file', preview_workspace_rename: 'search', edit_workspace_files: 'file', inspect_workspace_project: 'search', list_assist_evidence: 'memory', record_assist_evidence: 'memory', attach_assist_evidence: 'memory', list_linked_goals: 'memory', create_linked_goal: 'memory', ask_human: 'memory' };
+  const tools = { delivery_workflow: '交付闭环', search_workspace: '搜索项目代码', inventory_workspace_dependencies: '盘点工作区依赖', scan_workspace_secrets: '扫描疑似密钥', analyze_workspace_call_chain: '分析代码调用链', navigate_workspace_code: '代码符号导航', get_workspace_diagnostics: '读取代码诊断', validate_workspace_changes: '验证代码修改', recover_workspace_changes: '恢复代码修改状态', read_workspace_code: '读取待编辑代码', edit_workspace_file: '编辑代码', list_workspace_changes: '查看代码更改', wait_workers: '等待并行任务', spawn_worker: '分派并行任务', manage_workers: '调度并行任务', cancel_workers: '中断并行任务', list_workers: '检查协作进展', read_worker_evidence: '查看任务记录', read_workspace_file: '读取文件', read_image: '读取图片', list_workspace_files: '查看目录', run_local_shell_command: '运行本地命令', run_python: '运行 Python 沙箱', manage_python_environment: '管理 Python 依赖', run_linux_ssh_command: '运行命令', upload_sftp: 'SFTP 上传', deploy_remote_service: '部署远程服务', fetch_web_content: '读取网页', web_search: '搜索网页', load_skill: '加载技能', read_skills_resource: '读取技能资源', run_local_skill_script: '执行技能脚本', note: '更新笔记', todo: '更新任务', browser_action: '浏览器操作', read_context_evidence: '读取上下文证据', install_skill: '安装技能', install_mcp_server: '安装 MCP 服务', browser_connection_status: '检查浏览器状态', domain_inventory: '登记域名资产', learn_capability: '记录能力', inspect_harness: '查看运行预算', manage_harness_project: '管理任务配置', read_worker_result: '读取任务结果', read_workspace_change: '读取代码改动快照', preview_workspace_edits: '预览代码修改', preview_workspace_rename: '预览符号重命名', edit_workspace_files: '批量编辑代码', inspect_workspace_project: '检查项目配置', list_assist_evidence: '查看已记录证据', record_assist_evidence: '记录证据', attach_assist_evidence: '关联证据', list_linked_goals: '查看关联目标', create_linked_goal: '创建关联目标', ask_human: '询问用户', spawn_teammate: '创建团队成员', send_message: '向团队发消息', list_agents: '查看团队成员', wait_agent: '等待团队进展', interrupt_agent: '中断团队成员', team_task_create: '创建任务', team_task_list: '查看任务板', team_task_get: '读取任务', team_task_update: '更新任务', background_commands: '后台任务', stop_worker: '停止 Worker', start_worker: '启动 Worker', prompt_worker: '派发 Worker 提示' };
+  const kinds = { delivery_workflow: 'memory', search_workspace: 'search', inventory_workspace_dependencies: 'search', scan_workspace_secrets: 'search', analyze_workspace_call_chain: 'search', navigate_workspace_code: 'search', get_workspace_diagnostics: 'search', validate_workspace_changes: 'tool', recover_workspace_changes: 'file', read_workspace_code: 'file', edit_workspace_file: 'file', list_workspace_changes: 'folder', read_workspace_file: 'file', read_image: 'file', list_workspace_files: 'folder', run_local_shell_command: 'terminal', run_python: 'terminal', manage_python_environment: 'terminal', run_linux_ssh_command: 'terminal', upload_sftp: 'file', deploy_remote_service: 'terminal', fetch_web_content: 'browser', web_search: 'search', load_skill: 'skill', read_skills_resource: 'skill', run_local_skill_script: 'terminal', note: 'memory', todo: 'memory', browser_action: 'browser', read_context_evidence: 'search', install_skill: 'skill', install_mcp_server: 'mcp', browser_connection_status: 'browser', domain_inventory: 'memory', learn_capability: 'memory', inspect_harness: 'tool', manage_harness_project: 'tool', read_worker_result: 'tool', read_workspace_change: 'file', preview_workspace_edits: 'file', preview_workspace_rename: 'search', edit_workspace_files: 'file', inspect_workspace_project: 'search', list_assist_evidence: 'memory', record_assist_evidence: 'memory', attach_assist_evidence: 'memory', list_linked_goals: 'memory', create_linked_goal: 'memory', ask_human: 'memory', spawn_teammate: 'team', send_message: 'team', list_agents: 'team', wait_agent: 'team', interrupt_agent: 'team', team_task_create: 'team', team_task_list: 'team', team_task_get: 'team', team_task_update: 'team', background_commands: 'terminal', stop_worker: 'team', start_worker: 'team', prompt_worker: 'team' };
   const icons = {
     file: 'M9 3H5v18h14V9L13 3H9m4 0v6h6M8 13h8M8 17h6',
     folder: 'M3 6h7l2 2h9v12H3V6Z',
@@ -26,8 +26,9 @@
     memory: 'M9 6h12M9 12h12M9 18h12M3 6h1M3 12h1M3 18h1',
     mcp: 'm5 8 4-4 11 11-4 4L5 8Zm0 0L2 11l4 4m10 4-3 3M11 6l3-3 7 7-3 3',
     tool: 'm8 5-6 7 6 7m8-14 6 7-6 7M14 3l-4 18',
+    team: 'M9 4a3 3 0 1 0 0 6 3 3 0 0 0 0-6M3 20v-1.5a5.5 5.5 0 0 1 11 0V20M16 4.5a3 3 0 0 1 0 5.5M21 20v-1.5a5 5 0 0 0-3-4.5',
   };
-  const tr = value => window.UBOVMi18n?.t(value) ?? value;
+  const tr = (value, ...args) => window.UBOVMi18n?.t(value, ...args) ?? value;
   const isFlatToolCard = name => window.UBOVMTimeline?.isFlatToolCard?.(name) === true;
   const node = (tag, className, text) => { const value = document.createElement(tag); if (className) value.className = className; if (text !== undefined) value.textContent = tr(text); return value; };
   const setText = (element, value) => { const text = tr(value); if (element.textContent !== text) element.textContent = text; };
@@ -107,6 +108,48 @@
     return `${search.returned || search.results.length} 条结果`;
   }
   const shortId = value => { const text = String(value ?? '').trim(); return text.length > 12 ? text.slice(0, 12) + '…' : text; };
+  const TEAM_TOOL_NAMES = new Set(['spawn_teammate', 'send_message', 'list_agents', 'wait_agent', 'interrupt_agent',
+    'team_task_create', 'team_task_list', 'team_task_get', 'team_task_update']);
+  const isTeamTool = name => TEAM_TOOL_NAMES.has(name);
+  // Team results are compact JSON snapshots. Parse only a bounded payload so the
+  // collapsed summary never echoes prompt/message bodies or whole task boards.
+  function teamOutput(part) {
+    const output = part.output;
+    if (typeof output !== 'string' || !output || output.length > 8192) return undefined;
+    try { return JSON.parse(output); } catch { return undefined; }
+  }
+  function teamHint(part, input) {
+    const name = part.name;
+    const output = teamOutput(part);
+    const compact = (value, limit) => String(value ?? '').trim().slice(0, limit);
+    const target = typeof input.target === 'string' ? input.target : typeof input.name === 'string' ? input.name : '';
+    const taskId = typeof input.task_id === 'string' ? input.task_id : typeof input.taskId === 'string' ? input.taskId : '';
+    if (name === 'spawn_teammate' || name === 'send_message' || name === 'interrupt_agent') {
+      return compact(target || (name === 'spawn_teammate' ? output?.member?.target || output?.member?.name : ''), 64);
+    }
+    if (name === 'team_task_create' || name === 'team_task_update' || name === 'team_task_get') {
+      const task = output && typeof output === 'object' && !Array.isArray(output) ? output : undefined;
+      return compact(taskId || task?.id || input.subject || task?.subject || '', 120);
+    }
+    if (name === 'team_task_list') {
+      const tasks = Array.isArray(output?.tasks) ? output.tasks : undefined;
+      if (!tasks) return '';
+      const ids = tasks.slice(0, 3).map(task => task?.id).filter(Boolean).join(', ');
+      return tasks.length > 3 ? ids + '…' : ids;
+    }
+    if (name === 'list_agents') {
+      const members = Array.isArray(output) ? output : Array.isArray(output?.members) ? output.members : undefined;
+      if (!members) return '';
+      const names = members.slice(0, 4).map(member => member?.target || member?.name).filter(Boolean).join(', ');
+      return members.length > 4 ? names + '…' : names;
+    }
+    if (name === 'wait_agent') {
+      if (!output || typeof output !== 'object') return '';
+      if (output.noProgress) return '没有可等待的成员';
+      return output.timedOut ? '等待超时' : '有新的进展';
+    }
+    return '';
+  }
   function lineRange(input) {
     const start = Number(input.startLine ?? input.start), end = Number(input.endLine ?? input.end);
     if (Number.isSafeInteger(start) && Number.isSafeInteger(end) && start > 1 && end >= start) return `:${start}-${end}`;
@@ -115,6 +158,17 @@
     return '';
   }
   function hint(part, input) {
+    if (isTeamTool(part.name)) return teamHint(part, input);
+    if (part.name === 'background_commands') {
+      const action = ({ list: '列出后台任务', read: '读取输出', stop: '停止任务' })[typeof input.action === 'string' ? input.action : ''] || '';
+      const id = typeof input.command_id === 'string' ? shortId(input.command_id.replace(/^#/, '')) : '';
+      return [action, id && '#' + id].filter(Boolean).join(' ');
+    }
+    if (['stop_worker', 'start_worker', 'prompt_worker'].includes(part.name)) {
+      const alias = typeof input.worker === 'string' ? input.worker.trim().slice(0, 40) : '';
+      const direction = part.name === 'prompt_worker' && typeof input.message === 'string' ? input.message.replace(/\s+/g, ' ').trim().slice(0, 80) : '';
+      return [alias, direction].filter(Boolean).join(' · ');
+    }
     if (part.name === 'web_search') {
       const search = part.output ? parseSearchOutput(part.output) : null;
       const query = (search?.query || (typeof input.query === 'string' ? input.query : '')).replace(/\s+/g, ' ').trim();
@@ -144,7 +198,9 @@
     for (let index = part.output.indexOf('\n'); index !== -1; index = part.output.indexOf('\n', index + 1)) lines++;
     return lines > 1 ? `${lines} 行` : `${length} 字符`;
   }
-  const readSummary = (part, input) => [hint(part, input), readMetric(part)].filter(Boolean).join(' · ');
+  const readSummary = (part, input) => isTeamTool(part.name)
+    ? hint(part, input)
+    : [hint(part, input), readMetric(part)].filter(Boolean).join(' · ');
   // Task updates stay flat too: the result returns the whole board, but the
   // board itself is where to read it, so the card only names the action.
   const todoSummary = input => ({
@@ -320,6 +376,7 @@
     view.options = options;
     view.flat = isFlatToolCard(part.name);
     view.element.dataset.readonly = view.flat ? 'true' : 'false';
+    if (view.element.dataset.tool !== part.name) view.element.dataset.tool = part.name || '';
     const asideHidden = part.status !== 'running' || !part.commandId || part.background === true || !options.onBackgroundCommand;
     if (view.aside.hidden !== asideHidden) view.aside.hidden = asideHidden;
     const stopHidden = part.status !== 'running' || !part.commandId || !options.onInterruptCommand;
@@ -394,12 +451,14 @@
     }
     if (view.liveOutput === part.output && view.liveStatus === status && view.liveStreaming === streaming) return;
     // A bounded tail provides live feedback without materializing the folded
-    // log. Never scan an entire command output for each incoming chunk.
-    const showLive = streaming && status === 'running' && Boolean(part.output);
+    // log. Failures and stops keep their final line visible so a folded card
+    // still explains what happened. Never scan an entire output per chunk.
+    const showLive = Boolean(part.output) && (streaming && status === 'running' || status === 'failed' || status === 'interrupted');
     if (showLive) {
       const tail = part.output.slice(-1200).replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').replace(/\r\n?/g, '\n');
-       const lines = tail.trimEnd().split('\n').slice(-2).join('\n').slice(-400);
+      const lines = tail.trimEnd().split('\n').slice(-2).join('\n').slice(-400);
       setRaw(view.live, lines);
+      if (view.live.dataset.status !== status) view.live.dataset.status = status;
     }
     if (view.live.hidden === showLive) view.live.hidden = !showLive;
     if (!showLive && view.live.textContent) view.live.textContent = '';
@@ -651,7 +710,7 @@
     const showCursor = options.streaming === true && (parts.length ? writing : Boolean(text));
     if (!options.maintenanceNested) {
       const grouped = [];
-      const maintenance = part => part.type === 'summary' || part.type === 'tool' && part.name === 'wait_workers';
+      const maintenance = part => part.type === 'summary' || part.type === 'tool' && (part.name === 'wait_workers' || part.name === 'wait_agent');
       for (let index = 0; index < parts.length;) {
         if (!maintenance(parts[index])) { grouped.push(parts[index++]); continue; }
         let end = index + 1;
@@ -703,7 +762,17 @@
             group = node('div', 'tool-group');
             const toggle = node('button', 'tool-group-toggle'); toggle.type = 'button'; toggle.hidden = true;
             toggle.setAttribute('aria-expanded', 'false');
+            const status = node('span', 'tool-group-status'); status.setAttribute('aria-hidden', 'true');
+            const summary = node('span', 'tool-group-summary');
+            const runningChip = node('span', 'tool-group-chip'); runningChip.dataset.kind = 'running';
+            const failedChip = node('span', 'tool-group-chip'); failedChip.dataset.kind = 'failed';
+            const action = node('span', 'tool-group-action');
+            const duration = node('span', 'tool-group-duration'); duration.dataset.value = '';
+            const chevron = node('span', 'tool-group-chevron'); chevron.setAttribute('aria-hidden', 'true');
+            toggle.append(status, summary, runningChip, failedChip, action, duration, chevron);
             group.append(toggle);
+            group.toggle = toggle; group.summaryLabel = summary; group.runningChip = runningChip;
+            group.failedChip = failedChip; group.action = action; group.duration = duration;
             const batch = group;
             toggle.addEventListener('click', () => {
               batch.dataset.expanded = String(batch.dataset.expanded !== 'true');
@@ -732,7 +801,7 @@
         const failed = part.entries.some(entry => entry.status === 'failed');
         const interrupted = part.entries.some(entry => entry.status === 'interrupted');
         const count = part.entries.filter(entry => entry.type === 'summary').length;
-        const label = failed ? '后台步骤失败，请展开查看' : interrupted ? '后台步骤已停止' : running?.type === 'summary' ? '正在整理上下文' : running ? '正在等待并行任务' : '后台步骤已完成';
+        const label = failed ? '后台步骤失败，请展开查看' : interrupted ? '后台步骤已停止' : running?.type === 'summary' ? '正在整理上下文' : running ? (running.name === 'wait_agent' ? '正在等待团队进展' : '正在等待并行任务') : '后台步骤已完成';
         item.label = label + (count ? ` · ${count} 次上下文整理` : '') + ' · 查看详情';
         setText(item.title, item.label);
         const status = failed ? 'failed' : running ? 'running' : 'completed';
@@ -751,6 +820,19 @@
     for (const [batch, items] of toolBatches) refreshToolBatch(batch, items);
     return changed;
   }
+  function batchDuration(items, now = Date.now()) {
+    let start = Infinity, end = -Infinity;
+    for (const item of items) {
+      const startedAt = Number(item.part.startedAt);
+      if (!Number.isFinite(startedAt) || startedAt <= 0) continue;
+      start = Math.min(start, startedAt);
+      const endedAt = ['running', 'streaming'].includes(item.part.status) ? now : Number(item.part.endedAt);
+      if (Number.isFinite(endedAt) && endedAt >= startedAt) end = Math.max(end, endedAt);
+    }
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return '';
+    const seconds = (end - start) / 1000;
+    return seconds < 60 ? (seconds < 10 ? seconds.toFixed(1) : Math.floor(seconds)) + 's' : Math.floor(seconds / 60) + 'm ' + Math.floor(seconds % 60) + 's';
+  }
   function refreshToolBatch(batch, items) {
     const operationLabel = item => {
       const title = item.element.querySelector('.tool-title')?.textContent?.trim();
@@ -767,6 +849,8 @@
     batch.toolItems = items;
     // Only timestamps that overlap indicate parallel work. Mere adjacency is
     // not enough: a sequence of file reads should remain a sequential list.
+    // Huge same-timestamp batches are more useful as foldable history than as
+    // one "parallel" label, so only genuinely small clusters become a group.
     const clusters = [];
     for (const item of items) {
       const start = Number(item.part.startedAt);
@@ -776,10 +860,13 @@
         last.end = Math.max(last.end, Number(item.part.endedAt) || (['running', 'streaming'].includes(item.part.status) ? Infinity : start));
       } else clusters.push({ items: [item], end: Number(item.part.endedAt) || (['running', 'streaming'].includes(item.part.status) && start > 0 ? Infinity : start) });
     }
+    const batches = clusters.flatMap(cluster => cluster.items.length > 4
+      ? cluster.items.map(item => ({ items: [item], end: Number(item.part.endedAt) || 0 }))
+      : [cluster]);
     const previousGroups = batch.parallelGroups || new Map();
     const nextGroups = new Map();
     let anchor = batch.firstChild;
-    for (const cluster of clusters) {
+    for (const cluster of batches) {
       if (cluster.items.length === 1) {
         const card = cluster.items[0].element;
         delete card.dataset.parallelGroup;
@@ -792,54 +879,97 @@
       if (!parallel) {
         parallel = node('div', 'parallel-tools');
         const heading = node('button', 'parallel-tools-heading'); heading.type = 'button';
+        const status = node('span', 'parallel-tools-status'); status.setAttribute('aria-hidden', 'true');
         const title = node('span', 'parallel-tools-title');
         const progress = node('span', 'parallel-tools-progress');
-        const arrow = node('span', 'parallel-tools-chevron', '›'); arrow.setAttribute('aria-hidden', 'true');
-        heading.append(title, progress, arrow);
+        const arrow = node('span', 'parallel-tools-chevron'); arrow.setAttribute('aria-hidden', 'true');
+        heading.append(status, title, progress, arrow);
         parallel.append(heading);
         parallel.dataset.collapsed = 'false';
         heading.setAttribute('aria-expanded', 'true');
+        parallel.headingNode = heading; parallel.titleNode = title; parallel.progressNode = progress;
         heading.addEventListener('click', () => {
-          parallel.dataset.collapsed = String(parallel.dataset.collapsed !== 'true');
-          heading.setAttribute('aria-expanded', String(parallel.dataset.collapsed !== 'true'));
-          for (const card of cluster.items) card.element.hidden = parallel.dataset.collapsed === 'true';
+          const collapsed = parallel.dataset.collapsed !== 'true';
+          parallel.dataset.collapsed = String(collapsed);
+          heading.setAttribute('aria-expanded', String(!collapsed));
+          for (const card of parallel.clusterItems || []) card.element.hidden = collapsed;
         });
       }
       nextGroups.set(key, parallel);
+      parallel.clusterItems = cluster.items;
       const firstCard = cluster.items[0].element;
       if (parallel.parentNode !== batch || parallel.nextSibling !== firstCard) batch.insertBefore(parallel, firstCard);
       for (const item of cluster.items) item.element.dataset.parallelGroup = key;
       const runningCount = cluster.items.filter(item => ['running', 'streaming'].includes(item.part.status)).length;
       const failedCount = cluster.items.filter(item => item.part.status === 'failed').length;
-      parallel.dataset.status = failedCount ? 'failed' : runningCount ? 'running' : 'completed';
-       setText(parallel.firstChild.firstChild, `并行：${operationSummary(cluster.items, 2)}`);
-      setText(parallel.firstChild.children[1], failedCount ? `${failedCount} 失败 · ${cluster.items.length - runningCount - failedCount} 完成` : runningCount ? `${runningCount} 运行中 · ${cluster.items.length - runningCount} 完成` : '全部完成');
-       parallel.firstChild.setAttribute('aria-label', `${operationSummary(cluster.items)}，${failedCount ? `${failedCount} 个失败` : runningCount ? `${runningCount} 个运行中` : '全部完成'}`);
+      const interruptedCount = cluster.items.filter(item => item.part.status === 'interrupted').length;
+      const clusterStatus = failedCount ? 'failed' : runningCount ? 'running' : interruptedCount ? 'interrupted' : 'completed';
+      if (parallel.dataset.status !== clusterStatus) parallel.dataset.status = clusterStatus;
+      const clusterTitle = tr('{0} 个并行调用', cluster.items.length);
+      const clusterProgress = ' · ' + (failedCount ? tr('{0} 个失败', failedCount)
+        : runningCount ? tr('{0} 个运行中', runningCount)
+        : interruptedCount ? tr('{0} 个已停止', interruptedCount) : tr('全部完成'));
+      setText(parallel.titleNode, clusterTitle);
+      setRaw(parallel.progressNode, clusterProgress);
+      const clusterLabel = `${clusterTitle}：${operationSummary(cluster.items)}`;
+      if (parallel.headingNode.getAttribute('aria-label') !== clusterLabel) parallel.headingNode.setAttribute('aria-label', clusterLabel);
       anchor = cluster.items.at(-1).element;
     }
     for (const [key, parallel] of previousGroups) if (!nextGroups.has(key)) parallel.remove();
     batch.parallelGroups = nextGroups;
-    // Two consecutive calls already form a useful tool group. Waiting for
-    // four made the grouping invisible in normal agent turns.
+    // Two consecutive calls already form a useful tool group. History starts
+    // folding only once a batch grows past the three most recent calls, so
+    // short sequences stay fully readable.
     const compact = items.length >= 2, expanded = batch.dataset.expanded === 'true';
     if (batch.dataset.compact !== String(compact)) batch.dataset.compact = String(compact);
     const toggle = batch.firstChild;
-    if (toggle.hidden !== !compact) toggle.hidden = !compact;
-    let hidden = 0, running = 0, failed = 0;
-    const keepRecent = items.length <= 3 ? 1 : 3;
+    const keepRecent = 3;
+    let hidden = 0, running = 0, failed = 0, interrupted = 0;
+    // A parallel cluster folds as one unit while its calls sit in history.
+    const positions = new Map(items.map((item, index) => [item, index]));
+    const clusterFolded = new Map();
+    if (compact && !expanded) {
+      for (const [key, parallel] of nextGroups) {
+        const members = parallel.clusterItems || [];
+        const last = positions.get(members.at(-1));
+        clusterFolded.set(key, Number.isInteger(last) && last < items.length - keepRecent
+          && members.every(item => item.part.status === 'completed' && !item.element.open));
+      }
+    }
     items.forEach((item, index) => {
       const status = item.part.status;
       if (['running', 'streaming'].includes(status)) running++;
       if (status === 'failed') failed++;
-      // Preserve open logs and actionable results, even when new calls arrive.
-      const fold = compact && !expanded && index < items.length - keepRecent && status === 'completed' && !item.element.open && !item.element.closest('.parallel-tools');
-      const parallel = item.element.dataset.parallelGroup ? nextGroups.get(item.element.dataset.parallelGroup) : undefined;
+      if (status === 'interrupted') interrupted++;
+      const parallelKey = item.element.dataset.parallelGroup;
+      const fold = compact && !expanded && (parallelKey ? clusterFolded.get(parallelKey) === true
+        : index < items.length - keepRecent && status === 'completed' && !item.element.open);
+      const parallel = parallelKey ? nextGroups.get(parallelKey) : undefined;
       const hiddenByParallel = parallel?.dataset.collapsed === 'true';
       if (item.element.hidden !== (fold || hiddenByParallel)) item.element.hidden = fold || hiddenByParallel;
       if (fold) hidden++;
     });
-    setText(toggle, `执行：${operationSummary(items)}${running ? ` · ${running} 个运行中` : ''}${failed ? ` · ${failed} 个失败` : ''} · ${expanded ? '收起历史' : hidden ? `展开 ${hidden} 条历史` : '查看全部'}`);
-    toggle.title = operationSummary(items, items.length);
+    for (const [key, parallel] of nextGroups) {
+      const collapsedByUser = parallel.dataset.collapsed === 'true';
+      const hiddenByFold = clusterFolded.get(key) === true;
+      if (parallel.hidden !== (hiddenByFold && !collapsedByUser)) parallel.hidden = hiddenByFold && !collapsedByUser;
+    }
+    // Short completed batches with nothing folded need no header: the rows carry
+    // everything. Show the summary whenever history is folded, the user expanded
+    // the batch, or there is a live/error state worth surfacing.
+    const showToggle = compact && (expanded || hidden > 0 || running > 0 || failed > 0 || interrupted > 0);
+    if (toggle.hidden !== !showToggle) toggle.hidden = !showToggle;
+    const status = failed ? 'failed' : running ? 'running' : interrupted ? 'interrupted' : 'completed';
+    if (batch.dataset.status !== status) batch.dataset.status = status;
+    setText(batch.summaryLabel, tr('{0} 个工具调用', items.length));
+    setRaw(batch.runningChip, running ? ' · ' + tr('{0} 个运行中', running) : '');
+    setRaw(batch.failedChip, failed ? ' · ' + tr('{0} 个失败', failed) : '');
+    const action = expanded ? tr('收起历史') : hidden ? tr('展开 {0} 条历史', hidden) : tr('查看全部');
+    setRaw(batch.action, ' · ' + action);
+    const span = items.length > 1 ? batchDuration(items) : '';
+    if (batch.duration.dataset.value !== span) batch.duration.dataset.value = span;
+    const batchTitle = operationSummary(items, items.length) + (span ? ` · ${span}` : '');
+    if (toggle.title !== batchTitle) toggle.title = batchTitle;
     if (toggle.getAttribute('aria-expanded') !== String(expanded)) toggle.setAttribute('aria-expanded', String(expanded));
     if (batch.dataset.failures !== String(failed > 0)) batch.dataset.failures = String(failed > 0);
   }

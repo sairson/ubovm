@@ -280,6 +280,8 @@ async function fixture(t, mode = 'assist', initialFacts = '', configuration = {}
         const board = { sessionId: options.sessionId, goal: options.goal, revision: 0, rootId: 'root', nodes: [] };
         const memory = { notes: [] };
         return { snapshot: () => board, memory: () => structuredClone(memory), middlewareStatus: () => ({}), close: async () => {}, cancel() {},
+          agenda: () => ({ items: [], counts: { planned: 0, active: 0, blocked: 0, done: 0, dropped: 0 }, gaps: [], lastUpdated: null }),
+          graphInfo: () => ({ revision: board.revision, nodes: board.nodes.length, intents: 0, facts: 0, edges: 0, root: 'n1', detail: 'full', omittedFacts: 0, overBudget: false }),
           addFact: async fact => { board.nodes.push({ id: 'fact', kind: 'fact', parentIds: fact.parentIds, childIds: [], fact, attempts: [] }); board.revision++; },
           run: ({ signal }) => options.fixture({ ...options, signal, memory, route: 'goal' }) };
       }`),
@@ -1028,4 +1030,36 @@ test('composer mode overrides settings for each submitted assistance turn', asyn
   assert.equal(full.running.unbounded, true);
   assert.equal(full.service.state('current').approvalMode, 'full');
   full.complete('done'); await full.completion;
+});
+
+test('goal state exposes the shared exploration agenda projection', async t => {
+  const f = await fixture(t, 'goal');
+  const agenda = f.service.state('current').agenda;
+  assert.deepEqual(agenda.counts, { planned: 0, active: 0, blocked: 0, done: 0, dropped: 0 });
+  assert.deepEqual(agenda.items, []);
+  const graph = f.service.state('current').graph;
+  assert.equal(graph.detail, 'full');
+  assert.equal(graph.overBudget, false);
+  assert.equal(Number.isInteger(graph.nodes), true);
+  assert.equal(Number.isInteger(graph.edges), true);
+  f.event({ type: 'blackboard.changed' });
+  assert.equal(f.service.state('current').agenda.counts.planned, 0);
+  f.complete({ complete: true, revision: 1, summary: 'done' });
+  await f.completion;
+});
+
+test('goal execution log projects Reason worker-control tool calls', async t => {  const f = await fixture(t, 'goal');
+  const event = value => f.event({ type: 'reason.event', event: { type: 'pi_event', attempt: 1, event: value } });
+  f.event({ type: 'reason.start', revision: 0 });
+  const base = { toolCallId: 'reason-control', toolName: 'stop_worker' };
+  event({ ...base, type: 'tool_execution_start', args: { worker: 'n7', reason: 'redundant branch' } });
+  event({ ...base, type: 'tool_execution_end', isError: false, result: { content: [{ type: 'text', text: '{"worker":"n7","stopped":true}' }] } });
+  const part = f.service.state('current').parts.find(item => item.type === 'tool' && item.name === 'stop_worker');
+  assert(part, 'Reason worker-control call becomes a tool card');
+  assert.equal(part.status, 'completed');
+  assert.match(part.args, /"n7"/);
+  assert.match(part.output, /stopped/);
+  assert.equal((f.service.state('current').activities || []).some(item => item.label === 'stop_worker'), true);
+  f.complete({ complete: true, revision: 1, summary: 'done' });
+  await f.completion;
 });

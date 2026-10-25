@@ -131,28 +131,39 @@ export const FETCH_CATALOG = {
 };
 
 export const LOCAL_SHELL_CATALOG = {
-  description: 'Local shell for code/environment_setup only (state purpose+reason). Prefer workspace edit tools for tracked edits. Set help=true for session/retain/timeout. Not a remote/SSH bypass. Windows runs PowerShell 5.1: separate statements with ";" and use Get-ChildItem -Recurse/-Name instead of "&&" and "dir /s /b"; cmd-style commands are retried through cmd.exe automatically, but writing PowerShell avoids the retry.',
+  description: 'Local shell for code/environment_setup only (state purpose+reason). Prefer workspace edit tools for tracked edits. Set help=true for session/retain/timeout. Not a remote/SSH bypass. Long-lived servers: retain=true keeps the command running after the call returns; monitor or stop it later with background_commands (local and SSH share the same background-task list). Windows runs PowerShell 5.1: separate statements with ";" and use Get-ChildItem -Recurse/-Name instead of "&&" and "dir /s /b"; cmd-style commands are retried through cmd.exe automatically, but writing PowerShell avoids the retry.',
   tiers: ['core', 'session', 'policy'],
   tierBlurbs: { core: 'command + purpose + reason', session: 'named shell, retain, cwd, timeout', policy: 'allowed purposes and anti-patterns' },
   docs: [
     { action: 'command', tier: 'core', field: 'command', summary: 'Non-interactive shell command.', params: ['command', 'purpose', 'reason'] },
     { action: 'purpose', tier: 'core', field: 'purpose', summary: 'code | environment_setup only.', params: ['purpose'] },
     { action: 'session', tier: 'session', field: 'session', summary: 'Reuse named shell (serializes; soft-resets after failure).', params: ['session?', 'reset_session?'] },
-    { action: 'retain', tier: 'session', field: 'retain', summary: 'Keep long-lived servers after the tool returns.', params: ['retain?'] },
+    { action: 'retain', tier: 'session', field: 'retain', summary: 'Keep long-lived servers after the tool returns; monitor/stop with background_commands.', params: ['retain?'] },
     { action: 'cwd', tier: 'session', field: 'cwd', summary: 'Working directory (not a sandbox root).', params: ['cwd?', 'timeout_seconds?'] },
     { action: 'policy', tier: 'policy', summary: 'No browsing/office/remote bypass; no shell-native background jobs—use retain=true.', params: [] },
   ],
 };
 
 export const SSH_CATALOG = {
-  description: 'Run Linux commands on the host-selected SSH profile (streamed I/O). Default budget ~120s; raise timeout_seconds for long recon. Use retain=true for long-lived remote servers. Prefer vs local shell/browser. Set help=true for session/retain. Profile is not model-selectable.',
+  description: 'Run Linux commands on the host-selected SSH profile (streamed I/O). Default budget ~120s; raise timeout_seconds for long recon. Use retain=true for long-lived remote servers; monitor or stop them later with background_commands (local and SSH share one background-task list). Prefer vs local shell/browser. Set help=true for session/retain. Profile is not model-selectable.',
   tiers: ['core', 'session', 'scope'],
   tierBlurbs: { core: 'command + timeout', session: 'named bash session / retain', scope: 'remote vs challenge target' },
   docs: [
     { action: 'command', tier: 'core', field: 'command', summary: 'Remote Linux command/script. Default timeout ~120s (profile may cap lower).', params: ['command', 'timeout_seconds?'] },
     { action: 'session', tier: 'session', field: 'session', summary: 'Named bash shell retaining cwd/env (setsid+/proc).', params: ['session?', 'reset_session?'] },
-    { action: 'retain', tier: 'session', field: 'retain', summary: 'Host-retain long-lived remote servers; skips the remote timeout wrapper.', params: ['retain?'] },
+    { action: 'retain', tier: 'session', field: 'retain', summary: 'Host-retain long-lived remote servers; skips the remote timeout wrapper. Monitor/stop with background_commands.', params: ['retain?'] },
     { action: 'scope', tier: 'scope', summary: 'SSH host is the execution env, not automatically the challenge target—use addresses from evidence. Transfer artifacts with upload_sftp when needed.', params: [] },
+  ],
+};
+
+export const BACKGROUND_CATALOG = {
+  description: 'Manage long-running shell tasks that were retained (retain=true) or put aside in the UI, for BOTH local shell and SSH. list returns command ids with status/elapsed/worker; read returns a bounded output tail (optionally wait for new output); stop interrupts one command. Never start a second copy of a server that is already listed as running.',
+  tiers: ['core', 'read', 'stop'],
+  tierBlurbs: { core: 'list background tasks', read: 'read output / wait', stop: 'interrupt one task' },
+  docs: [
+    { action: 'list', tier: 'core', summary: 'List local + SSH background commands, running first.', params: [] },
+    { action: 'read', tier: 'read', field: 'command_id', summary: 'Bounded output tail; wait_seconds waits for new output or completion.', params: ['command_id', 'tail_lines?', 'wait_seconds?'] },
+    { action: 'stop', tier: 'stop', field: 'command_id', summary: 'Interrupt the command; cleanup still runs and list shows the final status.', params: ['command_id'] },
   ],
 };
 
@@ -327,11 +338,11 @@ export const READ_WORKER_EVIDENCE_CATALOG = {
 };
 
 export const ASK_HUMAN_CATALOG = {
-  description: '向用户提问并从给定选项中获得选择（可多选），也允许用户补充自定义回答。只在用户本人才能决定、且会实质改变结果时使用：不可逆或破坏性操作、授权或范围界定、真实个人偏好。默认先按最合理的解释动手并说明假设；不要用它征求许可、确认常规步骤、或在你能自行评估的方案之间让用户挑选，也不要用它代替工具审批。Set help=true for limits.',
+  description: '向用户提问并从给定选项中获得选择（可多选），也允许用户补充自定义回答。只在用户本人才能决定、且会实质改变结果时使用：不可逆或破坏性操作、授权或范围界定、真实个人偏好。默认先按最合理的解释动手并说明假设；不要用它征求许可、确认常规步骤、或在你能自行评估的方案之间让用户挑选，也不要用它代替工具审批。绝对不要用它问“接下来做什么 / 是否继续 / 要不要开始下一步”这类推进问题，也不要用于中途暂停、汇报进度或让用户替你决定执行顺序——长任务应连续执行到目标完成。Set help=true for limits.',
   tiers: ['core', 'limits'],
   tierBlurbs: { core: 'question, options, multiple, allow_custom', limits: 'count and length caps' },
   docs: [
-    { action: 'question', tier: 'core', field: 'question', summary: '要问用户的问题；只问用户本人能决定的事。', params: ['question'] },
+    { action: 'question', tier: 'core', field: 'question', summary: '要问用户的问题；只问用户本人才能决定的事，不要问下一步该做什么或是否继续。', params: ['question'] },
     { action: 'options', tier: 'core', field: 'options', summary: '1–8 个候选项；能自行判断的取舍不要交回用户。', params: ['options'] },
     { action: 'multiple', tier: 'core', field: 'multiple', summary: '允许用户多选（默认单选）。', params: ['multiple?'] },
     { action: 'allow_custom', tier: 'core', field: 'allow_custom', summary: '允许用户补充自定义回答（默认允许）。', params: ['allow_custom?'] },
@@ -354,5 +365,89 @@ export const LEARN_CAPABILITY_CATALOG = {
     { action: 'forget', tier: 'local', summary: 'Delete only your own local lesson by id.', params: ['id'] },
     { action: 'publish', tier: 'library', summary: 'Export a local lesson id after redacting task-specific details.', params: ['id'], notes: 'Requires configured library.' },
     { action: 'feedback', tier: 'library', summary: 'Assess a library id with outcome + new tool_call_ids.', params: ['id', 'outcome', 'tool_call_ids'], notes: 'Requires configured library.' },
+  ],
+};
+
+// Agent Teams catalogs. The Team tool surface is opt-in per assist run and is
+// registered directly (no progressive help), so these descriptions are the
+// complete model-facing contract for each tool.
+export const SPAWN_TEAMMATE_CATALOG = {
+  description: 'Create one named, durable teammate. Only the Team Lead may call this tool. The name is permanent and never reused, including failed members. context=fresh starts without Lead history; fork inherits completed Lead turns. The teammate starts running immediately; use list_agents/wait_agent for progress and send_message to steer it.',
+  tiers: ['core'],
+  tierBlurbs: { core: 'name, description, prompt, context' },
+  docs: [
+    { action: 'spawn', tier: 'core', summary: 'Reserve a unique lower-kebab-case name, record provisioning, then start the teammate run.', params: ['name', 'description', 'prompt', 'context?'] },
+  ],
+};
+
+export const SEND_MESSAGE_CATALOG = {
+  description: 'Send one message to another Team member. A running target receives it at the nearest step boundary; an inactive target starts or resumes a turn. Success only means inbox admission, not that the recipient processed or finished the message. A peer message starts with its sender name.',
+  tiers: ['core'],
+  tierBlurbs: { core: 'target and message' },
+  docs: [
+    { action: 'send', tier: 'core', summary: 'Queue one peer message for a teammate or lead; self-sends, unknown targets and oversized messages fail.', params: ['target', 'message'] },
+  ],
+};
+
+export const LIST_AGENTS_CATALOG = {
+  description: 'List the Lead and every durable teammate with an addressable target and current availability. inactive means no turn is executing, not a task result. provisioning and failed describe member creation. Re-list after wait_agent instead of polling.',
+  tiers: ['core'],
+  tierBlurbs: { core: 'roster snapshot' },
+  docs: [
+    { action: 'list', tier: 'core', summary: 'Lead first, then teammates with target, role, status, description, context and error.', params: [] },
+  ],
+};
+
+export const WAIT_AGENT_CATALOG = {
+  description: 'Wait for the next teammate status, message, or shared-task change after this call starts. This never wakes inactive members and returns noProgress immediately when no other member is running or provisioning. Re-list after wakeup or timeout instead of polling.',
+  tiers: ['core'],
+  tierBlurbs: { core: 'timeout_ms' },
+  docs: [
+    { action: 'wait', tier: 'core', summary: 'Bounded wait from 10000 through 3600000 ms (default 30000); a change resolves early, a timeout reports timedOut=true.', params: ['timeout_ms?'] },
+  ],
+};
+
+export const INTERRUPT_AGENT_CATALOG = {
+  description: 'Interrupt one teammate\'s current turn while preserving its pending inbox and task ownership. Team Lead only. Interruption does not undo tool effects.',
+  tiers: ['core'],
+  tierBlurbs: { core: 'target' },
+  docs: [
+    { action: 'interrupt', tier: 'core', summary: 'Abort the target\'s live turn and return the status sampled before cancellation.', params: ['target'] },
+  ],
+};
+
+export const TEAM_TASK_CREATE_CATALOG = {
+  description: 'Create one unowned pending task on the shared Team task board. blocked_by lists task ids that must complete before it is ready; write_scopes records advisory workspace-relative prefixes so the Lead can spot overlapping writers. Tasks have revisions; every later change must pass expected_revision.',
+  tiers: ['core'],
+  tierBlurbs: { core: 'subject, description, blocked_by, write_scopes' },
+  docs: [
+    { action: 'create', tier: 'core', summary: 'Create task-<n> at revision 1, pending and unowned.', params: ['subject', 'description', 'blocked_by?', 'write_scopes?'] },
+  ],
+};
+
+export const TEAM_TASK_LIST_CATALOG = {
+  description: 'List shared tasks, including readiness, owner, revision, blockers, and write-scope warnings. Deleted tasks are omitted; filter by status, owner (use unowned) and ready, then page with cursor/limit.',
+  tiers: ['core'],
+  tierBlurbs: { core: 'filters and paging' },
+  docs: [
+    { action: 'list', tier: 'core', summary: 'Filter by status/owner/ready and page with cursor + limit (1-100).', params: ['status?', 'owner?', 'ready?', 'cursor?', 'limit?'] },
+  ],
+};
+
+export const TEAM_TASK_GET_CATALOG = {
+  description: 'Read the complete latest value of one shared task before changing or executing it. The returned revision is the expectedRevision for team_task_update.',
+  tiers: ['core'],
+  tierBlurbs: { core: 'task_id' },
+  docs: [
+    { action: 'get', tier: 'core', summary: 'Read one task including readiness and write-scope warnings.', params: ['task_id'] },
+  ],
+};
+
+export const TEAM_TASK_UPDATE_CATALOG = {
+  description: 'Compare-and-set a shared task action using the latest revision from team_task_get or team_task_list. claim only when ready and unowned; complete only when in_progress; reassign is Lead-only. Stale revisions fail with TEAM_TASK_STALE_REVISION. Write-scope warnings are advisory and never block.',
+  tiers: ['core'],
+  tierBlurbs: { core: 'CAS task transitions' },
+  docs: [
+    { action: 'update', tier: 'core', summary: 'Apply claim, release, complete, reopen, edit, set_dependencies, reassign or delete with expected_revision.', params: ['task_id', 'expected_revision', 'action', 'subject?', 'description?', 'blocked_by?', 'write_scopes?', 'owner?'] },
   ],
 };

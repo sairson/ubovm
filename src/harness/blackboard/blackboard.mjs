@@ -415,6 +415,24 @@ export class Blackboard {
     });
   }
 
+  /**
+   * Stop an intent that has not started yet. The host records a synthetic
+   * interrupted attempt so the node still satisfies "latest attempt matches the
+   * intent status", remains inspectable, and can be retried later.
+   */
+  cancelIntent(id, reason = 'Intent stopped before execution') {
+    const detail = required(reason, 'reason');
+    return this.#commit('blackboard.intent.cancelled', state => {
+      const node = intentNode(state, id);
+      if (node.intent.status !== 'pending') throw new Error(`Intent ${id} is ${node.intent.status}; only pending intents can be cancelled`);
+      const timestamp = now();
+      node.attempts.push({ id: `a_${randomUUID()}`, status: 'interrupted', startedAt: timestamp, completedAt: timestamp, error: detail });
+      node.intent.status = 'interrupted';
+      touch(node);
+      return node;
+    });
+  }
+
   recoverInterrupted() {
     return this.#commit('blackboard.attempts.recovered', state => {
       const recovered = [];

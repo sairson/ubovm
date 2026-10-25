@@ -2,11 +2,15 @@ import { randomUUID } from 'node:crypto';
 import { access, mkdir, readFile, realpath } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { Blackboard, BlackboardCoordinator, buildBlackboardContext } from './blackboard/index.mjs';
+import { buildExplorationAgenda, renderAgenda } from './blackboard/agenda.mjs';
+import { buildGraphView } from './blackboard/graph-view.mjs';
+import { createExplorationGraphTool } from './agents/graph-tool.mjs';
 import { writeSnapshot } from './blackboard/persistence.mjs';
 import { workerEvidence } from './blackboard/evidence.mjs';
 import { createInternalTools, MemoryStore } from './intools/index.mjs';
 import { createPiWorker } from './worker-agents/index.mjs';
 import { createPiReason } from './agents/index.mjs';
+import { createAgendaTool } from './agents/agenda-tool.mjs';
 import { createKnowledgeReflector } from './learning/background.mjs';
 import { createModelClient } from './model.mjs';
 import { HarnessDatabase } from './blackboard/database/database.mjs';
@@ -55,8 +59,14 @@ function combineText(...hooks) {
 function summaryAborted(error, signal) {
   return Boolean(signal?.aborted || error?.code === 'ABORT_ERR' || error?.name === 'AbortError' || error?.code === 'MIDDLEWARE_CLOSED');
 }
-function combineTransforms(host, summary) {
-  if (!host && !summary) return undefined;
+function graphBudgetChars(reasonConfig) {
+  const window = reasonConfig?.client?.model?.contextWindow ?? reasonConfig?.options?.model?.contextWindow ?? 128000;
+  const tokens = Number.isSafeInteger(window) && window > 0 ? window : 128000;
+  // Leave room for the system policy, agenda and repair text. The renderer keeps
+  // every node/edge even when it must degrade fact detail.
+  return Math.max(12000, Math.min(800000, Math.floor(tokens * 0.55 * 4) - 60000));
+}
+function combineTransforms(host, summary) {  if (!host && !summary) return undefined;
   return async event => {
     // Host transforms run after compaction; they can supply application-specific
     // context without invalidating the evidence indexes supplied by adapters.
@@ -132,6 +142,7 @@ export class HarnessSession {
   #summary;
   #mcp;
   #skills;
+  #graphCache;
   constructor(key, config) {
     if (key !== constructionKey) throw new TypeError('Use await createHarness(options)');
     this.#board = config.board; this.#runtime = config.runtime; this.#record = config.record;
@@ -153,6 +164,23 @@ export class HarnessSession {
   get storage() { return this.#database ? { kind: 'sqlite', filePath: this.#database.filePath } : this.#metadataFile ? { kind: 'json', filePath: this.#metadataFile } : { kind: 'memory' }; }
   snapshot() { return this.#board.snapshot(); }
   memory() { return this.#runtime?.store.snapshot(); }
+  /** Shared exploration agenda: projected intents, Worker plan steps, gaps and Reason directions. */
+  agenda() {
+    const agenda = buildExplorationAgenda({
+      snapshot: this.#board.snapshot(),
+      memory: this.#runtime?.store.snapshot(['agenda']) ?? { agenda: [] }
+    });
+    return { items: agenda.items, counts: agenda.counts, gaps: agenda.gaps, lastUpdated: agenda.lastUpdated };
+  }
+  /** Complete-topology graph view rendered under the Reason model budget. */
+  graphView() {
+    const snapshot = this.#board.snapshot();
+    if (this.#graphCache?.revision === snapshot.revision) return this.#graphCache.view;
+    const view = buildGraphView(snapshot, { maxChars: graphBudgetChars(this.#reasonConfig) });
+    this.#graphCache = { revision: snapshot.revision, view };
+    return view;
+  }
+  graphInfo() { return this.graphView().stats; }
   getContext(options) { return buildBlackboardContext(this.#board.snapshot(), options); }
   getState() { return clone({ sessionId: this.id, goal: this.goal, status: this.status, runId: this.#record.runId, result: this.#record.result, error: this.#record.error, revision: this.#board.snapshot().revision }); }
   events({ afterSequence = 0, limit = 100 } = {}) {
@@ -241,7 +269,26 @@ export class HarnessSession {
       await this.#save({ status: 'running', runId, result: null, error: null, startedAt: new Date().toISOString() });
       signal.throwIfAborted();
       const reasonConfig = this.#reasonConfig, workerConfig = this.#workerConfig;
+      const store = this.#runtime?.store;
+      // Intent status and Worker plan steps are projected on every read; Reason's
+      // direction entries live in the shared memory store so Workers see them too.
+      const agendaFor = () => buildExplorationAgenda({
+        snapshot: this.#board.snapshot(),
+        memory: store ? store.snapshot(['agenda']) : { agenda: [] }
+      });
+      const agendaText = options => { try { return renderAgenda(agendaFor(), options); } catch { return ''; } };
+      const agendaTools = store && !reasonConfig.callback
+        ? [createAgendaTool({ store, build: agendaFor, sessionId: this.id })]
+        : [];
+      // The complete-topology graph is rendered under the Reason model budget;
+      // exploration_graph reads exact fact bodies/neighbourhoods on demand.
+      const graphTool = !reasonConfig.callback
+        ? createExplorationGraphTool({ build: () => ({ snapshot: this.#board.snapshot() }), info: () => ({ stats: this.graphInfo() }) })
+        : undefined;
       const reason = reasonConfig.callback ?? createPiReason({ ...reasonConfig.client, ...reasonConfig.options,
+        extraTools: [...agendaTools, ...(graphTool ? [graphTool] : [])],
+        contextProvider: async () => agendaText(),
+        evidenceProvider: async () => this.graphView().text,
         beforeModel: combineTransforms(reasonConfig.options?.beforeModel, this.#summary), onEvent: event => {
         if (active && !signal.aborted) { emit('reason.event', { event }); observer(reasonConfig.options.onEvent, event); }
       } });
@@ -261,12 +308,18 @@ export class HarnessSession {
       const worker = workerConfig.callback ?? createPiWorker({ ...workerConfig.client, ...workerConfig.options, tools,
         onProgress: combineHook(memory.onProgress, workerConfig.options?.onProgress),
         onToolResult: combineHook(memory.onToolResult, workerConfig.options?.onToolResult),
-        contextProvider: combineText(memory.contextProvider, workerConfig.options?.contextProvider),
+        contextProvider: combineText(memory.contextProvider, async () => agendaText({ maxOpen: 10, maxDone: 4 }), workerConfig.options?.contextProvider),
         instructionProvider: combineText(this.#skills?.instructionProvider, workerConfig.options?.instructionProvider),
         beforeModel: combineTransforms(workerConfig.options?.beforeModel, this.#summary),
         onEvent: event => { if (active && !signal.aborted) { emit('worker.event', { event }); observer(workerConfig.options.onEvent, event); } }
       });
       const coordinator = new BlackboardCoordinator({ blackboard: this.#board, ...this.#limits,
+        duplicateTexts: async () => {
+          try {
+            return agendaFor().items.filter(item => item.kind === 'direction' && item.status !== 'dropped')
+              .map(item => ({ text: item.dedupeKey || item.title, label: 'shared agenda direction' }));
+          } catch { return []; }
+        },
         reason: async args => {
           emit('reason.start', { revision: args.context.revision });
           try { const decision = await reason(args); signal.throwIfAborted(); emit('reason.decision', { revision: args.context.revision, decision }); return decision; }

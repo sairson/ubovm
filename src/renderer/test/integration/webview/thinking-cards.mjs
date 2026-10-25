@@ -109,6 +109,9 @@ test('repeated collaboration waits stay in one expandable status without a false
   assert.equal(await f.page.locator('#messages .response-streaming').count(), 0);
   assert.equal(await f.page.locator('#busy-status').isVisible(), false);
   await group.locator(':scope > summary').click();
+  // The native <details> toggle event is dispatched after the click gesture;
+  // wait one rendered frame before asserting the lazily built contents.
+  await f.frames();
   assert.equal(await group.locator('.tool-card').count(), 2);
   assert.equal(await group.locator('.summary-card').count(), 2);
   const finished = parts.map(part => part.id === 'wait-2' ? { ...part, status: 'completed', endedAt: start + 9000 } : part);

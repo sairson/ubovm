@@ -8,7 +8,7 @@ let revision = 0;
 function snapshot(id) {
   return { id, revision: ++revision, state: service.state(id), summary: service.runtimeSummary(id) };
 }
-const methods = new Set(['start', 'steer', 'resume', 'cancel', 'interruptCommand', 'backgroundCommand', 'restore', 'releaseWorkspace', 'remove', 'close']);
+const methods = new Set(['start', 'steer', 'resume', 'cancel', 'interruptCommand', 'backgroundCommand', 'restore', 'watchTeamMember', 'releaseWorkspace', 'remove', 'close']);
 const rpc = createRPC(parentPort, async (method, args) => {
   if (!methods.has(method)) throw new Error('Unknown agent method');
   if (method === 'close') snapshots.close();

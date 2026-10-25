@@ -5,7 +5,7 @@
     if (text !== undefined) element.textContent = window.UBOVMi18n?.t(text) ?? text;
     return element;
   };
-  const tr = value => window.UBOVMi18n?.t(value) ?? value;
+  const tr = (value, ...args) => window.UBOVMi18n?.t(value, ...args) ?? value;
   const text = (element, value) => { if (element.textContent !== value) element.textContent = value; };
   const attribute = (element, name, value) => { if (element.getAttribute(name) !== value) element.setAttribute(name, value); };
   const property = (element, name, value) => { if (element[name] !== value) element[name] = value; };
@@ -24,6 +24,9 @@
   function lastLine(output) {
     return String(output || '').slice(-1000).replace(/\u001b\[[0-9;]*[A-Za-z]/g, '').trim().split('\n').filter(line => line.trim()).at(-1)?.slice(0, 160) || '';
   }
+  // Local shell and SSH share the background dock; label the transport so the
+  // two kinds of tasks are distinguishable at a glance.
+  const transportOf = task => task?.name === 'run_linux_ssh_command' ? 'SSH' : task?.name === 'run_local_shell_command' ? '本地' : '';
   window.createBackgroundTasks = function createBackgroundTasks(actions) {
     const element = node('section', 'background-tasks'); element.id = 'background-tasks'; element.hidden = true;
     element.setAttribute('aria-label', '后台任务');
@@ -109,7 +112,7 @@
         follow.setAttribute('aria-pressed', String(following));
       }
       text(detailTitle, command(task)); attribute(detailTitle, 'title', command(task));
-      text(meta, (disconnected && running(task) ? tr('连接中断 · 状态待确认') : status(task)) + ' · ' + task.owner + ' · ' + elapsed(task));
+      text(meta, metaText(task));
       property(stop, 'hidden', !running(task)); property(stop, 'disabled', disconnected || task.interruptRequested === true || stopping.has(task.commandId));
       text(stop, tr(task.interruptRequested || stopping.has(task.commandId) ? '正在停止…' : '停止任务'));
       const value = task.output || (running(task) ? '等待命令输出…' : '无文本输出。');
@@ -122,11 +125,15 @@
       }
       if (switched) output.scrollTop = following ? output.scrollHeight : reading.get(renderedSelection)?.top ?? 0;
     }
+    function metaText(task) {
+      return (disconnected && running(task) ? tr('连接中断 · 状态待确认') : status(task)) + ' · ' + task.owner + ' · ' + elapsed(task)
+        + (transportOf(task) ? ' · ' + tr(transportOf(task)) : '');
+    }
     function tick() {
       if (document.hidden || suspended || element.closest('[hidden]') || document.getElementById('settings-dialog')?.open) return;
       for (const task of tasks) { const row = rows.get(task.commandId); if (row) text(row.time, elapsed(task)); }
       const task = selectedTask();
-      if (task) text(meta, (disconnected && running(task) ? tr('连接中断 · 状态待确认') : status(task)) + ' · ' + task.owner + ' · ' + elapsed(task));
+      if (task) text(meta, metaText(task));
     }
     function syncClock() {
       const needed = expanded && !element.hidden && !document.hidden && !suspended && !document.getElementById('settings-dialog')?.open && tasks.some(running);
@@ -164,15 +171,21 @@
           const rowElement = node('div', 'background-task-row');
           const select = button('background-task-select', '');
           const dot = node('span', 'background-task-indicator'); dot.setAttribute('aria-hidden', 'true');
-          const name = node('code', 'background-task-name'), owner = node('span', 'background-task-owner');
+          const head = node('span', 'background-task-head');
+          const kind = node('span', 'background-task-kind'), name = node('code', 'background-task-name');
+          const owner = node('span', 'background-task-owner');
           const info = node('span', 'background-task-info');
           const state = node('span', 'background-task-state'), time = node('span', 'background-task-time');
-          const main = node('span', 'background-task-main'); main.append(name, owner); info.append(state, time);
+          const main = node('span', 'background-task-main'); head.append(kind, name); main.append(head, owner); info.append(state, time);
           select.append(dot, main, info); rowElement.append(select);
-          row = { element: rowElement, button: select, name, owner, state, time }; rows.set(task.commandId, row);
+          row = { element: rowElement, button: select, kind, name, owner, state, time }; rows.set(task.commandId, row);
           select.addEventListener('click', () => { if (selected === task.commandId) return; selected = task.commandId; text(notice, ''); renderDetail(); });
         }
         attribute(row.element, 'data-status', disconnected && running(task) ? 'unknown' : task.status);
+        const transport = transportOf(task);
+        text(row.kind, transport);
+        property(row.kind, 'hidden', !transport);
+        attribute(row.kind, 'data-kind', transport === 'SSH' ? 'ssh' : 'local');
         text(row.name, command(task).replace(/\s+/g, ' ')); attribute(row.name, 'title', command(task));
         text(row.owner, task.owner); text(row.state, disconnected && running(task) ? '待确认' : status(task)); text(row.time, elapsed(task));
         attribute(row.button, 'aria-label', command(task) + '，' + task.owner + '，' + status(task));

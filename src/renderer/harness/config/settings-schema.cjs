@@ -19,7 +19,7 @@ const thinking = f('thinkingLevel', '思考级别', 'select', { options: ['', 'o
 // when the prompts and bundled skills instruct the agent to call it. Host
 // interaction tools (ask_human) are intentionally absent: the assist path adds
 // them only when a human-facing hook is wired, and goal sessions never do.
-const tools = ['delivery_workflow', 'todo', 'note', 'domain_inventory', 'fetch_web_content', 'web_search', 'browser_action', 'browser_connection_status', 'read_skills_resource', 'run_local_skill_script', 'run_linux_ssh_command', 'run_local_shell_command', 'run_python', 'manage_python_environment', 'upload_sftp', 'deploy_remote_service'];
+const tools = ['delivery_workflow', 'todo', 'note', 'domain_inventory', 'fetch_web_content', 'web_search', 'browser_action', 'browser_connection_status', 'read_skills_resource', 'run_local_skill_script', 'run_linux_ssh_command', 'run_local_shell_command', 'run_python', 'manage_python_environment', 'upload_sftp', 'deploy_remote_service', 'background_commands'];
 const sections = {
   python: { title: 'Python 执行', description: '对话可在本地沙箱里运行 Python，无需 Docker。默认允许联网和访问/修改所有已打开工作区；凭据目录仍受保护。解释器留空时使用随 IDE 打包的 Python。首次准备沙箱时，Windows 可能弹出授权提示。', fields: [
     f('executable', 'Python 解释器绝对路径', 'text', { placeholder: '例如 C:\\Python312\\python.exe 或项目 .venv 中的 Python' }),

@@ -963,6 +963,15 @@ async function activate(context) {
     return publishState();
   }
 
+  // Selecting a teammate conversation is a read-only presentation operation;
+  // it never starts, wakes or interrupts a member.
+  function watchTeamMember(expectedSessionId, name) {
+    return updateSession(expectedSessionId, async () => {
+      if (sessions.current().mode !== 'assist') throw new Error('团队会话仅在协助模式下可用。');
+      await harness.watchTeamMember({ conversationId: sessions.current().id, name: name ?? null });
+    });
+  }
+
   function resumeRun(expectedSessionId) {
     return updateSession(expectedSessionId, async () => {
       const conversation = sessions.current();
@@ -1589,6 +1598,7 @@ async function activate(context) {
         }
       }
       else if (message.action === 'openWorker') await workerPanel.show(message.workerId, message.sessionId);
+      else if (message.action === 'watchTeamMember') await watchTeamMember(message.sessionId, message.name);
       else if (message.action === 'copyText') await copyText(message.text);
       else if (['openTurnFile', 'reviewCodeTurnFile', 'undoCodeTurn'].includes(message.action)) {
         const id = message.sessionId;

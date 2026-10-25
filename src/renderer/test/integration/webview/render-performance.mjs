@@ -1689,7 +1689,8 @@ test('overview shows only the full-width Reason log across viewport sizes', asyn
     current.execution = { status: 'running', busy: true, parts: [
       { id: 'plan', type: 'thinking', source: 'reason', status: 'completed', startedAt: now - 60000, endedAt: now - 45000, text: '先确认 **浏览器安装流程** 和工具卡片的状态更新路径。\n\n把检查拆成两个独立任务：一个验证下载与重试，另一个检查界面交互。等待结果后，再整合发现并验证。' },
       { id: 'review', type: 'thinking', source: 'reason', status: 'running', startedAt: now - 8000, text: '安装流程已经检查完成，正在核对界面的状态变化。\n\n- 失败的工具保持收起\n- 思考日志默认展开\n- 用户手动选择在流式更新中保留' },
-      { id: 'private-worker', type: 'thinking', source: 'worker', text: '仅在 Worker 详情显示', status: 'running' }
+      { id: 'private-worker', type: 'thinking', source: 'worker', text: '仅在 Worker 详情显示', status: 'running' },
+      ...Array.from({ length: 10 }, (_, index) => ({ id: 'bulk-' + index, type: 'thinking', source: 'reason', status: 'completed', startedAt: now - 7000 + index, text: '补充检查项 ' + index + '：继续核对下载、重试、界面状态与窄屏布局，确认日志在面板内滚动而不是撑高页面。'.repeat(2) }))
     ], workers: [
       { id: 'done', name: '验证安装流程', description: '检查下载、重复点击和失败重试。', status: 'completed', createdAt: now - 50000, startedAt: now - 48000, finishedAt: now - 12000 },
       { id: 'active', name: '检查界面交互', description: '验证工具卡片和思考日志的展开状态。', status: 'running', createdAt: now - 40000, startedAt: now - 35000, parts: [{ id: 'test', type: 'tool', name: 'run_linux_ssh_command', status: 'running' }] },
@@ -1742,12 +1743,14 @@ test('goal page switcher supports keyboard navigation and restores reading posit
   initial.goal.criteria = Array.from({ length: 20 }, (_, index) => ({ id: 'c' + index, text: '验收条件 ' + index + '：保留页面中的阅读位置与输入内容。'.repeat(8), done: false }));
   await send(page, initial);
   assert.equal(await page.locator('#goal-tabs').getAttribute('aria-orientation'), 'vertical');
-  assert.equal(await page.locator('#goal-tabs button').count(), 4);
+  assert.equal(await page.locator('#goal-tabs button').count(), 5);
   assert.equal(await page.locator('#goal-prompt-form').isVisible(), false);
   await page.locator('.goal-acceptance-panel > summary').click();
   await page.locator('#goal-panels').evaluate(node => { node.scrollTop = 240; });
   await page.locator('#goal-view-switcher > summary').click();
   await page.locator('#goal-tab-overview').focus();
+  await page.keyboard.press('ArrowDown'); await paint(page);
+  assert.equal(await page.locator('#goal-tab-agenda').getAttribute('aria-selected'), 'true');
   await page.keyboard.press('ArrowDown'); await paint(page);
   assert.equal(await page.locator('#goal-tab-board').getAttribute('aria-selected'), 'true');
   assert.equal(await page.locator('#goal-prompt-form').isVisible(), false);

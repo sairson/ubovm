@@ -155,6 +155,147 @@ function reasonConclusion(decision) {
   return `派发 ${decision.intents.length} 项任务。\n${lines.join('\n')}`;
 }
 
+const TEAM_MEMBER_STATUSES = new Set(['running', 'inactive', 'provisioning', 'failed']);
+const TEAM_TASK_STATUSES = new Set(['pending', 'in_progress', 'completed']);
+const boundedText = (value, maximum) => typeof value === 'string' && value ? value.slice(0, maximum) : '';
+const safeInteger = (value, fallback = 0) => Number.isSafeInteger(value) && value >= 0 ? value : fallback;
+const boundedTexts = (value, maximum = 32, size = 300) => Array.isArray(value)
+  ? value.filter(item => typeof item === 'string' && item).slice(0, maximum).map(item => item.slice(0, size))
+  : [];
+
+/**
+ * Project one backend Team snapshot (roster + shared task board) onto the
+ * bounded UI shape. The backend owns semantics; this only validates, truncates
+ * and drops values the assist webview cannot present safely. Returns undefined
+ * for an empty or malformed snapshot so the page can hide its Team entry.
+ */
+function projectTeam(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const team = value.team && typeof value.team === 'object' && !Array.isArray(value.team) ? value.team : value;
+  const roster = (Array.isArray(team.roster) ? team.roster : []).flatMap(member => {
+    if (!member || typeof member !== 'object' || Array.isArray(member)) return [];
+    const name = boundedText(member.name, 80);
+    if (!name) return [];
+    const activity = member.activity && typeof member.activity === 'object' && !Array.isArray(member.activity) ? {
+      ...(boundedText(member.activity.label, 200) ? { label: boundedText(member.activity.label, 200) } : {}),
+      ...(boundedText(member.activity.status, 40) ? { status: boundedText(member.activity.status, 40) } : {}),
+      ...(Number.isSafeInteger(member.activity.at) && member.activity.at >= 0 ? { at: member.activity.at } : {})
+    } : undefined;
+    return [{
+      name,
+      role: member.role === 'lead' ? 'lead' : 'teammate',
+      status: TEAM_MEMBER_STATUSES.has(member.status) ? member.status : 'inactive',
+      ...(boundedText(member.description, 500) ? { description: boundedText(member.description, 500) } : {}),
+      ...(member.context === 'fresh' || member.context === 'fork' ? { context: member.context } : {}),
+      ...(boundedText(member.error, 500) ? { error: boundedText(member.error, 500) } : {}),
+      ...(activity && Object.keys(activity).length ? { activity } : {}),
+      updatedAt: safeInteger(member.updatedAt)
+    }];
+  }).slice(0, 32);
+  const tasks = (Array.isArray(team.tasks) ? team.tasks : []).flatMap(task => {
+    if (!task || typeof task !== 'object' || Array.isArray(task)) return [];
+    const id = boundedText(task.id, 80);
+    if (!id) return [];
+    return [{
+      id,
+      revision: safeInteger(task.revision),
+      subject: boundedText(task.subject, 300),
+      description: boundedText(task.description, 4000),
+      status: TEAM_TASK_STATUSES.has(task.status) ? task.status : 'pending',
+      ...(boundedText(task.ownerName, 80) ? { ownerName: boundedText(task.ownerName, 80) } : {}),
+      blockedBy: boundedTexts(task.blockedBy, 32, 80),
+      writeScopes: boundedTexts(task.writeScopes),
+      ready: task.ready === true,
+      writeScopeWarnings: boundedTexts(task.writeScopeWarnings, 32, 500)
+    }];
+  }).slice(0, 500);
+  const revision = safeInteger(team.revision);
+  // A roster with only the implicit Lead and no tasks carries nothing to show;
+  // keep it out of the published state until real team work starts.
+  if (!tasks.length && roster.filter(member => member.role === 'teammate').length === 0) return undefined;
+  return { revision, roster, tasks };
+}
+
+const TEAM_CONVERSATION_TEXT = 20000;
+const teamContentParts = content => typeof content === 'string' ? [{ type: 'text', text: content }]
+  : Array.isArray(content) ? content.filter(part => part && typeof part === 'object') : [];
+const teamContentText = content => teamContentParts(content).filter(part => part.type === 'text' && typeof part.text === 'string').map(part => part.text).join('\n');
+const teamTranscriptText = (value, maximum = TEAM_CONVERSATION_TEXT) => {
+  const text = typeof value === 'string' ? value : '';
+  return text.length > maximum ? text.slice(0, maximum) + '\n[内容已截断]' : text;
+};
+const teamTimestamp = value => Number.isFinite(value) && value >= 0 ? value : undefined;
+const teamPartId = (prefix, index, suffix = '') => `team:${prefix}:${index}${suffix ? ':' + suffix : ''}`;
+
+/**
+ * Convert a saved teammate pi transcript into the bounded conversation shape a
+ * DSH-style member view consumes: user messages, assistant text/thinking plus
+ * tool cards whose output is filled from the matching toolResult messages.
+ * Display-bounded only; it never rewrites model context or execution evidence.
+ */
+function teamTranscriptConversation(messages, { maxEntries = 40, maxParts = 200, maxText = 8000 } = {}) {
+  const source = Array.isArray(messages) ? messages : [];
+  const entries = [];
+  const tools = new Map();
+  let omitted = 0;
+  let partCount = 0;
+  const pushPart = (entry, part) => {
+    if (partCount >= maxParts) return;
+    partCount++;
+    entry.parts.push(part);
+  };
+  for (let index = 0; index < source.length; index++) {
+    const message = source[index];
+    if (!message || typeof message !== 'object' || Array.isArray(message)) continue;
+    const timestamp = teamTimestamp(message.timestamp);
+    if (message.role === 'user') {
+      const text = teamTranscriptText(teamContentText(message.content), maxText).trim();
+      if (!text) continue;
+      if (entries.length >= maxEntries) { omitted++; continue; }
+      entries.push({ id: teamPartId('user', index), role: 'user', text, ...(timestamp === undefined ? {} : { timestamp }) });
+      continue;
+    }
+    if (message.role === 'assistant') {
+      const parts = [];
+      const texts = [];
+      for (const content of teamContentParts(message.content)) {
+        if (content.type === 'text' && typeof content.text === 'string' && content.text) {
+          const text = teamTranscriptText(content.text, maxText);
+          texts.push(text);
+          pushPart({ parts }, { id: `team:text:${index}:${parts.length}`, type: 'text', text, status: 'completed' });
+        } else if (content.type === 'thinking' && content.redacted !== true && typeof content.thinking === 'string' && content.thinking.trim()) {
+          pushPart({ parts }, { id: `team:thinking:${index}:${parts.length}`, type: 'thinking', text: content.thinking.slice(0, maxText), status: 'completed',
+            source: 'assistant', ...(timestamp === undefined ? {} : { startedAt: timestamp, endedAt: timestamp }) });
+        } else if (content.type === 'toolCall' && typeof content.id === 'string' && content.id && typeof content.name === 'string' && content.name) {
+          const part = { id: teamPartId('tool', index, content.id.slice(0, 80)), type: 'tool', name: content.name.slice(0, 120),
+            args: formatToolValue(content.arguments ?? '', 4000).text, output: '', status: 'running',
+            ...(timestamp === undefined ? {} : { startedAt: timestamp }) };
+          pushPart({ parts }, part); tools.set(content.id, part);
+        }
+      }
+      const text = teamTranscriptText(texts.join('\n\n'), maxText);
+      if (!parts.length && !text) continue;
+      if (entries.length >= maxEntries) { omitted++; continue; }
+      entries.push({ id: teamPartId('assistant', index), role: 'assistant', ...(text ? { text } : {}), parts,
+        ...(timestamp === undefined ? {} : { timestamp }) });
+      continue;
+    }
+    if (message.role === 'toolResult') {
+      const part = tools.get(message.toolCallId);
+      if (!part) continue;
+      const output = formatToolValue(teamContentText(message.content), 12000);
+      part.output = output.text; if (output.truncated) part.truncated = true;
+      part.status = message.isError === true ? 'failed' : 'completed';
+      if (timestamp !== undefined) part.endedAt = timestamp;
+      tools.delete(message.toolCallId);
+    }
+  }
+  // Interrupted transcripts can leave a tool call without a result: report it
+  // honestly instead of rendering a permanent spinner in history.
+  for (const part of tools.values()) part.status = 'interrupted';
+  return { entries, omitted };
+}
+
 /** Finish host-cached progress when its runtime is gone, retaining partial output. */
 function interruptExecution(state, error, now = Date.now()) {
   const active = status => ['queued', 'running', 'waiting'].includes(status);
@@ -166,6 +307,11 @@ function interruptExecution(state, error, now = Date.now()) {
   return { ...state, status: error ? 'failed' : 'interrupted', busy: false, canSteer: false, phase: null, error: error ?? null,
     parts: parts(state.parts),
     activities: (state.activities ?? []).map(item => active(item.status) ? { ...item, status: 'interrupted' } : item),
+    ...(state.team && typeof state.team === 'object' && !Array.isArray(state.team) ? { team: {
+      ...state.team,
+      roster: (state.team.roster ?? []).map(member => member.status === 'running' || member.status === 'provisioning'
+        ? { ...member, status: 'inactive' } : member)
+    } } : {}),
     workers: (state.workers ?? []).map(worker => ({ ...worker,
       ...(active(worker.status) ? { status: 'interrupted', phase: null, finishedAt: Math.max(worker.startedAt ?? 0, now) } : {}),
       parts: parts(worker.parts)
@@ -218,4 +364,4 @@ function accumulateUsage(current, next) {
   return base;
 }
 
-module.exports = { cleanTimelineParts, formatToolValue, redactDisplayObject, interruptExecution, workerDisplayText, reasonConclusion, sanitizeUsage, usageSignature, accumulateUsage, STREAMING_TOOLS };
+module.exports = { cleanTimelineParts, formatToolValue, redactDisplayObject, projectTeam, teamTranscriptConversation, interruptExecution, workerDisplayText, reasonConclusion, sanitizeUsage, usageSignature, accumulateUsage, STREAMING_TOOLS };

@@ -25,12 +25,45 @@ test('legacy interrupted read recovers as an explicit error without fabricating 
   assert.deepEqual(restoreWorkerCheckpoint(restored, options), restored, 'repair is stable after another restart');
 });
 
-test('writes, unknown tools and checkpoint-provided recovery flags cannot bypass replay protection', () => {
-  for (const name of ['edit_workspace_file', 'unknown', 'read_workspace_code']) {
+test('interrupted side-effecting calls resume with an explicit unknown-side-effects observation', () => {
+  for (const name of ['run_linux_ssh_command', 'edit_workspace_file', 'unknown', 'read_workspace_code']) {
     const input = interrupted(name); input.ledger[0].recovery = 'retry-read-only';
-    assert.throws(() => restoreWorkerCheckpoint(input, options), { code: 'UNSAFE_TOOL_REPLAY' });
+    const restored = restoreWorkerCheckpoint(input, options);
+    assert.equal(input.ledger[0].status, 'running', 'input is not mutated');
+    assert.equal(restored.ledger[0].status, 'completed');
+    assert.equal(restored.ledger[0].isError, true);
+    assert.equal(restored.ledger[0].interrupted, true);
+    assert.match(restored.ledger[0].result.content[0].text, /side effects are unknown/);
+    assert.match(restored.ledger[0].result.content[0].text, /not re-executed/);
+    assert.match(restored.ledger[0].result.content[0].text, /new tool call ID/);
+    assert.equal(restored.messages.at(-1).role, 'toolResult');
+    assert.equal(restored.messages.at(-1).isError, true);
+    assert.equal(restored.messages.at(-1).content[0].text, restored.ledger[0].result.content[0].text);
+    assert.deepEqual(restoreWorkerCheckpoint(restored, options), restored, 'repair is stable after another restart');
   }
-  assert.throws(() => restoreWorkerCheckpoint(interrupted('edit_workspace_file'), { ...options, retryableReadTools: ['read_workspace_code'] }), { code: 'UNSAFE_TOOL_REPLAY' });
+  // A saved recovery flag never authorizes a read-only retry; only the current
+  // host tool policy does.
+  const flagged = interrupted('read_workspace_code'); flagged.ledger[0].recovery = 'retry-read-only';
+  const restored = restoreWorkerCheckpoint(flagged, options);
+  assert.match(restored.ledger[0].result.content[0].text, /side effects are unknown/);
+  assert.doesNotMatch(restored.ledger[0].result.content[0].text, /read-only tool/);
+});
+
+test('interrupted side-effecting calls do not abort worker resumption or execute during recovery', async () => {
+  let saved, executions = 0, recorded = 0, request;
+  const worker = createPiWorker({ model,
+    tools: [{ name: 'run_linux_ssh_command', description: 'run', parameters: { type: 'object', properties: {} }, execute: async () => { executions++; return { content: [] }; } }],
+    onToolResult: async () => { recorded++; },
+    streamFn: (_model, transcript) => { request = transcript; throw new Error('fixture model reached'); } });
+  await assert.rejects(worker({ node: { id: 'intent', intent: { description: 'run', keyPoints: ['observed'] } }, attempt: { id: 'attempt' }, checkpoint: interrupted('run_linux_ssh_command'),
+    getContext: () => ({ data: { goal: options.goal, nodes: [] }, text: options.goal }), saveCheckpoint: async value => { saved = value; } }), /fixture model reached/);
+  assert.equal(executions, 0, 'recovery itself must not execute tools');
+  assert.equal(recorded, 0, 'an interrupted error observation must not enter the tool evidence store');
+  assert.equal(saved.ledger[0].status, 'completed');
+  assert.equal(saved.ledger[0].interrupted, true);
+  const recovered = request.messages.find(message => message.role === 'toolResult' && message.toolCallId === 'call-interrupted');
+  assert.equal(recovered.isError, true);
+  assert.match(recovered.content[0].text, /side effects are unknown/);
 });
 
 test('safe read repair still validates transcript identity and arguments', () => {

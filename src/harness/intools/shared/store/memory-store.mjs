@@ -49,6 +49,21 @@ function validate(state, sessionId) {
     if (todoIds.has(key) || !['pending', 'in_progress', 'completed'].includes(todo.status)) throw new Error('Invalid memory todo identity or status');
     todoIds.add(key);
   }
+  // Exploration agenda directions written by Reason. Older snapshots simply have
+  // no agenda; never fail a durable memory load just because the field is new.
+  if (state.agenda === undefined) state.agenda = [];
+  if (!Array.isArray(state.agenda)) throw new Error('Invalid memory snapshot agenda');
+  const agendaIds = new Set();
+  for (const entry of state.agenda) {
+    required(entry?.id, 'agenda.id'); required(entry?.worker_id, 'agenda.worker_id'); required(entry?.content, 'agenda.content');
+    if (entry.worker_id !== 'reason') throw new Error('Invalid agenda owner');
+    const key = JSON.stringify([entry.worker_id, entry.id]);
+    if (agendaIds.has(key) || !['planned', 'active', 'done', 'dropped'].includes(entry.status)) throw new Error('Invalid memory agenda identity or status');
+    for (const field of ['dedupe_key', 'method', 'acceptance']) {
+      if (entry[field] !== undefined && (typeof entry[field] !== 'string' || entry[field].length > 512)) throw new Error(`Invalid memory agenda ${field}`);
+    }
+    agendaIds.add(key);
+  }
   const promotionIds = new Set();
   for (const entry of state.promotions) {
     const key = JSON.stringify([entry.note_id, entry.kind]);
@@ -70,7 +85,7 @@ export class MemoryStore {
   constructor({ sessionId, persist = async () => {} } = {}) {
     sessionId = required(sessionId, 'sessionId');
     if (typeof persist !== 'function') throw new TypeError('persist must be a function');
-    this.#state = { schemaVersion: 1, sessionId, revision: 0, todos: [], notes: [], promotions: [], workers: [], audit: [] };
+    this.#state = { schemaVersion: 1, sessionId, revision: 0, todos: [], notes: [], promotions: [], workers: [], audit: [], agenda: [] };
     this.#persist = persist;
   }
 

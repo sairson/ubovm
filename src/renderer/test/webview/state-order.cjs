@@ -96,3 +96,49 @@ test('execution ticks can clear recovering without replacing conversation histor
   current = order.execution(delta(3, 'a', 'running'), current);
   assert.equal(current.recovering, false);
 });
+
+test('team roster and task board survive full and incremental state updates', () => {
+  const order = createStateOrder();
+  const team = {
+    revision: 2,
+    roster: [{ name: 'lead', role: 'lead', status: 'running', updatedAt: 1 },
+      { name: 'reviewer', role: 'teammate', status: 'inactive', description: 'Review', updatedAt: 2 }],
+    tasks: [{ id: 'task-1', revision: 1, subject: 'Review', description: '', status: 'pending', blockedBy: [], writeScopes: [], ready: true, writeScopeWarnings: [] }]
+  };
+  let current = order.full({ ...full(1), execution: { status: 'running', team } });
+  assert.deepEqual(current.execution.team, team);
+  const next = { revision: 3, roster: [{ name: 'reviewer', role: 'teammate', status: 'running' }], tasks: [] };
+  current = order.execution({ ...delta(2), execution: { status: 'running', team: next } }, current);
+  assert.equal(current.execution.team.revision, 3);
+  assert.equal(current.execution.team.roster[0].status, 'running');
+});
+
+test('malformed team payloads are downgraded or dropped instead of breaking the view', () => {
+  const order = createStateOrder();
+  let current = order.full(full(1));
+  current = order.execution({ ...delta(2), execution: { status: 'running', team: { roster: {}, tasks: 'x' } } }, current);
+  assert.deepEqual(current.execution.team, { roster: [], tasks: [] });
+  current = order.execution({ ...delta(3), execution: { status: 'running', team: 'team' } }, current);
+  assert.equal('team' in current.execution, false);
+  assert.doesNotThrow(() => order.full({ ...full(4), execution: { status: 'running', team: { roster: 5 } } }, current));
+});
+
+test('team member watch payload survives execution updates and malformed parts are downgraded', () => {
+  const order = createStateOrder();
+  const teamWatch = {
+    name: 'reviewer', role: 'teammate', status: 'running', running: true,
+    history: { entries: [{ id: 'team:user:0', role: 'user', text: 'Team message from lead:\nreview' }], omitted: 0 },
+    live: { parts: [{ id: 'text:1', type: 'text', text: 'working', status: 'streaming' }], streamText: 'working' }
+  };
+  let current = order.full({ ...full(1), execution: { status: 'running', teamWatch } });
+  assert.deepEqual(current.execution.teamWatch, teamWatch);
+  current = order.execution({ ...delta(2), execution: { status: 'running', teamWatch: { ...teamWatch, status: 'inactive', running: false } } }, current);
+  assert.equal(current.execution.teamWatch.running, false);
+  current = order.execution({ ...delta(3), execution: { status: 'running', teamWatch: { name: 'reviewer', history: { entries: {} }, live: { parts: 'x' } } } }, current);
+  assert.deepEqual(current.execution.teamWatch.history.entries, []);
+  assert.deepEqual(current.execution.teamWatch.live.parts, []);
+  current = order.execution({ ...delta(4), execution: { status: 'running', teamWatch: 'reviewer' } }, current);
+  assert.equal('teamWatch' in current.execution, false);
+});
+
+

@@ -18,7 +18,11 @@
     read_workspace_change: '读取代码改动快照', preview_workspace_edits: '预览代码修改', preview_workspace_rename: '预览符号重命名',
     edit_workspace_files: '批量编辑代码', inspect_workspace_project: '检查项目配置',
     list_assist_evidence: '查看已记录证据', record_assist_evidence: '记录证据', attach_assist_evidence: '关联证据',
-    list_linked_goals: '查看关联目标', create_linked_goal: '创建关联目标', ask_human: '询问用户'
+    list_linked_goals: '查看关联目标', create_linked_goal: '创建关联目标', ask_human: '询问用户',
+    spawn_teammate: '创建团队成员', send_message: '向团队发消息', list_agents: '查看团队成员', wait_agent: '等待团队进展',
+    interrupt_agent: '中断团队成员', team_task_create: '创建任务', team_task_list: '查看任务板', team_task_get: '读取任务',
+    team_task_update: '更新任务', background_commands: '后台任务',
+    stop_worker: '停止 Worker', start_worker: '启动 Worker', prompt_worker: '派发 Worker 提示'
   });
   const isBackgroundTool = part => Boolean(part && part.type === 'tool' && part.background === true);
   const visibleTimelineParts = parts => Array.isArray(parts) ? parts.filter(part => !isBackgroundTool(part)) : [];
@@ -28,7 +32,10 @@
   const READ_ONLY_PREFIXES = Object.freeze(['read_', 'list_', 'get_', 'search_', 'inspect_']);
   const READ_ONLY_TOOLS = Object.freeze(new Set([
     'web_search', 'fetch_web_content', 'navigate_workspace_code', 'load_skill',
-    'scan_workspace_secrets', 'inventory_workspace_dependencies', 'analyze_workspace_call_chain'
+    'scan_workspace_secrets', 'inventory_workspace_dependencies', 'analyze_workspace_call_chain',
+    // Team roster/board lookups return whole snapshots the Team panel already
+    // shows; their cards stay flat and never echo the returned content.
+    'list_agents', 'team_task_list', 'team_task_get', 'wait_agent'
   ]));
   // Task-board updates are flat like read-only cards: the board already carries
   // the current items, so the card only needs the operation, status and timing.

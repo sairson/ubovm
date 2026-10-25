@@ -47,6 +47,24 @@ test('Reason discards known parent notes locally without spending a repair or ch
   assert.throws(() => parseReasonDecision(source, { context }), /unsupported field "parentIds_note"/);
 });
 
+test('Reason discards priority-note annotations instead of failing the review', async () => {
+  let calls = 0;
+  const events = [];
+  const intents = [{
+    description: 'inspect', parentIds: ['n1'], priority: 'medium', keyPoints: ['checked'],
+    priority_note_removed: 'the previous priority note was removed by the host'
+  }];
+  const source = JSON.stringify({ intents });
+  const decision = await createPiReason({ model, maxRepairs: 0, onEvent: event => events.push(event),
+    streamFn: () => { calls++; return response(source, 'stop'); } })({ context });
+  assert.deepEqual(decision, { intents: [{ description: 'inspect', parentIds: ['n1'], priority: 'medium', keyPoints: ['checked'] }] });
+  assert.equal(calls, 1);
+  assert.deepEqual(events.find(event => event.type === 'reason_normalized').fields, ['intents[0].priority_note_removed']);
+  assert.throws(() => parseReasonDecision(source, { context }), /unsupported field "priority_note_removed"/);
+  await assert.rejects(createPiReason({ model, maxRepairs: 0,
+    streamFn: () => response(JSON.stringify({ intents: [{ ...intents[0], hint: 'human instruction' }] }), 'stop') })({ context }), { code: 'INVALID_REASON_DECISION' });
+});
+
 test('Reason note normalization preserves schema, alias and response limits', async () => {
   for (const overrides of [
     { hint: 'human instruction' }, { other_note: 'unknown' }, { parentIds: ['n99'] },

@@ -53,6 +53,9 @@ test('ask_human guidance steers the agent to act before asking', async () => {
   assert.match(ASK_HUMAN_CATALOG.description, /只在用户本人才能决定/);
   assert.match(ASK_HUMAN_CATALOG.description, /默认先按最合理的解释动手/);
   assert.match(ASK_HUMAN_CATALOG.description, /在你能自行评估的方案之间让用户挑选/);
+  assert.match(ASK_HUMAN_CATALOG.description, /接下来做什么/);
+  assert.match(ASK_HUMAN_CATALOG.description, /长任务应连续执行到目标完成/);
+  assert.match(ASK_HUMAN_CATALOG.docs.find(doc => doc.action === 'question').summary, /不要问下一步该做什么/);
 });
 
 test('ask_human input validation rejects malformed options and unknown fields', () => {

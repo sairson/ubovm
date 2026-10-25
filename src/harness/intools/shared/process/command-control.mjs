@@ -26,7 +26,7 @@ export function controlledCommand(tool, workerId, register) {
     if (retain) signal?.addEventListener('abort', forwardAbort, { once: true });
     const owned = { background: false, abort: () => controller.abort(new Error('Command runtime is closed')) };
     controls.add(owned);
-    let finished = false, started = false, release, background = false, stopping = false, executionState = 'running', output = '', observer, putAside, operation, cleanupFailure;
+    let finished = false, started = false, release, background = false, stopping = false, executionState = 'running', output = '', observers = new Set(), putAside, operation, cleanupFailure;
     const residentListeners = new Set();
     const lifecycle = retain ? {
       get resident() { return background; },
@@ -39,8 +39,14 @@ export function controlledCommand(tool, workerId, register) {
         cleanupFailure = Object.assign(new Error('命令进程清理未确认，请检查服务状态。'), { code: 'COMMAND_CLEANUP_UNCONFIRMED' });
       }
     };
+    const snapshot = (status = 'running') => ({ status, output, executionState: stopping ? 'stopping' : executionState });
     const publish = (status = 'running') => {
-      if (background) try { Promise.resolve(observer?.({ status, output, executionState: stopping ? 'stopping' : executionState })).catch(() => {}); } catch { /* Host observers cannot terminate commands. */ }
+      if (!background) return;
+      // Each observer is isolated: a broken host projection must not keep the
+      // command, its siblings or a background-task reader from working.
+      for (const observer of observers) {
+        try { Promise.resolve(observer(snapshot(status))).catch(() => {}); } catch { /* Host observers cannot terminate commands. */ }
+      }
     };
     const backgroundCommand = () => {
       if (finished || combined.aborted || background || stopping || retain && register.canRetain?.() === false) return false;
@@ -52,7 +58,7 @@ export function controlledCommand(tool, workerId, register) {
       }
       publish();
       onUpdate = undefined;
-      putAside(textResult(retain ? '命令已驻留，agent 结束后继续运行（本地与 SSH 相同）。不要重复启动。可手动停止；驻留后取消前台超时，日志只保留末尾；切换工作空间、删除会话或退出应用会清理任务。' : '命令已放在一边，仍在运行。不要重复启动；原有超时、取消及会话关闭仍生效。', { command_id: id, background: true }));
+      putAside(textResult(retain ? `命令已驻留（本地与 SSH 相同），agent 结束后继续运行。任务 ID：#${id}。不要重复启动；用 background_commands action=read|stop 读取日志或停止。启动长任务不是任务完成：继续完成其余步骤、验证真实结果后再给出最终答复，不要因此询问用户下一步。驻留后取消前台超时，日志只保留末尾；切换工作空间、删除会话或退出应用会清理任务。` : `命令已放在一边（任务 ID：#${id}），仍在运行。不要重复启动；可用 background_commands 读取日志或停止。继续完成其余工作，不要只因为命令转入后台就结束本轮。原有超时、取消及会话关闭仍生效。`, { command_id: id, background: true }));
       return true;
     };
     const interrupt = () => {
@@ -62,7 +68,18 @@ export function controlledCommand(tool, workerId, register) {
     };
     try {
       release = register({ id, workerId, toolCallId, name: tool.name, args, startedAt: Date.now(), get retained() { return retain && background && !finished; }, interrupt,
-        done: async () => { await operation?.catch(() => {}); if (cleanupFailure) throw cleanupFailure; }, background: backgroundCommand, subscribe: callback => { observer = callback; } });
+        done: async () => { await operation?.catch(() => {}); if (cleanupFailure) throw cleanupFailure; }, background: backgroundCommand,
+        subscribe: callback => {
+          if (typeof callback !== 'function') return () => {};
+          observers.add(callback);
+          // Late readers (e.g. a background-task tool opened after 放在一边)
+          // receive the latest snapshot immediately instead of waiting for the
+          // next output chunk.
+          if (background) {
+            try { Promise.resolve(callback(snapshot())).catch(() => {}); } catch { /* Observers cannot terminate commands. */ }
+          }
+          return () => observers.delete(callback);
+        } });
       try { Promise.resolve(onUpdate?.(textResult('', { command_id: id }))).catch(() => {}); } catch { /* observer */ }
       // Auto-retain host-managed long servers (retain:true or npm run dev heuristics)
       // so the agent turn is not blocked and cancel/close will not kill them.

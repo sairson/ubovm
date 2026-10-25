@@ -92,7 +92,7 @@
   const drafts = new Map();
   const pending = new Map();
   const errors = new Map();
-  const goalViews = ['overview', 'board', 'workers', 'notes'];
+  const goalViews = ['overview', 'agenda', 'board', 'workers', 'notes'];
   let currentSessionId = '';
   let hostState = null;
   const stateOrder = window.createStateOrder();
@@ -180,14 +180,84 @@
   const scrollPositions = new WeakMap();
   const goalViewScroll = new Map();
   let pendingScroll;
-  // Long histories paint the newest turns first so loaders can clear before older
-  // Markdown work. Prefill runs on later frames without a second full snapshot.
-  const HISTORY_TAIL = 14;
-  const HISTORY_BATCH = 8;
+  // Long histories paint only the newest turns synchronously so the page skeleton
+  // can clear in one frame; the rest of the published history streams in above on
+  // later frames under a small synchronous time budget. Short conversations keep
+  // the single full paint so fixtures and reader order do not change.
+  const HISTORY_PROGRESSIVE_MIN = 24;     // histories longer than this paint progressively
+  const HISTORY_SYNC_COUNT = 3;           // newest messages painted on the first frame
+  const HISTORY_FRAME_BUDGET_MS = 6;      // synchronous DOM work allowed per backfill frame
+  const HISTORY_OUTLINE_INTERVAL_MS = 100; // coalesced outline rebuild interval during fill
+  const HISTORY_HEAVY_COUNT = 24;         // long histories skip offscreen layout from the first paint
   let historyFillFrame = 0;
+  let historyOutlineAt = 0;
+  let historyLoadingEl = null;
   let pendingThreadTeardown;
   function cancelHistoryFill() {
     if (historyFillFrame) { cancelAnimationFrame(historyFillFrame); historyFillFrame = 0; }
+  }
+  // The indicator explains the top gap while older history is still streaming in.
+  // It lives inside #messages (role=log) so the announcement is polite; removing it
+  // when the fill completes is compensated by the caller's scroll anchoring.
+  function setHistoryLoading(active) {
+    if (!active) {
+      if (historyLoadingEl) { historyLoadingEl.remove(); historyLoadingEl = null; }
+      return;
+    }
+    if (!historyLoadingEl || !historyLoadingEl.isConnected) {
+      historyLoadingEl = document.createElement('div');
+      historyLoadingEl.className = 'history-loading';
+      historyLoadingEl.setAttribute('role', 'status');
+      historyLoadingEl.setAttribute('aria-live', 'polite');
+      historyLoadingEl.setAttribute('aria-atomic', 'true');
+      historyLoadingEl.textContent = t('正在载入较早的记录…');
+    }
+    if (messages.firstChild !== historyLoadingEl) messages.insertBefore(historyLoadingEl, messages.firstChild);
+    historyLoadingEl.hidden = false;
+  }
+  // Offscreen rendering is scoped to long conversations: content-visibility lets the
+  // browser skip layout/paint for messages far outside the viewport while scrolling.
+  // The marker follows the published length so it never flips mid-fill (a late flip
+  // would re-estimate already-laid-out history and shift the reader's anchor).
+  function syncHistoryDensity(count) {
+    const heavy = count > HISTORY_HEAVY_COUNT;
+    if (messages.classList.contains('history-heavy') !== heavy) messages.classList.toggle('history-heavy', heavy);
+  }
+  // The first progressive paint mounts cheap shells: the first visible part only.
+  // Remaining parts are appended one at a time on later frames so one frame never has
+  // to lay out every tool card of the newest turns at once (the ~50 ms first-paint
+  // long task). Until a shell finishes hydrating it shows a small inline hint.
+  function createHydratingHint() {
+    const hint = document.createElement('div');
+    hint.className = 'message-hydrating';
+    hint.setAttribute('role', 'status');
+    hint.setAttribute('aria-live', 'polite');
+    hint.textContent = t('正在载入工具记录…');
+    return hint;
+  }
+  function queueHistoryHydration(view, entry, parts) {
+    entry.pendingParts = parts;
+    entry.hydrated = 1;
+    entry.hint = createHydratingHint();
+    entry.article.dataset.hydrating = 'true';
+    entry.article.appendChild(entry.hint);
+    view.hydration ??= [];
+    view.hydration.push(entry);
+  }
+  function finishHistoryHydration(entry) {
+    entry.hint?.remove();
+    entry.hint = undefined;
+    entry.pendingParts = undefined;
+    entry.hydrated = 1;
+    entry.article.removeAttribute('data-hydrating');
+  }
+  // Drop queued hydration for entries that were replaced or removed by a full
+  // history reconcile; their parts are rendered synchronously by that reconcile.
+  function clearHistoryHydration(view) {
+    for (const entry of view.hydration || []) {
+      if (entry.pendingParts) finishHistoryHydration(entry);
+    }
+    view.hydration = [];
   }
   function releaseMessageView(view) {
     if (!view) return;
@@ -472,6 +542,52 @@
   const backgroundTasks = window.createBackgroundTasks(messageActions);
   document.querySelector('.shell')?.append(backgroundTasks.element);
   const workerPanel = window.createWorkerPanel(messageActions, { openNative: id => { if (!hostState?.nativeWorkerPanel) return false; if (!hasPending('openWorker')) void renderRequest('openWorker', { workerId: id }).catch(() => {}); return true; }, initialWidth: workerPanelWidth, onWidthChange: width => { workerPanelWidth = width; persistDrafts(); } });
+  const teamPanel = window.createTeamPanel({
+    onSelectMember: name => {
+      // A teammate name opens that member's conversation; the Lead row returns
+      // to the main conversation (null).
+      if (name) openTeamMember(name);
+      else closeTeamMember({ restoreFocus: false });
+    }
+  });
+  const teamMemberView = window.createTeamMemberView({
+    actions: messageActions,
+    onClose: () => clearTeamWatchMember(),
+    onRetry: name => { if (teamMemberView.isOpen) requestTeamMember(name); },
+    isBlocked: () => teamPanel.isOpen
+  });
+  // The member view is driven by `execution.teamWatch`, which the host projects
+  // from the selected teammate's transcript. Opening asks for the watch and
+  // shows the loading surface immediately; closing always clears it so the host
+  // stops projecting that member.
+  function requestTeamMember(name) {
+    return request('watchTeamMember', { name }, undefined, failure => {
+      if (teamMemberView.isOpen && teamMemberView.name === name) {
+        teamMemberView.fail(failure?.message || '读取该成员的会话失败，请重试。');
+      }
+    }, 8000);
+  }
+  function openTeamMember(name) {
+    const member = typeof name === 'string' ? name.trim() : '';
+    if (!member) return;
+    teamMemberView.open(member);
+    requestTeamMember(member);
+  }
+  function closeTeamMember({ restoreFocus = true } = {}) {
+    if (!teamMemberView.isOpen) return;
+    teamMemberView.close({ restoreFocus });
+  }
+  // Best-effort clear, idempotent: the host ignores clears when no member is
+  // selected. A failure never reopens the view or blocks navigation.
+  function clearTeamWatchMember() {
+    if (!currentSessionId) return;
+    request('watchTeamMember', { name: null }, undefined, () => {}, 5000);
+  }
+  // Registered before the pagehide cleanup below so the clear still reaches the
+  // host while the bridge is open; the host drops it if the session is gone.
+  window.addEventListener('pagehide', () => {
+    if (teamMemberView.isOpen) closeTeamMember({ restoreFocus: false });
+  });
   byId('goal-log-bottom').addEventListener('click', () => {
     // showLatest re-enables follow mode so later stream ticks stay pinned to the end.
     goalExecutionLog?.showLatest();
@@ -640,6 +756,85 @@
     setProperty(button, 'title', stop ? '停止当前执行' : busy ? (liveSteer ? '立刻引导当前任务（Enter）' : '加入队列（Enter）') : '发送（Enter）');
     setAttribute(button.querySelector('path'), 'd', stop ? 'M6 6h12v12H6Z' : 'M12 19V5m-6 6 6-6 6 6');
     setProperty(button, 'disabled', connectionStatus === 'disconnected' || !currentSessionId || hostState?.recovering || navigationPending() || hasPending('rewindInput') || hasPending('cancelRun') || (stop ? hasPending('prompt') : configurationMissing() || hasPending('prompt') || hasPending('runGoal') || hasPending('resumeRun') || contextPending() || (!field.value.trim() && !(hostState?.pendingImages?.length)) || field.value.length > field.maxLength));
+  }
+  // The composer model picker keeps native <select> semantics (keyboard,
+  // type-ahead, form value) while presenting the DSH chip look. Chromium's
+  // customizable select lets the trigger carry the provider mark and the popup
+  // carry per-model metadata; older engines keep the plain option list.
+  const supportsCustomSelect = (() => {
+    try { return CSS.supports('appearance', 'base-select'); } catch { return false; }
+  })();
+  const modelIconCache = new Map();
+  function modelPickerIcon(providerId) {
+    const key = String(providerId || '');
+    let icon = modelIconCache.get(key);
+    if (!icon) {
+      let library = {};
+      try { library = typeof UBOVM_PROVIDER_ICONS === 'object' && UBOVM_PROVIDER_ICONS ? UBOVM_PROVIDER_ICONS : {}; } catch { library = {}; }
+      // Brand marks ship with inline style attributes; CSP style-src has no
+      // unsafe-inline, so strip them before the SVG enters this document.
+      const markup = String(library[key] || '').replace(/\sstyle\s*=\s*("[^"]*"|'[^']*')/gi, '');
+      let svg;
+      if (markup) {
+        try {
+          svg = new DOMParser().parseFromString(markup, 'image/svg+xml').documentElement;
+          if (svg?.nodeName?.toLowerCase() !== 'svg') svg = null;
+        } catch { svg = null; }
+      }
+      if (!svg) {
+        // Neutral spark for custom/unknown providers.
+        svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        svg.setAttribute('viewBox', '0 0 24 24');
+        const shape = document.createElementNS(svg.namespaceURI, 'path');
+        shape.setAttribute('d', 'M12 3.2c.55 3.7 2.6 5.75 6.3 6.3-3.7.55-5.75 2.6-6.3 6.3-.55-3.7-2.6-5.75-6.3-6.3 3.7-.55 5.75-2.6 6.3-6.3Z');
+        shape.setAttribute('fill', 'none');
+        shape.setAttribute('stroke', 'currentColor');
+        shape.setAttribute('stroke-width', '1.7');
+        shape.setAttribute('stroke-linejoin', 'round');
+        svg.append(shape);
+      }
+      svg.querySelectorAll('title').forEach(node => node.remove());
+      // The sanitized markup above already dropped inline styles; keep the DOM
+      // side clean as well so no stray style attribute can trip the CSP.
+      svg.removeAttribute('style');
+      svg.querySelectorAll('[style]').forEach(node => node.removeAttribute('style'));
+      svg.setAttribute('class', 'model-provider-icon');
+      svg.setAttribute('aria-hidden', 'true');
+      svg.setAttribute('focusable', 'false');
+      modelIconCache.set(key, svg);
+      icon = svg;
+    }
+    return icon.cloneNode(true);
+  }
+  function fillModelPicker(select, choices, providerId, defaultModel) {
+    const nodes = [];
+    if (supportsCustomSelect) {
+      const trigger = document.createElement('button');
+      trigger.type = 'button';
+      trigger.append(modelPickerIcon(providerId));
+      trigger.append(document.createElement('selectedcontent'));
+      nodes.push(trigger);
+    }
+    for (const id of choices) {
+      const option = document.createElement('option');
+      option.value = id;
+      if (supportsCustomSelect) {
+        const name = document.createElement('span');
+        name.className = 'model-option-name';
+        name.textContent = id;
+        option.append(name);
+        if (id === defaultModel) {
+          const tag = document.createElement('span');
+          tag.className = 'model-option-tag';
+          tag.textContent = t('默认');
+          option.append(tag);
+        }
+      } else {
+        option.textContent = id;
+      }
+      nodes.push(option);
+    }
+    select.replaceChildren(...nodes);
   }
   function updateControls() {
     renderInputQueue();
@@ -1077,46 +1272,114 @@
     entry.messageId = item.id;
     return changed;
   }
+  function mountHistoryEntry(item, view, progressive = false) {
+    const parts = item.role === 'assistant' ? visibleTimelineParts(item.parts) : item.parts;
+    const hydrate = progressive && Array.isArray(parts) && parts.length > 1;
+    const entry = createMessageEntry(item.role, item.text, hydrate ? parts.slice(0, 1) : parts, false, item.images);
+    entry.key = messageHistoryKey(item);
+    decorateHistoryEntry(entry, item);
+    if (entry.role === 'assistant' && typeof entry.messageId === 'string' && entry.messageId.startsWith('assist:')) {
+      entry.changes = document.createElement('section');
+      entry.article.appendChild(entry.changes);
+      const turnId = entry.messageId.slice(7);
+      window.UBOVMCodeChanges.update(entry.changes, hostState?.codeChanges?.[turnId], {
+        turnId, busy, usage: item.usage, onAction: (action, payload) => new Promise((resolve, reject) => {
+          if (!entry.changes.isConnected || view.sessionId !== currentSessionId) { reject(new Error('会话已切换，请返回原会话操作。')); return; }
+          if (!request(action, payload, resolve, reject)) reject(new Error('操作未发送，请稍后重试。'));
+        })
+      });
+    }
+    if (hydrate) queueHistoryHydration(view, entry, parts);
+    return entry;
+  }
+  function flashHistoryBatch(entries) {
+    for (const entry of entries) {
+      entry.article.classList.add('history-enter');
+      // The class is one-shot: drop it after the fade so it can never revive on a
+      // later retained-node reconcile. Reduced motion disables the animation, in
+      // which case it stays inert on the (kept) node.
+      entry.article.addEventListener('animationend', () => {
+        entry.article.classList.remove('history-enter');
+      }, { once: true });
+    }
+  }
   function scheduleHistoryFill() {
     if (historyFillFrame || pageHidden()) return;
-    historyFillFrame = requestAnimationFrame(() => {
-      historyFillFrame = 0;
-      if (pageHidden() || hostState?.mode === 'goal') return;
-      const view = messageViews.get(messages);
-      if (!view || view.sessionId !== currentSessionId || !(view.historyStart > 0) || !Array.isArray(view.history)) return;
-      const batchEnd = view.historyStart;
-      const batchStart = Math.max(0, batchEnd - HISTORY_BATCH);
-      const batch = view.history.slice(batchStart, batchEnd);
-      const scroller = conversation;
-      const position = scrollPositions.get(scroller);
+    historyFillFrame = requestAnimationFrame(runHistoryFillFrame);
+  }
+  // Advance exactly one visible shell by one part per frame. The expensive part of
+  // the old first paint was the browser laying out several tool cards in the same
+  // frame; adding one card per frame keeps every frame short (measured: one part per
+  // frame never crosses the long-task threshold). Shells are advanced round-robin so
+  // the newest turns fill in order and none is left stranded.
+  function hydrateHistoryFrame(view) {
+    const queue = view.hydration;
+    if (!queue?.length) return false;
+    while (queue.length) {
+      const entry = queue.shift();
+      if (!entry.article.isConnected) { finishHistoryHydration(entry); continue; }
+      const parts = entry.pendingParts;
+      if (!parts || entry.hydrated >= parts.length) { finishHistoryHydration(entry); continue; }
+      entry.hydrated++;
+      const prefix = parts.slice(0, entry.hydrated);
+      window.UBOVMMessage.update(entry.body, entry.text, { ...messageActions, role: entry.role, parts: prefix, streaming: false, preserveBody: true });
+      entry.parts = prefix;
+      if (entry.hydrated < parts.length) queue.push(entry);
+      else finishHistoryHydration(entry);
+      return true;
+    }
+    return false;
+  }
+  // Frame scheduler for the progressive history: visible-shell hydration first, then
+  // time-budgeted backfill of older messages. Always makes progress (>=1 part and/or
+  // >=1 message) and stops once both queues are empty. Replaces the fixed
+  // HISTORY_BATCH=8 batches whose tool-rich Markdown caused ~56 ms long tasks.
+  function runHistoryFillFrame() {
+    historyFillFrame = 0;
+    if (pageHidden() || hostState?.mode === 'goal') return;
+    const view = messageViews.get(messages);
+    if (!view || view.sessionId !== currentSessionId) return;
+    const fillPending = view.historyStart > 0 && Array.isArray(view.history);
+    if (!fillPending && !view.hydration?.length) return;
+    const started = performance.now();
+    const hydrated = hydrateHistoryFrame(view);
+    const scroller = conversation;
+    const position = scrollPositions.get(scroller);
+    // Hydration grows the visible newest messages downwards. A following reader must
+    // be re-pinned before the fill's own "near the bottom" test, otherwise the grown
+    // hint/parts would make the fill think the reader scrolled away and stop following.
+    if (hydrated && position.following) {
+      scroller.scrollTop = scroller.scrollHeight;
+      position.top = scroller.scrollTop;
+    }
+    let complete = false;
+    if (fillPending) {
+      // Measure the anchor after hydration: hydration grows visible messages below the
+      // reader's anchor, so only the inserted history height may be compensated.
       const previousHeight = scroller.scrollHeight;
       const previousTop = scroller.scrollTop;
       const following = position.following && scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 32;
-      const fragment = document.createDocumentFragment();
-      const prefix = [];
-      for (const item of batch) {
-        const parts = item.role === 'assistant' ? visibleTimelineParts(item.parts) : item.parts;
-        const entry = createMessageEntry(item.role, item.text, parts, false, item.images);
-        entry.key = messageHistoryKey(item);
-        decorateHistoryEntry(entry, item);
-        if (entry.role === 'assistant' && typeof entry.messageId === 'string' && entry.messageId.startsWith('assist:')) {
-          entry.changes = document.createElement('section');
-          entry.article.appendChild(entry.changes);
-          const turnId = entry.messageId.slice(7);
-          window.UBOVMCodeChanges.update(entry.changes, hostState?.codeChanges?.[turnId], {
-            turnId, busy, usage: item.usage, onAction: (action, payload) => new Promise((resolve, reject) => {
-              if (!entry.changes.isConnected || view.sessionId !== currentSessionId) { reject(new Error('会话已切换，请返回原会话操作。')); return; }
-              if (!request(action, payload, resolve, reject)) reject(new Error('操作未发送，请稍后重试。'));
-            })
-          });
-        }
-        prefix.push(entry);
-        fragment.appendChild(entry.article);
+      const fillStarted = performance.now();
+      const fillBudget = Math.max(1, HISTORY_FRAME_BUDGET_MS - (fillStarted - started));
+      const added = [];
+      let cursor = view.historyStart;
+      while (cursor > 0) {
+        added.push(mountHistoryEntry(view.history[cursor - 1], view));
+        cursor--;
+        if (performance.now() - fillStarted >= fillBudget) break;
       }
       const anchor = view.entries[0]?.article || view.stream?.article || null;
+      const fragment = document.createDocumentFragment();
+      for (let index = added.length - 1; index >= 0; index--) fragment.appendChild(added[index].article);
       messages.insertBefore(fragment, anchor);
-      view.entries = prefix.concat(view.entries);
-      view.historyStart = batchStart;
+      added.reverse();
+      flashHistoryBatch(added);
+      view.entries = added.concat(view.entries);
+      view.historyStart = cursor;
+      complete = cursor === 0;
+      // The indicator sits above every entry, so its removal is part of the inserted
+      // height delta that keeps a reader who scrolled up visually anchored.
+      if (complete) setHistoryLoading(false);
       if (!following) {
         scroller.scrollTop = previousTop + (scroller.scrollHeight - previousHeight);
         position.top = scroller.scrollTop;
@@ -1125,10 +1388,20 @@
         position.top = scroller.scrollTop;
         position.following = true;
       }
-      try { renderConversationOutline(); } catch { /* Outline can catch up on the next full paint. */ }
-      refreshLatest();
-      if (view.historyStart > 0) scheduleHistoryFill();
-    });
+      // The outline is expensive to rebuild per batch; coalesce it while the fill runs
+      // and always do one final identical rebuild when all entries are mounted.
+      const now = performance.now();
+      if (complete || now - historyOutlineAt >= HISTORY_OUTLINE_INTERVAL_MS) {
+        historyOutlineAt = now;
+        try { renderConversationOutline(); } catch { /* Outline can catch up on the next full paint. */ }
+      }
+    } else if (hydrated && position.following) {
+      // Hydration grows the newest messages; a following reader stays pinned.
+      scroller.scrollTop = scroller.scrollHeight;
+      position.top = scroller.scrollTop;
+    }
+    refreshLatest();
+    if (view.historyStart > 0 || view.hydration?.length) scheduleHistoryFill();
   }
   let pendingImageKey = '';
   function renderPendingImages() {
@@ -1178,19 +1451,26 @@
     forceScroll = false;
     if (view?.sessionId !== currentSessionId) {
       cancelHistoryFill();
+      historyOutlineAt = 0;
+      setHistoryLoading(false);
       container.replaceChildren();
-      view = { sessionId: currentSessionId, entries: [], stream: null, busy: undefined, historyStart: 0 };
+      view = { sessionId: currentSessionId, entries: [], stream: null, busy: undefined, historyStart: 0, hydration: [] };
       messageViews.set(container, view);
     }
-    // Fresh session mounts paint the newest turns first so the loader can clear
-    // before older Markdown work. Same-session history edits keep full reconcile.
-    const progressive = historyChanged && view.entries.length === 0 && safeMessages.length > HISTORY_TAIL;
-    const paintStart = progressive ? safeMessages.length - HISTORY_TAIL : 0;
+    // Long histories mount only the newest messages on the first frame so the page
+    // skeleton can clear before the expensive Markdown/tool-card work. Short
+    // conversations keep the full synchronous paint. Same-session history edits
+    // keep the full reconcile.
+    const progressive = historyChanged && view.entries.length === 0 && safeMessages.length > HISTORY_PROGRESSIVE_MIN;
+    const paintStart = progressive ? safeMessages.length - HISTORY_SYNC_COUNT : 0;
     let changed = view.busy !== busy || view.entries.length !== safeMessages.length - paintStart;
     // Keep published history in place while only the transient reply grows.
     // Reading selections, focus, and scroll anchors survive token updates.
     if (historyChanged) {
       cancelHistoryFill();
+      // A full reconcile renders every part synchronously, so queued incremental
+      // hydration would re-render an already-complete body: drop it first.
+      clearHistoryHydration(view);
       const paintMessages = safeMessages.slice(paintStart);
       const retained = new Map(view.entries.filter(entry => entry.key).map(entry => [entry.key, entry]));
       const used = new Set(), entries = [];
@@ -1208,7 +1488,10 @@
           entry.text = item.text; entry.parts = parts;
           changed = true;
         } else if (!entry) {
-          entry = createMessageEntry(item.role, item.text, parts, false, item.images);
+          // Progressive first paint mounts cheap shells (first visible part) and
+          // hydrates the remaining parts on later frames; everything else keeps the
+          // single synchronous mount.
+          entry = progressive ? mountHistoryEntry(item, view, true) : createMessageEntry(item.role, item.text, parts, false, item.images);
           changed = true;
         } else if (entry.role !== item.role || entry.text !== item.text || !sameParts(entry.parts, parts) || !sameImages(entry.images, item.images)) {
           entry.article.className = 'message ' + item.role;
@@ -1233,7 +1516,13 @@
       }
       view.entries = entries;
       view.historyStart = paintStart;
-      if (paintStart > 0) scheduleHistoryFill();
+      if (paintStart > 0) setHistoryLoading(true);
+      else setHistoryLoading(false);
+      if (paintStart > 0 || view.hydration.length) scheduleHistoryFill();
+    } else if ((view.historyStart > 0 || view.hydration?.length) && !pageHidden() && hostState?.mode !== 'goal') {
+      // A hidden/aborted paint cancels the pending fill frame; resume it on the next
+      // committed render instead of leaving older history permanently missing.
+      scheduleHistoryFill();
     }
     if (hasLive) {
       if (!view.stream) {
@@ -1302,6 +1591,7 @@
     changed = renderQuestions(view) || changed;
     view.busy = busy;
     view.source = items; view.history = safeMessages; view.firstPartId = firstPartId; view.represented = represented;
+    syncHistoryDensity(safeMessages.length);
     showConversation(safeMessages.length > 0 || hasLive || busy || Boolean(execution.error) || execution.canResume === true || execution.workers?.length > 0 || view.approvals.size > 0 || view.questions.size > 0);
     refreshLatest();
     if (!changed) return;
@@ -1332,6 +1622,10 @@
     byId('validate-code-changes').hidden = goalMode;
     byId('review-code-changes').hidden = goalMode;
     byId('assist-notes-toggle').hidden = goalMode;
+    // The Team panel belongs to the assist Lead conversation; a mode switch must
+    // not leave a stale popover or a watched teammate floating over the goal
+    // workspace.
+    if (goalMode) { teamPanel.close(); closeTeamMember({ restoreFocus: false }); }
     renderModuleActions();
     updateInput();
   }
@@ -1347,7 +1641,7 @@
   function renderGoalView() {
     renderModuleActions();
     const selected = draftFor().view;
-    const label = { overview: '概览', board: '黑板', workers: '任务', notes: '笔记' }[selected];
+    const label = { overview: '概览', agenda: '议程', board: '黑板', workers: '任务', notes: '笔记' }[selected];
     setText(byId('goal-current-view'), label);
     const currentIcon = byId('goal-current-icon');
     if (currentIcon.dataset.view !== selected) {
@@ -1380,7 +1674,13 @@
     // A route change must synchronize the outer mode and workspace as well as
     // the tab. Partial execution renders can otherwise retain a hidden ancestor.
     pendingViewRestore = { sessionId: currentSessionId, view };
-    beginPageTransition('正在打开' + ({ overview: '思考日志', board: '黑板', workers: '任务', notes: '笔记' }[view]) + '…');
+    // Rapid clicks during an in-flight transition must not start competing
+    // transitions: the pending full paint already renders whatever view is
+    // selected when it runs, so this click only needs to become the latest
+    // intent. Starting another transition per click would re-arm the mask and
+    // cancellation path and can leave the page on an older intent.
+    if (routePending) { scheduleRender(); return; }
+    beginPageTransition('正在打开' + ({ overview: '思考日志', agenda: '议程', board: '黑板', workers: '任务', notes: '笔记' }[view]) + '…');
     scheduleRender();
   }
   function restoreFields() {
@@ -1585,6 +1885,101 @@
       }
     });
   }
+  function renderAgenda(agenda) {
+    const items = Array.isArray(agenda?.items) ? agenda.items : [];
+    renderSection('agenda', [items, agenda?.counts], () => {
+      const list = byId('goal-agenda-list');
+      const empty = items.length === 0;
+      byId('goal-agenda-empty').hidden = !empty;
+      list.hidden = empty;
+      const counts = agenda?.counts || {};
+      const openCount = (counts.planned || 0) + (counts.active || 0) + (counts.blocked || 0);
+      setText(byId('goal-agenda-summary'), empty ? '还没有探索议程' : `${counts.planned || 0} 待查 · ${counts.active || 0} 在查 · ${counts.blocked || 0} 受阻 · ${counts.done || 0} 已确认`);
+      setText(byId('goal-nav-agenda'), String(openCount));
+      const groups = [
+        { key: 'active', label: '进行中', filter: item => item.status === 'active' },
+        { key: 'planned', label: '待查', filter: item => item.status === 'planned' },
+        { key: 'blocked', label: '受阻 / 建议换方法', filter: item => item.status === 'blocked' },
+        { key: 'done', label: '最近确认', filter: item => item.status === 'done' },
+        { key: 'dropped', label: '最近放弃', filter: item => item.status === 'dropped' }
+      ];
+      list.replaceChildren(...groups.flatMap(group => {
+        const rows = items.filter(group.filter);
+        if (!rows.length) return [];
+        const section = document.createElement('section');
+        section.className = 'goal-agenda-group';
+        section.dataset.group = group.key;
+        const heading = document.createElement('h3');
+        heading.className = 'goal-agenda-group-heading';
+        const count = document.createElement('span');
+        count.className = 'count';
+        count.textContent = String(rows.length);
+        heading.append(group.label, count);
+        section.append(heading, ...rows.map(item => {
+          const row = document.createElement('article');
+          row.className = 'goal-agenda-row';
+          row.dataset.status = item.status;
+          row.dataset.kind = item.kind || 'intent';
+          const chip = document.createElement('span');
+          chip.className = 'goal-agenda-chip';
+          chip.textContent = item.kind === 'suggestion' ? '建议' : ({ planned: '待查', active: '在查', blocked: '受阻', done: '已确认', dropped: '已放弃' }[item.status] || item.status);
+          const main = document.createElement('div');
+          main.className = 'goal-agenda-main';
+          const title = document.createElement('p');
+          title.className = 'goal-agenda-title';
+          title.textContent = item.title;
+          const meta = document.createElement('div');
+          meta.className = 'goal-agenda-meta';
+          const kind = ({ intent: '意图', direction: '方向', suggestion: '建议' })[item.kind] || '条目';
+          const bits = [kind];
+          if (item.ref) bits.push(item.ref);
+          if (item.method) bits.push('方法：' + item.method);
+          if (item.acceptance) bits.push('验收：' + item.acceptance);
+          bits.forEach((bit, index) => {
+            if (index) { const sep = document.createElement('span'); sep.className = 'goal-agenda-sep'; sep.textContent = '·'; meta.append(sep); }
+            const span = document.createElement('span');
+            span.textContent = bit;
+            meta.append(span);
+          });
+          if (item.blocker) {
+            const blocker = document.createElement('span');
+            blocker.className = 'goal-agenda-blocker';
+            blocker.textContent = '· ' + item.blocker;
+            meta.append(blocker);
+          }
+          main.append(title, meta);
+          const steps = Array.isArray(item.planSteps) ? item.planSteps : [];
+          if (steps.length) {
+            const stepList = document.createElement('div');
+            stepList.className = 'goal-agenda-steps';
+            steps.forEach((step, index) => {
+              const span = document.createElement('span');
+              span.className = 'goal-agenda-step';
+              span.textContent = (index === 0 && item.status === 'active' ? '▸ ' : '') + step;
+              if (index === 0 && item.status === 'active') span.dataset.current = 'true';
+              stepList.append(span);
+            });
+            main.append(stepList);
+          }
+          const key = document.createElement('span');
+          key.className = 'goal-agenda-key';
+          key.textContent = item.evidenceRef || item.ref || '';
+          row.append(chip, main, key);
+          return row;
+        }));
+        return [section];
+      }));
+    });
+  }
+  function renderGraphStatus(graph) {
+    const badge = byId('goal-graph-status');
+    if (!graph || !Number.isInteger(graph.nodes) || graph.nodes <= 0) { badge.hidden = true; badge.textContent = ''; return; }
+    const detail = graph.detail === 'full' ? '完整' : graph.detail === 'summary' ? '摘要' : '仅拓扑';
+    badge.hidden = false;
+    setText(badge, `图${detail} · ${graph.nodes} 节点`);
+    setAttribute(badge, 'title', `图完整度：${detail}；${graph.nodes} 个节点、${graph.edges} 条边、${graph.omittedFacts || 0} 个事实正文按需读取`);
+    if (badge.dataset.detail !== graph.detail) badge.dataset.detail = graph.detail;
+  }
   function factText(content) {
     if (typeof content !== 'string') return '';
     try {
@@ -1720,6 +2115,16 @@
     if (goalMode && selected === 'board') renderBlackboard(execution.blackboard, execution.result);
     if (selected === 'notes') renderAgentNotes(execution.memory);
   }
+  // Team panel is a read-only projection of the Lead conversation's roster and
+  // shared task board; it is only available in assist mode.
+  function renderTeam() {
+    teamPanel.update(hostState?.mode === 'assist' ? executionState().team : undefined);
+  }
+  // Teammate conversation view: a live projection of `execution.teamWatch`.
+  // Updates are incremental and a closed view ignores execution ticks entirely.
+  function renderTeamMember() {
+    teamMemberView.update(hostState?.mode === 'assist' ? executionState().teamWatch : undefined, currentSessionId);
+  }
   function renderGoal() {
     const goalMode = hostState?.mode === 'goal';
     setAttribute(byId('goal-notes'), 'aria-labelledby', goalMode ? 'goal-tab-notes' : 'assist-notes-toggle');
@@ -1755,6 +2160,7 @@
     setProperty(byId('goal-workspace'), 'hidden', editing);
     renderGoalView();
     if (goal) {
+      if (!editing) { renderAgenda(hostState?.agenda); renderGraphStatus(hostState?.graph); }
       const criteria = Array.isArray(goal.criteria) ? goal.criteria : [];
       const notes = Array.isArray(goal.notes) ? goal.notes : [];
       setText(byId('goal-objective'), goal.objective);
@@ -2459,6 +2865,8 @@
       ...(executionOnly ? [] : [renderConversationOutline, renderAssistEvidence]),
       ...(executionOnly && hostState.mode !== 'goal' ? [] : [renderGoal]),
       renderExecution,
+      renderTeam,
+      renderTeamMember,
       updateControls
     ];
     for (const render of tasks) {
@@ -2658,6 +3066,50 @@
       renderRestUntil = performance.now() + (elapsed > 8 ? Math.min(250, elapsed * 3) : 0);
     });
   }
+  let goalPageHeal = { view: '', at: 0 };
+  // Route/view switches only hide and show static panel containers. If a paint
+  // or a competing update leaves the selected page's list/detail root empty
+  // while the host state still carries content (for example an incremental
+  // renderer released its rows but its memo was not invalidated), rebuild that
+  // page once instead of leaving a permanently blank component.
+  function emptyActiveGoalPage() {
+    if (!hostState || hostState.mode !== 'goal' || !hostState.goal || workspaceMissing()) return '';
+    if (draftFor().goalEditing && !busy) return '';
+    const view = draftFor().view;
+    const execution = executionState();
+    if (view === 'agenda') {
+      return Array.isArray(hostState.agenda?.items) && hostState.agenda.items.length && !byId('goal-agenda-list').children.length ? view : '';
+    }
+    if (view === 'board') {
+      return Array.isArray(execution.blackboard?.nodes) && execution.blackboard.nodes.length && !byId('blackboard-nodes').children.length ? view : '';
+    }
+    if (view === 'notes') {
+      return Array.isArray(hostState.goal.notes) && hostState.goal.notes.length && !byId('goal-notes-list').children.length ? view : '';
+    }
+    if (view === 'overview') {
+      const hasLog = Boolean(execution.parts?.length || execution.activities?.length || execution.workers?.length || execution.result?.summary || execution.streamText);
+      return hasLog && !byId('goal-output-content').children.length ? view : '';
+    }
+    return '';
+  }
+  function reconcileActiveGoalPage() {
+    const view = emptyActiveGoalPage();
+    if (!view) return;
+    const now = performance.now();
+    // Throttle only repeats of the same page; switching to another blank page
+    // must heal immediately or rapid navigation leaves it empty behind the mask.
+    if (goalPageHeal.view === view && now - goalPageHeal.at < 500) return;
+    goalPageHeal = { view, at: now };
+    sectionViews.clear();
+    lastNotes = ''; lastNotesSource = undefined;
+    lastCriteria = ''; lastCriteriaSource = undefined;
+    try { blackboardGraph?.dispose(); } catch { /* Recreate from the next paint. */ }
+    blackboardGraph = undefined;
+    try { goalExecutionLog?.dispose?.(); } catch { /* The panel rebuilds from the next paint. */ }
+    goalExecutionLog = undefined;
+    renderPending = true; fullRenderPending = true;
+    scheduleRender();
+  }
   function renderSafely(full) {
     keepAliveMark();
     const state = hostState, epoch = viewEpoch, generation = renderGeneration;
@@ -2715,6 +3167,7 @@
         if (succeeded) {
           window.UBOVMRuntime?.painted();
           if (window.UBOVMi18n?.locale === 'en') window.UBOVMi18n.apply(document.body);
+          try { reconcileActiveGoalPage(); } catch { /* Self-heal must never fail the paint. */ }
         }
       }
     }
@@ -2798,6 +3251,8 @@
     const modelPicker = byId('composer-model');
     const choices = Array.isArray(state.modelSelection?.models) ? state.modelSelection.models : [];
     const selected = choices.includes(state.modelSelection?.selected) ? state.modelSelection.selected : choices[0];
+    const defaultModel = state.modelSelection?.defaultModel || '';
+    const providerId = state.modelSelection?.provider || state.provider?.provider || '';
     const pickerVisible = choices.length >= 2 && state.mode === 'assist';
     if (state.provider) {
       const providerLabel = state.provider.configured && state.ssh?.configured === false ? '配置 SSH（必需）' : state.provider.label || '未连接模型';
@@ -2807,10 +3262,10 @@
         : state.provider.error || state.ssh?.error || '打开模型配置';
       setText(byId('connection-note'), configurationMissing() ? '先完成模型和远程连接配置，就可以开始' : '模型已就绪，直接输入即可');
     }
-    const key = JSON.stringify(choices);
+    const key = JSON.stringify([choices, providerId, defaultModel]);
     if (modelPicker.dataset.choices !== key) {
       modelPicker.dataset.choices = key;
-      modelPicker.replaceChildren(...choices.map(id => Object.assign(document.createElement('option'), { value: id, textContent: id })));
+      fillModelPicker(modelPicker, choices, providerId, defaultModel);
     }
     modelPicker.hidden = !pickerVisible;
     modelPicker.title = pickerVisible
@@ -3026,6 +3481,8 @@
       cleanup(() => conversationOutline?.reset());
       cleanup(closeNoteEditor);
       cleanup(() => projectSwitcher.close());
+      cleanup(() => teamPanel.close());
+      cleanup(() => closeTeamMember({ restoreFocus: false }));
       cleanup(() => modalDialog.close());
       cleanup(() => { byId('goal-header-more').open = false; });
     }

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { chatSystemPrompt, workerSystemPrompt } from '../prompts.mjs';
+import { chatSystemPrompt, workerSystemPrompt, TEAM_POLICY, teamPolicy, teammateSystemPrompt } from '../prompts.mjs';
 
 test('assist chat prompt defaults to Swarm for assisting tasks', () => {
   assert.match(chatSystemPrompt, /You are the chat coordinator inside UBOVM IDE collaboration mode/);
@@ -19,6 +19,20 @@ test('assist chat prompt defaults to acting instead of asking for options', () =
   assert.match(chatSystemPrompt, /Ask only when a decision is genuinely the user's/);
   assert.match(chatSystemPrompt, /Never trade work for a menu of options or opinions/);
   assert.match(chatSystemPrompt, /Do not close with an options menu/);
+});
+
+test('assist prompts keep long tasks running instead of asking for the next step', () => {
+  assert.match(chatSystemPrompt, /## Long tasks/);
+  assert.match(chatSystemPrompt, /A long task is not a hand-off/);
+  assert.match(chatSystemPrompt, /Starting a long-running command is a checkpoint, not completion/);
+  assert.match(chatSystemPrompt, /background_commands/);
+  assert.match(chatSystemPrompt, /Do not end the turn merely because the task is long/);
+  assert.match(chatSystemPrompt, /Never use ask_human for permission/);
+  assert.match(chatSystemPrompt, /do not end an assistant message with a question mark/);
+  assert.match(chatSystemPrompt, /never ask the user to plan the next step/);
+  assert.match(chatSystemPrompt, /never hand a working phase back by asking the user what to do next/);
+  assert.match(workerSystemPrompt, /do not pause to ask the Lead what to do next/);
+  assert.match(teammateSystemPrompt, /Do not hand the task back or ask the Lead what to do next/);
 });
 
 test('assist prompts require matching the user language', () => {
@@ -95,4 +109,19 @@ test('assist coding prompt keeps the structured coding discipline', () => {
     /For implementation requests, carry the work through investigation, edits and appropriate verification instead of stopping at advice or a plan\./,
   );
   assert.match(chatSystemPrompt, /Write completion is not test passing/);
+});
+
+test('Agent Teams policy prefers named teammates for independent workstreams', () => {
+  assert.match(TEAM_POLICY, /prefer Agent Teams over Swarm workers/);
+  assert.match(TEAM_POLICY, /spawn one named teammate per stream/);
+  assert.match(TEAM_POLICY, /shared task board with write scopes and dependencies/);
+  assert.match(TEAM_POLICY, /Never put a teammate and a Swarm worker on the same file/);
+  assert.match(TEAM_POLICY, /The Lead must wait for required teammates before giving the final answer/);
+  assert.match(TEAM_POLICY, /Only the Team Lead creates or interrupts teammates/);
+  assert.match(teamPolicy('lead'), /You are the Team Lead named "lead"/);
+  assert.match(teamPolicy('teammate', 'reviewer'), /You are teammate "reviewer"/);
+  assert.match(teamPolicy('teammate', 'reviewer'), /send_message\(\{ target: "lead"/);
+  assert.match(teammateSystemPrompt, /You are a named teammate inside the UBOVM IDE collaboration mode/);
+  assert.match(teammateSystemPrompt, /never create or interrupt teammates/);
+  assert.match(teammateSystemPrompt, /send_message\(\{ target: "lead"/);
 });

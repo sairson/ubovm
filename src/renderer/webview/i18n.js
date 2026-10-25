@@ -52,6 +52,12 @@
     [/^，(\d+) 个会话$/, ', $1 sessions'],
     [/^，(\d+) 个运行中$/, ', $1 running'],
     [/^(\d+) 条消息$/, '$1 messages'],
+    [/^(\d+) 待查 · (\d+) 在查 · (\d+) 受阻 · (\d+) 已确认$/, '$1 planned · $2 active · $3 blocked · $4 confirmed'],
+    [/^方法：([\s\S]*)$/, 'Method: $1'],
+    [/^验收：([\s\S]*)$/, 'Acceptance: $1'],
+    [/^图(完整|摘要|仅拓扑) · (\d+) 节点$/, (_, detail, count) => `Graph ${({ '完整': 'full', '摘要': 'summarized', '仅拓扑': 'topology only' })[detail] || detail} · ${count} nodes`],
+    [/^(.+) · (思考|工具|输出|上下文摘要)$/, (_, worker, kind) => `${worker} · ${({ '思考': 'thinking', '工具': 'tool', '输出': 'output', '上下文摘要': 'context summary' })[kind] || kind}`],
+    [/^图完整度：(.+)；(\d+) 个节点、(\d+) 条边、(\d+) 个事实正文按需读取$/, (_, detail, nodes, edges, facts) => `Graph detail: ${detail}; ${nodes} nodes, ${edges} edges, ${facts} fact bodies readable on demand`],
     [/^再显示 (\d+) 个会话$/, 'Show $1 more sessions'],
     [/^更多，还有 (\d+) 个会话$/, 'More, $1 sessions remaining']
   ];

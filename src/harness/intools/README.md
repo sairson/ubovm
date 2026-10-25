@@ -34,6 +34,8 @@ Shell、SSH 与 Python 共用 `shared/process/process-output.mjs`：stdout/stder
 
 宿主可通过 `onCommand` 注册每次本地/SSH 命令的 `interrupt()` 句柄，调用结束后注销。中断只影响这一次调用，排队命令中断不会终止正在执行的另一条命令，Agent 和其他 Worker 可以继续工作。界面在运行中命令卡片上提供“中断命令”和“放在一边”。本地与 SSH 均支持宿主驻留：`retain=true` 或常见长跑模式（如 `npm run dev` / `vite`）会自动驻留，agent 本轮结束或“停止执行”不会打断；驻留后前台超时取消，命名会话会释放队列并另开新 shell，连接池在仍有驻留工具引用时保持存活。切换工作空间、删除会话或退出应用会清理驻留任务。中断原因与已接收输出保留；不自动重试用户中断的命令。默认执行超时为 120 秒，宿主可设置更小上限。
 
+`background_commands` 是 Agent 侧的后台任务面板，与宿主界面的“后台任务”栏共用同一批命令，本地与 SSH 完全一致：`action=list` 返回命令 ID、传输类型（local/ssh）、状态、耗时、所属 Worker 和命令预览；`action=read` 返回有界输出尾部，可传 `wait_seconds` 等待新输出或结束；`action=stop` 请求中断单个命令并保留原有清理流程。命令 ID 来自驻留调用的结果（`details.command_id`）或 `action=list`。`command-control` 的订阅是多方广播：宿主投影、界面日志和这个 Agent 注册表各自独立接收快照，晚加入的读者会立即拿到当前状态，任一观察者抛错都不会影响命令或其他观察者。运行时在每个模型边界把仍在运行的后台命令摘成上下文提示，提醒 Agent 不要重复启动同一个 `npm run dev`，应通过 `background_commands` 读取或停止。
+
 每个持久会话最多排队 64 条命令，按调用进入顺序执行；本地目录验证也在取得队列位置后进行。取消会立即移除等待项并释放其计时器和监听器。驻留命令可 `park` 释放活动槽，避免 `npm run dev` 堵死同名会话的后续调用。排队等待另设与本次 `timeout_seconds` 相同的上限，等待超时返回 `SHELL_QUEUE_TIMEOUT` 且不会随后执行；队列已满返回 `SHELL_QUEUE_FULL`。命令取得执行位置后单独计算执行超时，目录准备和 shell 启动也在此预算内。结果的 `queue_wait_ms` 记录等待耗时，界面区分排队、准备、运行和停止。无效目录不破坏已有会话状态；工具 `close()` 同时取消隔离执行与持久执行并等待清理。
 
 本地持久 shell 中断后终止进程树并最多等待 2 秒，结果通过 `process_closed` 区分已关闭与未确认清理；启动阶段也能取消，迟到的 shell 会关闭。SSH 命名会话要求 Linux `setsid` 和 `/proc`，以独立进程组启动，取消时用额外 SSH exec 通道校验随机环境标识后终止整组进程，不只关闭输出通道。控制通道最多等待 1.5 秒，失败或断连时返回 `remote_termination_confirmed: false` 并保留警告；不可把网络断开当成远端进程已终止。

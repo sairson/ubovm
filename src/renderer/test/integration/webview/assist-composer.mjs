@@ -751,6 +751,82 @@ test('context chips and model labels reflect host state with scoped, acknowledge
   } finally { await f.close(); }
 });
 
+test('model picker keeps one truncated model name with a provider mark and default badge', async () => {
+  const models = ['deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-reasoner'];
+  for (const viewport of [{ width: 900, height: 800 }, { width: 320, height: 760 }]) {
+    const f = await fixture(viewport);
+    try {
+      await f.emit(state('model-picker', {
+        provider: { configured: true, connected: true, label: 'DeepSeek', provider: 'deepseek', defaultModel: models[0] },
+        modelSelection: { provider: 'deepseek', models, selected: models[1], defaultModel: models[0], imageInput: true }
+      }));
+      const select = f.page.locator('#composer-model');
+      assert.equal(await select.isVisible(), true, `${viewport.width}: two configured models expose the picker`);
+      assert.equal(await select.inputValue(), models[1], `${viewport.width}: the conversation model stays selected`);
+      assert.equal(await f.page.locator('#composer-model option').count(), models.length);
+      const chip = await select.evaluate(element => {
+        const name = element.querySelector('selectedcontent .model-option-name');
+        const tag = element.querySelector('selectedcontent .model-option-tag');
+        const box = element.getBoundingClientRect();
+        return {
+          rich: CSS.supports('appearance', 'base-select'),
+          trigger: element.querySelector(':scope > button')?.tagName || '',
+          icon: Boolean(element.querySelector('.model-provider-icon')),
+          name: name?.textContent || '',
+          tagHidden: tag ? getComputedStyle(tag).display : '',
+          height: box.height,
+          font: getComputedStyle(element).fontSize,
+          whiteSpace: name ? getComputedStyle(name).whiteSpace : '',
+          overflow: element.scrollWidth > element.clientWidth + 1
+        };
+      });
+      if (chip.rich) {
+        assert.equal(chip.trigger, 'BUTTON', `${viewport.width}: the chip renders the custom trigger`);
+        assert.equal(chip.icon, true, `${viewport.width}: the chip carries the provider mark`);
+        assert.equal(chip.name, models[1], `${viewport.width}: the trigger mirrors the checked option`);
+        assert.equal(chip.tagHidden, '', `${viewport.width}: a non-default chip carries no badge`);
+        assert.equal(chip.whiteSpace, 'nowrap', `${viewport.width}: the model name truncates instead of wrapping`);
+      }
+      assert.equal(chip.height, 30, `${viewport.width}: the chip keeps the toolbar control height`);
+      assert.equal(chip.font, '12px');
+      assert.equal(chip.overflow, false, `${viewport.width}: the chip never overflows its box`);
+
+      if (viewport.width === 900) {
+        await select.click();
+        await f.frames();
+        assert.equal(await select.evaluate(element => element.matches(':open')), true, 'the menu opens from the chip');
+        await f.page.keyboard.press('Escape');
+        if (chip.rich) {
+          const menu = await f.page.evaluate(() => {
+            const option = [...document.querySelectorAll('#composer-model option')].find(node => node.value === 'deepseek-v4-flash');
+            return { label: option?.querySelector('.model-option-name')?.textContent || '', tag: option?.querySelector('.model-option-tag')?.textContent || '' };
+          });
+          assert.equal(menu.label, 'deepseek-v4-flash');
+          assert.equal(menu.tag, '默认', 'the configured default is marked in the menu');
+          // Selecting the configured default mirrors its badge into the trigger,
+          // where the chip hides it instead of widening the control.
+          await f.emit(state('model-picker', {
+            provider: { configured: true, connected: true, label: 'DeepSeek', provider: 'deepseek', defaultModel: models[0] },
+            modelSelection: { provider: 'deepseek', models, selected: models[0], defaultModel: models[0], imageInput: true }
+          }));
+          assert.equal(await select.inputValue(), models[0]);
+          const mirrored = await select.evaluate(element => {
+            const name = element.querySelector('selectedcontent .model-option-name');
+            const tag = element.querySelector('selectedcontent .model-option-tag');
+            return { name: name?.textContent || '', tag: tag?.textContent || '', tagDisplay: tag ? getComputedStyle(tag).display : 'absent' };
+          });
+          assert.equal(mirrored.name, models[0]);
+          assert.equal(mirrored.tag, '默认');
+          assert.equal(mirrored.tagDisplay, 'none', 'the default badge is hidden in the chip');
+        }
+        await select.selectOption(models[2]);
+        const request = (await f.sent('setModel')).at(-1);
+        assert.equal(request?.modelId, models[2], 'choosing a model asks the host to switch the conversation model');
+      }
+    } finally { await f.close(); }
+  }
+});
+
 test('composer and long user messages fit narrow, wide, short and dark IDE surfaces', async () => {
   for (const viewport of [{ width: 320, height: 760 }, { width: 600, height: 760 }, { width: 1000, height: 760 }, { width: 600, height: 360 }]) {
     const f = await fixture(viewport);

@@ -108,7 +108,7 @@ export function createTodoTool({ store, sessionId, workerId = 'worker' } = {}) {
       // The board reminds the agent to maintain it, so progress is not left stale
       // until the final answer.
       const directive = open
-        ? `Maintain this board as you work: keep exactly ONE item in_progress, and mark an item completed with todo action=update todo_id=<id> status=completed the moment its outcome is verified. Do not defer updates to the end. ${open} item(s) still open.`
+        ? `Maintain this board as you work: keep exactly ONE item in_progress, and mark an item completed with todo action=update todo_id=<id> status=completed the moment its outcome is verified. Do not defer updates to the end. ${open} item(s) still open. Open items are current work: continue with the next safe item in this turn instead of asking the user what to do next or ending early.`
         : 'Every item is completed. Add or reopen items with action=write if more steps remain.';
       return ['# Session Todo Board', 'Shared progress memory refreshed at each model boundary. plan- items are host-managed. Reuse completed work and coordinate with other owners.', directive, ...active, ...(done.length ? ['Recently completed:', ...done] : [])].join('\n');
     }

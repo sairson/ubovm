@@ -17,7 +17,10 @@ test('npm run dev style commands auto-retain when the host enables retainBackgro
   const call = tool.execute('dev', { command: 'npm run dev' }, lifetime.signal);
   await Promise.resolve();
   await Promise.resolve();
-  assert.equal((await call).details.background, true);
+  const result = await call;
+  assert.equal(result.details.background, true);
+  assert.match(result.content[0].text, /启动长任务不是任务完成/);
+  assert.match(result.content[0].text, new RegExp('#' + result.details.command_id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   assert.equal(control.retained, true);
   lifetime.abort();
   await tool.close();
@@ -232,6 +235,37 @@ test('putting a command aside releases the caller and keeps output and interrupt
   assert.equal(control.interrupt(), true);
   await tool.close();
   assert.equal(snapshots.at(-1).status, 'interrupted');
+});
+
+test('resident updates fan out to every observer and late readers get a snapshot', async () => {
+  let control, complete, emit;
+  const host = [], reader = [], late = [];
+  const tool = controlledCommand({ name: 'run_local_shell_command', execute(id, args, signal, update) {
+    emit = update;
+    return new Promise(resolve => { complete = resolve; });
+  } }, 'worker', value => {
+    control = value;
+    value.subscribe(update => host.push(update));
+    value.subscribe(update => reader.push(update));
+  });
+  const call = tool.execute('fanout', {});
+  await Promise.resolve();
+  emit({ content: [{ type: 'text', text: 'boot\n' }] });
+  assert.equal(control.background(), true);
+  await call;
+  const unsubscribe = control.subscribe(update => late.push(update));
+  assert.equal(late.at(-1)?.status, 'running', 'a late observer receives the current snapshot');
+  assert.match(late.at(-1).output, /boot/);
+  emit({ content: [{ type: 'text', text: 'ready\n' }] });
+  for (const updates of [host, reader, late]) assert.match(updates.at(-1).output, /boot\nready/);
+  unsubscribe();
+  emit({ content: [{ type: 'text', text: 'after-unsubscribe\n' }] });
+  assert.doesNotMatch(late.at(-1).output, /after-unsubscribe/);
+  complete({ content: [] });
+  await control.done();
+  assert.equal(host.at(-1).status, 'completed');
+  assert.equal(reader.at(-1).status, 'completed');
+  await tool.close();
 });
 
 test('manual interruption terminates a native child process before reporting local cleanup', async t => {

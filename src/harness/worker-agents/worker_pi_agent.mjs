@@ -261,7 +261,9 @@ export function createPiWorker({
       await persist();
       // Reconcile idempotent external memory after a prior checkpoint succeeded
       // but its companion hook failed, without executing the tool again.
-      for (const entry of state.ledger) if (entry.status === 'completed') await recordTool(entry);
+      // Repaired interrupted entries are deliberately skipped: they are error
+      // observations, not durable tool results, and must not enter evidence.
+      for (const entry of state.ledger) if (entry.status === 'completed' && entry.interrupted !== true) await recordTool(entry);
       await progress();
 
       const wrappedTools = available.map(tool => ({

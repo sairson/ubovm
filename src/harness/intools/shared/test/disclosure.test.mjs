@@ -103,6 +103,7 @@ test('todo board prompts proactive lifecycle management', async () => {
   assert.match(summary, /Maintain this board as you work/);
   assert.match(summary, /todo action=update todo_id=<id> status=completed/);
   assert.match(summary, /2 item\(s\) still open/);
+  assert.match(summary, /continue with the next safe item in this turn instead of asking the user what to do next/);
   assert.match(summary, /\[in_progress\] \(you\) Wire it up #step-2/);
   await todo.execute('t', { action: 'update', todo_id: 'step-2', status: 'completed' });
   await todo.execute('t', { action: 'update', todo_id: 'step-3', status: 'completed' });
