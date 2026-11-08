@@ -417,6 +417,10 @@ test('fact sidebar separates structured evidence and shows plain facts only once
   const text = await page.locator('#detail').innerText();
   assert.equal(text.split('已确认配置文件中存在超时设置。').length - 1, 1);
   assert.equal(await page.locator('h1').innerText(), '事实详情');
+  assert.equal(await page.locator('.fact-coverage li').count(), 1);
+  assert.match(await page.locator('.fact-coverage .fact-pill').textContent(), /已确认/);
+  assert.match(await page.locator('.fact-evidence .fact-ref').textContent(), /read-1/);
+  assert.match(await page.locator('.fact-counts').textContent(), /1 已确认/);
   assert(await page.locator('.section').first().evaluate(element => getComputedStyle(element).fontWeight === '400'));
   assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'narrow detail does not overflow horizontally');
   await page.screenshot({ path: '.cache/fact-sidebar.png', fullPage: true });
@@ -443,6 +447,52 @@ test('fact sidebar separates structured evidence and shows plain facts only once
   })), { sameParagraph: true, sameLink: true, focused: true, selection: '已确认配置文件中存在超时设置。', stableScroll: true });
   await emit({ ...detail, id: 'different-fact' });
   assert.equal(await page.evaluate(() => scrollY), 0, 'a different fact starts at the top');
+});
+
+test('detail view exposes the evidence path, attempt timeline, stats, filters and labels', async t => {
+  const browser = await chromium.launch({ headless: true, executablePath: process.env.UBOVM_STYLE_EDGE || 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe' });
+  t.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 1000, height: 900 } });
+  const errors = []; page.on('pageerror', error => errors.push(error.message));
+  await page.setContent('<div id="goal-board"><div id="board"></div></div>');
+  await page.addStyleTag({ path: 'src/renderer/webview/goal/blackboard-graph.css' });
+  for (const name of ['exploration-model', 'blackboard-graph']) await page.addScriptTag({ path: `src/renderer/webview/goal/${name}.js` });
+  await page.evaluate(() => {
+    document.body.dataset.mode = 'goal';
+    const structured = JSON.stringify({ version: 1, statement: '登录接口可用', outcome: 'confirmed', coverage: [{ point: 'login', status: 'confirmed', result: '200' }], evidence: [{ toolCallId: 't1', observation: '200' }] });
+    window.graph = createBlackboardGraph(document.querySelector('#board'), { factText: value => value || '', statusText: value => value });
+    window.graph.update({ sessionId: 'detail-polish', rootId: 'r', goal: '验证登录', revision: 4, nodes: [
+      { id: 'r', kind: 'root', parentIds: [] },
+      { id: 'a', kind: 'fact', parentIds: ['r'], fact: { content: structured } },
+      { id: 'b', kind: 'fact', parentIds: ['r'], fact: { content: '另一条未经确认的方向' } },
+      { id: 'i', kind: 'intent', parentIds: ['a'], intent: { description: '继续验证越权', status: 'failed' }, attempts: [
+        { id: 'x', status: 'failed', startedAt: '2026-01-01T00:00:00.000Z', error: 'WAF 拦截了请求' },
+        { id: 'y', status: 'completed', startedAt: '2026-01-01T00:01:00.000Z' }
+      ] }
+    ] });
+    window.graph.select('i');
+  });
+  assert.match(await page.locator('.graph-stats').textContent(), /4 节点 · 2 事实 · 1 意图 · 修订 4/);
+  assert.equal(await page.locator('.graph-crumb').count(), 3);
+  assert.equal(await page.locator('.graph-crumb[aria-current="page"]').count(), 1);
+  assert.equal(await page.locator('.graph-attempt').count(), 2);
+  assert.match(await page.locator('.graph-attempt-error').textContent(), /WAF/);
+  assert.equal(await page.locator('[data-node-id="a"]').evaluate(node => node.classList.contains('is-path')), true);
+  assert.equal(await page.locator('[data-node-id="b"]').evaluate(node => node.classList.contains('is-path')), false);
+  // Regression: the invisible 14/scale hit target must never be painted as a
+  // thick highlight band; only the visible edge line carries the path class.
+  assert.equal(await page.locator('.graph-edge-hit.is-path, .graph-edge-hit.is-selected').count(), 0);
+  const highlightWidth = await page.locator('.graph-edges path.is-path:not(.graph-edge-hit)').first()
+    .evaluate(node => Number.parseFloat(getComputedStyle(node).strokeWidth));
+  assert(highlightWidth <= 2.2, `highlight stroke should stay hairline-thin, got ${highlightWidth}px`);
+  await page.getByLabel('按结果过滤').selectOption('confirmed');
+  assert.equal(await page.locator('[data-node-id="b"]').evaluate(node => node.classList.contains('is-filtered')), true);
+  assert.equal(await page.locator('[data-node-id="a"]').evaluate(node => node.classList.contains('is-filtered')), false);
+  await page.getByLabel('按结果过滤').selectOption('all');
+  await page.getByRole('button', { name: '显示事实标题' }).click();
+  assert.notEqual(await page.locator('[data-node-id="a"] .graph-node-title').evaluate(node => getComputedStyle(node).display), 'none');
+  assert.equal(await page.getByRole('button', { name: '显示事实标题' }).getAttribute('aria-pressed'), 'true');
+  assert.deepEqual(errors, []);
 });
 
 test('all graph edges stay straight and attach to node boundaries across ranks and dragging', async t => {

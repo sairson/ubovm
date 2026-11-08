@@ -97,8 +97,18 @@ export function parseReasonDecision(source, { context, maxIntents = 5, maxRespon
   }
   fields(value, ['complete', 'intents'], 'Decision');
   if (value.complete !== undefined && value.complete !== false) throw invalid('complete must be a boolean.');
-  if (!Array.isArray(value.intents) || !value.intents.length) throw invalid(`An unfinished decision requires 1 to ${maxIntents} intents.`);
   const capacity = intentCapacity([...nodes.values()], openIntents);
+  // An unfinished decision that proposes no intents means "nothing new to start".
+  // While Workers are pending or running that is exactly {"wait":true}; models
+  // frequently express "not done yet" as {"complete":false}, so normalize it
+  // instead of failing the review on a schema technicality. With no open work the
+  // decision cannot continue the goal, so name both valid alternatives.
+  const hasIntents = Object.hasOwn(value, 'intents');
+  if (hasIntents && !Array.isArray(value.intents)) throw invalid('intents must be an array of intent objects.');
+  if (!hasIntents || !value.intents.length) {
+    if (capacity.open > 0) return { wait: true };
+    throw invalid(`An unfinished decision cannot continue: no Worker is pending or running and no new intent was proposed. Return 1 to ${maxIntents} intents (description, parentIds, priority, keyPoints), or {"complete":true,"evidenceIds":[...],"summary":"..."} when recorded facts prove the goal.`);
+  }
   const seen = new Set([...nodes.values()].filter(node => node.intent)
     .map(node => intentKey(node.intent, [...new Set(node.parents.map(ref => nodes.get(ref)?.result || ref))])));
   const { admitted, wait, errors } = fillIntentSlots(value.intents, {
@@ -127,6 +137,6 @@ export function parseReasonDecision(source, { context, maxIntents = 5, maxRespon
     }
     return { wait: true };
   }
-  if (!admitted.length) throw errors[0] ?? invalid(`An unfinished decision requires 1 to ${maxIntents} intents.`);
+  if (!admitted.length) throw errors[0] ?? invalid(`An unfinished decision admitted no new intents. Return 1 to ${maxIntents} valid intents, or {"wait":true} while Workers are pending or running.`);
   return { intents: admitted };
 }

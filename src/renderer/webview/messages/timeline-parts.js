@@ -22,7 +22,9 @@
     spawn_teammate: '创建团队成员', send_message: '向团队发消息', list_agents: '查看团队成员', wait_agent: '等待团队进展',
     interrupt_agent: '中断团队成员', team_task_create: '创建任务', team_task_list: '查看任务板', team_task_get: '读取任务',
     team_task_update: '更新任务', background_commands: '后台任务',
-    stop_worker: '停止 Worker', start_worker: '启动 Worker', prompt_worker: '派发 Worker 提示'
+    stop_worker: '停止 Worker', start_worker: '启动 Worker', prompt_worker: '派发 Worker 提示',
+    wait_worker_sleep: '等待 Worker 进展', exploration_graph: '查看探索图',
+    exploration_todo: '更新探索任务', submit_decision: '提交规划决策'
   });
   const isBackgroundTool = part => Boolean(part && part.type === 'tool' && part.background === true);
   const visibleTimelineParts = parts => Array.isArray(parts) ? parts.filter(part => !isBackgroundTool(part)) : [];
@@ -137,7 +139,8 @@
     }
     return visible.reverse();
   }
-  const api = { TOOL_LABELS, isBackgroundTool, isReadOnlyTool, isFlatToolCard, visibleTimelineParts, visibleActivities, displayActivityLabel, eachToolPart, toolDiff, diffSummary };
+  const toolDisplayName = name => typeof name === 'string' && name ? (TOOL_LABELS[name] || name) : '';
+  const api = { TOOL_LABELS, toolDisplayName, isBackgroundTool, isReadOnlyTool, isFlatToolCard, visibleTimelineParts, visibleActivities, displayActivityLabel, eachToolPart, toolDiff, diffSummary };
   if (typeof module === 'object' && module.exports) module.exports = api;
   if (typeof window === 'object') window.UBOVMTimeline = api;
 })();

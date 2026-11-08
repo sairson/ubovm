@@ -46,7 +46,12 @@ test('the complete graph renderer never drops a node or parent edge', () => {
     }
   }
   assert.match(lines[0], /complete topology/);
-  assert.match(lines[1], /nodes=500 intents=250 facts=249 edges=499 root=n1 detail=full omitted_fact_bodies=249/);
+  assert.match(lines[1], /nodes=500 intents=250 facts=249 edges=499 root=n1 detail=full/);
+  assert.match(lines[1], /budget=\d+\/1000000/);
+  assert.match(lines[1], /over_budget=false/);
+  assert.match(lines[1], /omitted_ranges=none/);
+  assert.match(lines[1], /cites=0/);
+  assert.match(lines[1], /omitted_fact_bodies=249/);
   // Completed Workers are archived: one line with status/result, no repeated task prose.
   const completedIntent = nodeLines.find(line => /^n2 .*status=completed/.test(line));
   assert.ok(completedIntent, 'completed intent line is present');
@@ -73,6 +78,8 @@ test('budget pressure degrades detail deterministically while preserving topolog
   }
   assert.match(summary.text, /detail=summary/);
   assert.match(topology.text, /detail=omitted/);
+  assert.match(tiny.text, /over_budget=true/);
+  assert.equal(tiny.stats.budgetChars, 500);
   assert.doesNotMatch(topology.text, /Statement 0/);
   assert(topology.stats.omittedFacts > 0);
   assert.equal(buildGraphView(small, { maxChars: Math.floor(smallFull.text.length * 0.8) }).text, summary.text, 'rendering is deterministic');
@@ -89,6 +96,7 @@ test('long campaigns bound topology under an explicit node budget', () => {
   assert.match(view.text, /nodes=500/);
   assert.match(view.text, /truncated=true/);
   assert.match(view.text, /omitted_nodes=/);
+  assert.match(view.text, /omitted_ranges=\[[^\]]+\]/);
   assert.match(view.text, /^n1 root/m);
   assert.doesNotMatch(view.text, /^n2 /m, 'older completed entries outside the frontier are omitted');
 });
@@ -105,3 +113,55 @@ test('fact references and subset rendering stay addressable', () => {
   assert.match(subset, /^n4 intent/m);
   assert.equal(subset.split('\n').length, 2);
 });
+
+function citationSnapshot() {
+  const factA = JSON.stringify({
+    version: 1, outcome: 'confirmed', statement: 'Found admin panel',
+    coverage: [{ point: 'k1', status: 'confirmed', result: 'panel returns 200' }],
+    evidence: [{ toolCallId: 't1', observation: 'GET /admin 200' }]
+  });
+  const factC = JSON.stringify({
+    version: 1, outcome: 'confirmed', statement: 'Admin export is reachable',
+    coverage: [{ point: 'k1', status: 'confirmed', result: 'export succeeds' }],
+    evidence: [
+      { nodeRef: 'n3', observation: 'reuses the admin discovery' },
+      { toolCallId: 't2', observation: 'GET /admin/export 200' }
+    ]
+  });
+  return {
+    schemaVersion: 1, sessionId: 'cites', goal: 'verify citations', revision: 3, rootId: 'root', nodes: [
+      { id: 'root', kind: 'root', parentIds: [], intent: null, attempts: [], fact: { content: 'verify citations' } },
+      { id: 'i1', kind: 'intent', parentIds: ['root'], resultId: 'f1', intent: { description: 'discover admin panel', keyPoints: ['k1'], priority: 'high', status: 'completed' }, attempts: [{ id: 'a1', status: 'completed' }], fact: null },
+      { id: 'f1', kind: 'fact', parentIds: ['i1'], producerId: 'i1', intent: null, attempts: [], fact: { content: factA } },
+      { id: 'i2', kind: 'intent', parentIds: ['f1'], intent: { description: 'probe export endpoint', keyPoints: ['k1'], priority: 'medium', status: 'pending' }, attempts: [], fact: null },
+      { id: 'i3', kind: 'intent', parentIds: ['f1'], resultId: 'f3', intent: { description: 'reuse admin session for export', keyPoints: ['k1'], priority: 'medium', status: 'completed' }, attempts: [{ id: 'a3', status: 'completed' }], fact: null },
+      { id: 'f3', kind: 'fact', parentIds: ['i3'], producerId: 'i3', intent: null, attempts: [], fact: { content: factC } }
+    ]
+  };
+}
+
+test('cross-fact citations render without changing parent edges', () => {
+  const snapshot = citationSnapshot();
+  const view = buildGraphView(snapshot, { maxChars: 1_000_000 });
+  const factLine = view.text.split('\n').find(line => /^n6 fact/.test(line));
+  assert.ok(factLine, 'the citing fact line is rendered');
+  assert.match(factLine, /cites=n3/);
+  assert.match(view.text.split('\n')[1], /cites=1/);
+  // Citations are not parent edges: the headline edge count is still 5.
+  assert.match(view.text.split('\n')[1], /edges=5/);
+});
+
+test('completed branches still relevant to open work keep a coverage index', () => {
+  const snapshot = citationSnapshot();
+  const withRelevance = buildGraphView(snapshot, { maxChars: 1_000_000, relevantRefs: new Set(['n3', 'n4']) });
+  const expanded = withRelevance.text.split('\n').find(line => /^n2 intent/.test(line));
+  assert.match(expanded, /status=completed/);
+  assert.match(expanded, /result=n3/);
+  assert.match(expanded, /cov=1\/1/);
+  assert.match(expanded, /kp=\[k1\]/);
+  // Unrelated completed branches stay archived.
+  const archived = buildGraphView(snapshot, { maxChars: 1_000_000 }).text.split('\n').find(line => /^n2 intent/.test(line));
+  assert.match(archived, /detail=archived/);
+  assert.doesNotMatch(archived, /kp=/);
+});
+

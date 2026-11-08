@@ -189,6 +189,11 @@ export function createDomainInventoryTool({ store, sessionId, workerId = 'worker
             relations.push({ type, evidence_refs: textList(input.evidence_refs, 'evidence_refs') });
           }
           const parent = input.parent ? normalizeHostname(input.parent) : null;
+          // These linkage fields belong to the inventory record, not to the
+          // update-only branch: a freshly discovered host must keep the note /
+          // finding association supplied at creation time.
+          const linkedNoteIds = textList(input.linked_note_ids, 'linked_note_ids');
+          const findingIds = textList(input.finding_ids, 'finding_ids');
           const created = [], updated = [];
           for (const hostname of names) {
             const seed_roots = inventory.seedRoots.filter(root => isSubdomainOf(hostname, root) || hostname === root);
@@ -201,6 +206,8 @@ export function createDomainInventoryTool({ store, sessionId, workerId = 'worker
                 hostname, kind, parent: parent ?? (attached.length === 1 && hostname !== attached[0] ? attached[0] : null),
                 seed_roots: attached, discovery, relations: mergeRelations([], relations), now
               });
+              if (linkedNoteIds.length) item.linked_note_ids = [...linkedNoteIds];
+              if (findingIds.length) item.finding_ids = [...findingIds];
               inventory.domains.push(item);
               created.push(hostname);
             } else {

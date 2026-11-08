@@ -17,6 +17,7 @@ const { createModelConnectionTest } = require('./host/system/model-connection-te
 const { keyFor: modelKeyFor, modelConfig: parseModelConfig } = require('./harness/config/model-config.cjs');
 const { createHarnessService } = require('./host/agent/agent-service.cjs');
 const { createInstallTools } = require('./host/agent/install-tools.cjs');
+const { createWebviewLiveness } = require('./host/ui/webview-liveness.cjs');
 const { createWorkspaceSearch } = require('./harness/workspace/workspace-search.cjs');
 
 /**
@@ -2728,8 +2729,15 @@ let restoreRetryAt = 0;
     welcomeReady = false;
     panel.title = '对话';
     panel.webview.options = { enableScripts: true, localResourceRoots: [vscode.Uri.file(attachmentRoot)] };
+    const liveness = createWebviewLiveness({
+      onStage: (stage, detail) => { void recoverConversationPage(panel, stage, detail); },
+      onGiveUp: () => reportConversationPageUnresponsive()
+    });
     const subscription = panel.webview.onDidReceiveMessage(message => {
       if (panel !== welcome) return;
+      // Any message proves the page's main thread still runs; the heartbeat also
+      // reports whether its renderer receives frames (webview-liveness.cjs).
+      liveness.message({ stalled: message?.stalled === true });
       // Fast-lane heartbeats before any async onMessage work so UI clicks cannot
       // queue probes behind snapshot rebuilds.
       if (message?.action === 'viewAlive') { lastViewAlive = Date.now(); return; }
@@ -2742,19 +2750,23 @@ let restoreRetryAt = 0;
     let aliveGuard;
     panel.webview.html = renderWebview({ version: vscode.version, workspaceName: workspaceName(), freshSession });
     lastViewAlive = Date.now();
-    // A crashed/blank webview cannot post messages, so no amount of republishing
-    // recovers it. Reload the HTML when a visible panel has been silent for a
-    // full minute; sessions and runs live in the extension host and are retained.
+    liveness.reset();
+    // The workbench silently keeps an unpainted iframe when the webview renderer
+    // dies or stops producing frames, and it never tells the extension host. The
+    // page heartbeat is the only liveness signal, so poll it here and recover in
+    // stages instead of leaving a flat gray panel on screen until the user restarts.
     aliveGuard = setInterval(() => {
-      if (shuttingDown || welcome !== panel || !panel.visible || !welcomeReady) return;
-      if (Date.now() - lastViewAlive < 60000) return;
-      lastViewAlive = Date.now();
-      output.appendLine('界面无响应，正在自动重新加载 Webview。');
-      void reloadConversation().catch(error => output.appendLine(errorText(error)));
-    }, 15000);
+      if (shuttingDown || welcome !== panel) return;
+      if (!panel.visible) { liveness.pause(); return; }
+      liveness.resume();
+      try { liveness.tick(); } catch (error) { output.appendLine('界面恢复检查失败：' + errorText(error)); }
+    }, 2000);
     let panelVisible = panel.visible;
     const visibilitySubscription = panel.onDidChangeViewState(() => {
-      if (welcome !== panel || panelVisible === panel.visible) return;
+      if (welcome !== panel) return;
+      // Hidden panels legitimately stop painting; only a visible one is probed.
+      if (panel.visible) liveness.resume(); else liveness.pause();
+      if (panelVisible === panel.visible) return;
       panelVisible = panel.visible;
       if (panel.visible && welcomeReady) {
         // Tab/focus churn must not republish the full conversation on every flicker.
@@ -2913,6 +2925,59 @@ let restoreRetryAt = 0;
     panel.webview.html = renderWebview({ version: vscode.version, workspaceName: workspaceName() });
     lastViewAlive = Date.now();
     panel.reveal(panel.viewColumn || vscode.ViewColumn.One, false);
+  }
+  // Staged recovery for a webview that stopped painting. The page heartbeat can be
+  // silent (dead/frozen renderer) or explicitly report that no animation frames
+  // arrive (renderer alive, compositor surface gone); both end in an unpainted
+  // panel. Only a re-created panel gets a new out-of-process iframe, so the ladder
+  // ends there and the user gets an explicit escape if even that does not help.
+  let pageRecoveryAlert = false;
+  async function recoverConversationPage(panel, stage, detail = {}) {
+    if (shuttingDown || welcome !== panel) return;
+    const reason = '静默 ' + Math.round((detail.silent || 0) / 1000) + 's，无帧 ' + Math.round((detail.stalled || 0) / 1000) + 's';
+    output.appendLine('对话页面无响应（' + stage + '，' + reason + '），开始恢复。');
+    if (stage === 'softReload') {
+      // A fresh nonce asks the webview host to reload the page; it keeps the panel
+      // and the page's stored draft state. Dropped silently when the renderer is gone.
+      if (welcome !== panel || shuttingDown) return;
+      panel.webview.html = renderWebview({ version: vscode.version, workspaceName: workspaceName() });
+      lastViewAlive = Date.now();
+      return;
+    }
+    if (stage === 'nudgeLayout') {
+      // Resize the editor group twice: a geometry change is the cheapest way to
+      // make Chromium re-create a dropped webview surface without losing the panel.
+      try {
+        await vscode.commands.executeCommand('workbench.action.toggleMaximizeEditorGroup');
+        await new Promise(resolve => setTimeout(resolve, 150));
+        await vscode.commands.executeCommand('workbench.action.toggleMaximizeEditorGroup');
+      } catch (error) { output.appendLine('界面恢复：调整布局失败 ' + errorText(error)); }
+      return;
+    }
+    if (stage === 'rebuildPanel') {
+      // dispose() tears the iframe down, so the re-created panel is the only path
+      // to a new renderer. Sessions, runs and notes live in the extension host and
+      // are re-published to the new page; only page-local scroll is reset.
+      output.appendLine('对话页面渲染进程无响应，正在重建对话面板。');
+      welcomeReady = false;
+      try { panel.dispose(); } catch (error) { output.appendLine('重建对话面板：释放旧面板失败 ' + errorText(error)); }
+      if (!shuttingDown && !welcome) {
+        try { await openWelcome(); } catch (error) { output.appendLine('重建对话面板失败 ' + errorText(error)); }
+      }
+      return;
+    }
+  }
+  function reportConversationPageUnresponsive() {
+    if (pageRecoveryAlert || shuttingDown) return;
+    pageRecoveryAlert = true;
+    output.appendLine('对话页面连续自动恢复失败，等待用户重新加载窗口。');
+    void vscode.window.showWarningMessage(
+      '对话页面显示已停止响应，自动恢复没有成功。重新加载窗口可以恢复界面；会话、运行状态和草稿都会保留。',
+      '重新加载窗口'
+    ).then(choice => {
+      pageRecoveryAlert = false;
+      if (choice === '重新加载窗口' && !shuttingDown) void vscode.commands.executeCommand('workbench.action.reloadWindow');
+    }, () => { pageRecoveryAlert = false; });
   }
 
   async function openWelcome(preserveFocus = false) {

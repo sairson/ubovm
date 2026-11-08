@@ -27,6 +27,18 @@ test('Reason accepts a JSON decision wrapped in commentary', () => {
   assert.deepEqual(parseReasonDecision(`Sure.\n\`\`\`json\n${JSON.stringify({ wait: true })}\n\`\`\``, { context: waiting }), { wait: true });
 });
 
+test('Reason normalizes an unfinished decision without intents while a worker runs', async () => {
+  const running = { data: { goal: 'verify', revision: 0, root: 'n1', nodes: [
+    { ref: 'n1', kind: 'root', parents: [] },
+    { ref: 'n2', kind: 'intent', parents: ['n1'], intent: { status: 'running', description: 'inspect', keyPoints: ['checked'] } }
+  ] }, resolveId: ref => ref };
+  let calls = 0;
+  const decision = await createPiReason({ model, maxRepairs: 1,
+    streamFn: () => { calls++; return response('{"complete":false}', 'stop'); } })({ context: running });
+  assert.deepEqual(decision, { wait: true });
+  assert.equal(calls, 1, 'a semantically valid wait must not spend a repair round');
+});
+
 test('Reason strips parent notes from fenced JSON without a repair', async () => {
   const wrapped = `Here:\n\`\`\`json\n${JSON.stringify({ intents: [annotatedIntent()] })}\n\`\`\``;
   const decision = await createPiReason({ model, maxRepairs: 0,

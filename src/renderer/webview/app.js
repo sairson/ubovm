@@ -4996,12 +4996,44 @@ let editingNote = null;
     requestInitialState();
   });
   watchInitialLoad();
-  // Host-side watchdog: if the webview process dies/blank out it cannot post, so
-  // the extension reloads the HTML after a minute of visible silence.
-  setInterval(() => {
+  // Renderer liveness heartbeat. The workbench silently keeps an unpainted iframe
+  // when this renderer dies or stops receiving frames, so the host must be able to
+  // tell "timers still run" from "frames still arrive": requestAnimationFrame
+  // callbacks stop when the compositor surface is dropped or the renderer freezes,
+  // while timers keep running. Sampling one frame every two seconds costs almost
+  // nothing while idle. A dead or frozen page cannot post at all; the host treats
+  // that silence the same way (see host/ui/webview-liveness.cjs).
+  let lastFrameAt = performance.now(), frameSampleArmed = false, frameSampleTimer = 0;
+  function sampleFrame() {
+    if (frameSampleArmed || frameSampleTimer) return;
+    frameSampleArmed = true;
+    const afterFrame = () => {
+      frameSampleArmed = false;
+      lastFrameAt = performance.now();
+      frameSampleTimer = setTimeout(() => { frameSampleTimer = 0; sampleFrame(); }, 2000);
+    };
+    try { requestAnimationFrame(afterFrame); }
+    catch { frameSampleArmed = false; frameSampleTimer = setTimeout(() => { frameSampleTimer = 0; sampleFrame(); }, 5000); }
+  }
+  function sendLiveness() {
     if (pageHidden()) return;
-    try { vscode.postMessage({ action: 'viewAlive' }); } catch { /* Host may be closing. */ }
-  }, 20000);
+    const stalled = performance.now() - lastFrameAt > 6000;
+    try { vscode.postMessage({ action: 'viewAlive', stalled }); } catch { /* Host may be closing. */ }
+  }
+  sampleFrame();
+  setInterval(sendLiveness, 5000);
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) return;
+    // Frames stop while hidden by design; do not report that period as a stall.
+    lastFrameAt = performance.now();
+    sampleFrame();
+    sendLiveness();
+  });
+  window.addEventListener('pageshow', () => {
+    lastFrameAt = performance.now();
+    sampleFrame();
+    sendLiveness();
+  });
   updateControls();
   requestInitialState();
 })();

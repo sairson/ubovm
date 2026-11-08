@@ -381,6 +381,18 @@ body.goal-chat-page {
 @keyframes goal-chat-pulse { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
 
 /* ---- Error / back-to-latest --------------------------------------------- */
+.goal-chat-stop-note {
+  flex: 0 0 auto;
+  margin: 10px 0 0;
+  padding: 7px 10px;
+  border: 1px solid var(--goal-chat-line-soft, var(--border));
+  border-radius: 9px;
+  color: var(--muted);
+  background: var(--goal-chat-surface-subtle, var(--surface-subtle));
+  font-size: 11px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
 .goal-chat-error {
   flex: 0 0 auto;
   margin: 10px 0 0;

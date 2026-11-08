@@ -56,6 +56,7 @@
     created: '已派发', pending: '排队中', queued: '排队中', running: '运行中', starting: '运行中',
     waiting: '等待中', completed: '已完成', failed: '失败', interrupted: '已停止', cancelled: '已停止'
   });
+  const FINAL_WORKER_STATUS = new Set(['completed', 'failed', 'interrupted', 'cancelled']);
   // Glyphs such as ⌕ fall back to unrelated Latin letters on some Windows font
   // stacks; the dispatch log draws the three activity families as inline SVG.
   const ACTIVITY_ICON_PATHS = Object.freeze({
@@ -241,7 +242,7 @@
   const roundHeaderText = round => tr('第 {0} 轮', round.number);
 
   window.createGoalExecutionLog = (container, { actions, statusText, openWorker }) => {
-    const rows = new Map(), roundHeaders = new Map();
+    const rows = new Map(), roundHeaders = new Map(), activityDividers = new Map(), taskCards = new Map();
     // Rounds the reader folded away stay folded across streaming ticks and
     // paging; they are cleared when the log switches session or evicts a round.
     const collapsedRounds = new Set();
@@ -254,6 +255,10 @@
     // The log opens with every round expanded; the header action can fold the
     // older rounds into index lines on demand for very long runs.
     let roundsCollapsedAll = false;
+    // Long runs stay fully expanded by default: thinking and conclusions must
+    // never disappear just because a run is long. The header action can fold the
+    // older rounds into index lines on demand; explicit per-round choices win.
+    let density = 'expanded'; // expanded | folded
     let rounds = [], current = null, session = '', latestExecution;
     // The last runId painted; used to tell a genuinely new run (which legitimately
     // starts with few records) from a light/partial tick that dropped most rows.
@@ -291,6 +296,120 @@
     const earlier = element('button', '', tr('较早日志')), newer = element('button', '', tr('较新日志')), latest = element('button', '', tr('最新日志')), range = element('span', '');
     for (const button of [earlier, newer, latest]) button.type = 'button';
     range.setAttribute('role', 'status'); pager.append(earlier, range, newer, latest); container.after(pager);
+    // Log-local tools: they only narrow what is already rendered. The durable
+    // execution state, record count and paging remain untouched.
+    const tools = element('div', 'goal-log-tools');
+    const filter = element('select', 'goal-log-filter');
+    filter.setAttribute('aria-label', '筛选日志');
+    for (const [value, label] of [['all', '全部记录'], ['current', '只看当前轮'], ['anomaly', '只看异常'], ['reasoning', '思考'], ['schedule', '调度'], ['tool', '工具'], ['worker', '任务']]) {
+      const option = element('option', '', tr(label)); option.value = value; filter.append(option);
+    }
+    const search = element('input', 'goal-log-search');
+    search.type = 'search'; search.placeholder = tr('搜索日志'); search.setAttribute('aria-label', tr('搜索日志'));
+    const jump = element('select', 'goal-log-jump');
+    jump.setAttribute('aria-label', tr('跳到轮次'));
+    const copy = element('button', 'goal-log-copy', tr('复制'));
+    copy.type = 'button'; copy.setAttribute('aria-label', tr('复制当前日志')); copy.title = tr('复制当前可见日志');
+    const matchInfo = element('span', 'goal-log-match');
+    matchInfo.setAttribute('role', 'status');
+    const filterEmpty = element('div', 'goal-log-filter-empty');
+    const filterEmptyText = element('span', '', tr('没有匹配的日志记录。'));
+    const clearFilter = element('button', 'goal-log-clear-filter', tr('清除筛选'));
+    clearFilter.type = 'button';
+    filterEmpty.append(filterEmptyText, clearFilter);
+    filterEmpty.hidden = true;
+    tools.append(filter, search, jump, copy, matchInfo, filterEmpty);
+    container.before(tools);
+    tools.hidden = true;
+    let filterMode = 'all', searchQuery = '', jumpSignature = '', filteredTotal = 0;
+    function filterActive() { return filterMode !== 'all' || Boolean(searchQuery); }
+    function entrySearchText(entry) {
+      return [
+        entry.part?.name, entry.part?.args, entry.part?.output, entry.part?.error, entry.part?.text,
+        entry.worker?.name, entry.worker?.description, entry.worker?.result, entry.worker?.error,
+        entry.activity?.label, entry.label, entry.text, entry.status,
+        ...(Array.isArray(entry.tools) ? entry.tools.flatMap(tool => [tool?.name, tool?.args, tool?.output, tool?.error]) : [])
+      ].filter(value => typeof value === 'string' && value).join(' ').toLowerCase();
+    }
+    function entryMatchesFilter(entry) {
+      const kind = entry.kind || '';
+      if (filterMode === 'reasoning' && kind !== 'reasoning') return false;
+      if (filterMode === 'schedule' && !['toolLine', 'activity'].includes(kind)) return false;
+      if (filterMode === 'tool' && kind !== 'tool') return false;
+      if (filterMode === 'worker' && kind !== 'worker') return false;
+      if (filterMode === 'current' && entry.round !== segments[segments.length - 1]) return false;
+      if (filterMode === 'anomaly') {
+        const status = entry.part?.status ?? entry.worker?.status ?? entry.status ?? '';
+        const failedTools = Array.isArray(entry.tools) && entry.tools.some(tool => ['failed', 'interrupted'].includes(tool?.status));
+        if (!failedTools && !['failed', 'interrupted'].includes(status)) return false;
+      }
+      if (searchQuery && !entrySearchText(entry).includes(searchQuery)) return false;
+      return true;
+    }
+    // Filtering happens on entries, not DOM rows: search/filter covers the whole
+    // bounded log (ages across pages), then the pager pages over the matches.
+    function refreshFilter() {
+      start = null;
+      firstId = undefined;
+      if (latestExecution) update(session, latestExecution);
+      else updateMatchInfo();
+    }
+    function updateMatchInfo() {
+      const active = filterActive();
+      if (!active) { setText(matchInfo, ''); setHidden(matchInfo, true); filterEmpty.hidden = true; return; }
+      setText(matchInfo, tr('显示 {0} 条', filteredTotal));
+      setHidden(matchInfo, false);
+      filterEmpty.hidden = filteredTotal > 0 || total === 0;
+    }
+    function clearFilters() {
+      filterMode = 'all'; searchQuery = '';
+      filter.value = 'all'; search.value = '';
+      refreshFilter();
+    }
+    function updateJump() {
+      const signature = segments.map(segment => `${segment.key}:${segment.number}`).join('|');
+      if (signature === jumpSignature) return;
+      jumpSignature = signature;
+      const first = element('option', '', tr('跳到轮次')); first.value = '';
+      jump.replaceChildren(first);
+      for (const segment of segments) {
+        const option = element('option', '', roundHeaderText(segment)); option.value = segment.key;
+        jump.append(option);
+      }
+      jump.hidden = segments.length < 2;
+    }
+    filter.addEventListener('change', () => { filterMode = filter.value; refreshFilter(); });
+    search.addEventListener('input', () => { searchQuery = search.value.trim().toLowerCase(); refreshFilter(); });
+    search.addEventListener('keydown', event => {
+      if (event.key !== 'Escape' || !search.value) return;
+      event.preventDefault();
+      clearFilters();
+      search.focus({ preventScroll: true });
+    });
+    clearFilter.addEventListener('click', () => { clearFilters(); search.focus({ preventScroll: true }); });
+    jump.addEventListener('change', () => {
+      const key = jump.value;
+      if (!key) return;
+      const header = roundHeaders.get(key);
+      if (!header) return;
+      follow = false;
+      cancelFollowFrame();
+      markFollow();
+      header.root.scrollIntoView({ block: 'start' });
+      jump.value = '';
+    });
+    copy.addEventListener('click', () => {
+      const text = [...container.querySelectorAll('.goal-log-round-heading, .goal-log-entry')]
+        .filter(node => !node.hidden)
+        .map(node => node.innerText || node.textContent || '')
+        .join('\n')
+        .trim();
+      if (!text || typeof actions?.onCopy !== 'function') return;
+      Promise.resolve(actions.onCopy(text)).then(() => {
+        setRaw(copy, tr('已复制'));
+        setTimeout(() => { if (copy.isConnected) setRaw(copy, tr('复制')); }, 1500);
+      }).catch(() => {});
+    });
     const reasonToggle = document.getElementById('goal-log-reason-toggle');
     const roundsToggle = document.getElementById('goal-log-rounds-toggle');
     const bottomButton = document.getElementById('goal-log-bottom');
@@ -360,6 +479,23 @@
       const value = follow && start === null ? 'true' : 'false';
       if (container.dataset.following !== value) container.dataset.following = value;
     }
+    // Selecting text is a reading gesture: stop auto-follow until the reader
+    // returns to the bottom, instead of letting the next tick move the selection.
+    function selectionInLog() {
+      const selection = typeof getSelection === 'function' ? getSelection() : null;
+      if (!selection || selection.isCollapsed || !selection.rangeCount) return false;
+      const node = selection.getRangeAt(0).commonAncestorContainer;
+      return container.contains(node.nodeType === 1 ? node : node.parentNode);
+    }
+    function onSelectionChange() {
+      if (!container.isConnected || !selectionInLog()) return;
+      if (!follow) return;
+      follow = false;
+      cancelFollowFrame();
+      markFollow();
+      syncBottomLabel();
+    }
+    document.addEventListener('selectionchange', onSelectionChange);
     function releaseRow(row) {
       if (row.reason) liveDurations.delete(row.reason);
       if (!liveDurations.size) stopLiveDurations();
@@ -380,12 +516,20 @@
       rows.clear();
       for (const header of roundHeaders.values()) header.root.remove();
       roundHeaders.clear();
+      for (const divider of activityDividers.values()) divider.remove();
+      activityDividers.clear();
+      for (const card of taskCards.values()) card.root.remove();
+      taskCards.clear();
       container.replaceChildren(); latestExecution = undefined; firstId = undefined; start = null; session = '';
       rounds = []; current = null; roundNumber = 0; fallbackCounter = 0; segments = []; segmentNumber = 0;
-      compactRounds = false; roundsCollapsedAll = false;
+      compactRounds = false; roundsCollapsedAll = false; density = 'expanded';
       collapsedRounds.clear(); expandedRounds.clear();
       follow = true; lastTop = 0; lastHeight = 0; total = 0; pager.hidden = true;
       pendingNew = 0; roundOffsets = []; roundGeometryDirty = true;
+      filterMode = 'all'; searchQuery = ''; jumpSignature = '';
+      filter.value = 'all'; search.value = '';
+      jump.replaceChildren(); jump.hidden = true;
+      tools.hidden = true; setText(matchInfo, ''); setHidden(matchInfo, true); filterEmpty.hidden = true;
       updateReasonToggle();
       updateRoundsToggle();
       markFollow();
@@ -393,7 +537,7 @@
     }
     function page(offset) {
       follow = false;
-      start = Math.max(0, (start ?? Math.max(0, total - pageSize)) + offset);
+      start = Math.max(0, (start ?? Math.max(0, filteredTotal - pageSize)) + offset);
       firstId = undefined;
       roundGeometryDirty = true;
       update(session, latestExecution);
@@ -507,15 +651,15 @@
       const entries = [];
       let seq = 0;
       const reasoningParts = reasoningPartsOf(data).filter(part => inReview(timestamp(part.startedAt)));
-      // While the current round is still thinking, pin the live reasoning line to
-      // the bottom of the round so new output never pushes it out of view. Once
-      // thinking completes it returns to its chronological position.
-      const reasoningActive = round.live && reasoningParts.some(part => ['running', 'streaming'].includes(part.status));
+      // Thinking keeps its chronological position for the whole review. It is
+      // never re-pinned to the bottom: a row that starts at the top of the round
+      // must not jump there when the review concludes, and a reader who scrolled
+      // up must not have the thinking line moved underneath the viewport.
       if (reasoningParts.length) {
         const firstStart = reasoningParts.map(part => timestamp(part.startedAt)).find(Number.isFinite);
         entries.push({
-          id: 'reason:' + round.key, kind: 'reasoning', round, parts: reasoningParts, pinned: reasoningActive,
-          time: reasoningActive ? Number.MAX_SAFE_INTEGER : firstStart ?? round.startedAt, seq: seq++
+          id: 'reason:' + round.key, kind: 'reasoning', round, parts: reasoningParts,
+          time: firstStart ?? round.startedAt, seq: seq++
         });
       }
       // Reason's own management calls (list_workers, wait_worker_sleep, graph,
@@ -555,18 +699,32 @@
         });
       }
       const workers = Array.isArray(data.workers) ? data.workers : [];
+      const reviewWorkers = [];
       for (const worker of workers) {
         if (!worker || typeof worker !== 'object') continue;
-        const at = timestamp(worker.createdAt ?? worker.startedAt);
-        // A worker is dispatched by the most recent Reason decision: place it in
-        // that review's round instead of the next review's (its createdAt lands a
-        // few milliseconds after the conclusion that spawned it).
-        if (Number.isFinite(at)) {
-          const decisions = cuts.filter(cut => cut <= at).length;
-          const owner = Math.max(0, decisions - 1);
-          if (owner !== review) continue;
-        } else if (review !== 0) continue;
-        entries.push({ id: 'worker:' + worker.id, kind: 'worker', round, worker, time: at ?? round.startedAt, seq: seq++ });
+        // createdAt is the dispatch event inside the review, so the review that
+        // owns it is reviewIndexOf(createdAt). Historical records may only carry
+        // startedAt (which lands after the decision): fall back to the preceding
+        // review, matching "the most recent Reason decision dispatched it".
+        const createdAt = timestamp(worker.createdAt);
+        const startedAt = timestamp(worker.startedAt ?? worker.finishedAt);
+        let owner;
+        if (Number.isFinite(createdAt)) owner = reviewIndexOf(createdAt, cuts);
+        else if (Number.isFinite(startedAt)) owner = Math.max(0, cuts.filter(cut => cut <= startedAt).length - 1);
+        else owner = 0;
+        if (owner !== review) continue;
+        reviewWorkers.push(worker);
+      }
+      // Workers are not timeline rows: the round owns one dedicated task card so
+      // dispatch management never interrupts thinking or conclusions.
+      round.workers = reviewWorkers.sort((left, right) =>
+        (timestamp(left.createdAt ?? left.startedAt) ?? 0) - (timestamp(right.createdAt ?? right.startedAt) ?? 0));
+      // A historical round may contain only dispatched tasks (for example a run
+      // interrupted before any thinking/text was persisted). Keep it in paging so
+      // its task card and header are not silently dropped; the marker never
+      // renders as a row.
+      if (!entries.length && reviewWorkers.length) {
+        entries.push({ id: 'tasks:' + round.key, kind: 'tasksOnly', round, time: round.startedAt ?? Date.now(), seq: seq++ });
       }
       const toolNames = toolNamesOf(data);
       (Array.isArray(data.activities) ? data.activities : []).forEach((activity, index) => {
@@ -642,6 +800,8 @@
         }
         segments = nextSegments;
         compactRounds = nextSegments.length > COMPACT_ROUND_THRESHOLD;
+        // A short run has no density choice; the next long run starts expanded.
+        if (!compactRounds) density = 'expanded';
         if (entries.length <= maxEntries || rounds.length <= 1) return entries;
         if (!evictRound(rounds[0])) return entries;
       }
@@ -706,6 +866,9 @@
       setData(row.root, 'round', round.number);
       setData(row.root, 'source', part.source || '');
       setData(row.root, 'status', part.status || '');
+      // Reason conclusions are the narrative anchors of a round; mark them so the
+      // stylesheet can set them apart from ordinary streamed prose.
+      setData(row.root, 'conclusion', typeof part.id === 'string' && part.id.startsWith('reason-conclusion:') ? 'true' : 'false');
       setData(row.root, 'logId', entry.id);
       setAttribute(row.root, 'data-round-key', round.key);
       // Cheap change signature: one update per changed row, never a rebuild.
@@ -776,7 +939,7 @@
       row.toolLine.body.className = 'goal-log-toolline-body goal-log-tool-cards message-timeline';
       try {
         window.UBOVMMessage.update(row.toolLine.body, '', {
-          ...actions, role: 'assistant', parts: entry.tools, streaming: active, toolGrouping: true
+          ...actions, role: 'assistant', parts: entry.tools, streaming: active, toolGrouping: false
         });
       } catch { /* Keep the previous cards if a render fails. */ }
     }
@@ -808,8 +971,8 @@
       row.root.append(sr);
       const view = { details, summary, icon, line, meta, stateLabel, duration, body, markdown, sr, renderedText: null, renderedStreaming: undefined, pinned: false };
       details.addEventListener('toggle', () => {
-        // Expanding/collapsing changes whether the live row may stay sticky.
-        setData(row.root, 'pinned', view.pinned && !details.open ? 'true' : 'false');
+        // Expanding/collapsing no longer changes a sticky status row; only the
+        // expand-all action and the rendered body state need updating.
         if (!details.open) {
           // Force a fresh full render on the next open (a coalesced toggle must
           // not leave the expanded body showing stale streamed text).
@@ -820,8 +983,8 @@
         }
         renderReasoningBody(row);
         updateReasonToggle();
-        // Opening the live row at the bottom should reveal the newest reasoning
-        // instead of growing below the viewport edge.
+        // Opening the live row should reveal the newest reasoning instead of
+        // growing below the viewport edge.
         if (follow) scheduleFollow();
       });
       // Native details does not close on Escape; keyboard readers expect it.
@@ -877,10 +1040,8 @@
       else { liveDurations.delete(view); if (!liveDurations.size) stopLiveDurations(); }
       setRaw(view.sr, text);
       setData(row.root, 'status', running ? 'running' : 'completed');
-      view.pinned = Boolean(entry.pinned && running);
-      // Expanding live thinking must not keep a large sticky panel hovering over
-      // the log; it stays in its chronological bottom position instead.
-      setData(row.root, 'pinned', view.pinned && !view.details.open ? 'true' : 'false');
+      // Thinking is a stable chronological row: no live pin, no status-bar pin.
+      setData(row.root, 'pinned', 'false');
       setData(view.summary, 'status', running ? 'running' : 'completed');
       setAttribute(row.root, 'data-round-key', entry.round.key);
       setData(row.root, 'round', entry.round.number);
@@ -905,20 +1066,31 @@
       row.workerLine = { button, chip, duration, description, result, error, parent };
       return row;
     }
+    function workerDisplayStatus(worker) {
+      const status = worker.status || 'created';
+      // The log is not a progress meter: a dispatched Worker shows only "已派发"
+      // while it runs/waits, then updates once to its final state. Live status
+      // and progress stay in the Worker detail panel.
+      return FINAL_WORKER_STATUS.has(status) ? status : 'created';
+    }
     function renderWorkerRow(row, entry, execution, now) {
       const worker = entry.worker;
       const round = entry.round;
-      const status = worker.status || 'created';
-      const duration = durationText(timestamp(worker.createdAt ?? worker.startedAt), timestamp(worker.finishedAt ?? (['running', 'waiting', 'starting'].includes(status) ? now : undefined)));
-      const resultText = workerResult(worker);
-      const error = workerError(worker);
-      const key = [worker.id, worker.name, worker.description, worker.parentId, status, worker.finishedAt, resultText, error, duration].join('\u0001');
+      const status = workerDisplayStatus(worker);
+      const final = FINAL_WORKER_STATUS.has(status);
+      const duration = final
+        ? durationText(timestamp(worker.createdAt ?? worker.startedAt), timestamp(worker.finishedAt))
+        : '';
+      const resultText = final ? workerResult(worker) : '';
+      const error = final ? workerError(worker) : '';
+      const key = [worker.id, worker.name, worker.description, worker.parentId, status, worker.finishedAt, resultText, error].join('\u0001');
       const locale = window.UBOVMi18n?.locale || 'zh-CN';
       setRaw(row.label, tr('分派任务'));
-      setRaw(row.state, tr('已派发'));
+      setRaw(row.state, tr(final ? (WORKER_STATUS[status] || status) : '已派发'));
       setRowTime(row, entry);
       setHidden(row.icon, true);
       setData(row.root, 'status', status);
+      setData(row.root, 'final', final ? 'true' : 'false');
       setData(row.root, 'round', round.number);
       setAttribute(row.root, 'data-round-key', round.key);
       setAttribute(row.root, 'data-worker', worker.id || '');
@@ -965,6 +1137,14 @@
       const kind = entry.kind;
       if (row.kind !== kind) resetRowForKind(row, kind);
       setData(row.root, 'logId', entry.id);
+      // Search runs against the source record, not only the collapsed DOM: tool
+      // names/args/outputs and worker descriptions stay findable while folded.
+      row.searchText = [
+        entry.part?.name, entry.part?.args, entry.part?.output, entry.part?.error, entry.part?.text,
+        entry.worker?.name, entry.worker?.description, entry.worker?.result, entry.worker?.error,
+        entry.activity?.label, entry.label, entry.text, entry.status,
+        ...(Array.isArray(entry.tools) ? entry.tools.flatMap(tool => [tool?.name, tool?.args, tool?.output, tool?.error]) : [])
+      ].filter(value => typeof value === 'string' && value).join(' ').toLowerCase();
       if (kind === 'reasoning') renderReasoningRow(row, entry, now);
       else if (kind === 'toolLine') renderToolLineRow(row, entry);
       else if (kind === 'worker') renderWorkerRow(row, entry, execution, now);
@@ -1029,35 +1209,92 @@
     }
     function roundSummary(round) {
       const entries = Array.isArray(round.entries) ? round.entries : [];
-      const workers = entries.filter(entry => entry.kind === 'worker').length;
+      const workers = Array.isArray(round.workers) ? round.workers.length : 0;
       const tools = entries.filter(entry => entry.kind === 'tool' || entry.kind === 'toolLine').length;
       const parts = [tr('{0} 条记录', entries.length)];
       if (workers) parts.push(tr('{0} 个任务', workers));
       if (tools) parts.push(tr('{0} 个工具', tools));
       return parts.join(' · ');
     }
-    // Default: every round expanded. Explicit reader choices win; the header
-    // action can fold all non-current rounds into one-line index rows.
-    function roundCollapsed(round) {
-      if (collapsedRounds.has(round.key)) return true;
-      if (expandedRounds.has(round.key)) return false;
-      return roundsCollapsedAll && !round.live;
+    // The round header should answer "what did this review decide?" without
+    // making the reader scan the rows. Decision-bearing tool arguments are the
+    // authoritative source (submit_decision intents/wait/complete, TODO
+    // directions, worker dispatch); missing or truncated args simply omit chips.
+    function toolArgs(part) {
+      const raw = part?.args;
+      if (typeof raw !== 'string' || !raw.trim().startsWith('{')) return undefined;
+      try {
+        const value = JSON.parse(raw);
+        return value && typeof value === 'object' && !Array.isArray(value) ? value : undefined;
+      } catch { return undefined; }
+    }
+    function roundDecisionText(round) {
+      const entries = Array.isArray(round.entries) ? round.entries : [];
+      let intents = 0, directions = 0, wait = false, complete = false, tools = 0, failures = 0;
+      const countDecision = part => {
+        const args = toolArgs(part);
+        if (!args) return;
+        if (Array.isArray(args.intents)) intents += args.intents.length;
+        if (args.complete === true) complete = true;
+        if (args.wait === true) wait = true;
+      };
+      for (const entry of entries) {
+        if (entry.kind === 'toolLine') {
+          for (const part of entry.tools || []) {
+            tools += 1;
+            if (part.name === 'submit_decision') countDecision(part);
+            if (part.name === 'exploration_todo') {
+              const args = toolArgs(part);
+              if (Array.isArray(args?.items)) directions += args.items.length;
+            }
+          }
+          continue;
+        }
+        if (entry.kind === 'tool') {
+          tools += 1;
+          const part = entry.part;
+          if (part && ['failed', 'interrupted'].includes(part.status)) failures += 1;
+          continue;
+        }
+        if (entry.kind === 'worker') continue;
+        const part = entry.part;
+        if (part && ['failed', 'interrupted'].includes(part.status)) failures += 1;
+      }
+      const workers = Array.isArray(round.workers) ? round.workers : [];
+      const workerFailures = workers.filter(worker => ['failed', 'interrupted'].includes(worker?.status)).length;
+      const chips = [];
+      if (complete) chips.push(tr('提交完成'));
+      else if (wait) chips.push(tr('等待'));
+      if (intents) chips.push(tr('{0} 个意图', intents));
+      if (directions) chips.push(tr('{0} 个方向', directions));
+      if (workers.length) chips.push(tr('{0} 个任务', workers.length));
+      if (tools) chips.push(tr('{0} 个工具', tools));
+      const anomalies = failures + workerFailures;
+      if (anomalies) chips.push(tr('{0} 个异常', anomalies));
+      return chips.join(' · ');
+    }
+    // Rounds are reading sections, not foldable accordions. The header stays
+    // sticky for orientation, but its rows are always visible: thinking and
+    // conclusions must never disappear behind a fold.
+    function roundCollapsed() {
+      return false;
     }
     function applyCollapsed(round) {
-      const collapsed = roundCollapsed(round);
       const header = roundHeaders.get(round.key);
       if (header) {
-        setData(header.root, 'collapsed', collapsed ? 'true' : 'false');
-        setAttribute(header.root, 'aria-expanded', collapsed ? 'false' : 'true');
-        setAttribute(header.root, 'aria-label', tr(collapsed ? '展开本轮记录' : '折叠本轮记录'));
-        setAttribute(header.root, 'title', tr(collapsed ? '展开本轮记录' : '折叠本轮记录'));
-        setRaw(header.meta, collapsed ? roundSummary(round) : '');
-        setHidden(header.meta, !collapsed);
+        setData(header.root, 'collapsed', 'false');
+        header.root.removeAttribute('aria-expanded');
+        header.root.removeAttribute('title');
+        setHidden(header.meta, true);
       }
       for (const [key, row] of rows) {
         if (!key.startsWith(round.key + '|')) continue;
-        if (row.root.hidden !== collapsed) row.root.hidden = collapsed;
+        if (row.root.hidden) row.root.hidden = false;
       }
+      const divider = activityDividers.get(round.key);
+      if (divider) divider.hidden = false;
+      const taskCard = taskCards.get(round.key);
+      if (taskCard) taskCard.root.hidden = false;
     }
     function toggleRound(round) {
       if (!round) return;
@@ -1096,21 +1333,17 @@
       let header = roundHeaders.get(round.key);
       if (!header) {
         const root = element('div', 'goal-log-round-heading');
-        root.tabIndex = 0;
-        root.setAttribute('role', 'button');
-        root.setAttribute('aria-expanded', 'true');
-        const chevron = element('span', 'goal-log-round-chevron', '›');
-        chevron.setAttribute('aria-hidden', 'true');
         const title = element('span', 'goal-log-round-title');
         const time = element('time', 'goal-log-round-time');
         const duration = element('span', 'goal-log-round-duration');
+        const decision = element('span', 'goal-log-round-decision');
         const meta = element('span', 'goal-log-round-meta');
         const status = element('span', 'goal-log-round-status');
         meta.hidden = true;
-        root.append(chevron, title, time, duration, meta, status);
-        header = { root, chevron, title, time, duration, meta, status };
+        decision.hidden = true;
+        root.append(title, time, duration, decision, meta, status);
+        header = { root, title, time, duration, decision, meta, status };
         roundHeaders.set(round.key, header);
-        bindRoundHeader(root, round);
       }
       setText(header.title, roundHeaderText(round));
       setRaw(header.time, new Date(round.startedAt).toLocaleTimeString('zh-CN', { hour12: false }));
@@ -1122,6 +1355,9 @@
       const duration = durationText(round.startedAt, Number.isFinite(end) ? Math.max(end, round.startedAt) : end);
       setRaw(header.duration, duration);
       setHidden(header.duration, !duration);
+      const decisionText = roundDecisionText(round);
+      setRaw(header.decision, decisionText);
+      setHidden(header.decision, !decisionText);
       setData(header.root, 'status', status);
       setData(header.root, 'round', round.number);
       setAttribute(header.root, 'data-round-key', round.key);
@@ -1148,15 +1384,14 @@
     // Round-level expand-all is only offered once the log is dense enough to have
     // folded older rounds; the current round always stays readable.
     function updateRoundsToggle() {
-      if (!roundsToggle) return;
-      setHidden(roundsToggle, !compactRounds);
-      if (!compactRounds) return;
-      setText(roundsToggle, tr(roundsCollapsedAll ? '展开全部轮次' : '收起旧轮次'));
-      setAttribute(roundsToggle, 'aria-pressed', String(roundsCollapsedAll));
-      setAttribute(roundsToggle, 'title', tr(roundsCollapsedAll ? '展开所有较早的轮次' : '把较早的轮次折叠成一行摘要，当前轮保持展开'));
+      // Round folding was removed: thinking and conclusions must stay visible.
+      // Keep the legacy header node hidden so older bundles/tests cannot expose it.
+      if (roundsToggle) setHidden(roundsToggle, true);
     }
     function toggleAllRounds() {
-      roundsCollapsedAll = !roundsCollapsedAll;
+      const anyCollapsed = segments.some(round => roundCollapsed(round));
+      density = anyCollapsed ? 'expanded' : 'folded';
+      roundsCollapsedAll = density === 'folded';
       expandedRounds.clear();
       collapsedRounds.clear();
       for (const round of segments) applyCollapsed(round);
@@ -1180,11 +1415,103 @@
       updateReasonToggle();
     }
     reasonToggle?.addEventListener('click', toggleAllReasoning);
-    roundsToggle?.addEventListener('click', toggleAllRounds);
+    // Round headers are not interactive: no fold/unfold affordance.
     // Keep the header label in sync with manual details toggles.
     container.addEventListener('toggle', event => {
       if (event.target?.classList?.contains('goal-log-reasoning')) updateReasonToggle();
     }, true);
+
+    // ---- Activity group divider --------------------------------------------
+    // Thinking, conclusions and summaries must read as one continuous story.
+    // Tool calls, Worker management and activity rows move below a divider at the
+    // end of the round instead of being spliced into the middle of the narrative.
+    function activityDividerFor(round, count) {
+      let divider = activityDividers.get(round.key);
+      if (!divider) {
+        divider = element('div', 'goal-log-activity-divider');
+        divider.setAttribute('role', 'separator');
+        divider.setAttribute('aria-label', tr('调度与执行'));
+        activityDividers.set(round.key, divider);
+      }
+      divider.dataset.roundKey = round.key;
+      setText(divider, tr('调度与执行 · {0} 条', count));
+      return divider;
+    }
+
+    // ---- Dispatched-task card ------------------------------------------------
+    // Workers get one management card per round instead of timeline rows: the
+    // card shows which tasks exist and their final state; live status stays in the
+    // Worker detail panel. Expanding it reveals descriptions/results/errors.
+    function workerCardLabel(worker) {
+      // Historical workers can be saved without a display name; the description
+      // is a far better label than the internal Worker id.
+      const name = typeof worker?.name === 'string' ? worker.name.trim() : '';
+      if (name) return name;
+      const description = typeof worker?.description === 'string' ? worker.description.trim() : '';
+      if (description) return description.length > 48 ? description.slice(0, 47) + '…' : description;
+      return worker?.id || '';
+    }
+    function renderTaskCard(round) {
+      const workers = Array.isArray(round.workers) ? round.workers : [];
+      let card = taskCards.get(round.key);
+      if (!workers.length) {
+        if (card) { card.root.remove(); taskCards.delete(round.key); }
+        return null;
+      }
+      if (!card) {
+        const root = element('details', 'goal-log-task-card');
+        const summary = element('summary', 'goal-log-task-summary');
+        const title = element('span', 'goal-log-task-title', tr('分派任务'));
+        const names = element('span', 'goal-log-task-names');
+        const state = element('span', 'goal-log-task-state');
+        const chevron = element('span', 'goal-log-task-chevron', '›');
+        chevron.setAttribute('aria-hidden', 'true');
+        summary.append(title, names, state, chevron);
+        const body = element('div', 'goal-log-task-body');
+        root.append(summary, body);
+        card = { root, title, names, state, body, signature: '' };
+        taskCards.set(round.key, card);
+      }
+      card.root.dataset.roundKey = round.key;
+      const finalCount = workers.filter(worker => FINAL_WORKER_STATUS.has(worker.status)).length;
+      const labels = workers.map(workerCardLabel).filter(Boolean);
+      setText(card.names, labels.slice(0, 3).join('、') + (labels.length > 3 ? ` +${labels.length - 3}` : ''));
+      setText(card.state, finalCount ? tr('{0}/{1} 完成', finalCount, workers.length) : tr('{0} 个', workers.length));
+      const signature = workers.map(worker => [
+        worker.id, worker.name, worker.description, worker.parentId, worker.status,
+        worker.finishedAt, worker.result, worker.error
+      ].join('\u0001')).join('|');
+      if (signature !== card.signature) {
+        card.signature = signature;
+        card.body.replaceChildren(...workers.map(worker => {
+          const status = workerDisplayStatus(worker);
+          const final = FINAL_WORKER_STATUS.has(status);
+          const item = element('div', 'goal-log-task');
+          item.dataset.workerId = worker.id || '';
+          const head = element('div', 'goal-log-task-head');
+          const button = element('button', 'goal-log-task-name', workerCardLabel(worker));
+          button.type = 'button';
+          button.title = tr('查看任务执行记录');
+          button.setAttribute('aria-label', tr('查看任务执行记录') + '：' + workerCardLabel(worker));
+          button.addEventListener('click', () => openWorker(worker.id, button));
+          const chip = element('span', 'goal-log-task-status', tr(WORKER_STATUS[status] || status));
+          setData(chip, 'status', status);
+          const duration = element('span', 'goal-log-task-duration', final
+            ? durationText(timestamp(worker.createdAt ?? worker.startedAt), timestamp(worker.finishedAt)) : '');
+          head.append(button, chip, duration);
+          item.append(head);
+          if (worker.description) item.append(element('p', 'goal-log-task-description', worker.description));
+          const result = final ? workerResult(worker) : '';
+          if (result) item.append(element('p', 'goal-log-task-result', tr('结果') + '：' + result));
+          const error = final ? workerError(worker) : '';
+          if (error) item.append(element('p', 'execution-error goal-log-task-error', error));
+          if (worker.parentId) item.append(element('small', 'goal-log-task-parent', tr('来自上级任务')));
+          return item;
+        }));
+      }
+      card.root.hidden = false;
+      return card.root;
+    }
 
     function update(sessionId, execution) {
       if (session !== sessionId) { reset(); session = sessionId; paintedRunId = ''; }
@@ -1209,18 +1536,21 @@
       if (sameRun && ['starting', 'running'].includes(status) && entries.length <= 2
         && total - entries.length > 10) return total;
       total = entries.length;
+      const matched = filterActive() ? entries.filter(entryMatchesFilter) : entries;
+      filteredTotal = matched.length;
       // Rows that arrived while the reader is away from the live edge are
       // reported on the bottom action so following up is a single click.
       if (!follow && total > previousTotal) pendingNew += total - previousTotal;
       if (follow) pendingNew = 0;
       // Keep an older page stable as live records arrive; evict its DOM on paging.
-      if (firstId && start !== null) { const index = entries.findIndex(entry => entry.id === firstId); if (index >= 0) start = index; }
-      const offset = start === null ? Math.max(0, total - pageSize) : Math.min(start, Math.max(0, total - 1));
-      const visibleEntries = entries.slice(offset, offset + pageSize);
+      if (firstId && start !== null) { const index = matched.findIndex(entry => entry.id === firstId); if (index >= 0) start = index; }
+      const offset = start === null ? Math.max(0, matched.length - pageSize) : Math.min(start, Math.max(0, matched.length - 1));
+      const visibleEntries = matched.slice(offset, offset + pageSize);
       firstId = visibleEntries[0]?.id;
-      pager.hidden = total <= pageSize;
-      earlier.disabled = offset === 0; newer.disabled = offset + pageSize >= total;
-      range.textContent = tr(`${total ? offset + 1 : 0}–${Math.min(total, offset + pageSize)} / ${total} 条`);
+      pager.hidden = matched.length <= pageSize;
+      earlier.disabled = offset === 0; newer.disabled = offset + pageSize >= matched.length;
+      range.textContent = tr(`${matched.length ? offset + 1 : 0}–${Math.min(matched.length, offset + pageSize)} / ${matched.length} 条`)
+        + (filterActive() ? tr('（筛选）') : '');
       latest.disabled = start === null;
       const now = Date.now();
       // Round headers group the chronological rows; rows themselves stay a single
@@ -1231,11 +1561,17 @@
         if (!last || last.round !== entry.round) groups.push({ round: entry.round, entries: [] });
         groups[groups.length - 1].entries.push(entry);
       }
-      const kept = new Set(), usedHeaders = new Set(), sequence = [];
+      const kept = new Set(), usedHeaders = new Set(), usedDividers = new Set(), usedTaskCards = new Set(), sequence = [];
       for (const group of groups) {
         usedHeaders.add(group.round.key);
         sequence.push({ header: roundHeaderFor(group.round) });
+        const narrative = [], activity = [];
         for (const entry of group.entries) {
+          if (entry.kind === 'tasksOnly') continue;
+          if (['toolLine', 'tool', 'worker', 'activity'].includes(entry.kind)) activity.push(entry);
+          else narrative.push(entry);
+        }
+        const appendRow = entry => {
           const rowKey = group.round.key + '|' + entry.id;
           kept.add(rowKey);
           let row = rows.get(rowKey);
@@ -1244,19 +1580,43 @@
           try { renderRow(row, entry, execution, now); }
           catch (error) { console.warn('[UBOVM] Goal log row render failed', error); }
           sequence.push({ row });
+        };
+        for (const entry of narrative) appendRow(entry);
+        const taskCard = renderTaskCard(group.round);
+        if (taskCard) {
+          usedTaskCards.add(group.round.key);
+          sequence.push({ taskCard });
+        }
+        if (activity.length) {
+          usedDividers.add(group.round.key);
+          sequence.push({ divider: activityDividerFor(group.round, activity.length) });
+          for (const entry of activity) appendRow(entry);
         }
       }
       // Place nodes in order without detaching unchanged rows unnecessarily.
       let anchor = container.firstChild;
       for (const item of sequence) {
-        const node = item.header || item.row.root;
+        const node = item.header || item.taskCard || item.divider || item.row.root;
         if (node === anchor) { anchor = anchor.nextSibling; continue; }
         container.insertBefore(node, anchor);
       }
       for (const [key, row] of rows) if (!kept.has(key)) { releaseRow(row); rows.delete(key); }
       for (const key of [...roundHeaders.keys()]) if (!usedHeaders.has(key)) removeRoundHeader(key);
+      for (const [key, divider] of activityDividers) {
+        if (usedDividers.has(key) && divider.isConnected) continue;
+        divider.remove();
+        activityDividers.delete(key);
+      }
+      for (const [key, card] of taskCards) {
+        if (usedTaskCards.has(key) && card.root.isConnected) continue;
+        card.root.remove();
+        taskCards.delete(key);
+      }
       // Re-apply folded rounds after new rows took part in the layout.
       for (const round of segments) applyCollapsed(round);
+      setHidden(tools, !entries.length);
+      updateJump();
+      updateMatchInfo();
       if (roundGeometryDirty) measureRoundOffsets();
       updateReasonToggle();
       updateRoundsToggle();
@@ -1266,15 +1626,19 @@
       return entries.length;
     }
     return {
-      update, reset, showLatest, alignFollow: scheduleFollow,
+      update,
+      reset,
+      showLatest,
+      alignFollow: scheduleFollow,
       dispose() {
         cancelFollowFrame();
         reset();
+        document.removeEventListener('selectionchange', onSelectionChange);
         if (measureFrame) { cancelAnimationFrame(measureFrame); measureFrame = 0; }
         measureObserver?.disconnect?.();
         pager.remove();
+        tools.remove();
         reasonToggle?.removeEventListener?.('click', toggleAllReasoning);
-      roundsToggle?.removeEventListener?.('click', toggleAllRounds);
       }
     };
   };

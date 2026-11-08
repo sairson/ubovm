@@ -70,3 +70,17 @@ test('idempotent upsert and capacity-safe validation', async () => {
   assert.deepEqual(again.updated, ['a.root.example']);
   await assert.rejects(call({ action: 'bootstrap', seeds: [] }), /seed/);
 });
+
+test('a newly discovered host keeps its note and finding linkage immediately', async () => {
+  const { call } = fixture();
+  await call({ action: 'bootstrap', hostname: 'root.example' });
+  const first = await call({
+    action: 'upsert', hostname: 'a.root.example',
+    linked_note_ids: ['note-1'], finding_ids: ['VULN-001']
+  });
+  assert.deepEqual(first.created, ['a.root.example']);
+  const listed = await call({ action: 'list', query: 'a.root.example' });
+  const host = listed.domains.find(item => item.hostname === 'a.root.example');
+  assert.deepEqual(host.linked_note_ids, ['note-1']);
+  assert.deepEqual(host.finding_ids, ['VULN-001']);
+});

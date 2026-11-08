@@ -72,6 +72,9 @@ test('every phase keeps the distinct behavioral core rules', () => {
   assert.match(workerSystemPrompt('plan'), /include the final user-facing verification step in the plan/);
   assert.match(workerSystemPrompt('replan'), /No tools are available in this phase/);
   assert.match(workerSystemPrompt('conclude'), /No tools are available/);
+  assert.match(workerSystemPrompt('execute'), /exploration_graph/);
+  assert.match(workerSystemPrompt('execute'), /navigation, never\s+evidence/);
+  assert.doesNotMatch(workerSystemPrompt('plan'), /exploration_graph/);
 });
 
 test('host instructions append after the phase text and unknown phases fail', () => {

@@ -848,7 +848,7 @@ test('chatTools mode runs an agent turn with Worker tools and exploration status
   assert.equal(options.text, '列出当前 Worker 和 Reason 状态');
   assert.ok(options.signal instanceof AbortSignal);
   const names = options.configuration.tools.map(tool => tool.name);
-  for (const name of ['workspace_info', 'goal_status', 'read_notes', 'read_fact', 'exploration_workers', 'exploration_agenda', 'exploration_graph', 'read_blackboard_facts', 'read_execution_log', 'exploration_control']) {
+  for (const name of ['workspace_info', 'goal_status', 'read_notes', 'read_fact', 'exploration_workers', 'exploration_agenda', 'exploration_graph', 'read_blackboard_facts', 'read_execution_log', 'read_domain_coverage', 'exploration_control']) {
     assert.ok(names.includes(name), `missing inspection tool ${name}`);
   }
   // Command execution tools are deliberately absent from the sidebar chat; the
@@ -881,6 +881,11 @@ test('chatTools mode runs an agent turn with Worker tools and exploration status
   assert.equal(facts.total, 0);
   const noteList = JSON.parse((await options.configuration.tools.find(tool => tool.name === 'read_notes').execute('call-notes', {}, new AbortController().signal)).content[0].text);
   assert.equal(noteList.total, 0);
+  const coverage = JSON.parse((await options.configuration.tools.find(tool => tool.name === 'read_domain_coverage').execute('call-coverage', {}, new AbortController().signal)).content[0].text);
+  assert.deepEqual(coverage.seedRoots, []);
+  assert.equal(coverage.total, 0);
+  assert.equal(coverage.complete, false);
+  assert.equal(coverage.scope, null);
   // Status management: idle sessions cannot be stopped or resumed.
   const stop = JSON.parse((await options.configuration.tools.find(tool => tool.name === 'exploration_control').execute('call-stop', { action: 'stop' }, new AbortController().signal)).content[0].text);
   assert.equal(stop.stopped, false);
@@ -1091,6 +1096,34 @@ test('the classic sidebar digest is bounded and caps every exploration source', 
   assert.equal(digestLines(digest, '最近笔记：').length, 6);
   assert.equal(digestLines(digest, '最近活动：').length, 8);
   await f.waitForChat(view => view.status === 'completed', 'digest chat completed');
+});
+
+test('the classic sidebar digest exposes domain coverage and authorization scope', async t => {
+  const seed = chatHarnessSeed();
+  seed.memory = {
+    notes: [...seed.memory.notes, { note_type: 'scope', scope: { targets: ['example.com'], out_of_scope: ['third.example.net'], authorization: 'sow-7' } }],
+    domainInventory: {
+      seedRoots: ['example.com'], revision: 2,
+      domains: [
+        { hostname: 'example.com', test_status: 'tested' },
+        { hostname: 'api.example.com', test_status: 'pending' },
+        { hostname: 'cdn.example.com', test_status: 'out_of_scope', skip_reason: 'CDN only' }
+      ]
+    }
+  };
+  const f = await fixture(t, { harnessSeed: seed });
+  await startSeededGoal(f);
+  await f.send('覆盖到哪一步了？');
+  const control = await f.waitForChatCount(1).then(() => f.chats[0]);
+  const systemPrompt = control.context.systemPrompt;
+  control.push('已核对');
+  control.finish();
+  assert.match(systemPrompt, /攻击面覆盖（domain_inventory）/);
+  assert.match(systemPrompt, /hosts=3/);
+  assert.match(systemPrompt, /未覆盖：api\.example\.com/);
+  assert.match(systemPrompt, /授权范围/);
+  assert.match(systemPrompt, /in=example\.com/);
+  assert.match(systemPrompt, /out=third\.example\.net/);
 });
 
 test('the classic digest clips oversized rows and never exceeds the hard cap', async t => {

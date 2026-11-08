@@ -91,6 +91,21 @@ test('linear graph layering agrees with prior layering for varied cyclic and acy
   }
 });
 
+test('evidence path to root picks a deterministic ancestor chain and ignores cycles', () => {
+  const nodes = [
+    { id: 'r', parentIds: [] },
+    { id: 'a', parentIds: ['r'] },
+    { id: 'b', parentIds: ['r'] },
+    { id: 'j', parentIds: ['a', 'b'] },
+    { id: 'self', parentIds: ['self'] }
+  ];
+  const path = id => [...context.window.explorationPathToRoot(nodes, id)];
+  assert.deepEqual(path('j'), ['r', 'a', 'j']);
+  assert.deepEqual(path('r'), ['r']);
+  assert.deepEqual(path('missing'), []);
+  assert.deepEqual(path('self'), []);
+});
+
 test('native independent results keep durable identity without synthesizing duplicate facts', () => {
   const input = { nodes: [
     { id: 'a', kind: 'intent', resultId: 'f', parentIds: [], intent: { status: 'completed' }, fact: null },

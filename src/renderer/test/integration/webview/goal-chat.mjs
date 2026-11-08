@@ -140,6 +140,11 @@ test('streaming partials update in place, sending and stopping round-trip throug
     assert.equal(await page.locator('#goal-chat-stop').isVisible(), false);
     assert.equal(await page.locator('#goal-chat-log .goal-chat-message').count(), 2);
     assert.match(await page.locator('#goal-chat-log').textContent(), /还有两处证据没有验证/);
+    const stopNote = page.locator('#goal-chat-stop-note');
+    assert.equal(await stopNote.isVisible(), true);
+    assert.match(await stopNote.textContent(), /回答已停止，已保留已生成的内容/);
+    await send(payload(IDLE));
+    assert.equal(await stopNote.isVisible(), false, 'a later idle snapshot clears the stop note');
     assert.deepEqual(errors, []);
   } finally { await browser.close(); }
 });

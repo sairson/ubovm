@@ -1371,6 +1371,22 @@ body[data-mode="goal"] #goal-board > .goal-page-heading { display: flex; align-i
 .goal-log-entry[data-kind="activity"][data-activity="plan"] { --log-accent: var(--vscode-charts-purple, #7A4A96); }
 .goal-log-entry[data-kind="activity"][data-activity="dispatch"] { --log-accent: var(--vscode-charts-blue, #3E56BE); }
 .goal-log-entry[data-kind="activity"][data-activity="search"] { --log-accent: var(--vscode-charts-green, var(--dsw-static-green-500)); }
+/* Round headers are orientation labels, not fold controls: keep the sticky
+ * surface for reading position but drop every interactive affordance. */
+#goal-output-panel .goal-log-round-heading {
+  cursor: default;
+  user-select: text;
+}
+#goal-output-panel .goal-log-round-heading:hover {
+  background: var(--goal-surface-muted, var(--canvas));
+}
+#goal-output-panel .goal-log-round-heading:focus-visible { outline: none; }
+/* A Reason conclusion is the narrative anchor, not another execution row. */
+.goal-log-entry[data-conclusion="true"] {
+  --log-ring: color-mix(in srgb, var(--accent) 7%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent) 4.5%, transparent);
+}
 .goal-log-entry[data-status="failed"] { --log-accent: var(--vscode-errorForeground, #BE3A31); }
 .goal-log-entry:is([data-status="running"], [data-status="streaming"]) { --log-ring: color-mix(in srgb, var(--accent) 5%, var(--canvas)); border-radius: 10px; background: var(--log-ring); }
 .goal-log-heading { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; margin-bottom: 5px; font-size: 12px; }
@@ -1652,6 +1668,97 @@ body.file-drag-over #drop-overlay { display: flex; }
   .composer-model { min-width: 84px; max-width: 112px; }
 }
 .goal-log-pager [role="status"] { margin-right: auto; font-variant-numeric: tabular-nums; }
+/* Log-local filter/search/jump tools; they never change the underlying record set. */
+.goal-log-tools {
+  display: flex; flex: 0 0 auto; align-items: center; flex-wrap: wrap; gap: 6px;
+  padding: 6px 12px; border-bottom: 1px solid var(--border);
+  background: var(--canvas);
+}
+.goal-log-tools[hidden] { display: none !important; }
+.goal-log-tools > * { min-width: 0; font: inherit; font-size: 10.5px; }
+.goal-log-filter, .goal-log-jump {
+  height: 24px; padding: 0 6px; border: 1px solid var(--border); border-radius: 7px;
+  color: var(--ink); background: var(--canvas); max-width: 40%;
+}
+.goal-log-jump[hidden] { display: none !important; }
+.goal-log-search {
+  flex: 1 1 120px; height: 24px; padding: 0 8px; border: 1px solid var(--border);
+  border-radius: 7px; color: var(--ink); background: var(--canvas); outline: none;
+}
+.goal-log-search:focus-visible { border-color: var(--focus); }
+.goal-log-copy {
+  flex: 0 0 auto; height: 24px; padding: 0 9px; border: 1px solid var(--border);
+  border-radius: 7px; color: var(--ink); background: var(--canvas); cursor: pointer;
+}
+.goal-log-copy:hover { background: var(--surface-hover); }
+.goal-log-match { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
+.goal-log-match[hidden] { display: none !important; }
+.goal-log-filter-empty {
+  display: flex; align-items: center; gap: 9px; flex-wrap: wrap;
+  flex: 1 0 100%; padding: 5px 2px 2px;
+  color: var(--muted); font-size: 11.5px; line-height: 1.6;
+}
+.goal-log-filter-empty[hidden] { display: none !important; }
+/* Narrative first, scheduling below: the divider keeps the two reading modes
+   visually separate without making execution evidence disappear. */
+.goal-log-activity-divider {
+  display: flex; align-items: center; gap: 8px;
+  margin: 3px 0 1px; padding: 5px 12px 3px 34px;
+  color: var(--muted); font-size: 10px; line-height: 16px; letter-spacing: .02em;
+}
+.goal-log-activity-divider::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+.goal-log-activity-divider[hidden] { display: none !important; }
+/* Dispatched tasks live in their own management card, not in the timeline. */
+.goal-log-task-card {
+  margin: 5px 12px 3px 34px; border: 1px solid var(--border); border-radius: 10px;
+  background: color-mix(in srgb, var(--ink) 2.5%, var(--canvas));
+}
+.goal-log-task-card[hidden] { display: none !important; }
+.goal-log-task-summary {
+  display: flex; align-items: center; gap: 7px; padding: 6px 9px;
+  list-style: none; cursor: pointer; color: var(--muted); font-size: 10.5px; line-height: 16px;
+}
+.goal-log-task-summary::-webkit-details-marker { display: none; }
+.goal-log-task-title { flex: 0 0 auto; color: var(--ink); font-weight: 500; }
+.goal-log-task-names {
+  flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; color: var(--muted);
+}
+.goal-log-task-state { flex: 0 0 auto; font-variant-numeric: tabular-nums; }
+.goal-log-task-chevron { flex: 0 0 auto; transition: transform 120ms ease; }
+.goal-log-task-card[open] .goal-log-task-chevron { transform: rotate(90deg); }
+.goal-log-task-body { padding: 0 9px 7px; }
+.goal-log-task { padding: 7px 0; border-top: 1px solid color-mix(in srgb, var(--border) 70%, transparent); }
+.goal-log-task:first-child { border-top: 0; }
+.goal-log-task-head { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.goal-log-task-name {
+  flex: 0 1 auto; min-width: 0; padding: 0; border: 0; background: transparent;
+  color: var(--ink); font: inherit; font-size: 11.5px; line-height: 16px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer;
+}
+.goal-log-task-name:hover { text-decoration: underline; }
+.goal-log-task-status {
+  flex: 0 0 auto; padding: 0 5px; border-radius: 999px; font-size: 9.5px; line-height: 15px;
+  color: var(--muted); background: color-mix(in srgb, var(--ink) 6%, transparent);
+}
+.goal-log-task-status[data-status="completed"] { color: var(--vscode-charts-green, #3E7B4A); }
+.goal-log-task-status[data-status="failed"],
+.goal-log-task-status[data-status="interrupted"] { color: var(--vscode-errorForeground, #BE3A31); }
+.goal-log-task-duration { flex: 0 0 auto; color: var(--muted); font: 10px/16px var(--font-code); }
+.goal-log-task-description,
+.goal-log-task-result,
+.goal-log-task-error,
+.goal-log-task-parent { margin: 3px 0 0; font-size: 10.5px; line-height: 1.55; color: var(--muted); overflow-wrap: anywhere; }
+.goal-log-task-error { color: var(--vscode-errorForeground, #BE3A31); }
+.goal-log-clear-filter {
+  flex: 0 0 auto; padding: 3px 9px; border: 1px solid var(--border); border-radius: 999px;
+  color: var(--ink); background: var(--canvas); font: inherit; font-size: 10.5px; cursor: pointer;
+}
+.goal-log-clear-filter:hover { background: var(--surface-hover); }
+@media (max-width: 520px) {
+  .goal-log-tools { gap: 4px; padding: 5px 8px; }
+  .goal-log-filter, .goal-log-jump { max-width: 44%; }
+}
 .goal-overview-columns { grid-template-columns: minmax(0, 1fr); }
 .goal-output-panel > .execution-error { margin: 12px 20px; }
 
@@ -3720,6 +3827,14 @@ body.vscode-dark[data-mode="goal"] #goal-output-panel #goal-log-bottom[data-pend
 }
 #goal-output-panel .goal-log-round-duration::before { content: '·'; margin-right: 4px; opacity: .55; }
 #goal-output-panel .goal-log-round-duration[hidden] { display: none !important; }
+#goal-output-panel .goal-log-round-decision {
+  flex: 0 1 auto; min-width: 0; max-width: 46%; overflow: hidden; text-overflow: ellipsis;
+  color: var(--muted); font-size: 10px; line-height: 16px; white-space: nowrap;
+}
+#goal-output-panel .goal-log-round-decision[hidden] { display: none !important; }
+@media (max-width: 620px) {
+  #goal-output-panel .goal-log-round-decision { display: none !important; }
+}
 #goal-output-panel .goal-log-round-meta {
   flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis;
   color: var(--muted); font-size: 10.5px; line-height: 16px; white-space: nowrap;
@@ -3908,5 +4023,129 @@ body.vscode-dark[data-mode="goal"] #goal-output-panel #goal-log-bottom[data-pend
   #goal-output-panel .goal-log-round-status::before,
   #goal-output-panel #goal-output-status::before,
   #goal-output-panel #goal-log-bottom[data-pending="true"] { animation: none; }
+}
+/* Final override: round headers are sticky labels, never fold controls. */
+#goal-output-panel .goal-log-round-heading {
+  cursor: default;
+  user-select: text;
+}
+#goal-output-panel .goal-log-round-heading:hover {
+  background: var(--goal-surface-muted, var(--canvas));
+}
+#goal-output-panel .goal-log-round-heading:focus-visible { outline: none; }
+
+/* ---------------------------------------------------------------------------
+ * Reading polish: live rows are marked by the header rail + dot, not by a
+ * full-width accent block that visually merges reasoning and streaming text.
+ * ------------------------------------------------------------------------- */
+body[data-mode="goal"] #goal-output-panel .goal-log-entry:is([data-kind="reasoning"], [data-kind="text"], [data-kind="summary"]):is([data-status="running"], [data-status="streaming"]) {
+  background: transparent;
+  border-radius: 0;
+  box-shadow: none;
+}
+body[data-mode="goal"] #goal-output-panel .goal-log-entry[data-conclusion="true"] {
+  background: transparent;
+}
+/* Expanded reasoning is a focused reading card: a quiet accent rail, roomy
+ * padding and code blocks that do not dissolve into the prose. */
+body[data-mode="goal"] #goal-output-panel .goal-log-reasoning[open] > .goal-log-reasoning-summary {
+  color: var(--ink);
+  background: color-mix(in srgb, var(--accent) 4%, transparent);
+}
+#goal-output-panel .goal-log-reasoning[open] > .goal-log-reasoning-summary .thinking-chevron {
+  color: var(--accent);
+}
+body[data-mode="goal"] #goal-output-panel .goal-log-reasoning-body {
+  max-height: min(46vh, 420px);
+  margin: 4px 0 6px 3px;
+  padding: 10px 12px 11px;
+  border: 1px solid color-mix(in srgb, var(--ink) 8%, transparent);
+  border-left: 2px solid color-mix(in srgb, var(--accent) 55%, var(--border));
+  border-radius: 0 10px 10px 0;
+  background: color-mix(in srgb, var(--ink) 2%, var(--goal-surface-raised, var(--canvas)));
+}
+#goal-output-panel .goal-log-reasoning-body .goal-log-reasoning-markdown {
+  color: color-mix(in srgb, var(--ink) 94%, transparent);
+  font-size: 12.5px;
+  line-height: 1.78;
+}
+#goal-output-panel .goal-log-reasoning-body .md-content h1,
+#goal-output-panel .goal-log-reasoning-body .md-content h2,
+#goal-output-panel .goal-log-reasoning-body .md-content h3,
+#goal-output-panel .goal-log-reasoning-body .md-content h4 {
+  margin: 9px 0 5px;
+  font-size: 13px;
+  line-height: 1.45;
+}
+#goal-output-panel .goal-log-reasoning-body .md-content h1:first-child,
+#goal-output-panel .goal-log-reasoning-body .md-content h2:first-child,
+#goal-output-panel .goal-log-reasoning-body .md-content h3:first-child { margin-top: 0; }
+#goal-output-panel .goal-log-reasoning-body .md-content code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+  font-size: 11.5px;
+}
+#goal-output-panel .goal-log-reasoning-body .md-content pre {
+  border: 1px solid color-mix(in srgb, var(--ink) 8%, transparent);
+  background: color-mix(in srgb, var(--ink) 3.5%, var(--goal-surface-raised, var(--canvas)));
+}
+#goal-output-panel .goal-log-reasoning-body .md-content blockquote {
+  margin: 7px 0;
+  padding: 2px 0 2px 9px;
+  border-left: 2px solid color-mix(in srgb, var(--accent) 32%, var(--border));
+  color: var(--muted);
+}
+
+/* Scheduling calls are an audit list, not a stack of nested full cards: one
+ * quiet panel with compact rows and a readable expanded result body. */
+body[data-mode="goal"] #goal-output-panel .goal-log-toolline-body {
+  margin: 6px 0 2px;
+  padding: 7px 10px 6px 11px;
+  border-left: 2px solid color-mix(in srgb, var(--ink) 12%, transparent);
+  border-radius: 0 9px 9px 0;
+  background: color-mix(in srgb, var(--ink) 1.8%, var(--goal-surface-raised, var(--canvas)));
+}
+#goal-output-panel .goal-log-tool-cards { gap: 0; }
+#goal-output-panel .goal-log-tool-cards .tool-card {
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+#goal-output-panel .goal-log-tool-cards .tool-card + .tool-card {
+  border-top: 1px solid color-mix(in srgb, var(--ink) 7%, transparent);
+}
+#goal-output-panel .goal-log-tool-cards .tool-card > .tool-card-summary {
+  min-height: 28px;
+  padding: 2px 3px;
+  border-radius: 6px;
+}
+#goal-output-panel .goal-log-tool-cards .tool-card > .tool-card-summary:hover {
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
+}
+#goal-output-panel .goal-log-tool-cards .tool-card[open] {
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 2%, transparent);
+}
+#goal-output-panel .goal-log-tool-cards .tool-card-summary .tool-title { font-size: 11.5px; }
+#goal-output-panel .goal-log-tool-cards .tool-card-meta { font-size: 10px; }
+#goal-output-panel .goal-log-tool-cards .tool-card-body {
+  margin: 4px 2px 6px;
+  border-color: color-mix(in srgb, var(--ink) 9%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--ink) 2%, var(--goal-surface-raised, var(--canvas)));
+}
+#goal-output-panel .goal-log-tool-cards .tool-result-toolbar {
+  min-height: 26px;
+  padding: 3px 8px;
+  font-size: 10.5px;
+}
+#goal-output-panel .goal-log-tool-cards .tool-output,
+#goal-output-panel .goal-log-tool-cards .tool-parameters {
+  max-height: min(260px, 40vh);
+  padding: 9px 11px;
+  font-size: 11.5px;
+  line-height: 1.7;
 }
 

@@ -101,6 +101,23 @@ test('custom openIntents raises the hard capacity for board writes and Reason pa
   assert.equal(parseReasonDecision(proposal(roomContext, 8), { context: roomContext, openIntents: 8, maxIntents: 8 }).intents.length, 8);
 });
 
+test('an unfinished decision without intents waits while workers are pending or running', async () => {
+  const board = new Blackboard({ sessionId: 'empty-intents-wait', goal: 'verify' });
+  const [intent] = await board.createIntents(specs(1));
+  await board.beginAttempt(intent.id);
+  const context = buildBlackboardContext(board.snapshot());
+  for (const source of ['{"complete":false}', '{}', '{"intents":[]}']) {
+    assert.deepEqual(parseReasonDecision(source, { context }), { wait: true });
+  }
+  assert.throws(() => parseReasonDecision('{"intents":"n1"}', { context }), /array of intent objects/);
+});
+
+test('an unfinished decision without intents fails with alternatives when no work remains', () => {
+  const board = new Blackboard({ sessionId: 'empty-intents-idle', goal: 'verify' });
+  const context = buildBlackboardContext(board.snapshot());
+  assert.throws(() => parseReasonDecision('{"complete":false}', { context }), /no Worker is pending or running and no new intent was proposed/);
+});
+
 test('fillIntentSlots keeps filling after a skipped invalid item', () => {
   const { admitted, errors } = fillIntentSlots([
     { priority: 'high', keep: false },
@@ -154,6 +171,28 @@ test('blackboard batch writes keep as many intents as remaining slots', async ()
   assert.equal(created.length, 1);
   assert.equal(intentCapacity(board.snapshot().nodes).open, 5);
   await assert.rejects(board.createIntents(specs(2)), { code: 'OPEN_INTENT_LIMIT' });
+});
+
+test('custom Reason unfinished decision without intents waits while another worker runs', async () => {
+  const board = new Blackboard({ sessionId: 'custom-empty-wait', goal: 'verify' });
+  let emptyReviews = 0;
+  const result = await new BlackboardCoordinator({ blackboard: board, maxConcurrency: 1,
+    reason: async ({ context }) => {
+      const facts = context.data.nodes.filter(node => node.kind === 'fact');
+      const intents = context.data.nodes.filter(node => node.kind === 'intent');
+      if (facts.length === 2) return { complete: true, summary: 'verified', evidenceIds: facts.map(node => node.ref) };
+      if (!intents.length) return { intents: [
+        { description: 'first', parentIds: [context.data.root], priority: 'high', keyPoints: ['verify'] },
+        { description: 'second', parentIds: [context.data.root], priority: 'low', keyPoints: ['verify'] }
+      ] };
+      // One intent finished while the other is still pending: nothing new to start.
+      emptyReviews++;
+      return { complete: false };
+    },
+    worker: async () => 'verified'
+  }).run();
+  assert.equal(result.complete, true);
+  assert.equal(emptyReviews, 1, 'the empty unfinished decision is normalized to waiting once');
 });
 
 test('custom Reason skips poisoned items and still completes admitted work', async () => {

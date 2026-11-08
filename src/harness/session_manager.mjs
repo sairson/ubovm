@@ -3,7 +3,11 @@ import { access, mkdir, readFile, realpath } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { Blackboard, BlackboardCoordinator, buildBlackboardContext } from './blackboard/index.mjs';
 import { buildExplorationAgenda, renderAgenda } from './blackboard/agenda.mjs';
+import { buildExplorationIndex } from './blackboard/exploration-index.mjs';
+import { collectRelevantRefs, createGraphIndex } from './blackboard/graph-index.mjs';
 import { buildGraphView } from './blackboard/graph-view.mjs';
+import { collectHints, renderNavigationBrief } from './blackboard/navigation-brief.mjs';
+import { evaluateCompletionSurface, renderSurfaceSummary } from './blackboard/surface-gate.mjs';
 import { createExplorationGraphTool } from './agents/graph-tool.mjs';
 import { writeSnapshot } from './blackboard/persistence.mjs';
 import { workerEvidence } from './blackboard/evidence.mjs';
@@ -78,6 +82,9 @@ function graphBudgetChars(reasonConfig) {
   // review must not consume 100k+ tokens just because the model could accept it.
   return Math.max(12000, Math.min(60000, Math.floor(tokens * 0.55 * 4) - 60000));
 }
+// Reserved out of the graph budget so the navigation brief never pushes the
+// combined Reason evidence past the review budget.
+const NAVIGATION_BRIEF_RESERVE = 1200;
 function combineTransforms(host, summary) {  if (!host && !summary) return undefined;
   return async event => {
     // Host transforms run after compaction; they can supply application-specific
@@ -158,11 +165,20 @@ export class HarnessSession {
   #mcp;
   #skills;
   #graphCache;
+  // Snapshot-revision cache shared by the graph renderer and the navigation
+  // brief: refs/children/fact views/citations and the exploration index are
+  // derived once per durable board change.
+  #indexCache;
+  // Coverage gate mode (off/warn/enforce) and the ledger projection cache used
+  // by both the Navigation brief and the completion guard.
+  #surfaceGate;
+  #surfaceCache;
   constructor(key, config) {
     if (key !== constructionKey) throw new TypeError('Use await createHarness(options)');
     this.#board = config.board; this.#runtime = config.runtime; this.#record = config.record;
     this.#metadataFile = config.metadataFile; this.#directoryKey = config.directoryKey;
     this.#reasonConfig = config.reason; this.#workerConfig = config.worker; this.#extraTools = config.tools;
+    this.#surfaceGate = config.surfaceGate ?? 'warn';
     this.#limits = config.limits;
     this.#database = config.database; this.#databaseOwned = config.databaseOwned; this.#lease = config.lease;
     this.#databaseSessionKey = config.databaseSessionKey;
@@ -187,13 +203,72 @@ export class HarnessSession {
     });
     return { items: agenda.items, counts: agenda.counts, gaps: agenda.gaps, lastUpdated: agenda.lastUpdated };
   }
+  /**
+   * Read-only projection indexes for the current board revision. The renderer,
+   * the exploration index, the relevance set and the navigation brief all share
+   * this snapshot, so facts are decoded and branches scored once per change.
+   */
+  #graphIndex() {
+    const snapshot = this.#board.snapshot();
+    if (this.#indexCache?.revision === snapshot.revision) return this.#indexCache;
+    const index = createGraphIndex(snapshot);
+    const exploration = buildExplorationIndex(index.navigationNodes());
+    const relevantRefs = collectRelevantRefs({ snapshot, index, exploration });
+    this.#indexCache = { revision: snapshot.revision, index, exploration, relevantRefs };
+    return this.#indexCache;
+  }
   /** Complete-topology graph view rendered under the Reason model budget. */
   graphView() {
     const snapshot = this.#board.snapshot();
     if (this.#graphCache?.revision === snapshot.revision) return this.#graphCache.view;
-    const view = buildGraphView(snapshot, { maxChars: graphBudgetChars(this.#reasonConfig), maxNodes: 360 });
+    const { index, relevantRefs } = this.#graphIndex();
+    const view = buildGraphView(snapshot, {
+      maxChars: Math.max(12000, graphBudgetChars(this.#reasonConfig) - NAVIGATION_BRIEF_RESERVE),
+      maxNodes: 360,
+      index,
+      relevantRefs
+    });
     this.#graphCache = { revision: snapshot.revision, view };
     return view;
+  }
+  /**
+   * Navigation brief injected after the agenda on every Reason review. It is
+   * not evidence: it only surfaces the frontier lifecycle, open gaps, human
+   * hints and stored-evidence counts that the graph text does not carry.
+   */
+  navigationText() {
+    const snapshot = this.#board.snapshot();
+    const { exploration } = this.#graphIndex();
+    const brief = renderNavigationBrief({
+      snapshot,
+      exploration,
+      hints: collectHints(snapshot),
+      surface: this.#surfaceSummary(),
+      budgetChars: NAVIGATION_BRIEF_RESERVE
+    });
+    return brief.text;
+  }
+  /** Cached read-only projection of the domain ledger + authorization scope. */
+  #surfaceSummary() {
+    const store = this.#runtime?.store;
+    if (!store) return undefined;
+    const memoryRevision = store.revision?.() ?? 0;
+    if (this.#surfaceCache?.memoryRevision === memoryRevision) return this.#surfaceCache.summary;
+    let inventory, notes = [];
+    try {
+      inventory = store.snapshot(['domainInventory']).domainInventory;
+      notes = store.snapshot(['notes']).notes ?? [];
+    } catch { /* an unreadable ledger must not block planning */ }
+    const summary = renderSurfaceSummary({ inventory, notes });
+    this.#surfaceCache = { memoryRevision, summary };
+    return summary;
+  }
+  /** Host-side coverage gate evaluated against the current ledger snapshot. */
+  #completionSurface() {
+    const store = this.#runtime?.store;
+    let inventory;
+    try { inventory = store ? store.snapshot(['domainInventory']).domainInventory : undefined; } catch { inventory = undefined; }
+    return evaluateCompletionSurface({ mode: this.#surfaceGate, goal: this.goal, inventory });
   }
   graphInfo() { return this.graphView().stats; }
   /**
@@ -207,7 +282,7 @@ export class HarnessSession {
     const text = value => ({ content: [{ type: 'text', text: JSON.stringify(value) }], details: value });
     const tools = [];
     if (!this.#reasonConfig.callback) {
-      tools.push(createExplorationGraphTool({ build: () => ({ snapshot: this.#board.snapshot() }), info: () => ({ stats: this.graphInfo() }) }));
+      tools.push(createExplorationGraphTool({ build: () => ({ snapshot: this.#board.snapshot(), index: this.#graphIndex().index }), info: () => ({ stats: this.graphInfo() }) }));
     }
     // Intent creation is Reason's core job: the sidebar chat may add an intent
     // with the same schema/board path, and later rounds dispatch Workers for it.
@@ -314,7 +389,22 @@ export class HarnessSession {
     pending.finally(() => this.#edits.delete(pending)).catch(() => {});
     return pending;
   }
-  addIntent(spec) { const copied = clone(spec); return this.#edit(() => this.#board.createIntent(copied)); }
+  addIntent(spec) {
+    const copied = clone(spec);
+    return this.#edit(() => {
+      const snapshot = this.#board.snapshot();
+      const byId = new Map(snapshot.nodes.map(node => [node.id, node]));
+      const parents = copied.parentIds?.length ? copied.parentIds : [snapshot.rootId];
+      for (const id of parents) {
+        const parent = byId.get(id);
+        if (!parent) throw new Error(`Unknown parent node: ${id}`);
+        if (parent.kind !== 'root' && !(parent.kind === 'fact' && typeof parent.fact?.content === 'string')) {
+          throw new Error('Exploration parents must be the goal root or a recorded fact');
+        }
+      }
+      return this.#board.createIntent(copied);
+    });
+  }
   cancelIntent(id, reason) { return this.#edit(() => this.#board.cancelIntent(id, typeof reason === 'string' && reason.trim() ? reason.trim() : 'Cancelled by the sidebar chat')); }
   addFact(spec) { const copied = clone(spec); return this.#edit(() => this.#board.createFact(copied)); }
   setHint(id, hint) { return this.#edit(() => this.#board.updateHint(id, hint)); }
@@ -385,11 +475,25 @@ export class HarnessSession {
       // The complete-topology graph is rendered under the Reason model budget;
       // exploration_graph reads exact fact bodies/neighbourhoods on demand.
       const graphTool = !reasonConfig.callback
-        ? createExplorationGraphTool({ build: () => ({ snapshot: this.#board.snapshot() }), info: () => ({ stats: this.graphInfo() }) })
+        ? createExplorationGraphTool({ build: () => ({ snapshot: this.#board.snapshot(), index: this.#graphIndex().index }), info: () => ({ stats: this.graphInfo() }) })
         : undefined;
+      // Coverage gate for security goals. The parse-level guard lets Reason fix
+      // its own decision inside the same review; the coordinator re-checks and
+      // treats a changed ledger as a stale decision instead of failing the run.
+      const completionGuard = async () => {
+        const gate = this.#completionSurface();
+        if (gate.status !== 'not_applicable' && gate.status !== 'ok') {
+          emit('session.surface_gate', { status: gate.status, code: gate.code, diagnostics: gate.diagnostics });
+        }
+        return {
+          issue: gate.status === 'blocked' ? gate.message : null,
+          surface: { status: gate.status, code: gate.code, ...(gate.diagnostics ? { diagnostics: gate.diagnostics } : {}) }
+        };
+      };
       const reason = reasonConfig.callback ?? createPiReason({ ...reasonConfig.client, ...reasonConfig.options,
+        completionGuard,
         extraTools: [...agendaTools, ...(graphTool ? [graphTool] : [])],
-        contextProvider: async () => agendaText({ compact: true }),
+        contextProvider: async () => [agendaText({ compact: true }), this.navigationText()].filter(Boolean).join('\n\n'),
         evidenceProvider: async () => this.graphView().text,
         beforeModel: combineTransforms(reasonConfig.options?.beforeModel, this.#summary), onEvent: event => {
         if (active && !signal.aborted) { emit('reason.event', { event }); observer(reasonConfig.options.onEvent, event); }
@@ -397,6 +501,11 @@ export class HarnessSession {
       const memory = this.#runtime?.workerOptions ?? {};
       const configuredTools = workerConfig.options?.tools;
       const sources = [memory.tools, this.#mcp?.tools, this.#skills?.tools, this.#summary?.tools, configuredTools, this.#extraTools].filter(value => value !== undefined);
+      // Exploration Workers can query the shared graph read-only instead of
+      // re-reading the whole board JSON for one citation or neighbour lookup.
+      const workerGraphTool = !workerConfig.callback
+        ? createExplorationGraphTool({ build: () => ({ snapshot: this.#board.snapshot(), index: this.#graphIndex().index }), info: () => ({ stats: this.graphInfo() }) })
+        : undefined;
       const tools = async context => {
         const output = [];
         for (const source of sources) {
@@ -405,6 +514,7 @@ export class HarnessSession {
           if (!Array.isArray(values)) throw new TypeError('Tool factories must return an array');
           output.push(...values);
         }
+        if (workerGraphTool) output.push(workerGraphTool);
         return output;
       };
       const worker = workerConfig.callback ?? createPiWorker({ ...workerConfig.client, ...workerConfig.options, tools,
@@ -416,6 +526,7 @@ export class HarnessSession {
         onEvent: event => { if (active && !signal.aborted) { emit('worker.event', { event }); observer(workerConfig.options.onEvent, event); } }
       });
       const coordinator = new BlackboardCoordinator({ blackboard: this.#board, ...this.#limits,
+        completionGuard,
         duplicateTexts: async () => {
           try {
             return agendaFor().items.filter(item => item.kind === 'direction' && item.status !== 'dropped')
@@ -490,13 +601,14 @@ export class HarnessSession {
 export async function createHarness(options = {}) {
   object(options, 'Harness options');
   const { directory, onEvent, tools, intools = {}, maxConcurrency = 3, maxRounds = 0,
-    workerTimeoutMs = 3600000, maxWorkerRetries = 1 } = options;
+    workerTimeoutMs = 3600000, maxWorkerRetries = 1, surfaceGate = 'warn' } = options;
   const openIntents = options.openIntents ?? options.reason?.openIntents ?? 5;
   const reviewIntervalMs = options.reviewIntervalMs ?? options.reason?.reviewIntervalMs ?? 120000;
   if (onEvent !== undefined && typeof onEvent !== 'function') throw new TypeError('onEvent must be a function');
   if (tools !== undefined && !Array.isArray(tools) && typeof tools !== 'function') throw new TypeError('tools must be an array or factory');
   for (const [key, value] of Object.entries({ maxConcurrency, openIntents })) if (!Number.isSafeInteger(value) || value < 1) throw new TypeError(`${key} must be a positive integer`);
   for (const [key, value] of Object.entries({ maxRounds, workerTimeoutMs, maxWorkerRetries, reviewIntervalMs })) if (!Number.isSafeInteger(value) || value < 0) throw new TypeError(`${key} must be a nonnegative integer`);
+  if (!['off', 'warn', 'enforce'].includes(surfaceGate)) throw new TypeError('surfaceGate must be off, warn or enforce');
   if (maxConcurrency > openIntents) throw new TypeError('maxConcurrency cannot exceed openIntents');
   if (Number.isSafeInteger(options.reason?.maxIntents) && options.reason.maxIntents > openIntents) {
     throw new TypeError('maxIntents cannot exceed openIntents');
@@ -648,7 +760,7 @@ export async function createHarness(options = {}) {
     const session = new HarnessSession(constructionKey, { board, runtime, record, metadataFile, directoryKey,
       database, databaseOwned, databaseSessionKey, lease, recordRevision, sequence: persisted?.eventSequence ?? 0,
       setMiddlewareObserver: callback => { dispatchMiddleware = callback; },
-      summary, skills, mcp, reason, worker, tools, onEvent, limits: { maxConcurrency, maxRounds, openIntents, workerTimeoutMs, maxWorkerRetries, reviewIntervalMs } });
+      summary, skills, mcp, reason, worker, tools, onEvent, surfaceGate, limits: { maxConcurrency, maxRounds, openIntents, workerTimeoutMs, maxWorkerRetries, reviewIntervalMs } });
     return session;
   } catch (error) {
     const settled = await Promise.allSettled([runtime, summary, skills, mcp].filter(Boolean)

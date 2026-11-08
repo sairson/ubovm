@@ -365,3 +365,97 @@ body[data-mode="goal"] #blackboard-empty::before {
 #goal-board .graph-node[data-kind="root"] .graph-node-info,
 #goal-board .graph-goal-badge .graph-node-title,
 #goal-board .graph-goal-badge .graph-node-info { display: none; }
+
+/* ============================================================================
+ * Exploration detail polish: local filters, evidence-chain highlight,
+ * breadcrumbs, attempt timeline and optional ball labels. None of these change
+ * the durable board or the prompt view; they only refine the operator surface.
+ * ========================================================================== */
+#goal-board .graph-navigation { flex-wrap: wrap; }
+#goal-board .graph-navigation .graph-filter-outcome,
+#goal-board .graph-navigation .graph-filter-status { max-width: 112px; }
+#goal-board .graph-navigation .graph-labels-toggle[aria-pressed="true"] {
+  color: var(--ink); border-color: var(--focus);
+  background: color-mix(in srgb, var(--focus) 8%, var(--goal-canvas, var(--canvas)));
+}
+#goal-board .graph-stats {
+  margin-left: auto; color: var(--muted); font-size: 10.5px;
+  white-space: nowrap; font-variant-numeric: tabular-nums;
+}
+#goal-board .graph-node.is-filtered,
+#goal-board .graph-frontier.is-filtered { opacity: .12; pointer-events: none; }
+#goal-board .graph-edges .is-filtered { opacity: .1; }
+#goal-board .graph-workspace {
+  --graph-path: color-mix(in srgb, var(--graph-accent) 74%, var(--graph-line));
+  --graph-path-glow: color-mix(in srgb, var(--graph-accent) 22%, transparent);
+}
+#goal-board .graph-node.is-path,
+#goal-board .graph-frontier.is-path {
+  border-color: var(--graph-path);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--graph-accent) 12%, transparent);
+}
+#goal-board .graph-edges path {
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+/* Highlight exactly the visible edge, never the transparent hit target. */
+#goal-board .graph-edges path.is-path:not(.graph-edge-hit) {
+  stroke: var(--graph-path);
+  stroke-width: 1.6;
+  stroke-opacity: .96;
+  vector-effect: non-scaling-stroke;
+  filter: drop-shadow(0 0 1.5px var(--graph-path-glow));
+}
+#goal-board .graph-edges path.is-selected:not(.graph-edge-hit) {
+  stroke: var(--graph-path);
+  stroke-width: 2;
+  stroke-opacity: 1;
+  vector-effect: non-scaling-stroke;
+  filter: drop-shadow(0 0 2px var(--graph-path-glow));
+}
+/* Defensive: the invisible hit target must never become a painted band even if
+   a future rule forgets the :not(.graph-edge-hit) guard. */
+#goal-board .graph-edges path.graph-edge-hit { stroke: transparent; stroke-opacity: 0; }
+#goal-board .graph-edge-label.is-path { fill: var(--graph-path); opacity: 1; }
+
+#goal-board .graph-breadcrumb { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin: 10px 0 4px; }
+#goal-board .graph-breadcrumb .graph-crumb {
+  max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  padding: 2px 8px; border: 1px solid var(--goal-line, var(--border)); border-radius: 999px;
+  background: var(--goal-canvas, var(--canvas)); color: var(--muted); font-size: 10.5px; line-height: 1.5;
+}
+#goal-board .graph-breadcrumb .graph-crumb:hover:enabled { color: var(--ink); border-color: var(--focus); }
+#goal-board .graph-breadcrumb .graph-crumb.is-current {
+  color: var(--ink); border-color: var(--graph-accent);
+  background: color-mix(in srgb, var(--graph-accent) 7%, var(--goal-canvas, var(--canvas))); cursor: default;
+}
+#goal-board .graph-breadcrumb .graph-crumb-sep { color: var(--muted); font-size: 10px; }
+
+#goal-board .graph-attempts { display: flex; flex-direction: column; gap: 6px; margin: 8px 0 0; padding: 0; list-style: none; }
+#goal-board .graph-attempt {
+  padding: 6px 8px; border: 1px solid var(--goal-line-soft, var(--border));
+  border-radius: 8px; background: var(--goal-surface-muted, var(--wash));
+}
+#goal-board .graph-attempt-head { display: flex; justify-content: space-between; gap: 8px; font-size: 10.5px; }
+#goal-board .graph-attempt-state { font-weight: 600; color: var(--ink); }
+#goal-board .graph-attempt[data-status="failed"] .graph-attempt-state,
+#goal-board .graph-attempt[data-status="interrupted"] .graph-attempt-state { color: var(--state-error); }
+#goal-board .graph-attempt[data-status="completed"] .graph-attempt-state { color: var(--graph-accent); }
+#goal-board .graph-attempt-time { color: var(--muted); font-variant-numeric: tabular-nums; }
+#goal-board .graph-attempt-error { margin: 4px 0 0; color: var(--muted); font-size: 10.5px; line-height: 1.5; overflow-wrap: anywhere; }
+#goal-board .graph-detail-note {
+  margin: 12px 0 0; padding: 8px 10px; border: 1px dashed var(--goal-line, var(--border));
+  border-radius: 8px; background: var(--goal-surface-muted, var(--wash));
+  color: var(--muted); font-size: 10.5px; line-height: 1.6;
+}
+
+#goal-board .graph-labels-on .graph-node[data-kind="fact"] .graph-node-title,
+#goal-board .graph-labels-on .graph-node[data-kind="root"] .graph-node-title {
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  font-size: 10.5px; line-height: 14px; color: inherit; opacity: .92;
+}
+#goal-board .graph-labels-on .graph-node[data-kind="fact"] .graph-node-info { display: block; }
+
+@media (max-width: 760px) {
+  #goal-board .graph-stats { flex-basis: 100%; margin-left: 0; }
+}

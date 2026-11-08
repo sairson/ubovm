@@ -338,7 +338,14 @@ export function createNoteTool({ store, sessionId, workerId = 'worker', blackboa
       const ids = await verifyEvidence(request.tool_call_ids ?? [], note.worker_id, warnings, { requireSuccess: true });
       const provenance = { sourceType: 'note', noteIds: [note.id], workerIds: [note.worker_id], toolCallIds: ids };
       const spec = { parentIds: [parentFor(note)], provenance };
-      if (request.promotion_kind === 'fact') spec.content = JSON.stringify({ version: 1, outcome: request.outcome, statement: request.statement, evidence: request.evidence, failed_checks: request.failed_checks, limitations: request.limitations });
+      if (request.promotion_kind === 'fact') spec.content = JSON.stringify({
+        version: 1,
+        outcome: request.outcome,
+        statement: request.statement,
+        evidence: request.evidence.map(observation => ({ observation })),
+        failedChecks: request.failed_checks,
+        limitations: request.limitations
+      });
       else spec.description = request.description;
       const id = equivalentNode(blackboard, request.promotion_kind, spec)?.id ?? `note-knowledge-${note.id}-${request.promotion_kind}`;
       const entry = await store.commit(state => {

@@ -1,4 +1,7 @@
 // Recover the compositor surface without navigating or restarting task hosts.
+// Repaint/nudge hooks handle compositor failures the OS reports; a pixel probe
+// covers the silent case (an unpainted webview surface) where nothing is reported.
+import { createBlankSurfaceWatchdog } from './paint-probe.mjs';
 export function installWindowRendering({
   app, powerMonitor, log = console, schedule = setTimeout, cancel = clearTimeout,
   interval = setInterval, clearLoop = clearInterval, now = Date.now, keepAliveMs = 20000,
@@ -27,6 +30,20 @@ export function installWindowRendering({
       keepAlive = undefined;
     };
     const surfaceReady = () => live() && window.isVisible() && !window.isMinimized();
+    // The workbench never reports an unpainted webview surface, so sample the
+    // committed frame and drive the same ladder from pixels. Only a window whose
+    // webContents supports capturePage (the real Electron one) probes frames, which
+    // keeps the unit-test harness free of a second interval.
+    const blankWatch = typeof contents.capturePage === 'function' ? createBlankSurfaceWatchdog({
+      capture: () => contents.capturePage(),
+      repaint: () => repaint(),
+      rebuild: () => rebuildSurface(),
+      reload: () => contents.reload(),
+      visible: surfaceReady,
+      loading: () => contents.isLoading?.() === true,
+      log, now, interval, clearLoop, schedule, cancel,
+      debug: process.env.UBOVM_PAINT_DEBUG === '1'
+    }) : undefined;
     const repaint = () => {
       if (!surfaceReady()) return false;
       try {
@@ -85,6 +102,7 @@ export function installWindowRendering({
         return;
       }
       startKeepAlive();
+      blankWatch?.start();
       // Windows may deliver show/focus before the restored native surface is ready.
       for (const delay of delayMs) {
         if (delay === 0) {
@@ -100,7 +118,7 @@ export function installWindowRendering({
       }
       if (native) scheduleRebuild();
     };
-    const pause = () => { clearTimers(); clearNudges(); stopKeepAlive(); };
+    const pause = () => { clearTimers(); clearNudges(); stopKeepAlive(); blankWatch?.pause(); };
     const onInput = (event, input) => {
       // Keep a keyboard escape hatch for a surface that is already blank; the
       // command palette and menus are also unpainted in that state.
@@ -142,6 +160,7 @@ export function installWindowRendering({
     const responsive = () => recover();
     const dispose = () => {
       pause();
+      blankWatch?.dispose();
       window.removeListener('show', show);
       window.removeListener('restore', restore);
       window.removeListener('focus', focus);
@@ -157,7 +176,7 @@ export function installWindowRendering({
       contents.removeListener('before-input-event', onInput);
       windows.delete(window);
     };
-    const loaded = () => recover();
+    const loaded = () => { blankWatch?.reset(); recover(); };
     windows.set(window, { recover, dispose });
     window.on('show', show);
     window.on('restore', restore);

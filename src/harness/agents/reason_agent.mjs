@@ -102,6 +102,14 @@ function repairHint(error, context) {
     `${refs.length > visible.length ? ` … (${refs.length} total)` : ''}. Reuse a fact alias from the current evidence.`;
 }
 
+/** Host completion guard: returns an actionable issue string, or null. */
+async function completionGuardIssue(guard, decision) {
+  if (typeof guard !== 'function' || decision?.complete !== true) return null;
+  const guarded = await guard(decision);
+  if (typeof guarded === 'string') return guarded;
+  return typeof guarded?.issue === 'string' && guarded.issue.trim() ? guarded.issue : null;
+}
+
 function raceAbort(operation, signal) {
   if (!signal) return operation;
   return new Promise((resolve, reject) => {
@@ -115,7 +123,7 @@ function raceAbort(operation, signal) {
 // Structured decision channel: providers get a schema-defined tool instead of
 // arbitrary text JSON. Invalid fields or stale aliases become a tool error that
 // the model can correct in the same review, without consuming repair budget.
-function createSubmitDecisionTool({ context, maxIntents, openIntents, maxResponseBytes, submitted }) {
+function createSubmitDecisionTool({ context, maxIntents, openIntents, maxResponseBytes, submitted, completionGuard }) {
   const ref = Type.String({ minLength: 1, maxLength: 32 });
   const intent = Type.Object({
     description: Type.String({ minLength: 1, maxLength: 8192 }),
@@ -126,22 +134,26 @@ function createSubmitDecisionTool({ context, maxIntents, openIntents, maxRespons
   return {
     name: 'submit_decision',
     label: 'Submit the exploration decision',
-    description: 'Submit the final Reason decision exactly once. Use the same fields as the JSON decision schema: complete/summary/evidenceIds, wait, or intents. The host validates field names and node aliases; when a call is rejected, fix the reported field or alias and call submit_decision again.',
+    description: 'Submit the final Reason decision exactly once. Use the same fields as the JSON decision schema: complete/summary/evidenceIds, wait, or intents. An unfinished decision with no intents is accepted as waiting only while Workers are pending or running; otherwise propose intents or complete with evidence. The host validates field names and node aliases; when a call is rejected, fix the reported field or alias and call submit_decision again.',
     parameters: Type.Object({
       complete: Type.Optional(Type.Boolean()),
       summary: Type.Optional(Type.String({ maxLength: 8192 })),
       evidenceIds: Type.Optional(Type.Array(ref, { minItems: 1, maxItems: 64 })),
       wait: Type.Optional(Type.Boolean()),
-      intents: Type.Optional(Type.Array(intent, { minItems: 1, maxItems: maxIntents }))
+      intents: Type.Optional(Type.Array(intent, { maxItems: maxIntents }))
     }, { additionalProperties: false }),
     constrainedSampling: { type: 'json_schema', strict: 'prefer' },
     async execute(_toolCallId, input) {
       if (submitted.decision) throw new Error('A decision was already accepted; do not submit another.');
+      let decision;
       try {
-        submitted.decision = parseReasonDecision(JSON.stringify(input), { context, maxIntents, openIntents, maxResponseBytes });
+        decision = parseReasonDecision(JSON.stringify(input), { context, maxIntents, openIntents, maxResponseBytes });
       } catch (error) {
         throw new Error(`Decision rejected: ${repairHint(error, context)}`);
       }
+      const guardIssue = await completionGuardIssue(completionGuard, decision);
+      if (guardIssue) throw new Error(`Decision rejected: ${guardIssue}`);
+      submitted.decision = decision;
       return { content: [{ type: 'text', text: 'Decision accepted.' }], details: { accepted: true } };
     }
   };
@@ -151,12 +163,12 @@ function createSubmitDecisionTool({ context, maxIntents, openIntents, maxRespons
 export function createPiReason({
   model, streamFn, getApiKey, thinkingLevel = 'off', systemPrompt = '',
   maxIntents = 5, openIntents = 5, maxResponseBytes = 32768, maxRepairs = 1, maxWorkerActions = 12,
-  extraTools = [], contextProvider, evidenceProvider, onEvent, beforeModel, sleep
+  extraTools = [], contextProvider, evidenceProvider, onEvent, beforeModel, sleep, completionGuard
 } = {}) {
   if (!model || !['id', 'api', 'provider'].every(key => typeof model[key] === 'string' && model[key])) throw new TypeError('A pi model is required.');
   if (typeof streamFn !== 'function') throw new TypeError('A pi streamFn is required.');
   if (typeof systemPrompt !== 'string') throw new TypeError('systemPrompt must be a string.');
-  for (const [name, value] of Object.entries({ getApiKey, onEvent, beforeModel, contextProvider, evidenceProvider, sleep })) {
+  for (const [name, value] of Object.entries({ getApiKey, onEvent, beforeModel, contextProvider, evidenceProvider, sleep, completionGuard })) {
     if (value !== undefined && typeof value !== 'function') throw new TypeError(`${name} must be a function.`);
   }
   if (!Array.isArray(extraTools) || extraTools.some(tool => !tool || typeof tool.name !== 'string' || typeof tool.execute !== 'function')) throw new TypeError('extraTools must be an array of tools');
@@ -214,7 +226,7 @@ export function createPiReason({
         onSleep: () => { refreshRequested = true; agent?.abort(); }
       }) : [];
       const agendaTools = Array.isArray(extraTools) ? extraTools : [];
-      const decisionTool = createSubmitDecisionTool({ context: snapshot, maxIntents, openIntents, maxResponseBytes, submitted });
+      const decisionTool = createSubmitDecisionTool({ context: snapshot, maxIntents, openIntents, maxResponseBytes, submitted, completionGuard });
       const allTools = [...workerTools, ...agendaTools, decisionTool];
       const shared = contextProvider ? await contextProvider({ context: snapshot }) : '';
       if (shared !== undefined && shared !== null && typeof shared !== 'string') throw new TypeError('Reason contextProvider must return text');
@@ -345,6 +357,10 @@ export function createPiReason({
           if (message.stopReason !== 'stop' || message.content.some(part => !['text', 'thinking'].includes(part.type))) throw failure('INVALID_REASON_DECISION', 'Reason must finish with a JSON decision and no pending tool calls.');
           const normalized = discardIntentNotes(source, maxResponseBytes);
           const decision = parseReasonDecision(normalized.source, { context: snapshot, maxIntents, openIntents, maxResponseBytes });
+          const guardIssue = await completionGuardIssue(completionGuard, decision);
+          // A host coverage gate is a repairable decision: the model sees the
+          // actionable message and can propose more work in the same review.
+          if (guardIssue) throw failure('INVALID_REASON_DECISION', guardIssue);
           if (normalized.fields.length) {
             report({ type: 'reason_normalized', fields: normalized.fields });
             // Cosmetic note fields are not a reason to fail the turn. Ask for

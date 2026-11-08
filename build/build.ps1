@@ -1368,11 +1368,50 @@ function Quote-NativeArgument([string]$Value) {
     return '"' + [regex]::Replace($escaped, '(\\+)$', '$1$1') + '"'
 }
 
+function Repair-RuntimeIntegrity {
+    # A build or copy that ran inside a sandbox can stamp the runtime files with a
+    # Low mandatory-integrity label. Windows then starts VSCodium at Low integrity,
+    # so it cannot create directories under the Medium-integrity ~/.ubovm profile
+    # and Code OSS only reports "Unable to write program user data". Relabel the
+    # runtime once, and only when the executable actually carries that label.
+    if ([Environment]::OSVersion.Platform -ne 'Win32NT') { return }
+    if (-not (Test-Path -LiteralPath $Executable)) { return }
+    $acl = & icacls $Executable 2>&1 | Out-String
+    if ($acl -notmatch 'Low Mandatory Level') { return }
+    Write-Host '[UBOVM] Runtime files carry a Low integrity label; repairing to Medium...'
+    & icacls $Runtime /setintegritylevel Medium /T /C /Q | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning '[UBOVM] Runtime integrity repair reported failures; the IDE may not be able to write user data.'
+    }
+}
+
+function Assert-WritableDataRoot([string]$DataRoot) {
+    # VS Code shows a generic "Unable to write program user data" dialog when the
+    # launched process cannot create directories below the portable root. A
+    # sandboxed shell or a security-software rule produces that state; fail here
+    # with the actual fix instead of starting an IDE whose profile is unwritable.
+    $probe = Join-Path $DataRoot ('.ubovm-launch-probe-' + [guid]::NewGuid().ToString('N'))
+    $failure = $null
+    try { New-Item -ItemType Directory -Path $probe -ErrorAction Stop | Out-Null }
+    catch { $failure = $_.Exception.Message }
+    if (-not $failure) { try { Remove-Item -LiteralPath $probe -Force -ErrorAction Stop } catch { } }
+    if (-not $failure) { return }
+    Write-Host ''
+    Write-Host '[UBOVM] User data directory is not writable; the IDE was not started.' -ForegroundColor Red
+    Write-Host "  Directory: $DataRoot"
+    Write-Host "  Reason: $failure"
+    Write-Host '  Start UBOVM from a normal PowerShell window or Explorer, not from a sandboxed/agent terminal.'
+    Write-Host '  If it still fails, check the security software protection log and trust VSCodium.exe.'
+    throw "UBOVM user data directory is not writable: $DataRoot"
+}
+
 function Start-Desktop([switch]$Development, [switch]$Smoke) {
     # Prepare the portable data root first: Sync-Application needs VSCODE_PORTABLE
     # to apply the recorded extension enable/disable state during startup.
     $portable = Set-PortableData $(if ($Smoke) { 'smoke' } else { 'desktop' })
+    Assert-WritableDataRoot $portable
     Initialize-Runtime
+    Repair-RuntimeIntegrity
     $env:UBOVM_HARNESS_ENTRY = Join-Path $AppRoot 'ubovm/harness/index.mjs'
     $arguments = @('--no-sandbox', '--skip-welcome', '--skip-release-notes')
     # Ordinary launches reuse Code OSS's existing window and IPC owner.

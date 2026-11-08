@@ -9,6 +9,9 @@ const now = () => new Date().toISOString();
 const priorities = { high: 0, medium: 1, low: 2 };
 const intentStates = ['pending', 'running', 'completed', 'failed', 'interrupted'];
 const attemptStates = ['running', 'completed', 'failed', 'interrupted'];
+// Intent branches the bounded graph view keeps visible so dead ends stay
+// discoverable in a long campaign.
+export const BOUNDED_RETAINED_INTENT_STATUSES = Object.freeze(['pending', 'running', 'failed', 'interrupted']);
 
 function required(value, name) {
   if (typeof value !== 'string' || !value.trim()) throw new TypeError(`${name} must be a nonempty string`);

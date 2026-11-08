@@ -151,7 +151,7 @@ test('masthead, compact scheduling rows and per-part rows replace the merged con
     paint: getComputedStyle(node).backgroundImage !== 'none' || getComputedStyle(node).backgroundColor !== 'rgba(0, 0, 0, 0)'
   }));
   assert.deepEqual(plan, { radius: '6px', padding: '3px 10px', border: '0px', shadow: 'none', paint: false });
-  assert.equal(await f.page.locator('[data-log-id="worker:w-n4"]').count(), 1);
+  assert.equal(await f.page.locator('.goal-log-task-card [data-worker-id="w-n4"]').count(), 1);
   // Narrow layout keeps the header on two compact rows and never scrolls sideways.
   await f.page.setViewportSize({ width: 430, height: 900 }); await f.paint();
   const narrow = await f.page.evaluate(() => {
@@ -184,7 +184,7 @@ test('masthead, compact scheduling rows and per-part rows replace the merged con
   assert.deepEqual(empty, { borderWidth: '0px', borderStyle: 'none', shadow: 'none' });
 });
 
-test('rows inside a round are ordered chronologically with activities and workers interleaved', async t => {
+test('a round reads narrative first, then its scheduling and execution rows', async t => {
   const f = await fixture(t);
   const base = 1000000;
   const part = (id, type, offset, extra = {}) => ({ id, type, startedAt: base + offset, status: 'completed', ...extra });
@@ -201,14 +201,22 @@ test('rows inside a round are ordered chronologically with activities and worker
     workers: [worker('w1', { name: '检查入口', status: 'running', createdAt: base + 35, startedAt: base + 35, finishedAt: undefined })]
   }));
   assert.deepEqual(await rowIds(f.page), [
+    'reason:chrono',
     'part:t1',
+    'part:t3',
     'part:tool2',
     'activity:chrono:a1',
-    'part:t3',
-    'worker:w1',
-    'part:tool4',
-    'reason:chrono'
-  ], 'active thinking stays pinned to the bottom while content rows keep chronological order');
+    'part:tool4'
+  ], 'thinking and conclusions stay contiguous; scheduling and execution follow below the divider');
+  const taskCard = f.page.locator('.goal-log-task-card').first();
+  assert.equal(await taskCard.isVisible(), true);
+  assert.equal(await taskCard.locator('[data-worker-id="w1"]').count(), 1, 'the Worker lives in the task card, not the timeline');
+  const decision = f.page.locator('.goal-log-round-heading .goal-log-round-decision').first();
+  assert.doesNotMatch(await decision.textContent(), /\[object Object\]/, 'decision chips never stringify a Worker array');
+  assert.match(await decision.textContent(), /1 个任务/);
+  const divider = f.page.locator('.goal-log-activity-divider').first();
+  assert.equal(await divider.isVisible(), true);
+  assert.match(await divider.textContent(), /调度与执行 · 3 条/);
   const toolRows = f.page.locator('.goal-log-entry[data-kind="tool"]');
   assert.equal(await toolRows.count(), 2);
   const cardsPerRow = await toolRows.evaluateAll(rows => rows.map(row => row.querySelectorAll('.tool-card').length));
@@ -219,7 +227,8 @@ test('rows inside a round are ordered chronologically with activities and worker
   assert.equal(await textRows.count(), 2);
   const textContents = (await textRows.locator('.response-text').allTextContents()).map(value => value.trim());
   assert.deepEqual(textContents, ['第一段文字。', '第二段文字。']);
-  // Streaming update: a later row appends at the bottom, existing order is unchanged.
+  // Streaming update: narrative rows stay contiguous and new activity still lands
+  // below the divider; existing rows keep their DOM.
   const before = await rowIds(f.page);
   await f.page.evaluate(() => { window.savedToolRow = document.querySelector('[data-log-id="part:tool4"]'); });
   await f.send(goalState({
@@ -237,14 +246,21 @@ test('rows inside a round are ordered chronologically with activities and worker
     workers: [worker('w1', { name: '检查入口', status: 'running', createdAt: base + 35, startedAt: base + 35, finishedAt: undefined })]
   }));
   const after = await rowIds(f.page);
-  const beforeContent = before.filter(id => !id.startsWith('reason:'));
-  assert.deepEqual(after.slice(0, beforeContent.length), beforeContent, 'existing content rows never reorder when later parts arrive');
-  assert.deepEqual(after.slice(beforeContent.length, -1), ['part:t6', 'part:tool7']);
-  assert.equal(after.at(-1), 'reason:chrono', 'the live thinking line stays pinned at the bottom while streaming');
+  assert.deepEqual(after, [
+    'reason:chrono',
+    'part:t1',
+    'part:t3',
+    'part:t6',
+    'part:tool2',
+    'activity:chrono:a1',
+    'part:tool4',
+    'part:tool7'
+  ], 'new narrative rows still precede the activity group');
+  assert.ok(before.length + 2 === after.length);
   assert.equal(await f.page.evaluate(() => document.querySelector('[data-log-id="part:tool4"]') === window.savedToolRow), true, 'tool updates keep the same card row');
   await f.page.locator('[data-log-id="part:tool4"] .tool-card > summary').click(); await f.paint();
   assert.match(await f.page.locator('[data-log-id="part:tool4"] .tool-output').textContent(), /still ok/);
-  // Once thinking finishes it goes back to its natural position at the top of the round.
+  // Once thinking finishes the narrative still stays at the top of the round.
   await f.send(goalState({
     runId: 'chrono',
     parts: [
@@ -252,7 +268,7 @@ test('rows inside a round are ordered chronologically with activities and worker
       part('t1', 'text', 10, { text: '第一段文字。' })
     ]
   }));
-  assert.deepEqual(await rowIds(f.page), ['reason:chrono', 'part:t1'], 'completed thinking returns to its original place');
+  assert.deepEqual(await rowIds(f.page), ['reason:chrono', 'part:t1'], 'completed thinking keeps its narrative position');
 });
 
 test('the reasoning line keeps changing while streaming and never auto-opens', async t => {
@@ -323,6 +339,7 @@ test('clicking the reasoning line expands full Markdown; manual state survives t
   const row = reasoningRow(f.page);
   const details = row.locator('.goal-log-reasoning');
   await row.locator('.goal-log-reasoning-summary').click(); await f.paint();
+  await f.page.screenshot({ path: screenshotDirectory + '/reasoning-open.png' });
   assert.equal(await details.evaluate(node => node.open), true, 'clicking the line expands it');
   const markdown = row.locator('.goal-log-reasoning-markdown');
   assert.equal(await markdown.evaluate(node => node.classList.contains('md-content')), true);
@@ -355,8 +372,12 @@ test('Reason scheduling tools merge into one expandable line instead of piling c
   assert.equal(await f.page.locator('.goal-log-entry[data-kind="tool"]').count(), 0, 'Reason tools no longer become standalone cards');
   const line = f.page.locator('.goal-log-entry[data-kind="toolLine"]');
   assert.equal(await line.count(), 1, 'they merge into one scheduling line');
-  assert.match(await line.locator('.goal-log-toolline-names').textContent(), /list_workers/);
+  assert.match(await line.locator('.goal-log-toolline-names').textContent(), /检查协作进展/);
   assert.equal(await line.locator('.goal-log-toolline-body .tool-card').count(), 2, 'expanding the line still shows both tool cards');
+  assert.equal(await line.locator('.tool-group').count(), 0, 'scheduling calls never nest a redundant tool group');
+  assert.equal(await line.locator('.parallel-tools').count(), 0, 'scheduling calls stay one flat audit list');
+  await line.locator('.goal-log-toolline-summary').click(); await f.paint();
+  await f.page.screenshot({ path: screenshotDirectory + '/toolline-open.png' });
   assert.equal(await f.page.locator('.goal-log-entry[data-kind="text"][data-source="reason"]').count(), 1, 'prose keeps its own row');
   // A second tick must diff the line's signature without throwing (regression:
   // a string signature was passed to the array-based `equal` helper).
@@ -371,7 +392,166 @@ test('Reason scheduling tools merge into one expandable line instead of piling c
     ]
   }));
   assert.equal(await line.count(), 1, 'streaming ticks update the same merged line');
-  assert.match(await line.locator('.goal-log-toolline-names').textContent(), /list_workers/);
+  assert.match(await line.locator('.goal-log-toolline-names').textContent(), /检查协作进展/);
+});
+
+test('scheduling calls render as a flat compact audit list', async t => {
+  const f = await fixture(t);
+  const base = now - 6000;
+  const tool = (index, name, extra = {}) => ({
+    id: 'audit-tool-' + index, type: 'tool', name, source: 'reason', status: 'completed',
+    args: '{}', output: '{}', startedAt: base + index * 500, endedAt: base + index * 500 + 300, ...extra
+  });
+  await f.send(goalState({
+    parts: [
+      thinkingPart('audit-think', { startedAt: base - 1000, endedAt: base - 500 }),
+      tool(0, 'list_workers'), tool(1, 'wait_worker_sleep', { args: '{"seconds":30}' }),
+      tool(2, 'exploration_graph'), tool(3, 'exploration_todo'),
+      tool(4, 'start_worker', { args: '{"worker":"n4"}' }), tool(5, 'prompt_worker', { args: '{"worker":"n4","message":"继续"}' })
+    ]
+  }));
+  const line = f.page.locator('.goal-log-entry[data-kind="toolLine"]');
+  await line.locator('.goal-log-toolline-summary').click(); await f.paint();
+  const body = line.locator('.goal-log-toolline-body');
+  assert.equal(await body.locator('.tool-card').count(), 6);
+  assert.equal(await body.locator('.tool-title').nth(1).textContent(), '等待 Worker 进展');
+  assert.equal(await body.locator('.tool-title').nth(2).textContent(), '查看探索图');
+  assert.equal(await body.locator('.tool-title').nth(3).textContent(), '更新探索任务');
+  assert.equal(await body.locator('.tool-group').count(), 0, 'no nested tool group in a scheduling call');
+  assert.equal(await body.locator('.parallel-tools').count(), 0, 'no parallel-tools wrapper in a scheduling call');
+  const gaps = await body.evaluate(node => {
+    const cards = [...node.querySelectorAll('.tool-card')];
+    return cards.slice(1).map((card, index) => Math.round(card.getBoundingClientRect().top - cards[index].getBoundingClientRect().bottom));
+  });
+  assert.ok(gaps.every(gap => gap >= 0 && gap <= 6), `tool rows stay a tight list: ${JSON.stringify(gaps)}`);
+  await f.page.screenshot({ path: screenshotDirectory + '/toolline-many.png' });
+});
+
+test('round header summarizes decision-bearing tool arguments', async t => {
+  const f = await fixture(t);
+  await f.send(goalState({
+    runId: 'decision-summary',
+    parts: [
+      thinkingPart('decision-think'),
+      { id: 'decision-call', type: 'tool', name: 'submit_decision', source: 'reason', status: 'completed',
+        args: JSON.stringify({ wait: true, intents: [{ description: '检查入口' }, { description: '验证越权' }] }),
+        output: '{"accepted":true}', startedAt: now - 3000, endedAt: now - 2900 },
+      { id: 'decision-start', type: 'tool', name: 'start_worker', source: 'reason', status: 'completed',
+        args: '{"worker":"n2"}', output: '{"worker":"n2"}', startedAt: now - 2800, endedAt: now - 2700 }
+    ]
+  }));
+  const decision = f.page.locator('.goal-log-round-heading .goal-log-round-decision').first();
+  assert.equal(await decision.isVisible(), true);
+  const text = await decision.textContent();
+  assert.match(text, /等待/);
+  assert.match(text, /2 个意图/);
+  assert.match(text, /2 个工具/);
+});
+
+test('log toolbar filters, searches and copies without changing the record set', async t => {
+  const f = await fixture(t);
+  await f.send(goalState({
+    runId: 'toolbar',
+    parts: [
+      thinkingPart('toolbar-think'),
+      textPart('toolbar-text', '本轮结论：入口可继续验证。', { source: 'reason' }),
+      { id: 'toolbar-fail', type: 'tool', name: 'run_linux_ssh_command', status: 'failed',
+        args: '{"command":"curl"}', output: '', error: '连接超时', startedAt: now - 2000, endedAt: now - 1900 }
+    ]
+  }));
+  const entries = f.page.locator('#goal-output-content .goal-log-entry');
+  const total = await entries.count();
+  assert.ok(total >= 3, 'fixture must render thinking, conclusion and a failed tool');
+  assert.equal(await f.page.locator('#goal-output-count').textContent(), `${total} 条记录`);
+
+  await f.page.locator('.goal-log-filter').selectOption('anomaly');
+  assert.equal(await f.page.locator('#goal-output-content .goal-log-entry:visible').count(), 1, 'only the failed row stays visible');
+  assert.match(await f.page.locator('.goal-log-match').textContent(), /显示 1 条/);
+
+  await f.page.locator('.goal-log-filter').selectOption('all');
+  await f.page.locator('.goal-log-search').fill('ssh');
+  assert.equal(await f.page.locator('#goal-output-content .goal-log-entry:visible').count(), 1, 'search narrows to the matching tool row');
+  await f.page.locator('.goal-log-search').fill('');
+  assert.equal(await f.page.locator('#goal-output-content .goal-log-entry:visible').count(), total);
+  assert.equal(await f.page.locator('#goal-output-count').textContent(), `${total} 条记录`, 'filtering never changes the record count');
+
+  await f.page.locator('.goal-log-search').fill('绝不存在的内容');
+  assert.equal(await f.page.locator('.goal-log-filter-empty').isVisible(), true, 'zero matches explains itself');
+  await f.page.locator('.goal-log-clear-filter').click();
+  assert.equal(await f.page.locator('.goal-log-filter-empty').isVisible(), false);
+  assert.equal(await f.page.locator('#goal-output-content .goal-log-entry:visible').count(), total);
+
+  await f.page.locator('.goal-log-copy').click();
+  const copied = await f.page.evaluate(() => window.hostMessages.filter(message => message?.action === 'copyText'));
+  assert.equal(copied.length, 1);
+  assert.match(copied[0].text, /本轮结论：入口可继续验证/);
+  assert.match(copied[0].text, /curl/);
+});
+
+test('search covers matches outside the current page', async t => {
+  const f = await fixture(t);
+  const parts = Array.from({ length: 150 }, (_, index) => textPart('page-' + index,
+    index === 0 ? 'older needle from the first page' : 'row ' + index,
+    { startedAt: now - 200000 + index * 100 }));
+  await f.send(goalState({ runId: 'search-pages', parts }));
+  assert.equal(await f.page.locator('#goal-output-count').textContent(), '150 条记录');
+  await f.page.locator('.goal-log-search').fill('older needle');
+  const visible = f.page.locator('#goal-output-content .goal-log-entry:visible');
+  assert.equal(await visible.count(), 1, 'filtering searches the whole bounded log, not only the visible page');
+  assert.match(await visible.locator('.response-text').textContent(), /older needle/);
+});
+
+test('the task card announces creation and final completion only', async t => {
+  const f = await fixture(t);
+  const base = now;
+  const quiet = overrides => worker('w-quiet', {
+    status: 'created', createdAt: base - 8000, startedAt: base - 7900, finishedAt: undefined, ...overrides
+  });
+  const sendWorker = workers => f.send(goalState({
+    runId: 'quiet-worker',
+    parts: [thinkingPart('quiet-think', { startedAt: base - 9000, endedAt: base - 8500, text: '派发并等待入口检查。' })],
+    workers
+  }));
+  await sendWorker([quiet({})]);
+  const card = f.page.locator('.goal-log-task-card');
+  assert.equal(await card.isVisible(), true);
+  assert.match(await card.locator('.goal-log-task-summary').textContent(), /检查入口/);
+  await card.locator('.goal-log-task-summary').click(); await f.paint();
+  const row = card.locator('[data-worker-id="w-quiet"]');
+  assert.equal(await row.locator('.goal-log-task-status').textContent(), '已派发');
+  assert.equal((await row.locator('.goal-log-task-duration').textContent()).trim(), '', 'a dispatched Worker has no live duration in the log');
+
+  await sendWorker([quiet({ status: 'running' })]);
+  assert.equal(await row.locator('.goal-log-task-status').textContent(), '已派发', 'running never becomes a log status');
+  assert.doesNotMatch(await row.textContent(), /运行中|等待中/);
+
+  await sendWorker([quiet({ status: 'waiting' })]);
+  assert.equal(await row.locator('.goal-log-task-status').textContent(), '已派发', 'waiting never becomes a log status');
+
+  await sendWorker([quiet({ status: 'completed', finishedAt: base - 1000, result: '入口验证通过。' })]);
+  assert.equal(await row.locator('.goal-log-task-status').textContent(), '已完成');
+  assert.match(await row.locator('.goal-log-task-duration').textContent(), /\d/);
+  assert.match(await row.locator('.goal-log-task-result').textContent(), /入口验证通过/);
+});
+
+test('a worker-only historical round keeps its task card', async t => {
+  const f = await fixture(t);
+  await f.send(goalState({
+    runId: 'live-after-history',
+    parts: [thinkingPart('after-history-live')],
+    logHistory: [{
+      runId: 'history-tasks', startedAt: now - 20000, finishedAt: now - 15000, status: 'completed',
+      parts: [], activities: [],
+      workers: [{
+        id: 'history-worker', name: '历史任务', description: '历史任务描述', status: 'completed',
+        createdAt: now - 19000, startedAt: now - 18500, finishedAt: now - 16000
+      }]
+    }]
+  }));
+  const card = f.page.locator('.goal-log-task-card[data-round-key="history-tasks"]');
+  assert.equal(await card.count(), 1, 'a historical round with only workers must not disappear');
+  assert.match(await card.locator('.goal-log-task-summary').textContent(), /历史任务/);
+  assert.equal(await f.page.locator('.goal-log-entry[data-log-id^="tasks:"]').count(), 0, 'the paging marker never renders as a row');
 });
 
 test('malformed archived history is skipped without breaking the log', async t => {
@@ -516,12 +696,17 @@ test('worker lifecycle, private thinking and compact activity labels are preserv
   const heights = await activities.evaluateAll(nodes => nodes.map(node => Math.round(node.getBoundingClientRect().height)));
   for (const height of heights) assert(height <= 30, `compact activity row: ${heights}`);
   assert.deepEqual(await activities.locator('.goal-log-heading strong').allTextContents(), ['调度', '分派并行任务', '搜索网页']);
-  const okRow = f.page.locator('[data-log-id="worker:w-ok"]');
-  assert.equal(await okRow.locator('.goal-log-worker-status').textContent(), '已完成');
-  assert.match(await okRow.locator('.goal-log-worker-result').textContent(), /入口验证通过/);
-  const failedRow = f.page.locator('[data-log-id="worker:w-fail"]');
-  assert.match(await failedRow.locator('.goal-log-worker-error').textContent(), /读取配置失败/);
-  await f.page.locator('[data-log-id="worker:w-ok"] .goal-log-worker').click();
+  const card = f.page.locator('.goal-log-task-card');
+  assert.equal(await card.isVisible(), true, 'dispatched Workers live in a dedicated card');
+  assert.match(await card.locator('.goal-log-task-summary').textContent(), /2\/2 完成/);
+  await card.locator('.goal-log-task-summary').click(); await f.paint();
+  const okRow = card.locator('[data-worker-id="w-ok"]');
+  assert.equal(await okRow.locator('.goal-log-task-status').textContent(), '已完成');
+  assert.match(await okRow.locator('.goal-log-task-result').textContent(), /入口验证通过/);
+  const failedRow = card.locator('[data-worker-id="w-fail"]');
+  assert.match(await failedRow.locator('.goal-log-task-status').textContent(), /失败/);
+  assert.match(await failedRow.locator('.goal-log-task-error').textContent(), /读取配置失败/);
+  await okRow.locator('.goal-log-task-name').click();
   await f.paint();
   assert.equal(await f.page.locator('#worker-panel').isVisible(), true, 'worker name button still opens the detail panel');
   await f.page.getByRole('button', { name: '关闭 Worker 详情' }).click();
@@ -646,9 +831,9 @@ test('dark, light and 430px keep interleaved tool cards and content readable', a
 });
 
 // ---------------------------------------------------------------------------
-// v7 navigation: the round header is the round's sticky section control.
+// Round headers are sticky orientation labels, not fold controls.
 // ---------------------------------------------------------------------------
-test('round headers stay sticky and fold a round without losing its rows', async t => {
+test('round headers stay sticky and cannot fold their rows', async t => {
   const f = await fixture(t);
   const archived = archivedRound();
   const live = text => goalState({
@@ -661,42 +846,31 @@ test('round headers stay sticky and fold a round without losing its rows', async
   const header = f.page.locator('.goal-log-round-heading[data-round-key="fold-archived"]');
   assert.deepEqual(await header.evaluate(node => ({
     position: getComputedStyle(node).position, top: getComputedStyle(node).top,
-    expanded: node.getAttribute('aria-expanded'), tabindex: node.getAttribute('tabindex'), role: node.getAttribute('role')
-  })), { position: 'sticky', top: '0px', expanded: 'true', tabindex: '0', role: 'button' });
+    cursor: getComputedStyle(node).cursor, tabindex: node.getAttribute('tabindex'),
+    role: node.getAttribute('role'), expanded: node.getAttribute('aria-expanded')
+  })), { position: 'sticky', top: '0px', cursor: 'default', tabindex: null, role: null, expanded: null },
+  'the header is a non-interactive sticky label');
   const expandedState = await roundFoldState(f.page, 'fold-archived');
-  assert.deepEqual([expandedState.hidden, expandedState.visible, expandedState.metaHidden], [0, 5, true]);
+  assert.deepEqual([expandedState.hidden, expandedState.visible, expandedState.metaHidden], [0, 4, true]);
 
   await header.click(); await f.paint();
-  const folded = await roundFoldState(f.page, 'fold-archived');
-  assert.equal(folded.expanded, 'false');
-  assert.equal(folded.collapsed, 'true');
-  assert.deepEqual([folded.hidden, folded.visible], [5, 0], 'every row of the folded round is hidden');
-  assert.equal(folded.meta, '5 条记录 · 1 个任务 · 1 个工具');
-  assert.equal(folded.metaHidden, false);
-  assert.equal(folded.label, '展开本轮记录');
-  assert.equal(await f.page.locator('.goal-log-entry[data-round-key="fold-live"][data-kind="reasoning"]').isVisible(), true,
-    'other rounds stay visible');
+  const afterClick = await roundFoldState(f.page, 'fold-archived');
+  assert.deepEqual([afterClick.hidden, afterClick.visible, afterClick.metaHidden], [0, 4, true],
+    'clicking a round header must not hide any row');
+  assert.equal(afterClick.collapsed, 'false');
+  assert.equal(await f.page.locator('#goal-log-rounds-toggle').isVisible(), false, 'the fold-all action is gone');
 
-  // Streaming ticks never unfold the round or lose the folded summary.
-  await f.send(live('第二轮正在分析。\n\n继续观察。'));
-  const afterTick = await roundFoldState(f.page, 'fold-archived');
-  assert.deepEqual([afterTick.hidden, afterTick.visible], [5, 0]);
-  assert.equal(afterTick.meta, '5 条记录 · 1 个任务 · 1 个工具');
-
-  // Keyboard toggles the same control and restores every row.
   await header.focus();
   await f.page.keyboard.press('Enter'); await f.paint();
-  const restored = await roundFoldState(f.page, 'fold-archived');
-  assert.equal(restored.expanded, 'true');
-  assert.deepEqual([restored.hidden, restored.visible, restored.metaHidden], [0, 5, true]);
+  const afterKeyboard = await roundFoldState(f.page, 'fold-archived');
+  assert.deepEqual([afterKeyboard.hidden, afterKeyboard.visible], [0, 4], 'Enter must not fold the round');
 
-  // Colouring the folded control does not detach the sticky positioning while
-  // the reader scrolls; folding the live round keeps the log usable too.
-  await f.page.locator('.goal-log-round-heading[data-round-key="fold-live"]').click(); await f.paint();
-  await f.page.locator('#goal-output-content').evaluate(node => { node.scrollTop = 0; }); await f.paint();
-  const liveFold = await roundFoldState(f.page, 'fold-live');
-  assert.equal(liveFold.expanded, 'false');
-  assert.ok(liveFold.hidden >= 1, 'folding the live round hides its live rows');
+  // Streaming still keeps every historical row visible.
+  await f.send(live('第二轮正在分析。\n\n继续观察。'));
+  const afterTick = await roundFoldState(f.page, 'fold-archived');
+  assert.deepEqual([afterTick.hidden, afterTick.visible], [0, 4]);
+  assert.equal(await f.page.locator('.goal-log-entry[data-round-key="fold-live"][data-kind="reasoning"]').isVisible(), true,
+    'the live round stays visible too');
 });
 
 test('the round header stays pinned while the log scrolls inside a round', async t => {
@@ -825,7 +999,7 @@ test('the pager is a footer below the scrolling log', async t => {
   });
 });
 
-test('English locale translates the folded round summary and fold affordance', async t => {
+test('English locale translates round headers and exposes no fold affordance', async t => {
   const f = await fixture(t);
   await f.page.evaluate(() => window.UBOVMi18n.setLocale('en'));
   await f.paint();
@@ -835,13 +1009,11 @@ test('English locale translates the folded round summary and fold affordance', a
     logHistory: [archivedRound()]
   }));
   assert.deepEqual(await f.page.locator('.goal-log-round-title').allTextContents(), ['Round 1', 'Round 2']);
+  assert.equal(await f.page.locator('#goal-log-rounds-toggle').isVisible(), false);
   const header = f.page.locator('.goal-log-round-heading[data-round-key="fold-archived"]');
-  await header.click(); await f.paint();
-  const folded = await roundFoldState(f.page, 'fold-archived');
-  assert.equal(folded.meta, '5 records · 1 tasks · 1 tools');
-  assert.equal(folded.label, 'Expand this round');
-  await header.click(); await f.paint();
-  assert.equal((await roundFoldState(f.page, 'fold-archived')).label, 'Collapse this round');
+  assert.equal(await header.getAttribute('role'), null);
+  assert.equal(await header.locator('.goal-log-round-meta').isVisible(), false);
+  assert.equal(await f.page.locator('.goal-log-entry[data-round-key="fold-archived"]:visible').count(), 4);
 });
 
 test('every Reason review is its own round inside one run', async t => {
@@ -857,8 +1029,8 @@ test('every Reason review is its own round inside one run', async t => {
       thinkingPart('rv3-think', { status: 'running', startedAt: now - 2000, endedAt: undefined, text: '第三轮思考：等待结果。' })
     ],
     workers: [
-      worker('rv-w1', { createdAt: now - 25500, startedAt: now - 25400, finishedAt: now - 24000 }),
-      worker('rv-w2', { createdAt: now - 17000, startedAt: now - 16900, finishedAt: undefined, status: 'running' })
+      worker('rv-w1', { createdAt: now - 27000, startedAt: now - 25400, finishedAt: now - 24000 }),
+      worker('rv-w2', { createdAt: now - 19000, startedAt: now - 16900, finishedAt: undefined, status: 'running' })
     ]
   }));
   const headings = await f.page.locator('#goal-output-content .goal-log-round-heading').evaluateAll(nodes => nodes.map(node => ({
@@ -876,8 +1048,8 @@ test('every Reason review is its own round inside one run', async t => {
   assert.match(thinkingTexts[0], /第一轮思考/);
   assert.match(thinkingTexts[1], /第二轮思考/);
   assert.match(thinkingTexts[2], /第三轮思考/);
-  assert.equal(await f.page.locator('.goal-log-entry[data-kind="worker"][data-round-key="review-run#r0"]').count(), 1, 'a worker dispatched by round 1 stays in round 1');
-  assert.equal(await f.page.locator('.goal-log-entry[data-kind="worker"][data-round-key="review-run#r1"]').count(), 1, 'a worker dispatched by round 2 owns round 2');
+  assert.equal(await f.page.locator('.goal-log-task-card[data-round-key="review-run#r0"] [data-worker-id="rv-w1"]').count(), 1, 'a worker dispatched by round 1 stays in round 1');
+  assert.equal(await f.page.locator('.goal-log-task-card[data-round-key="review-run#r1"] [data-worker-id="rv-w2"]').count(), 1, 'a worker dispatched by round 2 owns round 2');
   // A further review is appended live: the previous live round turns completed
   // and the same round key is updated instead of duplicated.
   await f.send(goalState({
@@ -892,8 +1064,8 @@ test('every Reason review is its own round inside one run', async t => {
       textPart('reason-conclusion:review-run:3', '目标已完成。', { source: 'reason', startedAt: now - 500 })
     ],
     workers: [
-      worker('rv-w1', { createdAt: now - 25500, startedAt: now - 25400, finishedAt: now - 24000 }),
-      worker('rv-w2', { createdAt: now - 17000, startedAt: now - 16900, finishedAt: now - 16000, status: 'completed' })
+      worker('rv-w1', { createdAt: now - 27000, startedAt: now - 25400, finishedAt: now - 24000 }),
+      worker('rv-w2', { createdAt: now - 19000, startedAt: now - 16900, finishedAt: now - 16000, status: 'completed' })
     ]
   }));
   const updated = await f.page.locator('#goal-output-content .goal-log-round-heading').evaluateAll(nodes => nodes.map(node => ({
@@ -926,7 +1098,7 @@ test('a light tick that drops most records never blanks an active log', async t 
   assert.equal(await f.page.locator('#goal-output-count').textContent(), '13 条记录');
 });
 
-test('long runs open every round by default and fold older ones on demand', async t => {
+test('long runs keep every round expanded and cannot fold', async t => {
   const f = await fixture(t);
   const parts = [];
   const workers = [];
@@ -940,34 +1112,26 @@ test('long runs open every round by default and fold older ones on demand', asyn
   await f.send(goalState({ runId: 'fold-run', status: 'running', busy: true, parts, workers }));
   const headers = f.page.locator('#goal-output-content .goal-log-round-heading');
   assert.equal(await headers.count(), 9, 'eight reviews plus the live review');
-  assert.deepEqual(await headers.evaluateAll(nodes => nodes.map(node => node.dataset.collapsed)), Array(9).fill('false'), 'every round opens by default');
-  const toggle = f.page.locator('#goal-log-rounds-toggle');
-  assert.equal(await toggle.isVisible(), true);
-  assert.equal(await toggle.textContent(), '收起旧轮次');
-  await toggle.click(); await f.paint();
-  assert.equal(await toggle.textContent(), '展开全部轮次');
-  const folded = await headers.evaluateAll(nodes => nodes.map(node => node.dataset.collapsed));
-  assert.deepEqual(folded, Array(8).fill('true').concat('false'), 'the optional fold keeps only the live round open');
-  assert.ok(await f.page.locator('.goal-log-entry:visible').count() < 9, 'folded rounds contribute only their summary header');
-  await toggle.click(); await f.paint();
-  assert.equal(await toggle.textContent(), '收起旧轮次');
-  assert.deepEqual(await headers.evaluateAll(nodes => nodes.map(node => node.dataset.collapsed)), Array(9).fill('false'));
-  // Folding one round is independent from the header action.
+  assert.deepEqual(await headers.evaluateAll(nodes => nodes.map(node => node.dataset.collapsed)),
+    Array(9).fill('false'), 'a long run still keeps every review open so thinking and conclusions stay visible');
+  assert.ok(await f.page.locator('.goal-log-entry[data-kind="reasoning"]:visible').count() >= 8,
+    'thinking rows stay visible in a long run');
+  assert.ok(await f.page.locator('.goal-log-entry[data-kind="text"]:visible').count() >= 8,
+    'reason conclusions stay visible in a long run');
+  assert.ok(await f.page.locator('.goal-log-entry[data-conclusion="true"]:visible').count() >= 8,
+    'reason conclusions are marked as narrative anchors');
+  assert.equal(await f.page.locator('#goal-log-rounds-toggle').isVisible(), false, 'there is no fold-all action');
+  const beforeClick = await f.page.locator('#goal-output-content .goal-log-entry:visible').count();
   await headers.nth(0).click(); await f.paint();
-  assert.equal(await headers.nth(0).getAttribute('data-collapsed'), 'true');
-  assert.equal(await headers.nth(1).getAttribute('data-collapsed'), 'false');
-  await f.page.evaluate(() => window.UBOVMi18n.setLocale('en')); await f.paint();
-  assert.equal(await toggle.textContent(), 'Collapse older rounds');
-  await f.page.evaluate(() => window.UBOVMi18n.setLocale('zh'));
+  assert.equal(await f.page.locator('#goal-output-content .goal-log-entry:visible').count(), beforeClick,
+    'clicking a long-run round header keeps every row visible');
   await f.page.setViewportSize({ width: 430, height: 800 }); await f.paint();
   assert.equal(await f.page.evaluate(() => {
     const content = document.getElementById('goal-output-content');
     const right = content.getBoundingClientRect().right;
     return content.scrollWidth <= content.clientWidth + 1
       && [...content.querySelectorAll('.goal-log-round-heading')].every(node => node.getBoundingClientRect().right <= right + 1);
-  }), true, 'folded round headers stay inside a 430px viewport');
-  // A completed run keeps every round expanded; the final decision is readable.
-  await headers.nth(0).click(); await f.paint();
+  }), true, 'round headers stay inside a 430px viewport');
   await f.send(goalState({
     runId: 'fold-run', status: 'completed', busy: false,
     parts: [...parts.filter(part => part.id !== 'fold-think-live'), thinkingPart('fold-think-live', { startedAt: now - 3000, endedAt: now - 2000, text: '当前复盘仍在思考。' }),
@@ -975,7 +1139,7 @@ test('long runs open every round by default and fold older ones on demand', asyn
     workers
   }));
   const finalCollapsed = await f.page.locator('#goal-output-content .goal-log-round-heading').evaluateAll(nodes => nodes.map(node => node.dataset.collapsed));
-  assert.deepEqual(finalCollapsed, Array(9).fill('false'), 'a finished run leaves all rounds expanded');
+  assert.deepEqual(finalCollapsed, Array(9).fill('false'), 'a finished run leaves all rounds expanded so conclusions are visible');
 });
 
 test('a stale row from an earlier run cannot drag a round header back in time', async t => {

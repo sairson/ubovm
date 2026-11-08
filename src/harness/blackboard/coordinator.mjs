@@ -184,7 +184,7 @@ export class BlackboardCoordinator {
   #control;
 
   constructor({ blackboard, reason, worker, maxConcurrency = 3, maxRounds = 0,
-    workerTimeoutMs = 0, maxWorkerRetries = 0, reviewIntervalMs = 0, duplicateTexts } = {}) {
+    workerTimeoutMs = 0, maxWorkerRetries = 0, reviewIntervalMs = 0, duplicateTexts, completionGuard } = {}) {
     if (!blackboard || typeof blackboard.snapshot !== 'function') {
       throw new TypeError('blackboard is required.');
     }
@@ -192,6 +192,8 @@ export class BlackboardCoordinator {
       throw new TypeError('reason and worker callbacks are required.');
     }
     if (duplicateTexts !== undefined && typeof duplicateTexts !== 'function') throw new TypeError('duplicateTexts must be a function returning agenda texts');
+    if (completionGuard !== undefined && typeof completionGuard !== 'function') throw new TypeError('completionGuard must be a function');
+    this.completionGuard = completionGuard;
     this.blackboard = blackboard;
     this.reason = reason;
     this.worker = worker;
@@ -498,6 +500,10 @@ export class BlackboardCoordinator {
       // of restarts so a model stuck in sleep cannot loop forever.
       let refreshes = 0;
       let periodicReview = false;
+      // A host completion gate may reject a decision because the ledger moved
+      // between the review and the commit. That is a stale decision, not a
+      // failed run; bound the retries so a custom Reason callback cannot loop.
+      let completionRejections = 0;
       for (let round = 1; this.maxRounds === 0 || round <= this.maxRounds;) {
         checkAbort(signal);
         let snapshot = this.blackboard.snapshot({ clone: false });
@@ -553,8 +559,30 @@ export class BlackboardCoordinator {
         if (!decision || typeof decision !== 'object' || Array.isArray(decision)) {
           throw failure('INVALID_DECISION', 'Reason must return a decision object.');
         }
+        // Custom Reason callbacks can express "not done yet, nothing new to start"
+        // as an unfinished decision without intents. While Workers are pending or
+        // running that is exactly {"wait":true}; normalize it instead of failing
+        // the review. With no open work the decision cannot continue the goal.
+        const noIntents = decision.intents === undefined ||
+          Array.isArray(decision.intents) && decision.intents.length === 0;
+        if (decision.complete !== true && decision.wait !== true && noIntents &&
+            intentCapacity(snapshot.nodes, this.blackboard.openIntents).open > 0) {
+          decision = { wait: true };
+        }
         if (decision.complete === true) {
-          const complete = this.#complete(decision, snapshot, context, currentRound);
+          let complete;
+          try {
+            complete = await this.#complete(decision, snapshot, context, currentRound);
+          } catch (error) {
+            if (error?.code === 'STALE_DECISION' && !signal?.aborted) {
+              if (++completionRejections > 5) {
+                throw failure('SURFACE_GATE_BLOCKED', `Completion was rejected ${completionRejections} times by the host gate: ${error.message}`);
+              }
+              reviewedState = undefined;
+              continue;
+            }
+            throw error;
+          }
           // Queue the final validation behind already accepted host writes;
           // an in-flight persist is deliberately absent from snapshot().
           try { await this.blackboard.verifyRevision(snapshot.revision); }
@@ -582,7 +610,7 @@ export class BlackboardCoordinator {
           continue;
         }
         if (!Array.isArray(decision.intents)) {
-          throw failure('INVALID_DECISION', 'An unfinished decision must contain an intents array.');
+          throw failure('INVALID_DECISION', 'An unfinished decision must propose intent objects, or {"wait":true} while Workers are pending or running; no Worker is active and no new intent was proposed.');
         }
         const capacity = intentCapacity(snapshot.nodes, this.blackboard.openIntents);
         const byId = new Map(snapshot.nodes.map(node => [node.id, node]));
@@ -668,7 +696,7 @@ export class BlackboardCoordinator {
    */
   workerControl() { return this.#control; }
 
-  #complete(decision, snapshot, context, round) {
+  async #complete(decision, snapshot, context, round) {
     if (decision.intents !== undefined && (!Array.isArray(decision.intents) || decision.intents.length > 0)) {
       throw failure('INVALID_DECISION', 'Completion cannot also propose intents.');
     }
@@ -688,7 +716,16 @@ export class BlackboardCoordinator {
       const issue = completionEvidenceIssue(node.fact.content, producer.intent.keyPoints ?? [], node.provenance?.sourceType);
       if (issue) throw failure('INVALID_COMPLETION', `Node ${id} ${issue}.`);
     }
-    return { complete: true, evidenceIds, summary: decision.summary.trim(), rounds: round, revision: snapshot.revision };
+    let surface;
+    if (this.completionGuard) {
+      const guarded = await this.completionGuard({
+        complete: true, evidenceIds, summary: decision.summary.trim(), rounds: round, revision: snapshot.revision
+      });
+      const issue = typeof guarded === 'string' ? guarded : guarded?.issue;
+      if (issue) throw failure('STALE_DECISION', issue);
+      if (guarded && typeof guarded === 'object' && guarded.surface) surface = guarded.surface;
+    }
+    return { complete: true, evidenceIds, summary: decision.summary.trim(), rounds: round, revision: snapshot.revision, ...(surface ? { surfaceGate: surface } : {}) };
   }
 
   async #execute(node, signal, retry, onAttempt, controlState = {}) {

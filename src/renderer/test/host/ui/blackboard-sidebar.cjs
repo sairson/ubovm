@@ -59,6 +59,102 @@ test('malformed nested detail records cannot replace the readable current projec
   assert.deepEqual(selected, ['b']); sidebar.dispose();
 });
 
+test('structured fact views are validated before reaching the panel', async () => {
+  const messages = [];
+  const sidebar = createBlackboardSidebar({ commands: {} }, { onSelect() {}, onClose() {} });
+  sidebar.resolveWebviewView({ webview: { onDidReceiveMessage() { return { dispose() {} }; }, postMessage(value) { messages.push(value); } }, onDidDispose() {} });
+  sidebar.setSession('s');
+  const base = { sessionId: 's', id: 'f', title: '事实详情', meta: '', sections: [{ label: '结论', text: '结论' }], links: [] };
+  const fact = { outcome: 'partial', statement: '结论', coverage: [{ status: 'confirmed', statusLabel: '已确认', point: '检查配置', result: '已读取' }],
+    counts: { confirmed: 1, evidence: 1 }, evidence: [{ observation: '读取配置', ref: 'call-1' }],
+    failedChecks: [], limitations: ['未验证运行时'], nextSteps: [], truncated: true, omitted: { coverage: 0, evidence: 2 } };
+  await sidebar.update({ ...base, fact });
+  assert.deepEqual(messages.at(-1).detail.fact, fact);
+  for (const bad of [{}, { statement: 'x' }, { statement: 'x', coverage: [{}], evidence: [] },
+    { statement: 'x', coverage: [], evidence: [{ observation: 1 }] }, { statement: 'x', coverage: [], evidence: [], truncated: 'yes' }]) {
+    const count = messages.length;
+    await sidebar.update({ ...base, fact: bad });
+    assert.equal(messages.length, count, JSON.stringify(bad));
+  }
+  await sidebar.update(base);
+  assert.equal(messages.at(-1).detail.fact, undefined);
+  sidebar.dispose();
+});
+
+test('structured fact details render outcome chips, coverage cards and omission notes', () => {
+  const vm = require('node:vm');
+  const { renderSidebar } = require('../../../host/ui/blackboard-sidebar.cjs');
+  class FakeElement {
+    constructor(tag) {
+      this.tagName = String(tag).toUpperCase(); this.children = []; this.style = {}; this.dataset = {};
+      this.hidden = false; this.className = ''; this._text = '';
+      this.classList = {
+        add: name => { if (!this.className.split(/\s+/).includes(name)) this.className = (this.className + ' ' + name).trim(); },
+        toggle: name => {
+          const parts = this.className.split(/\s+/).filter(Boolean); const index = parts.indexOf(name);
+          if (index >= 0) { parts.splice(index, 1); this.className = parts.join(' '); return false; }
+          parts.push(name); this.className = parts.join(' '); return true;
+        },
+        contains: name => this.className.split(/\s+/).includes(name)
+      };
+    }
+    get textContent() { return this._text + this.children.map(child => child.textContent || '').join(''); }
+    set textContent(value) { this._text = String(value); this.children = []; }
+    append(...items) { for (const item of items) this.insertBefore(item, null); }
+    insertBefore(item, before) {
+      if (item.parent) item.remove();
+      item.parent = this;
+      const index = before ? this.children.indexOf(before) : this.children.length;
+      this.children.splice(index < 0 ? this.children.length : index, 0, item);
+    }
+    remove() { if (this.parent) { const index = this.parent.children.indexOf(this); if (index >= 0) this.parent.children.splice(index, 1); } this.parent = null; }
+    replaceChildren(...items) { this.children = []; this._text = ''; this.append(...items); }
+  }
+  const nodes = { files: new FakeElement('button'), refresh: new FakeElement('button'), detail: new FakeElement('article'), empty: new FakeElement('div') };
+  let listener;
+  const context = {
+    acquireVsCodeApi: () => ({ postMessage() {} }),
+    document: { getElementById: id => nodes[id], createElement: tag => new FakeElement(tag) },
+    window: { addEventListener: (type, fn) => { listener = fn; }, scrollTo() {} },
+    setTimeout, clearTimeout, console, Promise
+  };
+  context.globalThis = context;
+  vm.runInNewContext(renderSidebar().match(/<script nonce="[^"]+">([\s\S]*?)<\/script>/)[1], context);
+  const fact = {
+    outcome: 'partial',
+    statement: '审计结论'.repeat(400),
+    coverage: [
+      { status: 'confirmed', statusLabel: '已确认', point: '模型字段完整性', result: '读取 adhoc.py 确认四个字段。' },
+      { status: 'partial', statusLabel: '部分完成', point: '命令前置校验', result: '只覆盖普通命令路径。' }
+    ],
+    counts: { confirmed: 1, partial: 1, blocked: 0, negative: 0, unknown: 0, evidence: 3 },
+    evidence: [{ observation: '读取 AdHoc 模型定义。', ref: 'call_01' }],
+    failedChecks: [], limitations: ['未在运行环境执行。'], nextSteps: ['构造一次真实请求。'],
+    truncated: true, omitted: { coverage: 2, evidence: 2, failedChecks: 0, limitations: 0, nextSteps: 0 }
+  };
+  listener({ data: { type: 'detail', detail: { sessionId: 's', id: 'f', title: '事实详情', meta: '事实 · 部分完成', sections: [{ label: '结论', text: '结论' }], links: [], fact } } });
+  const byClass = name => {
+    const out = [];
+    const walk = node => { if (String(node.className).split(/\s+/).includes(name)) out.push(node); node.children.forEach(walk); };
+    walk(nodes.detail);
+    return out;
+  };
+  assert.equal(byClass('fact-chip')[0].textContent, '部分完成');
+  assert.equal(byClass('fact-chip')[1].textContent, '摘要');
+  assert(byClass('fact-head')[0].children.some(child => String(child.className).includes('fact-counts')), 'counts share the chip row');
+  assert.equal(byClass('fact-coverage')[0].children.length, 2);
+  assert.equal(byClass('fact-pill')[0].textContent, '已确认');
+  assert.equal(byClass('fact-pill')[1].dataset.status, 'partial');
+  assert.match(byClass('fact-ref')[0].textContent, /call_01/);
+  assert.match(byClass('fact-counts')[0].textContent, /1 已确认/);
+  assert.match(byClass('fact-counts')[0].textContent, /3 条证据/);
+  assert.match(byClass('fact-note')[0].textContent, /已省略 2 项验证覆盖、2 条证据/);
+  assert.equal(byClass('fact-actions')[0].children.length, 2, 'copy and expand actions');
+  assert(byClass('fact-statement')[0].classList.contains('is-clamped'));
+  assert.match(nodes.detail.textContent, /审计结论/);
+  assert.equal(byClass('fact-list')[1].children[0].textContent, '构造一次真实请求。');
+});
+
 test('fact content actions use the current session and the existing message handler only', async () => {
   const actions = []; let receive;
   const sidebar = createBlackboardSidebar({ commands: {} }, {

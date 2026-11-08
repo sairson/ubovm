@@ -5,7 +5,7 @@ import { app, Tray, Menu, nativeImage, dialog, powerMonitor } from 'electron';
 import path from 'node:path';
 import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
-import { configureDataPaths, discardRestoredWorkbenchSession, findLegacyRoot, initializeUserSettings } from './data-paths.mjs';
+import { configureDataPaths, checkDataPathsWritable, discardRestoredWorkbenchSession, findLegacyRoot, initializeUserSettings } from './data-paths.mjs';
 import { reconcileExtensionState } from './extension-state.mjs';
 import { ensureWorkbenchExtensionViews } from './workbench-compat.mjs';
 import { restoreExtensionViewContainers } from './extension-views.mjs';
@@ -43,6 +43,23 @@ const dataPaths = configureDataPaths({ app, legacyRoot: findLegacyRoot(app.getAp
 // contributed location.
 try { restoreExtensionViewContainers(dataPaths.extensions, console); } catch (error) { console.warn('[UBOVM] Extension view restore failed:', error?.message || error); }
 try { prepareExtensionDataDirectories(console); } catch (error) { console.warn('[UBOVM] Extension data permission repair failed:', error?.message || error); }
+// Code OSS only reports a generic "Unable to write program user data" dialog when
+// its per-session log directory cannot be created. Probe the same operation now
+// and name the real blocker (restricted launch token or security software)
+// instead of surfacing that dialog with no actionable fix.
+const dataWritability = checkDataPathsWritable(dataPaths);
+if (!dataWritability.writable) {
+  const message = [
+    `UBOVM 无法写入用户数据目录：${dataPaths.logs}`,
+    '',
+    `系统错误：${dataWritability.message || dataWritability.code || '未知错误'}`,
+    '',
+    '请从普通 PowerShell 窗口或资源管理器启动 UBOVM，不要从受限或沙箱终端启动。',
+    '若仍失败，请打开安全软件（如火绒）的防护日志与信任区，确认是否拦截 VSCodium.exe，并把该程序加入信任。'
+  ].join('\n');
+  try { dialog.showErrorBox('UBOVM 无法写入用户数据', message); } catch { /* best effort */ }
+  process.exit(1);
+}
 try { repairExtensionExecutableIntegrity(dataPaths.extensions, console); } catch (error) { console.warn('[UBOVM] Extension executable repair failed:', error?.message || error); }
 // Extension enable/disable is recorded by the extension host and applied here,
 // before Code OSS scans the extensions directory.

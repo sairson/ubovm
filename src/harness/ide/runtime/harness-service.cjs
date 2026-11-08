@@ -7,6 +7,7 @@ const { pathToFileURL } = require('node:url');
 const { cleanTimelineParts, formatToolValue, redactDisplayObject, sanitizeToolImage, TOOL_IMAGE_LIMITS, projectTeam, teamTranscriptConversation, workerDisplayText, reasonConclusion, sanitizeUsage, accumulateUsage, STREAMING_TOOLS } = require('./projection.cjs');
 const { createLatestWrite } = require('./latest-write.cjs');
 const { workerRecord, WORKER_RECORD_LIMIT, WORKER_RECORD_COUNT } = require('./worker-record.cjs');
+const { projectFactContent } = require('./fact-projection.cjs');
 const { formatAssistSourceEvidenceSeed } = require('../../assist-evidence.cjs');
 
 const hash = value => createHash('sha256').update(value).digest('hex').slice(0, 32);
@@ -107,15 +108,18 @@ function goalText(goal) {
   return `${goal.objective.trim()}${criteria.length ? '\n\n验收标准：\n' + criteria.map((item, index) => `${index + 1}. ${item.trim()}`).join('\n') : ''}`;
 }
 function projectBoard(snapshot) {
-  return { sessionId: snapshot.sessionId, goal: snapshot.goal, revision: snapshot.revision, rootId: snapshot.rootId, nodes: snapshot.nodes.map(node => ({
-    id: node.id, kind: node.kind, parentIds: node.parentIds, childIds: node.childIds, resultId: node.resultId, producerId: node.producerId,
-    intent: node.intent, fact: node.fact ? { ...node.fact, content: node.fact.content.slice(0, 12000) } : null,
-    // A long-running intent can accumulate thousands of retry attempts. The UI
-    // and graph sidebar only need the recent attempt history; the full journal
-    // remains in the Blackboard database.
-    ...(node.attempts.length > 20 ? { attemptsOmitted: node.attempts.length - 20 } : {}),
-    attempts: node.attempts.slice(-20).map(attempt => ({ id: attempt.id, status: attempt.status, startedAt: attempt.startedAt, completedAt: attempt.completedAt, error: attempt.error }))
-  })) };
+  return { sessionId: snapshot.sessionId, goal: snapshot.goal, revision: snapshot.revision, rootId: snapshot.rootId, nodes: snapshot.nodes.map(node => {
+    const fact = node.fact ? projectFactContent(node.fact.content) : null;
+    return {
+      id: node.id, kind: node.kind, parentIds: node.parentIds, childIds: node.childIds, resultId: node.resultId, producerId: node.producerId,
+      intent: node.intent, fact: fact ? { ...node.fact, content: fact.content, contentClipped: fact.clipped } : null,
+      // A long-running intent can accumulate thousands of retry attempts. The UI
+      // and graph sidebar only need the recent attempt history; the full journal
+      // remains in the Blackboard database.
+      ...(node.attempts.length > 20 ? { attemptsOmitted: node.attempts.length - 20 } : {}),
+      attempts: node.attempts.slice(-20).map(attempt => ({ id: attempt.id, status: attempt.status, startedAt: attempt.startedAt, completedAt: attempt.completedAt, error: attempt.error }))
+    };
+  }) };
 }
 
 /** Backend execution service. Host capabilities are injected; no IDE or browser dependencies. */
@@ -784,7 +788,6 @@ function createHarnessService({ sdkPath, storageDirectory, workspaceRoots = [], 
     const parts = cleanTimelineParts(value.parts)
       .filter(part => part.type === 'text' || part.type === 'thinking')
       .slice(-GOAL_LOG_HISTORY_PARTS);
-    if (!parts.length) return undefined;
     const activities = (Array.isArray(value.activities) ? value.activities : []).slice(-40).map(item => ({
       label: typeof item?.label === 'string' ? item.label.slice(0, 200) : '',
       status: typeof item?.status === 'string' ? item.status.slice(0, 40) : '',
@@ -792,12 +795,16 @@ function createHarnessService({ sdkPath, storageDirectory, workspaceRoots = [], 
     })).filter(item => item.label);
     const workers = (Array.isArray(value.workers) ? value.workers : []).slice(-40).map(worker => ({
       id: typeof worker?.id === 'string' ? worker.id.slice(0, 200) : '',
+      ...(typeof worker?.name === 'string' && worker.name.trim() ? { name: worker.name.slice(0, 200) } : {}),
       description: typeof worker?.description === 'string' ? worker.description.slice(0, 500) : '',
       status: typeof worker?.status === 'string' ? worker.status.slice(0, 40) : '',
+      ...(typeof worker?.parentId === 'string' && worker.parentId ? { parentId: worker.parentId.slice(0, 200) } : {}),
+      ...(Number.isFinite(worker?.createdAt) ? { createdAt: worker.createdAt } : {}),
       ...(Number.isFinite(worker?.startedAt) ? { startedAt: worker.startedAt } : {}),
       ...(Number.isFinite(worker?.finishedAt) ? { finishedAt: worker.finishedAt } : {}),
       ...(typeof worker?.result === 'string' ? { result: worker.result.slice(0, 4000) } : {})
     })).filter(worker => worker.id);
+    if (!parts.length && !workers.length && !activities.length) return undefined;
     return {
       runId: typeof value.runId === 'string' && value.runId ? value.runId : randomUUID(),
       startedAt: Number.isFinite(value.startedAt) ? value.startedAt : Date.now(),
@@ -1255,6 +1262,27 @@ function createHarnessService({ sdkPath, storageDirectory, workspaceRoots = [], 
     } catch { /* Plain-text facts are valid evidence too. */ }
     return chatClip(content, 400);
   }
+  function goalChatCoverage(entry) {
+    const inventory = entry.memory?.domainInventory;
+    const domains = Array.isArray(inventory?.domains) ? inventory.domains : [];
+    const counts = { pending: 0, in_progress: 0, tested: 0, skipped: 0, out_of_scope: 0 };
+    for (const domain of domains) if (Object.hasOwn(counts, domain?.test_status)) counts[domain.test_status] += 1;
+    const incomplete = domains.filter(domain => ['pending', 'in_progress'].includes(domain?.test_status)).map(domain => domain.hostname);
+    return {
+      seedRoots: Array.isArray(inventory?.seedRoots) ? inventory.seedRoots : [],
+      revision: Number.isSafeInteger(inventory?.revision) ? inventory.revision : 0,
+      total: domains.length, counts, incomplete,
+      complete: domains.length > 0 && incomplete.length === 0
+    };
+  }
+  function goalChatScope(entry) {
+    const notes = Array.isArray(entry.memory?.notes) ? entry.memory.notes : [];
+    for (let index = notes.length - 1; index >= 0; index--) {
+      const note = notes[index];
+      if (note?.note_type === 'scope' && note.scope && typeof note.scope === 'object') return note.scope;
+    }
+    return null;
+  }
   function goalChatDigest(entry) {
     const sections = [];
     const goal = entry.goal ?? {};
@@ -1279,6 +1307,17 @@ function createHarnessService({ sdkPath, storageDirectory, workspaceRoots = [], 
     }
     if (Array.isArray(entry.workers) && entry.workers.length) sections.push(`探索任务（${entry.workers.length} 个）：\n` + entry.workers.slice(0, 10).map(worker =>
       `- ${chatClip(worker.description ?? worker.name, 120)} [${worker.status ?? 'planned'}]${worker.phase ? `，阶段 ${chatClip(worker.phase, 40)}` : ''}`).join('\n'));
+    const coverage = goalChatCoverage(entry);
+    if (coverage.seedRoots.length) {
+      const incomplete = coverage.incomplete.slice(0, 8).join('、');
+      sections.push(`攻击面覆盖（domain_inventory）：seed=${coverage.seedRoots.slice(0, 4).join(',')}；hosts=${coverage.total}；已测=${coverage.counts.tested}；待测=${coverage.counts.pending}；进行中=${coverage.counts.in_progress}；跳过=${coverage.counts.skipped}；范围外=${coverage.counts.out_of_scope}；complete=${coverage.complete}${incomplete ? `；未覆盖：${incomplete}${coverage.incomplete.length > 8 ? ` 等 ${coverage.incomplete.length} 个` : ''}` : ''}`);
+    }
+    const scope = goalChatScope(entry);
+    if (scope) {
+      const targets = Array.isArray(scope.targets) ? scope.targets.filter(value => typeof value === 'string').slice(0, 6) : [];
+      const excluded = Array.isArray(scope.out_of_scope) ? scope.out_of_scope.filter(value => typeof value === 'string').slice(0, 6) : [];
+      sections.push(`授权范围：in=${targets.join(',') || '（未记录）'}；out=${excluded.join(',') || '（未记录）'}${scope.authorization ? `；授权来源=${chatClip(scope.authorization, 120)}` : ''}`);
+    }
     const nodes = Array.isArray(entry.blackboard?.nodes) ? entry.blackboard.nodes : [];
     if (nodes.length) {
       const facts = nodes.filter(node => node?.kind === 'fact' || node?.fact).slice(-10).reverse().map(goalChatFact).filter(Boolean);
@@ -1433,6 +1472,21 @@ function createHarnessService({ sdkPath, storageDirectory, workspaceRoots = [], 
           }));
           return text({ status: entry.status, phase: entry.phase ?? null, rows: parts });
         } },
+      { name: 'read_domain_coverage', label: 'Read domain coverage', description: 'Read the domain attack-surface ledger: seed roots, per-status host counts, the untested host list and the recorded authorization scope. Use it before answering coverage, scope or "is testing complete" questions; never infer coverage when the ledger is empty.',
+        parameters: { type: 'object', properties: {
+          status: { type: 'string', enum: ['all', 'pending', 'in_progress', 'tested', 'skipped', 'out_of_scope'] },
+          limit: { type: 'integer', minimum: 1, maximum: 200 }
+        }, additionalProperties: false },
+        async execute(_id, input) {
+          const coverage = goalChatCoverage(entry);
+          const inventory = entry.memory?.domainInventory;
+          const status = input?.status && input.status !== 'all' ? input.status : '';
+          const domains = (Array.isArray(inventory?.domains) ? inventory.domains : [])
+            .filter(domain => !status || domain?.test_status === status)
+            .slice(0, limitOf(input, 80))
+            .map(domain => ({ hostname: domain?.hostname ?? '', kind: domain?.kind ?? '', test_status: domain?.test_status ?? '', parent: domain?.parent ?? null }));
+          return text({ ...coverage, scope: goalChatScope(entry), domains });
+        } },
       { name: 'read_fact', label: 'Read one fact or intent node', description: 'Read one blackboard node in full by id: fact content, intent description/status, parents/children and recent attempts. Use ids from the graph, facts, agenda or status tools.',
         parameters: { type: 'object', required: ['nodeId'], properties: { nodeId: { type: 'string', minLength: 1, maxLength: 128 } }, additionalProperties: false },
         async execute(_id, input) {
@@ -1515,7 +1569,7 @@ function createHarnessService({ sdkPath, storageDirectory, workspaceRoots = [], 
       'workspace_info',
       ...(['list_workspace_files', 'read_workspace_code', 'edit_workspace_files', 'search_workspace'].filter(name => extras.has(name))),
       ...(['read_image'].filter(name => extras.has(name))),
-      'goal_status', 'read_notes', 'read_blackboard_facts', 'read_fact', 'read_execution_log', 'exploration_control',
+      'goal_status', 'read_notes', 'read_blackboard_facts', 'read_fact', 'read_execution_log', 'read_domain_coverage', 'exploration_control',
       ...(sessionTools.includes('exploration_todo') ? ['exploration_todo'] : ['exploration_agenda']),
       'exploration_graph',
       ...(sessionTools.includes('create_intent') ? ['create_intent', 'manage_intent'] : []),
@@ -1672,6 +1726,24 @@ function createHarnessService({ sdkPath, storageDirectory, workspaceRoots = [], 
     if (configuration?.chatTools === true) return performGoalChatAgent(entry, thread, text, controller, configuration, images);
     const chat = entry.goalChat;
     let received = '';
+    // Coalesce token notifications: the webview repaints from the latest snapshot,
+    // so publishing every delta only adds IPC churn. Keep state current on every
+    // delta (readers/waiters see it immediately) and notify at most every ~32ms.
+    let publishTimer = 0;
+    const schedulePublish = () => {
+      if (publishTimer || controller.signal.aborted) return;
+      publishTimer = setTimeout(() => {
+        publishTimer = 0;
+        if (controller.signal.aborted) return;
+        chat.updatedAt = Date.now();
+        notify(entry);
+      }, 32);
+    };
+    const flushPublish = () => {
+      if (!publishTimer) return;
+      clearTimeout(publishTimer);
+      publishTimer = 0;
+    };
     try {
       if (!configuration?.model) throw failure('MODEL_REQUIRED', '请先配置模型和 API Key。');
       const { createModelClient, loadImageParts } = await load();
@@ -1702,7 +1774,7 @@ function createHarnessService({ sdkPath, storageDirectory, workspaceRoots = [], 
             received = text;
             chat.streamText = received;
             chat.updatedAt = Date.now();
-            notify(entry);
+            schedulePublish();
           } else if (event?.type === 'done') final = event.message;
           else if (event?.type === 'error') throw failure('GOAL_CHAT_FAILED', streamFailure(event) || '模型请求失败，请重试。');
         }
@@ -1712,6 +1784,7 @@ function createHarnessService({ sdkPath, storageDirectory, workspaceRoots = [], 
         received = '';
         chat.streamText = '';
         chat.updatedAt = Date.now();
+        flushPublish();
         notify(entry);
       };
       let answer = '';
@@ -1757,6 +1830,7 @@ function createHarnessService({ sdkPath, storageDirectory, workspaceRoots = [], 
       chat.error = interrupted ? null : errorData(error);
       chat.streamText = ''; chat.updatedAt = Date.now();
     } finally {
+      flushPublish();
       if (chat.controller === controller) chat.controller = undefined;
       notify(entry, true);
       try { await saveGoalChat(entry); } catch (error) { entry.goalChatWriteError = errorData(error); }

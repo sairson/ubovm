@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { configureDataPaths, discardRestoredWorkbenchSession, findLegacyRoot, initializeUserSettings, normalizeDataArguments, prepareDataPaths, resolveDataPaths, STARTUP_POLICY_KEYS } from '../data-paths.mjs';
+import { checkDataPathsWritable, configureDataPaths, discardRestoredWorkbenchSession, findLegacyRoot, initializeUserSettings, normalizeDataArguments, prepareDataPaths, resolveDataPaths, STARTUP_POLICY_KEYS } from '../data-paths.mjs';
 
 function fixture(t) {
   const temporaryRoot = path.resolve(os.tmpdir());
@@ -216,6 +216,24 @@ test('preparing a standalone profile rejects junctions in managed data directori
     assert.deepEqual(fs.readdirSync(outside), ['sentinel']);
     assert.equal(fs.readFileSync(path.join(outside, 'sentinel'), 'utf8'), 'unchanged');
   }
+});
+
+test('session log writability probe reports a blocked directory', t => {
+  const paths = prepareDataPaths({ home: fixture(t) });
+  assert.deepEqual(checkDataPathsWritable(paths), { writable: true });
+  const root = fixture(t);
+  const blocked = path.join(root, 'logs-as-file');
+  fs.writeFileSync(blocked, 'x');
+  const result = checkDataPathsWritable({ logs: blocked });
+  assert.equal(result.writable, false);
+  assert.ok(result.code, 'the probe keeps the system error code');
+  assert.equal(typeof result.message, 'string');
+});
+
+test('bootstrap checks session log writability before Code OSS loads', () => {
+  const bootstrap = fs.readFileSync(new URL('../index.mjs', import.meta.url), 'utf8');
+  assert.match(bootstrap, /checkDataPathsWritable\(dataPaths\)/);
+  assert(bootstrap.indexOf('checkDataPathsWritable(dataPaths)') < bootstrap.indexOf('await import(pathToFileURL'));
 });
 
 test('bootstrap discards restored workbench session before Code OSS loads', () => {

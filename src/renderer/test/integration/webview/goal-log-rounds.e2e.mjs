@@ -74,7 +74,7 @@ const EXPECTED_SEQUENCE = [
   ['worker:w-r1', T0 + 3500],
   ['part:r1-tool-c', T0 + 4000]
 ];
-const EXPECTED_MARKER_ORDER = ['TEXT-ONE', 'search_web', 'read_file', 'TEXT-TWO', 'reviewer', 'list_dir'];
+const EXPECTED_MARKER_ORDER = ['TEXT-ONE', 'TEXT-TWO', 'reviewer', 'search_web', 'read_file', 'list_dir'];
 
 const r1Parts = () => [
   { id: 'r1-reason', type: 'thinking', source: 'reason', status: 'completed', startedAt: T0, endedAt: T0 + 500, text: R1_REASON },
@@ -314,25 +314,34 @@ test('each round keeps one collapsed DSH reasoning line and no thinking cards', 
 // ---------------------------------------------------------------------------
 // 2. Chronological order: individual rows interleaved with activity/worker rows.
 // ---------------------------------------------------------------------------
-test('content/tool rows render in timestamp order interleaved with activities and workers', async t => {
+test('a round renders its narrative first, then scheduling and execution below the divider', async t => {
   const f = await fixture(t);
   await f.emit(run1State());
-  const rendered = await rows(f.page);
-  const known = rendered.map(row => ({ ...row, time: timeOfRow(row.id) })).filter(row => row.time !== null);
-  assert.ok(known.length >= 9, `expected all interleaved rows to render (found ${known.length}: ${JSON.stringify(known.map(row => row.id))})`);
-  for (let index = 1; index < known.length; index++) {
-    assert.ok(known[index].time >= known[index - 1].time,
-      `row ${known[index].id} (t=${known[index].time}) must render after ${known[index - 1].id} (t=${known[index - 1].time}); rendered sequence ${JSON.stringify(known.map(row => row.id))}`);
+  const sequence = await f.page.evaluate(() => [...document.querySelectorAll('#goal-output-content > *')].map(node => {
+    if (node.classList.contains('goal-log-activity-divider')) return { divider: true };
+    if (!node.classList.contains('goal-log-entry')) return null;
+    return { id: node.dataset.logId || '', kind: node.dataset.kind || '' };
+  }).filter(Boolean));
+  const dividerIndex = sequence.findIndex(item => item.divider);
+  assert.ok(dividerIndex > 0, 'the round must split narrative from scheduling/execution');
+  const narrative = sequence.slice(0, dividerIndex);
+  const activity = sequence.slice(dividerIndex + 1);
+  assert.ok(narrative.length >= 3, `expected reasoning and conclusions before the divider (got ${JSON.stringify(narrative)})`);
+  assert.ok(activity.length >= 5, `expected tools, activities and workers after the divider (got ${JSON.stringify(activity)})`);
+  for (const item of narrative) assert.ok(['reasoning', 'text', 'summary', 'result'].includes(item.kind), `unexpected narrative row ${JSON.stringify(item)}`);
+  for (const item of activity) assert.ok(['tool', 'toolLine', 'worker', 'activity'].includes(item.kind), `unexpected activity row ${JSON.stringify(item)}`);
+  assert.ok(sequence.every(item => item.divider || item.id), 'every DOM row belongs to one side of the divider');
+  // Each side keeps its own chronological order.
+  const orderOf = side => side.filter(item => !item.divider).map(item => ({ ...item, time: timeOfRow(item.id) })).filter(item => item.time !== null);
+  for (const side of [narrative, activity]) {
+    const known = orderOf(side);
+    for (let index = 1; index < known.length; index++) {
+      assert.ok(known[index].time >= known[index - 1].time,
+        `row ${known[index].id} (t=${known[index].time}) must render after ${known[index - 1].id} (t=${known[index - 1].time}); sequence ${JSON.stringify(known.map(item => item.id))}`);
+    }
   }
-  const ids = known.map(row => row.id);
-  const activityIndex = ids.findIndex(id => /activity:.*act-todo/.test(id));
-  const textTwoIndex = ids.findIndex(id => id === 'part:r1-text-two');
-  const workerIndex = ids.findIndex(id => id === 'worker:w-r1');
-  const toolCIndex = ids.findIndex(id => id === 'part:r1-tool-c');
-  assert.ok(activityIndex >= 0 && activityIndex < textTwoIndex, 'the todo activity (t2.5) must render before TEXT-TWO (t3) — no merged content block');
-  assert.ok(workerIndex > 0 && toolCIndex > workerIndex, 'the worker (t3.5) must render before list_dir (t4) — tool rows interleave with worker rows');
-  const markers = await markerOrder(f.page);
-  assert.deepEqual(markers, EXPECTED_MARKER_ORDER, `rendered marker order must be chronological (got ${JSON.stringify(markers)})`);
+  const markerOrderResult = await markerOrder(f.page);
+  assert.deepEqual(markerOrderResult, EXPECTED_MARKER_ORDER, `narrative markers must precede scheduling markers (got ${JSON.stringify(markerOrderResult)})`);
 });
 
 // ---------------------------------------------------------------------------
@@ -396,11 +405,13 @@ test('a summary part renders as its own chronological row with the assist summar
   });
   assert.ok(facts.summaryCards >= 1, 'the summary row must contain the assist .summary-card');
   assert.equal(facts.thinkingCards, 0, 'a summary row must not be counted as reason-thinking');
-  // Chronological placement: summary t2.1 must sit between tool-a t2.0 and tool-b t2.2.
+  // Narrative placement: the summary joins reasoning/conclusions before the
+  // scheduling and execution group, instead of splitting tool rows.
   const ids = rendered.map(row => row.id);
   const summaryIndex = ids.indexOf('part:r1-summary');
-  assert.ok(ids.indexOf('part:r1-tool-a') < summaryIndex, 'summary must render after the earlier tool row');
-  assert.ok(summaryIndex < ids.indexOf('part:r1-tool-b'), 'summary must render before the later tool row');
+  assert.ok(summaryIndex >= 0);
+  assert.ok(summaryIndex < ids.indexOf('part:r1-tool-a'), 'summary must render before the execution group');
+  assert.ok(ids.indexOf('part:r1-text-one') < summaryIndex, 'summary follows the earlier narrative row');
 });
 
 // ---------------------------------------------------------------------------
@@ -450,7 +461,7 @@ test('text rows keep assist Markdown and tool rows keep copy/expand behavior', a
 // ---------------------------------------------------------------------------
 // 5. Shuffled host part order still renders chronologically; equal timestamps keep host order.
 // ---------------------------------------------------------------------------
-test('shuffled host part order renders chronologically and equal timestamps keep host order', async t => {
+test('shuffled host part order keeps narrative and execution ordering stable', async t => {
   const f = await fixture(t);
   const shuffled = [
     r1Parts()[5], // tool-c t4
@@ -465,7 +476,7 @@ test('shuffled host part order renders chronologically and equal timestamps keep
   await f.emit(goalState({ runId: 'run-1', parts: shuffled, activities: [], workers: [] }));
   const rendered = await rows(f.page);
   const ids = rendered.map(row => row.id);
-  const order = ['part:r1-text-one', 'part:r1-tool-a', 'part:r1-tool-b', 'part:r1-text-two', 'part:r1-tool-c', 'part:r1-eq-a', 'part:r1-eq-b'];
+  const order = ['part:r1-text-one', 'part:r1-text-two', 'part:r1-eq-a', 'part:r1-eq-b', 'part:r1-tool-a', 'part:r1-tool-b', 'part:r1-tool-c'];
   for (let index = 1; index < order.length; index++) {
     assert.ok(ids.indexOf(order[index]) > ids.indexOf(order[index - 1]),
       `row ${order[index]} must render after ${order[index - 1]} (rendered ${JSON.stringify(ids)})`);
@@ -521,11 +532,11 @@ test('streaming appends later rows and updates tools in place without reordering
   for (const id of beforeUpdate.filter(id => id !== 'part:r2-text-late')) {
     assert.ok(afterUpdate.includes(id), `row ${id} must not disappear while appending`);
   }
-  assert.equal(afterUpdate[afterUpdate.length - 1], 'reason:run-2', 'the live reasoning line stays pinned at the bottom while streaming');
   const toolIndex = afterUpdate.indexOf('part:r2-tool');
   const lateIndex = afterUpdate.indexOf('part:r2-text-late');
-  assert.ok(toolIndex >= 0 && toolIndex < lateIndex, 'the updated tool row keeps its chronological position before the new later row');
-  assert.ok(lateIndex < afterUpdate.length - 1, 'the newest content row is appended above the pinned reasoning line');
+  const reasonIndex = afterUpdate.indexOf('reason:run-2');
+  assert.ok(reasonIndex >= 0 && reasonIndex < lateIndex, 'the live reasoning row stays ahead of the narrative tail');
+  assert.ok(lateIndex >= 0 && lateIndex < toolIndex, 'a later narrative row still precedes the execution group');
 });
 
 // ---------------------------------------------------------------------------
@@ -541,11 +552,13 @@ test('a result summary renders as its own final row', async t => {
     result: { summary: R3_RESULT }
   }));
   const rendered = await rows(f.page);
-  const last = rendered[rendered.length - 1];
-  assert.ok(last, 'rows must render');
-  assert.match(last.text, /RESULT-ROW-MARKER/, `the result summary must fold into the final row (last row: ${JSON.stringify(last)})`);
-  const resultRow = rendered.find(row => row.id.startsWith('result:'));
+  const resultIndex = rendered.findIndex(row => row.id.startsWith('result:'));
+  const resultRow = rendered[resultIndex];
   assert.ok(resultRow, 'a synthetic result row must be created when no text part matches the result');
+  assert.match(resultRow.text, /RESULT-ROW-MARKER/);
+  // The result belongs to the narrative: it renders before the execution group.
+  const toolIndex = rendered.findIndex(row => row.id === 'part:r3-tool');
+  assert.ok(toolIndex > resultIndex, 'the result summary must render before the execution group');
 });
 
 // ---------------------------------------------------------------------------
@@ -649,7 +662,7 @@ test('archived round keeps its chronological rows and reasoning line expandable'
 // ---------------------------------------------------------------------------
 // 9. Worker lifecycle / private thinking / activity rows stay compact.
 // ---------------------------------------------------------------------------
-test('worker lifecycle stays one compact row, opens the panel, and private thinking stays hidden', async t => {
+test('the task card keeps worker lifecycle out of the timeline and opens the panel', async t => {
   const f = await fixture(t);
   await f.emit(run1State());
   const facts = await f.page.evaluate(() => {
@@ -657,21 +670,26 @@ test('worker lifecycle stays one compact row, opens the panel, and private think
     return {
       workerRows: log.querySelectorAll('.goal-log-entry[data-kind="worker"]').length,
       workerEndRows: log.querySelectorAll('[data-log-id^="worker-end:"]').length,
-      workerButtons: log.querySelectorAll('.goal-log-worker').length,
+      taskCards: log.querySelectorAll('.goal-log-task-card').length,
+      taskItems: log.querySelectorAll('.goal-log-task-card [data-worker-id]').length,
+      workerButtons: log.querySelectorAll('.goal-log-task-name').length,
       activityRows: [...log.querySelectorAll('.goal-log-entry[data-kind="activity"]')].map(node => ({
         height: Math.round(node.getBoundingClientRect().height),
         text: (node.textContent || '').replace(/\s+/g, ' ').trim()
       }))
     };
   });
-  assert.equal(facts.workerRows, 1, 'a worker must render one lifecycle row');
+  assert.equal(facts.workerRows, 0, 'a Worker must not render a timeline row');
   assert.equal(facts.workerEndRows, 0, 'no duplicate worker-end rows are allowed');
-  assert.equal(facts.workerButtons, 1, 'one worker-panel button per lifecycle row');
+  assert.equal(facts.taskCards, 1, 'one dispatched-task card per round');
+  assert.equal(facts.taskItems, 1, 'one task item per Worker');
+  assert.equal(facts.workerButtons, 1, 'one worker-panel button per task item');
   assert.ok(facts.activityRows.length >= 1, 'activity rows must render');
   for (const row of facts.activityRows) assert.ok(row.height <= 34, `activity rows must stay compact (got ${row.height}px)`);
   const text = await bodyText(f.page);
   assert.ok(!text.includes(WORKER_PRIVATE), 'worker-private thinking must stay excluded from the goal log');
-  const button = f.page.locator('#goal-output-content .goal-log-worker').first();
+  await f.page.locator('.goal-log-task-summary').first().click();
+  const button = f.page.locator('#goal-output-content .goal-log-task-name').first();
   await button.click();
   await f.frames(3);
   const panelVisible = await f.page.locator('#worker-panel').isVisible().catch(() => false);

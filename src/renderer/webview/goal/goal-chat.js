@@ -256,6 +256,9 @@
     const rows = new Map();
     const threadButtons = new Map();
     let streamRow;
+    let streamStartedAt = 0;
+    let streamClock = 0;
+    let stopNote;
 
     function blocked() { return goalMissing || !available; }
 
@@ -623,7 +626,23 @@
         rows.delete(id);
       }
     }
+    function stopStreamClock() {
+      if (streamClock) { clearInterval(streamClock); streamClock = 0; }
+      streamStartedAt = 0;
+    }
+    function streamLabelText() {
+      if (cancelling) return t('正在停止回答…');
+      const base = chat.activity ? t('正在调用 {0}…', chat.activity) : t('正在回答…');
+      const seconds = streamStartedAt ? Math.floor((performance.now() - streamStartedAt) / 1000) : 0;
+      // Elapsed time appears only after a couple of seconds so fast answers do
+      // not flash a counter; long tool calls get an honest progress signal.
+      return seconds >= 3 ? `${base} · ${seconds}s` : base;
+    }
+    function updateStreamLabel(row) {
+      if (row) setText(row.label, streamLabelText());
+    }
     function releaseStream() {
+      stopStreamClock();
       if (!streamRow) return;
       try { window.UBOVMMessage?.release?.(streamRow.body); } catch { /* Keep teardown independent. */ }
       streamRow.root.remove();
@@ -662,7 +681,17 @@
         return;
       }
       const row = ensureStreamRow();
-      setText(row.label, chat.activity ? t('正在调用 {0}…', chat.activity) : t('正在回答…'));
+      if (!streamStartedAt) {
+        streamStartedAt = performance.now();
+        if (!streamClock) {
+          streamClock = setInterval(() => {
+            if (!streamRow) { stopStreamClock(); return; }
+            if (blocked() || status !== 'running') { stopStreamClock(); return; }
+            updateStreamLabel(streamRow);
+          }, 1000);
+        }
+      }
+      updateStreamLabel(row);
       if (nodes.log.lastElementChild !== row.root) nodes.log.append(row.root);
       const parts = Array.isArray(chat.streamParts) ? chat.streamParts : [];
       const partsKey = signatureOf(parts);
@@ -699,6 +728,7 @@
           setHidden(nodes.latest, true);
         }
         renderError();
+        renderStopNote();
         syncControls();
         if (!blocked()) {
           updateLatest();
@@ -785,6 +815,21 @@
       const message = errorMessage();
       setText(nodes.error, message);
       setHidden(nodes.error, !message);
+    }
+    // An interrupted turn keeps its partial answer as a normal message; explain
+    // why it stopped without turning a user stop into an error.
+    function renderStopNote() {
+      if (!stopNote) {
+        stopNote = element('p', 'goal-chat-stop-note');
+        stopNote.id = 'goal-chat-stop-note';
+        stopNote.setAttribute('role', 'status');
+        nodes.log.insertAdjacentElement('afterend', stopNote);
+      }
+      const last = chat.messages.at(-1);
+      const visible = !blocked() && status === 'interrupted' && !chat.streamText
+        && last?.role === 'assistant' && typeof last.text === 'string' && last.text.trim().length > 0;
+      setText(stopNote, visible ? t('回答已停止，已保留已生成的内容。') : '');
+      setHidden(stopNote, !visible);
     }
 
     // ---- Composer -----------------------------------------------------------
@@ -991,6 +1036,7 @@
       if (blocked() || status !== 'running' || cancelling) return;
       cancelling = true;
       syncControls();
+      if (streamRow) updateStreamLabel(streamRow);
       let settled = false;
       const done = {
         success: () => {
@@ -1003,6 +1049,7 @@
           settled = true;
           cancelling = false;
           localError = errorText(error) || t('停止回答失败，请重试。');
+          if (streamRow) updateStreamLabel(streamRow);
           syncAll();
         }
       };
@@ -1112,8 +1159,10 @@
     // ---- Lifecycle ----------------------------------------------------------
     function reset() {
       cancelFollowFrame();
+      stopStreamClock();
       if (syncFrame) { cancelAnimationFrame(syncFrame); syncFrame = 0; }
       clearTranscript();
+      if (stopNote) { setHidden(stopNote, true); setText(stopNote, ''); }
       session = '';
       status = 'idle';
       chat = normalizeChat();

@@ -50,7 +50,23 @@
     for (const [value, label] of [['all', '全部路径'], ['upstream', '追溯上游证据'], ['downstream', '追踪下游分支']]) {
       const option = el('option', '', label); option.value = value; trace.append(option);
     }
-    navigation.append(search, next, searchCount, refresh, trace);
+    // Local filters only arrange what is already on the canvas; they never
+    // change the board or what Reason sees.
+    const outcomeFilter = el('select', 'graph-filter-outcome'); outcomeFilter.setAttribute('aria-label', '按结果过滤');
+    for (const [value, label] of [['all', '全部结果'], ['confirmed', '已确认'], ['negative', '已否定'], ['partial', '待补证'], ['blocked', '受阻'], ['unknown', '未知']]) {
+      const option = el('option', '', label); option.value = value; outcomeFilter.append(option);
+    }
+    const statusFilter = el('select', 'graph-filter-status'); statusFilter.setAttribute('aria-label', '按状态过滤');
+    for (const [value, label] of [['all', '全部状态'], ['running', '运行中'], ['failed', '失败'], ['pending', '待执行'], ['interrupted', '已中断']]) {
+      const option = el('option', '', label); option.value = value; statusFilter.append(option);
+    }
+    const labelsToggle = el('button', 'graph-labels-toggle', tr('标签'));
+    labelsToggle.type = 'button';
+    labelsToggle.setAttribute('aria-label', tr('显示事实标题'));
+    labelsToggle.setAttribute('aria-pressed', 'false');
+    labelsToggle.title = tr('放大后显示事实摘要标题');
+    const statsLine = el('span', 'graph-stats'); statsLine.setAttribute('role', 'status');
+    navigation.append(search, next, searchCount, refresh, trace, outcomeFilter, statusFilter, labelsToggle, statsLine);
     actionsContainer?.replaceChildren();
     const viewport = el('div', 'graph-viewport'); viewport.tabIndex = 0; viewport.setAttribute('aria-label', '任务关系图，可横向和纵向滚动');
     const canvas = el('div', 'graph-canvas');
@@ -71,6 +87,8 @@
     let detailOpen = false, drag = null, dragFrame = 0, suppressClick = '';
     let pan = { x: 0, y: 0 }, panGesture = null;
     let matches = [], matchIndex = -1;
+    let outcomeFilterValue = 'all', statusFilterValue = 'all', labelsOn = false;
+    let selectedPath = new Set();
     let suspended = false, disposed = false;
     const blocked = () => disposed || suspended || document.hidden || document.getElementById('settings-dialog')?.open;
     const edgeRecords = new Map();
@@ -78,7 +96,7 @@
     function updateSearch() {
       if (blocked()) return;
       const query = search.value.trim().toLocaleLowerCase();
-      matches = query ? nodes.filter(n => [n.id, title(n), factText(n.fact?.content), n.intent?.hint, ...(n.intent?.keyPoints || [])].join('\n').toLocaleLowerCase().includes(query)).map(n => n.id) : [];
+      matches = query ? nodes.filter(n => [n.id, title(n), factText(n.fact?.content), n.intent?.hint, ...(n.intent?.keyPoints || []), ...(n.attempts || []).map(attempt => attempt.error)].join('\n').toLocaleLowerCase().includes(query)).map(n => n.id) : [];
       matchIndex = matches.indexOf(selected);
       put(searchCount, query ? `${matchIndex + 1} / ${matches.length}` : ''); next.disabled = !matches.length;
     }
@@ -86,7 +104,51 @@
       if (blocked()) return;
       const visible = trace.value === 'all' || !projectedSnapshot ? null : window.traceExplorationGraph(projectedSnapshot, selected, trace.value);
       for (const [id, record] of records) record.button.classList.toggle('is-muted', !!visible && !visible.has(id));
-      for (const edge of edges.children) edge.classList.toggle('is-muted', !!visible && edge.dataset.selectionId !== selected && !(visible.has(edge.dataset.source) && visible.has(edge.dataset.target)));
+      for (const edge of edges.children) {
+        if (edge.classList.contains('graph-edge-hit')) continue;
+        edge.classList.toggle('is-muted', !!visible && edge.dataset.selectionId !== selected && !(visible.has(edge.dataset.source) && visible.has(edge.dataset.target)));
+      }
+    }
+    // Filtering dims rather than removes: positions and branch context stay
+    // stable while an operator narrows the view to failures or one outcome.
+    function applyFilters() {
+      if (blocked()) return;
+      for (const record of records.values()) {
+        const kind = record.button.dataset.kind;
+        const outcome = record.button.dataset.outcome || '';
+        const status = record.button.dataset.status || '';
+        let filtered = false;
+        if (outcomeFilterValue !== 'all' && kind === 'fact') {
+          filtered = outcomeFilterValue === 'unknown' ? !!outcome : outcome !== outcomeFilterValue;
+        }
+        if (!filtered && statusFilterValue !== 'all' && kind === 'frontier') filtered = status !== statusFilterValue;
+        record.button.classList.toggle('is-filtered', filtered);
+      }
+      for (const edge of edges.children) {
+        if (!edge.dataset.source || edge.classList.contains('graph-edge-hit')) continue;
+        const filtered = records.get(edge.dataset.source)?.button.classList.contains('is-filtered')
+          || records.get(edge.dataset.target)?.button.classList.contains('is-filtered');
+        edge.classList.toggle('is-filtered', !!filtered);
+      }
+    }
+    // Highlight the evidence chain from the root to the selected node. The
+    // invisible wide hit path must never receive highlight classes: it carries
+    // an inline 14/scale stroke width and would render as a thick band.
+    function applyPathHighlight() {
+      const path = new Set();
+      if (selected && Array.isArray(nodes)) {
+        for (const id of window.explorationPathToRoot?.(nodes, selected) || []) path.add(id);
+      }
+      selectedPath = path;
+      for (const [id, record] of records) {
+        const intentId = record.button.dataset.intentId || '';
+        record.button.classList.toggle('is-path', path.has(id) || (!!intentId && path.has(intentId)));
+      }
+      for (const edge of edges.children) {
+        if (!edge.dataset.source || edge.classList.contains('graph-edge-hit')) continue;
+        const onPath = path.has(edge.dataset.source) && path.has(edge.dataset.target);
+        edge.classList.toggle('is-path', onPath || (!!edge.dataset.intentId && path.has(edge.dataset.intentId)));
+      }
     }
     search.addEventListener('input', updateSearch);
     let composingSearch = false;
@@ -96,6 +158,14 @@
     next.addEventListener('click', () => { if (matches.length) select(matches[(matchIndex + 1) % matches.length], true); });
     search.addEventListener('keydown', event => { if (event.key === 'Enter' && !composingSearch && !event.isComposing && event.keyCode !== 229) { event.preventDefault(); next.click(); } });
     trace.addEventListener('change', applyTrace);
+    outcomeFilter.addEventListener('change', () => { outcomeFilterValue = outcomeFilter.value; applyFilters(); });
+    statusFilter.addEventListener('change', () => { statusFilterValue = statusFilter.value; applyFilters(); });
+    labelsToggle.addEventListener('click', () => {
+      if (blocked()) return;
+      labelsOn = !labelsOn;
+      workspace.classList.toggle('graph-labels-on', labelsOn);
+      labelsToggle.setAttribute('aria-pressed', String(labelsOn));
+    });
     // One camera in viewport pixels. CSS zoom/scroll offsets must not participate:
     // their changing overflow and auto margins otherwise move the zoom anchor.
     const applyPan = () => { canvas.style.transform = `translate(${pan.x}px, ${pan.y}px) scale(${scale})`; };
@@ -318,25 +388,36 @@
       pan = { x: (viewport.clientWidth - graphWidth * scale) / 2, y: (viewport.clientHeight - graphHeight * scale) / 2 };
       applyPan(); scheduleLabels();
     });
-    function factSections(content) {
+    function factSections(content, contentClipped = false) {
       try {
         const fact = JSON.parse(content);
         if (fact?.version === 1 && typeof fact.statement === 'string' && Array.isArray(fact.evidence)) {
           const strings = values => Array.isArray(values) ? values.filter(value => typeof value === 'string' && value.trim()) : [];
-          const list = values => strings(values).map(value => '- ' + value).join('\n');
+          const bullets = values => values.map(value => '- ' + value).join('\n');
           const statuses = { confirmed: '已确认', negative: '已否定', partial: '部分完成', blocked: '受阻' };
-          return [
+          const coverage = (Array.isArray(fact.coverage) ? fact.coverage : []).filter(item => item && typeof item.point === 'string' && typeof item.result === 'string');
+          const evidence = fact.evidence.filter(item => item && typeof item.observation === 'string');
+          const sections = [
             ['结论', fact.statement],
-            ['验证覆盖', list(Array.isArray(fact.coverage) ? fact.coverage.filter(item => item && typeof item.point === 'string' && typeof item.result === 'string').map(item => `${statuses[item.status] || '待确认'}：${item.point} — ${item.result}`) : [])],
-            ['证据', list(fact.evidence.filter(item => item && typeof item.observation === 'string').map(item => item.observation + (item.toolCallId || item.nodeRef ? ` [${item.toolCallId || item.nodeRef}]` : '')))],
-            ['失败检查', list(fact.failedChecks)], ['限制', list(fact.limitations)], ['后续步骤', list(fact.nextSteps)]
+            ['验证覆盖', bullets(coverage.map(item => `${statuses[item.status] || '待确认'} · ${item.point} — ${item.result}`))],
+            ['证据', bullets(evidence.map(item => item.observation + (item.toolCallId || item.nodeRef ? ' [' + (item.toolCallId || item.nodeRef) + ']' : '')))],
+            ['失败检查', bullets(strings(fact.failedChecks))], ['限制', bullets(strings(fact.limitations))], ['后续步骤', bullets(strings(fact.nextSteps))]
           ].filter(([, value]) => value?.trim());
+          const omitted = fact.omitted && typeof fact.omitted === 'object' ? fact.omitted : null;
+          const labels = [['coverage', '项验证覆盖'], ['evidence', '条证据'], ['failedChecks', '项失败检查'], ['limitations', '项限制'], ['nextSteps', '项后续步骤']];
+          const omittedParts = omitted ? labels.filter(([key]) => Number.isSafeInteger(omitted[key]) && omitted[key] > 0).map(([key, label]) => omitted[key] + ' ' + label) : [];
+          if (fact.truncated === true || omittedParts.length) {
+            sections.push(['显示范围', '事实正文较长，界面显示结构化摘要' +
+              (omittedParts.length ? '，已省略 ' + omittedParts.join('、') : '') + '；完整正文请查看 Worker 日志或导出图谱。']);
+          }
+          return sections;
         }
       } catch { /* Plain facts retain their original content. */ }
       const text = factText(content);
-      return text ? [['事实内容', text]] : [];
+      if (!text) return [];
+      return [['事实内容', text], ...(contentClipped ? [['显示范围', '事实正文较长，界面显示为截断版本；完整内容请查看 Worker 日志或导出图谱。']] : [])];
     }
-    const title = n => n.kind === 'root' ? n.goal || '目标' : n.intent?.description || factSections(n.fact?.content)[0]?.[1] || '共享事实';
+    const title = n => n.kind === 'root' ? n.goal || '目标' : n.intent?.description || factSections(n.fact?.content, n.fact?.contentClipped)[0]?.[1] || '共享事实';
     const summary = n => { const text = title(n).replace(/\s+/g, ' ').trim(); return text.length > 100 ? text.slice(0, 100) + '…' : text; };
     function factInfo(n) {
       const source = n.producerId ? '执行产出' : `${new Set(n.parentIds || []).size} 个来源`;
@@ -346,7 +427,10 @@
           const evidence = fact.evidence.filter(item => typeof item?.observation === 'string' && item.observation.trim()).length;
           const limits = Array.isArray(fact.limitations) ? fact.limitations.filter(item => typeof item === 'string' && item.trim()).length : 0;
           const failed = Array.isArray(fact.failedChecks) ? fact.failedChecks.filter(item => typeof item === 'string' && item.trim()).length : 0;
-          return [source, `${evidence} 条证据`, limits ? `${limits} 项限制` : '', failed ? `${failed} 项检查失败` : ''].filter(Boolean).join(' · ');
+          const omitted = fact.omitted && typeof fact.omitted === 'object'
+            ? ['coverage', 'evidence', 'failedChecks', 'limitations', 'nextSteps'].reduce((sum, key) => sum + (Number.isSafeInteger(fact.omitted[key]) ? Math.max(0, fact.omitted[key]) : 0), 0)
+            : 0;
+          return [source, `${evidence} 条证据`, limits ? `${limits} 项限制` : '', failed ? `${failed} 项检查失败` : '', omitted ? `已省略 ${omitted} 项` : ''].filter(Boolean).join(' · ');
         }
       } catch { /* Plain facts do not imply verified evidence. */ }
       return source + ' · 共享事实';
@@ -357,6 +441,35 @@
         return fact?.version === 1 && ['confirmed', 'negative', 'partial', 'blocked'].includes(fact.outcome) ? fact.outcome : '';
       } catch { return ''; }
     }
+    // Structured view for the native sidebar. `sections` stays as the markdown
+    // fallback (and for older clients); the fact view lets the panel render
+    // outcome chips, coverage cards and evidence references without parsing
+    // prose back out of a text blob.
+    function factView(n) {
+      try {
+        const fact = JSON.parse(n.fact?.content);
+        if (!(fact?.version === 1 && typeof fact.statement === 'string' && Array.isArray(fact.evidence))) return null;
+        const labels = { confirmed: '已确认', negative: '已否定', partial: '部分完成', blocked: '受阻' };
+        const coverage = (Array.isArray(fact.coverage) ? fact.coverage : [])
+          .filter(item => item && typeof item.point === 'string' && typeof item.result === 'string')
+          .map(item => {
+            const status = Object.hasOwn(labels, item.status) ? item.status : 'unknown';
+            return { status, statusLabel: labels[status] || '待确认', point: item.point, result: item.result };
+          });
+        const counts = { confirmed: 0, partial: 0, negative: 0, blocked: 0, unknown: 0 };
+        for (const item of coverage) counts[item.status] += 1;
+        const evidence = fact.evidence
+          .filter(item => item && typeof item.observation === 'string')
+          .map(item => ({ observation: item.observation,
+            ref: typeof item.toolCallId === 'string' && item.toolCallId ? item.toolCallId : typeof item.nodeRef === 'string' && item.nodeRef ? item.nodeRef : '' }));
+        const omitted = fact.omitted && typeof fact.omitted === 'object' && !Array.isArray(fact.omitted) ? fact.omitted : null;
+        counts.evidence = evidence.length + (omitted && Number.isSafeInteger(omitted.evidence) ? Math.max(0, omitted.evidence) : 0);
+        const strings = values => Array.isArray(values) ? values.filter(value => typeof value === 'string' && value.trim()) : [];
+        return { outcome: Object.hasOwn(labels, fact.outcome) ? fact.outcome : '', statement: fact.statement, coverage, counts, evidence,
+          failedChecks: strings(fact.failedChecks), limitations: strings(fact.limitations), nextSteps: strings(fact.nextSteps),
+          truncated: fact.truncated === true, omitted };
+      } catch { return null; }
+    }
     const state = n => n.kind === 'root' ? '目标' : n.kind === 'intent' ? '意图 · ' + statusText(n.intent?.status)
       : ({ confirmed: '事实 · 已确认', negative: '事实 · 已否定', partial: '事实 · 待补证', blocked: '事实 · 受阻' }[factOutcome(n)] || '事实');
     function select(id, reveal = false, open = true) {
@@ -365,19 +478,40 @@
       selected = id;
       const visualId = projectedSnapshot?.graphNodes.find(n => n.intentId === id)?.id || nodes.find(n => n.id === id)?.resultId || id;
       for (const [key, record] of records) record.button.setAttribute('aria-pressed', String(key === selected || key === visualId));
-      for (const edge of edges.children) edge.classList.toggle('is-selected', edge.dataset.intentId === selected || edge.dataset.source === selected || edge.dataset.target === selected);
-      updateSearch(); applyTrace();
+      for (const edge of edges.children) {
+        if (edge.classList.contains('graph-edge-hit')) continue;
+        edge.classList.toggle('is-selected', edge.dataset.intentId === selected || edge.dataset.source === selected || edge.dataset.target === selected);
+      }
+      updateSearch(); applyTrace(); applyPathHighlight();
       const n = nodes.find(n => n.id === selected); detail.hidden = !!onDetail || !n || !detailOpen;
       if (!n) { if (detailOpen) onDetail?.(null, false); return; }
       const detailTitle = n.kind === 'fact' ? '事实详情' : title(n);
       const heading = el('h3', '', detailTitle), meta = el('p', 'graph-detail-meta', `${state(n)} · ${n.sourceId || n.id}${n.producerId ? ' · 执行产出' : ''}`);
       const close = el('button', 'graph-detail-close', '×'); close.type = 'button'; close.setAttribute('aria-label', '关闭节点详情'); close.addEventListener('click', closeDetail);
       const content = [close, heading, meta];
+      const trail = window.explorationPathToRoot?.(nodes, selected) || [];
+      if (trail.length > 1) {
+        const crumbs = el('nav', 'graph-breadcrumb'); crumbs.setAttribute('aria-label', '从起点到当前节点');
+        trail.forEach((id, index) => {
+          const trailNode = nodes.find(item => item.id === id);
+          const crumb = el('button', 'graph-crumb', index === 0 ? tr('起点') : summary(trailNode || {}));
+          crumb.type = 'button';
+          if (index === trail.length - 1) {
+            crumb.disabled = true; crumb.classList.add('is-current'); crumb.setAttribute('aria-current', 'page');
+          } else crumb.addEventListener('click', () => select(id, true));
+          crumbs.append(crumb);
+          if (index < trail.length - 1) crumbs.append(el('span', 'graph-crumb-sep', '›'));
+        });
+        content.push(crumbs);
+      }
       if (n.resultId) {
         const result = el('button', 'graph-result-link', '查看产出事实 →'); result.type = 'button'; result.addEventListener('click', () => select(n.resultId, true)); content.push(result);
       }
-      for (const [label, value] of [['执行提示', n.intent?.hint], ['关注点', n.intent?.keyPoints?.join('\n')], ...factSections(n.fact?.content), ['最近执行错误', n.attempts?.at(-1)?.error]]) {
+      for (const [label, value] of [['执行提示', n.intent?.hint], ['关注点', n.intent?.keyPoints?.join('\n')], ...factSections(n.fact?.content, n.fact?.contentClipped), ['最近执行错误', n.attempts?.at(-1)?.error]]) {
         if (value) content.push(el('h4', '', label), el('p', 'graph-detail-text', typeof value === 'string' ? value : JSON.stringify(value)));
+      }
+      if (n.fact?.contentClipped === true || (typeof n.fact?.content === 'string' && n.fact.content.length >= 11999)) {
+        content.push(el('p', 'graph-detail-note', tr('事实正文较长，界面显示为截断版本；完整内容请查看 Worker 日志或导出的图谱。')));
       }
       const parents = [...new Set(n.parentIds || [])].map(id => nodes.find(n => n.id === id)).filter(Boolean);
       if (parents.length) {
@@ -385,15 +519,34 @@
         for (const parent of parents) { const link = el('button', '', summary(parent)); link.type = 'button'; link.addEventListener('click', () => select(parent.id, true)); links.append(link); }
         content.push(links);
       }
-      if (n.attempts?.length) content.push(el('p', 'graph-detail-meta', `执行 ${n.attempts.length} 次 · 最近状态：${statusText(n.attempts.at(-1).status)}`));
+      if (n.attempts?.length) {
+        content.push(el('h4', '', '执行记录'));
+        const attempts = el('ol', 'graph-attempts');
+        for (const [index, attempt] of n.attempts.slice(-6).entries()) {
+          const item = el('li', 'graph-attempt');
+          item.dataset.status = attempt.status || '';
+          const head = el('div', 'graph-attempt-head');
+          head.append(el('span', 'graph-attempt-state', `#${index + 1} ${statusText(attempt.status)}`));
+          const at = typeof attempt.startedAt === 'string' ? attempt.startedAt.slice(11, 19) : '';
+          if (at) head.append(el('span', 'graph-attempt-time', at));
+          item.append(head);
+          if (attempt.error) item.append(el('p', 'graph-attempt-error', String(attempt.error).replace(/\s+/g, ' ').slice(0, 200)));
+          attempts.append(item);
+        }
+        content.push(attempts);
+      }
       const key = JSON.stringify([selected, n.parentIds, n.resultId, ...content.map(n => n.textContent)]);
       if (onDetail && detailOpen && (open || detail.dataset.key !== key)) {
         const sections = [];
         for (let i = 0; i < content.length; i++) {
-          if (content[i].tagName === 'H4') sections.push({ label: content[i].textContent, text: content[i + 1]?.textContent || '' });
+          // The attempt list is emitted as a formatted timeline below; don't
+          // duplicate it as a raw H4/OL text section.
+          if (content[i].tagName === 'H4' && content[i + 1]?.tagName !== 'OL') sections.push({ label: content[i].textContent, text: content[i + 1]?.textContent || '' });
         }
-        if (n.attempts?.length) sections.push({ label: '执行记录', text: `执行 ${n.attempts.length} 次 · 最近状态：${statusText(n.attempts.at(-1).status)}` });
+        if (n.attempts?.length) sections.push({ label: '执行记录', text: n.attempts.slice(-6).map((attempt, index) => `#${index + 1} ${statusText(attempt.status)}${attempt.error ? ' · ' + String(attempt.error).replace(/\s+/g, ' ').slice(0, 160) : ''}`).join('\n') });
+        const view = n.kind === 'fact' ? factView(n) : null;
         onDetail({ id: n.id, title: detailTitle, meta: meta.textContent, sections,
+          ...(view ? { fact: view } : {}),
           links: [...(n.resultId ? [{ id: n.resultId, label: '查看产出事实 →' }] : []), ...parents.map(parent => ({ id: parent.id, label: '来源 · ' + summary(parent) }))] }, open);
       }
       if (detail.dataset.key !== key) { detail.replaceChildren(...content); detail.dataset.key = key; }
@@ -414,11 +567,22 @@
       const reuse = geometryOnly && snapshot === projectedSource && projectedSnapshot;
       snapshot = reuse ? projectedSnapshot : window.projectExplorationGraph(snapshot);
       const nextSession = snapshot?.sessionId || '';
-      if (session !== nextSession) { search.value = ''; trace.value = 'all'; }
+      if (session !== nextSession) {
+        search.value = ''; trace.value = 'all';
+        outcomeFilter.value = 'all'; statusFilter.value = 'all';
+        outcomeFilterValue = statusFilterValue = 'all';
+        selectedPath.clear();
+        labelsOn = false;
+        workspace.classList.remove('graph-labels-on');
+        labelsToggle.setAttribute('aria-pressed', 'false');
+      }
       if (session !== nextSession) { session = nextSession; selected = ''; detailOpen = false; manualPositions.clear(); automaticPositions.clear(); drag = null; panGesture = null; viewport.classList.remove('is-panning'); zoom(1); resetPan(); }
       nodes = [...new Map((snapshot?.nodes || []).filter(n => n && typeof n.id === 'string').map(n => [n.id, n.kind === 'root' ? { ...n, goal: snapshot.goal } : n])).values()];
       rootId = snapshot?.rootId || nodes.find(n => n.kind === 'root')?.id;
       put(goalTitle, snapshot?.goal || tr('目标尚未设置'));
+      put(statsLine, nodes.length
+        ? `${nodes.length} ${tr('节点')} · ${nodes.filter(n => n.kind === 'fact').length} ${tr('事实')} · ${nodes.filter(n => n.kind === 'intent').length} ${tr('意图')}${Number.isSafeInteger(snapshot?.revision) ? ` · ${tr('修订')} ${snapshot.revision}` : ''}`
+        : '');
       goalBadge.title = snapshot?.goal || '目标尚未设置';
       goalBadge.setAttribute('aria-label', '最终目标：' + goalBadge.title);
         controls.hidden = viewport.hidden = !nodes.length;
@@ -580,7 +744,8 @@
         record.button.style.left = p.x + 'px'; record.button.style.top = p.y + 'px';
         if (!reuse || fresh) {
         record.button.dataset.outcome = factOutcome(n);
-        record.button.dataset.status = n.status || n.kind; record.button.dataset.kind = n.kind; record.button.title = n.kind === 'frontier' ? '尚未产出事实 · ' + statusText(n.status) : title(n);
+        record.button.dataset.status = n.status || n.kind; record.button.dataset.kind = n.kind; record.button.dataset.intentId = n.intentId || '';
+        record.button.title = n.kind === 'frontier' ? '尚未产出事实 · ' + statusText(n.status) : title(n);
         record.button.setAttribute('aria-label', n.kind === 'frontier' ? `尚未产出事实：${allById.get(n.intentId)?.intent?.description || ''}` : state(n) + '：' + title(n));
         put(record.badge, tr(state(n))); put(record.name, n.kind === 'frontier' ? '?' : n.kind === 'root' ? tr('起点') : title(n));
         put(record.info, n.kind === 'root' ? tr('探索目标 · 非已证实事实') : n.kind === 'intent' ? `${(n.parentIds || []).length} ${tr('个来源')} · ${n.resultId ? tr('已产出事实') : tr('尚无产出事实')}${n.attempts?.length ? ` · ${n.attempts.length} ${tr('次执行')}` : ''}` : factInfo(n));
@@ -598,6 +763,7 @@
       }
       for (const [id, record] of records) if (!byId.has(id)) { record.button.remove(); records.delete(id); }
       if (!reuse) select(allById.has(selected) ? selected : rootId, false, false);
+      applyFilters(); applyPathHighlight();
       scheduleLabels();
     }
     return { update: render, select: id => select(id, true), closeDetail, dispose() {

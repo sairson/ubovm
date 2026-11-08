@@ -137,6 +137,23 @@ export function resolveDataPaths({ home = homedir(), profile = 'desktop' } = {})
   };
 }
 
+/**
+ * Probe the directory Code OSS creates for each session log. Code OSS only
+ * reports a generic "Unable to write program user data" dialog when this mkdir
+ * fails, so the caller can name the real cause before bootstrapping the workbench.
+ */
+export function checkDataPathsWritable(paths) {
+  const probe = path.join(paths.logs, `.ubovm-write-${process.pid}-${Date.now()}`);
+  try {
+    fs.mkdirSync(probe);
+    fs.rmdirSync(probe);
+    return { writable: true };
+  } catch (error) {
+    try { fs.rmSync(probe, { recursive: true, force: true }); } catch { /* best effort */ }
+    return { writable: false, code: error?.code, message: error?.message || String(error) };
+  }
+}
+
 export function prepareDataPaths({ home, profile, legacyRoot } = {}) {
   const paths = resolveDataPaths({ home, profile });
   const directories = [paths.root, paths.portable, paths.userData,

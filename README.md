@@ -146,6 +146,8 @@ MCP 可在「系统配置 → MCP 服务」添加，也可在对话里调用 `in
 
 右侧文件栏关闭后，可点击对话标题栏的文件夹按钮（`ubovm.openFiles`）直接打开文件管理；Explorer、Search、Worker 和 Blackboard 标签都可独立关闭，关闭最后一个标签时右栏收起。打开探索对话或恢复一个已打开探索对话的窗口时，会自动恢复 Worker 日志、黑板和探索对话三个标签。侧栏标签由 VS Code 的 composite bar 渲染，只有 `workbench.activityBar.location` 为 `top`/`bottom` 时才创建；扩展启动时会自动把误设的 `hidden`/`default` 修复为 `top`，避免整条标签栏消失。
 
+页面如果只剩一块灰色空白（Webview 渲染进程无响应、合成表面丢失），IDE 会自动恢复，不需要手动重启：页面心跳停止（渲染进程死亡或卡死）后，先重新加载页面，再调整一次编辑器布局重建合成表面，仍无响应就重建对话面板（新的 iframe 才会拿到新渲染进程）；连续失败时弹出「重新加载窗口」。主进程另有像素级兜底：窗口可见时每 3 秒采样一次画面，连续三次读到未初始化的 `rgb(128,128,128)` 灰色表面就按同一顺序重绘、重建窗口表面、重新加载窗口（每窗口最多 3 次，之后只记录日志）。会话、运行状态和草稿都在扩展侧保留，恢复只影响页面显示。需要观测采样结果时以 `UBOVM_PAINT_DEBUG=1` 启动，日志会输出每次采样的灰色占比。
+
 界面开发用 `node build/build.mjs dev`。其余动作见 `node build/build.mjs help`。
 
 运行时是独立的 harness IDE：构建时移除 open-vsx 市场、更新入口和未使用的内置扩展，只保留 `ubovm-core` 和必要的语言服务扩展。市场配置移除后 UI 不再提供外部扩展安装入口；`builtInExtensions`、`builtInExtensionsEnabledWithAutoUpdates`、`defaultChatAgent` 等产品字段必须保留，缺失会让启动页一直等待。不要添加 `extensions.allowed`，它会让当前 VSCodium 运行时的扩展宿主卡在加载页。内置扩展白名单见 `resources/builtin-extensions.json`。

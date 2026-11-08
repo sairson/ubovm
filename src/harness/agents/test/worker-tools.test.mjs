@@ -166,6 +166,14 @@ test('Reason accepts a validated submit_decision tool call', async () => {
   assert.equal(events.find(event => event.type === 'reason_decision').viaTool, true);
 });
 
+test('submit_decision accepts an unfinished decision without intents as waiting while a worker runs', async () => {
+  const events = [];
+  const decisionValue = await createPiReason({ model, maxRepairs: 0, onEvent: event => events.push(event),
+    streamFn: () => respond([tool('call-wait', 'submit_decision', { complete: false })]) })({ context });
+  assert.deepEqual(decisionValue, { wait: true });
+  assert.equal(events.find(event => event.type === 'reason_decision').viaTool, true);
+});
+
 test('submit_decision reports invalid aliases to the model without spending a repair', async () => {
   let turn = 0;
   const events = [];

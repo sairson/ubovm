@@ -130,3 +130,32 @@ test('quit before ready removes wake hooks', () => {
   const dispose = installWindowRendering({ app, powerMonitor });
   dispose(); app.emit('ready'); assert.equal(powerMonitor.listenerCount('resume'), 0);
 });
+
+test('a window with capturePage starts the unpainted-surface probe next to the keep-alive loop', () => {
+  const app = Object.assign(new EventEmitter(), { isReady: () => false });
+  const powerMonitor = new EventEmitter(), loops = new Map();
+  let next = 0, captures = 0;
+  installWindowRendering({
+    app, powerMonitor,
+    interval: fn => { loops.set(++next, fn); return next; },
+    clearLoop: id => loops.delete(id),
+    log: { warn() {}, error() {}, info() {} }
+  });
+  const contents = Object.assign(new EventEmitter(), {
+    isDestroyed: () => false, invalidate: () => {},
+    capturePage: async () => { captures += 1; return null; }
+  });
+  const win = Object.assign(new EventEmitter(), {
+    id: 2, minimized: false, maximized: false, fullscreen: false, bounds: { x: 0, y: 0, width: 800, height: 600 },
+    webContents: contents, isDestroyed: () => false, isVisible: () => true, isMinimized: () => false,
+    isMaximized: () => false, isFullScreen: () => false, getBounds() { return { ...this.bounds }; }, setBounds() {}
+  });
+  app.emit('browser-window-created', {}, win);
+  app.emit('ready');
+  assert.equal(loops.size, 1, 'the compositor keep-alive starts with the window');
+  contents.emit('did-finish-load');
+  assert.equal(loops.size, 2, 'the paint probe is sampled alongside the compositor keep-alive');
+  // The probe waits for the startup delay before its first capture; the harness
+  // clock is real, so only the loop registration is asserted here.
+  assert.equal(captures, 0);
+});

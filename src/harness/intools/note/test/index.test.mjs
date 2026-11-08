@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { MemoryStore } from '../../shared/store/memory-store.mjs';
 import { createNoteTool } from '../index.mjs';
+import { Blackboard } from '../../../blackboard/blackboard.mjs';
 
 function fixture() {
   const store = new MemoryStore({ sessionId: 'note-types' });
@@ -9,6 +10,27 @@ function fixture() {
   const call = async input => (await tool.execute('test', input)).details;
   return { store, tool, call };
 }
+
+test('promoted facts use the structured v1 fact shape', async () => {
+  const store = new MemoryStore({ sessionId: 'note-promotion' });
+  const board = new Blackboard({ sessionId: 'note-promotion', goal: 'verify promotion' });
+  await store.commit(state => { state.workers = [{ worker_id: 'worker', root_worker_id: board.snapshot().rootId }]; });
+  const tool = createNoteTool({ store, sessionId: store.sessionId, workerId: 'worker', blackboard: board });
+  const result = await tool.execute('promote-write', {
+    action: 'write', note_type: 'note', content: 'Observed a control',
+    promotion_kind: 'fact', outcome: 'confirmed', statement: 'Control observed',
+    evidence: ['curl returned 200'], failed_checks: ['no header check'], limitations: ['single sample']
+  });
+  assert.equal(result.details.status, 'promoted');
+  const fact = board.snapshot().nodes.find(node => node.kind === 'fact' && node.id !== board.snapshot().rootId);
+  const parsed = JSON.parse(fact.fact.content);
+  assert.equal(parsed.version, 1);
+  assert.equal(parsed.outcome, 'confirmed');
+  assert.deepEqual(parsed.evidence, [{ observation: 'curl returned 200' }]);
+  assert.deepEqual(parsed.failedChecks, ['no header check']);
+  assert.deepEqual(parsed.limitations, ['single sample']);
+  assert.equal(Object.hasOwn(parsed, 'failed_checks'), false);
+});
 
 test('notes expose a continuation offset until the final filtered page', async () => {
   const { call } = fixture();

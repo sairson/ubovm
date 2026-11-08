@@ -72,7 +72,10 @@ the step has a useful result or a concrete blocker, return a self-contained text
 report with observations, actual tool call IDs, failures and limitations. If the
 step grows into another slice, stop; hand that slice off at replan instead of
 calling more tools to think longer. Do not claim that tools ran unless their
-results are in the transcript.`,
+results are in the transcript. When the host supplies exploration_graph, use it
+read-only to inspect shared facts and citations (overview/search/node/parents/
+children/read_fact/find/dependents/sources/path). It is navigation, never
+evidence: cite tool calls or fact nodes in the structured result.`,
   replan: `Review the executed steps against the intent and latest shared evidence.
 Remove covered work. Stay in this plan only to finish the current slice's acceptance check.
 The boolean "done" is the decision: if the next action is a new slice, return {"done":true} and name it in the conclusion.

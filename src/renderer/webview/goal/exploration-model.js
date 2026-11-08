@@ -126,4 +126,25 @@
     return { ...snapshot, nodes, graphNodes, edges: graphEdges, intentCount: source.filter(n => n.kind === 'intent').length,
       factCount: nodes.filter(n => n.kind === 'fact').length };
   };
+  // Breadcrumb/evidence-chain helper: shortest ancestor path from a node back to
+  // the root. Multi-parent joins deterministically pick the first parent that
+  // reaches the root; cycles and missing nodes stay out of the result.
+  window.explorationPathToRoot = (nodes, selected) => {
+    const byId = new Map((Array.isArray(nodes) ? nodes : []).filter(n => n && typeof n.id === 'string').map(n => [n.id, n]));
+    if (!byId.has(selected)) return [];
+    const queue = [[selected]], seen = new Set([selected]);
+    while (queue.length) {
+      const path = queue.shift();
+      const node = byId.get(path[0]);
+      const parents = [...new Set((node.parentIds || []).filter(id => byId.has(id)))];
+      // Root-first: `path` is built by prepending each ancestor.
+      if (!parents.length) return path;
+      for (const parent of parents) {
+        if (seen.has(parent)) continue;
+        seen.add(parent);
+        queue.push([parent, ...path]);
+      }
+    }
+    return [];
+  };
 })();
