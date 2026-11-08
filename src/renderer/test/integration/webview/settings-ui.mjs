@@ -160,7 +160,7 @@ test('Python settings are reachable and submit interpreter and permissions witho
     await page.evaluate(() => window.postMessage({ type: 'settingsSection', section: 'python' }, '*'));
     await page.locator('[data-setting="executable"]').fill(process.execPath);
     assert.equal(await page.locator('#settings-section-title').textContent(), 'Python 执行');
-    assert.equal(await page.locator('[data-setting="allowWorkspaceWrite"]').isChecked(), false);
+    assert.equal(await page.locator('[data-setting="allowWorkspaceWrite"]').isChecked(), true);
     await page.locator('[data-setting="allowedDomains"]').fill('pypi.org\nexample.com');
     await page.locator('#settings-save').click();
     const request = await page.evaluate(() => window.sent.findLast(message => message.action === 'settingsSave'));
@@ -793,6 +793,77 @@ test('settings component failure does not cache a partial form and identical dat
   } finally { await browser.close(); }
 });
 
+
+test('MCP rows test saved server connectivity and expose the reported tool count', async () => {
+  const values = { mcp: { servers: [{ name: 'local-tools', transport: 'streamable_http', url: 'https://mcp.example.test/mcp', enabled: true }] } };
+  const configuration = { inspect: key => ({ globalValue: values[key], defaultValue: manifest.contributes.configuration.properties['ubovm.' + key]?.default }), update: async () => {} };
+  const service = createSettingsConfiguration({ workspace: { getConfiguration: () => configuration }, ConfigurationTarget: { Global: 1 } }, { secrets: { get: async () => undefined } });
+  const data = await service.snapshot({ includeSkills: false });
+  const browser = await chromium.launch({ channel: 'msedge', headless: true });
+  try {
+    const page = await browser.newPage({ viewport: { width: 1000, height: 800 } });
+    await page.addInitScript(() => { window.sent = []; window.acquireVsCodeApi = () => ({ getState: () => undefined, setState() {}, postMessage: message => window.sent.push(message) }); });
+    await page.route('**/*', route => route.fulfill({ contentType: 'text/html', body: renderWebview() }));
+    await page.goto('http://settings-mcp-test.test/');
+    await page.evaluate(data => window.postMessage({ type: 'openSettings', page: 'mcp', data }, '*'), data);
+    await page.waitForFunction(() => document.querySelector('#settings-dialog').dataset.page === 'mcp');
+    const testButton = page.locator('[data-server-card] .settings-server-test').first();
+    await testButton.click();
+    const request = await page.evaluate(() => window.sent.findLast(message => message.action === 'settingsTestMcp'));
+    assert.equal(request.name, 'local-tools');
+    await page.evaluate(requestId => window.postMessage({ type: 'settingsMcpTestResult', requestId, connected: true, tools: [{ name: 'echo' }, { name: 'search' }] }, '*'), request.requestId);
+    await page.waitForFunction(() => document.querySelector('.settings-server-test-status')?.textContent.includes('2 个工具可用'));
+    assert.match(await page.locator('.settings-server-test-status').first().textContent(), /echo、search/);
+    // A newly added, unsaved server must not probe an unrelated saved entry.
+    await page.locator('#settings-add-mcp').click();
+    const unsaved = page.locator('[data-server-card]').last().locator('.settings-server-test');
+    await unsaved.click();
+    await page.waitForFunction(() => [...document.querySelectorAll('.settings-server-test-status')].some(node => node.textContent.includes('请先保存这个服务')));
+    assert.equal(await page.evaluate(() => window.sent.filter(message => message.action === 'settingsTestMcp').length), 1);
+    // In the advanced two-column grid the toggle sits on the same control line
+    // as the neighbouring input instead of floating between label and input.
+    await page.locator('[data-server-card]').first().locator('.settings-server-edit:not(.settings-server-test)').click();
+    await page.evaluate(() => { document.querySelector('[data-server-card] .settings-advanced').open = true; });
+    const centerDelta = await page.evaluate(() => {
+      const card = document.querySelector('[data-server-card]');
+      const box = selector => { const rect = card.querySelector(selector).getBoundingClientRect(); return { y: Math.round(rect.top), h: Math.round(rect.height), center: Math.round(rect.top + rect.height / 2) }; };
+      return { prefix: box('[data-setting="toolNamePrefix"]'), toggle: box('[data-setting="insecureTls"]') };
+    });
+    assert.ok(Math.abs(centerDelta.prefix.center - centerDelta.toggle.center) < 3, 'advanced toggles align with adjacent inputs: ' + JSON.stringify(centerDelta));
+  } finally { await browser.close(); }
+});
+
+test('user-installed skills can be removed with confirmation while built-ins stay protected', async () => {
+  const service = createSettingsConfiguration({ workspace: { getConfiguration: () => ({ inspect: () => ({}) }) } }, { secrets: { get: async () => undefined } });
+  const data = await service.snapshot({ includeSkills: false });
+  const builtin = { name: 'swarm', description: 'Built-in', content: '# Swarm', builtin: true };
+  const user = { name: 'demo-skill', description: 'Demo', content: '# Demo', builtin: false };
+  data.skillsCatalog = { items: [user, builtin], errors: [] };
+  const browser = await chromium.launch({ channel: 'msedge', headless: true });
+  try {
+    const page = await browser.newPage({ viewport: { width: 1000, height: 800 } });
+    await page.addInitScript(() => { window.sent = []; window.acquireVsCodeApi = () => ({ getState: () => undefined, setState() {}, postMessage: message => window.sent.push(message) }); });
+    await page.route('**/*', route => route.fulfill({ contentType: 'text/html', body: renderWebview() }));
+    await page.goto('http://settings-skill-remove.test/');
+    await page.evaluate(data => window.postMessage({ type: 'openSettings', page: 'skills', data }, '*'), data);
+    await page.waitForFunction(() => document.querySelector('#settings-dialog').dataset.page === 'skills');
+    const card = page.locator('.settings-skill-card').first();
+    await card.locator('summary').click();
+    const remove = card.locator('.settings-skill-remove');
+    await remove.click();
+    assert.equal(await remove.textContent(), '确认删除？');
+    await remove.click();
+    const request = await page.evaluate(() => window.sent.findLast(message => message.action === 'settingsUninstallSkill'));
+    assert.equal(request.name, 'demo-skill');
+    const updated = structuredClone(data);
+    updated.skillsCatalog = { items: [builtin], errors: [] };
+    await page.evaluate(({ requestId, data }) => window.postMessage({ type: 'settingsResult', requestId, ok: true, data, saved: false, uninstalled: true, message: '已删除 Skill：demo-skill。' }, '*'), { requestId: request.requestId, data: updated });
+    await page.waitForFunction(() => document.querySelector('#settings-status').textContent.includes('已删除'));
+    assert.equal(await page.locator('.settings-skill-card').count(), 1);
+    await page.locator('.settings-skill-card').first().locator('summary').click();
+    assert.equal(await page.locator('.settings-skill-remove').count(), 0, 'built-in skills cannot be removed from the page');
+  } finally { await browser.close(); }
+});
 
 test('oversized settings previews are evicted while small forms retain their cached identity', async () => {
   const service = createSettingsConfiguration({ workspace: { getConfiguration: () => ({ inspect: () => ({}) }) } }, { secrets: { get: async () => undefined } });

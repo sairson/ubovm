@@ -11,7 +11,8 @@ function createWorkspaceValidation(vscode, context, { changes = async () => [], 
   let revision = 0, baselineQueue = Promise.resolve();
   const lifetime = new AbortController();
   const observers = new Set();
-  const pathKey = file => process.platform === 'win32' ? path.resolve(file).toLowerCase() : path.resolve(file);
+  // Windows and macOS (default APFS) compare paths case-insensitively.
+  const pathKey = file => process.platform === 'linux' ? path.resolve(file) : path.resolve(file).toLowerCase();
   const active = new Set();
   const key = 'ubovm.validationBaselines.v1';
   let baselines = context.workspaceState.get(key, {});

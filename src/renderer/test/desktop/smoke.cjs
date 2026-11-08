@@ -754,7 +754,7 @@ async function run() {
       const blockedRequest = await timeout(held.arrived, 30000, 'Worker replan after workspace tool');
       const during = core.assistantState();
       assert(during.execution.workers.some(worker => worker.status === 'running'));
-      assert(during.execution.activities.some(item => item.label === 'read_workspace_file' && item.status === 'completed'));
+      assert(during.execution.activities.some(item => item.label === 'read_workspace_code' && item.status === 'completed'));
       assert.equal(during.execution.middleware.contextSummary, true);
       await assert.rejects(() => vscode.commands.executeCommand('ubovm.saveGoal', { objective: 'MUST_NOT_REPLACE_RUNNING_GOAL', criteria: [] }, firstId), /停止/);
       await vscode.commands.executeCommand('ubovm.newChat', firstId);

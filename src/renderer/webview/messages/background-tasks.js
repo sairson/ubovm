@@ -56,7 +56,16 @@
     let sessionId, tasks = [], selected, expanded = false, following = true, timer, suspended = false, disconnected = false;
     let renderedSelection, renderedOutput, copyRequest = 0, sessionRevision = 0;
     const reading = new Map();
-    const rows = new Map(), dismissed = new Set(), stopping = new Set();
+    const rows = new Map(), stopping = new Set();
+    const DISMISS_KEY = 'ubovm.backgroundDismissed';
+    const dismissed = new Set();
+    try {
+      const saved = JSON.parse(sessionStorage.getItem(DISMISS_KEY) || '[]');
+      if (Array.isArray(saved)) for (const id of saved) if (typeof id === 'string') dismissed.add(id);
+    } catch { /* A blocked storage API must not hide the dock. */ }
+    const persistDismissed = () => {
+      try { sessionStorage.setItem(DISMISS_KEY, JSON.stringify([...dismissed].slice(-500))); } catch { /* Best effort. */ }
+    };
     const selectedTask = () => tasks.find(task => task.commandId === selected);
     function setExpanded(value) {
       expanded = value; body.hidden = !value; peek.hidden = value;
@@ -68,6 +77,7 @@
     toggle.addEventListener('click', () => setExpanded(!expanded));
     clear.addEventListener('click', () => {
       for (const task of tasks) if (!running(task)) dismissed.add(task.commandId);
+      persistDismissed();
       tasks = tasks.filter(task => !dismissed.has(task.commandId)); render();
     });
     body.addEventListener('keydown', event => {
@@ -198,7 +208,7 @@
       if (sessionId !== id) {
         // Returning to the same ID must not revive callbacks from a prior visit.
         sessionRevision++;
-        sessionId = id; dismissed.clear(); stopping.clear(); reading.clear(); renderedSelection = undefined; renderedOutput = undefined; following = true;
+        sessionId = id; stopping.clear(); reading.clear(); renderedSelection = undefined; renderedOutput = undefined; following = true;
         copyRequest++; copy.disabled = false; follow.setAttribute('aria-pressed', 'true'); selected = undefined;
         rows.forEach(row => row.element.remove()); rows.clear(); tasks = []; text(output, ''); text(notice, ''); setExpanded(false);
       }

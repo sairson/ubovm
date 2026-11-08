@@ -101,7 +101,10 @@ export function pythonAllowsHost(domains, host, port = 443) {
 export function pythonPolicy({ workspace, workspaceRoots = [], outputDirectory, controlDirectory, readRoots = [], protectedRuntimePaths = [], privatePaths = [join(homedir(), '.ubovm')], workspacePrivatePaths = [], allowedDomains = [], allowWorkspaceWrite = false, unbounded = false }, platform = process.platform, home = homedir()) {
   const protectedPaths = [join(home, '.ssh'), join(home, '.aws'), join(home, '.azure'), join(home, '.config', 'gcloud'),
     ...privatePaths, ...workspacePrivatePaths, join(home, '.codex'), ...['.git', '.env', '.agents', '.codex', '.ubovm-python'].map(name => join(workspace, name))];
-  const openWorkspaces = [workspace, ...workspaceRoots];
+  // The caller passes the primary workspace both directly and in
+  // workspaceRoots; dedupe so allowRead has one workspace entry followed by the
+  // private control directory.
+  const openWorkspaces = [...new Set([workspace, ...workspaceRoots].filter(root => typeof root === 'string' && root))];
   // 完全模式 grants the whole volume that holds the workspace instead of only the
   // open workspaces, and drops every credential/secret deny. It falls back to the
   // confined policy when the workspace paths yield no volume root.

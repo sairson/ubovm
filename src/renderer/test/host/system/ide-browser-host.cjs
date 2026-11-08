@@ -18,6 +18,7 @@ function fakeVscode(options = {}) {
     activeTab = tab;
     for (const listener of listeners.active) listener(tab);
   }
+
   const commands = new Map([
     ['workbench.action.browser.open', async urlOrOptions => {
       const openOptions = typeof urlOrOptions === 'string' ? { url: urlOrOptions } : (urlOrOptions || {});
@@ -89,6 +90,7 @@ function fakeVscode(options = {}) {
     };
     return tab;
   }
+  if (options.lockFails) commands.delete('workbench.action.browser.setAgentControlLock');
   return {
     ViewColumn: { One: 1, Two: 2, Beside: -2 },
     get lastOpen() { return lastOpen; },
@@ -99,7 +101,8 @@ function fakeVscode(options = {}) {
         lastOpen = { url, options: openOptions };
         const tab = makeTab(url);
         tabs.push(tab);
-        setActive(tab);
+        // Background tabs exist for agent actions without becoming the visible page.
+        if (openOptions?.background !== true) setActive(tab);
         return tab;
       },
       onDidCloseBrowserTab(listener) {
@@ -113,7 +116,10 @@ function fakeVscode(options = {}) {
       onDidChangeBrowserTabState(listener) {
         listeners.state.push(listener);
         return { dispose() { listeners.state = listeners.state.filter(item => item !== listener); } };
-      }
+      },
+      ...(options.browserPane === true ? {
+        tabGroups: { all: [{ isActive: true, tabs: [{ label: 'Browser', input: { constructor: { name: 'BrowserEditorInput' } } }] }] }
+      } : {})
     },
     commands: {
       executeCommand: async (id, ...args) => {
@@ -133,7 +139,7 @@ function pageEvalCdp(message, helpers) {
     helpers.tab.url = message.params.url;
     helpers.tab.title = message.params.url;
     helpers.emit('Page.loadEventFired', {});
-    return {};
+    return { frameId: 'main', loaderId: 'loader-1' };
   }
   if (message.method === 'Page.reload') {
     helpers.emit('Page.loadEventFired', {});
@@ -145,6 +151,15 @@ function pageEvalCdp(message, helpers) {
   if (message.method === 'Accessibility.getFullAXTree') {
     return { nodes: [{ role: { value: 'button' }, name: { value: 'Run' }, ignored: false }] };
   }
+  if (message.method === 'Page.getFrameTree') {
+    return {
+      frameTree: {
+        frame: { id: 'main', url: helpers.tab.url, name: '', securityOrigin: 'https://example.com', mimeType: 'text/html' },
+        childFrames: [{ frame: { id: 'child', parentId: 'main', url: 'https://example.com/frame', name: 'frame', securityOrigin: 'https://example.com', mimeType: 'text/html' } }]
+      }
+    };
+  }
+  if (message.method === 'Page.createIsolatedWorld') return { executionContextId: 4242 };
   if (message.method === 'Runtime.evaluate') {
     const expression = message.params.expression;
     // Minimal DOM emulator for snapshot/interaction scripts.
@@ -299,11 +314,51 @@ describe('ide-browser-host', () => {
     assert.equal(vscode.lastOpen.options.background, true);
   });
 
-  it('locks during call and unlocks afterwards', async () => {
+  it('locks for the whole agent task and unlocks only when the task ends', async () => {
     const vscode = fakeVscode({ cdp: pageEvalCdp });
     const host = createIdeBrowserHost(vscode);
+    await host.open('about:blank');
     await host.call({ sessionId: 's', workerId: 'w' }, { action: 'navigate', url: 'https://example.com/a' });
-    assert.deepEqual(vscode.locks.map(item => item.locked), [true, false]);
+    assert.deepEqual(vscode.locks.map(item => item.locked), [true], 'the first browser action keeps the tab locked after it returns');
+    await host.call({ sessionId: 's', workerId: 'w' }, { action: 'snapshot' });
+    assert.deepEqual(vscode.locks.map(item => item.locked), [true], 'later calls reuse the task lock');
+    await host.endAgentTask();
+    assert.deepEqual(vscode.locks.map(item => item.locked), [true, false], 'the mask is released when the whole task ends');
+  });
+
+  it('uses an in-page task mask when the prebuilt workbench has no native lock command', async () => {
+    const expressions = [];
+    const cdp = (message, helpers) => {
+      if (message.method === 'Runtime.evaluate') { expressions.push(message.params.expression); return {}; }
+      return pageEvalCdp(message, helpers);
+    };
+    const vscode = fakeVscode({ cdp, lockFails: true });
+    const host = createIdeBrowserHost(vscode);
+    await host.open('about:blank');
+    await host.call({ sessionId: 's', workerId: 'w' }, { action: 'navigate', url: 'https://example.com/a' });
+    assert.ok(expressions.some(expression => expression.includes('__ubovm_agent_control_overlay__')), 'fallback mask is injected');
+    assert.ok(expressions.some(expression => expression.includes('接管页面')), 'fallback mask offers manual takeover');
+    await host.endAgentTask();
+    assert.ok(expressions.some(expression => expression.includes('root.remove()')), 'task end removes the fallback mask');
+  });
+  it('yields agent control for user interaction and reacquires on the next action', async () => {
+    const vscode = fakeVscode({ cdp: pageEvalCdp });
+    const host = createIdeBrowserHost(vscode);
+    await host.open('about:blank');
+    await host.call({ sessionId: 's', workerId: 'w' }, { action: 'navigate', url: 'https://example.com/login' });
+    const locked = await host.call({ sessionId: 's', workerId: 'w' }, { action: 'status' });
+    assert.equal(locked.agent_control, 'agent');
+    assert.equal(locked.yield_supported, true);
+    const yielded = await host.call({ sessionId: 's', workerId: 'w' }, { action: 'yield_control' });
+    assert.equal(yielded.control, 'user');
+    assert.match(yielded.guidance, /login|MFA|consent/i);
+    assert.deepEqual(vscode.locks.map(item => item.locked), [true, false], 'user interaction releases the native lock');
+    const userControl = await host.call({ sessionId: 's', workerId: 'w' }, { action: 'status' });
+    assert.equal(userControl.agent_control, 'user');
+    await host.call({ sessionId: 's', workerId: 'w' }, { action: 'snapshot' });
+    assert.deepEqual(vscode.locks.map(item => item.locked), [true, false, true], 'the next action reacquires the lock');
+    const agentControl = await host.call({ sessionId: 's', workerId: 'w' }, { action: 'status' });
+    assert.equal(agentControl.agent_control, 'agent');
   });
 
   it('does not lock for status', async () => {
@@ -426,6 +481,7 @@ describe('ide-browser-host', () => {
       }
     });
     const host = createIdeBrowserHost(vscode);
+    await host.open('about:blank');
     await host.call({ sessionId: 's', workerId: 'w' }, { action: 'navigate', url: 'https://example.com/cdp' });
     assert.ok(methods.some(item => item.method === 'Target.attachToTarget' && !item.sessionId));
     assert.ok(methods.some(item => item.method === 'Page.enable' && item.sessionId === 'sess-page'));
@@ -505,6 +561,7 @@ describe('ide-browser-host', () => {
       }
     });
     const host = createIdeBrowserHost(vscode);
+    await host.open('about:blank');
     await host.call(binding, { action: 'navigate', url: 'https://example.com/one' });
     const all = await host.call(binding, { action: 'console' });
     assert.deepEqual(all.entries.map(entry => [entry.kind, entry.level, entry.text]),
@@ -554,5 +611,181 @@ describe('ide-browser-host', () => {
     assert.equal(waited.ok, true);
     assert.equal(waited.wait_for, 'text');
     assert.equal(evaluates, 1);
+  });
+
+  it('lists frames and evaluates inside an iframe', async () => {
+    const vscode = fakeVscode({ cdp: pageEvalCdp });
+    const host = createIdeBrowserHost(vscode);
+    const binding = { sessionId: 's', workerId: 'w' };
+    await host.open('https://example.com');
+    const frames = await host.call(binding, { action: 'frames' });
+    assert.equal(frames.frames.length, 2);
+    assert.equal(frames.frames[1].frame_id, 'child');
+    assert.equal(frames.frames[1].parent_frame_id, 'main');
+    const evaluated = await host.call(binding, { action: 'frame_evaluate', frame_id: 'child', script: '1+1' });
+    assert.equal(evaluated.frame_id, 'child');
+    assert.equal(evaluated.result, 2);
+  });
+
+  it('surfaces CDP navigation failures instead of pretending the page loaded', async () => {
+    const vscode = fakeVscode({
+      cdp(message, helpers) {
+        if (message.method === 'Page.navigate') return { frameId: 'main', loaderId: '', errorText: 'net::ERR_NAME_NOT_RESOLVED' };
+        return pageEvalCdp(message, helpers);
+      }
+    });
+    const host = createIdeBrowserHost(vscode);
+    await host.open('about:blank');
+    await assert.rejects(
+      () => host.call({ sessionId: 's', workerId: 'w' }, { action: 'navigate', url: 'https://nope.invalid' }),
+      /导航失败/
+    );
+  });
+
+  it('reports page_open in status and keeps agent actions off the browser until it is open', async () => {
+    const vscode = fakeVscode({ cdp: pageEvalCdp });
+    const host = createIdeBrowserHost(vscode);
+    const closed = await host.call({ sessionId: 's', workerId: 'w' }, { action: 'status' });
+    assert.equal(closed.page_open, false);
+    assert.equal(closed.tab_count, 0);
+    await host.open('https://example.com');
+    const opened = await host.call({ sessionId: 's', workerId: 'w' }, { action: 'status' });
+    assert.equal(opened.page_open, true);
+    assert.equal(opened.tab_count, 1);
+    assert.ok(opened.active_page_id);
+  });
+
+  it('captures network events after network_start and stops on network_stop', async () => {
+    globalThis.__ideDom = undefined;
+    let emit;
+    const vscode = fakeVscode({ cdp(message, helpers) { emit = helpers.emit; return pageEvalCdp(message, helpers); } });
+    const host = createIdeBrowserHost(vscode);
+    const binding = { sessionId: 's', workerId: 'w' };
+    await host.open('https://example.com');
+    const started = await host.call(binding, { action: 'network_start' });
+    assert.equal(started.capturing, true);
+    emit('Network.requestWillBeSent', { requestId: 'r1', request: { url: 'https://example.com/api', method: 'GET' }, type: 'Fetch' });
+    emit('Network.responseReceived', { requestId: 'r1', response: { url: 'https://example.com/api', status: 200, mimeType: 'application/json' } });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const listed = await host.call(binding, { action: 'network', query: '/api' });
+    assert.deepEqual(listed.entries.map(item => item.kind), ['request', 'response']);
+    assert.equal(listed.entries[1].status, 200);
+    await host.call(binding, { action: 'network_stop' });
+    emit('Network.requestWillBeSent', { requestId: 'r2', request: { url: 'https://example.com/late', method: 'GET' }, type: 'Fetch' });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal((await host.call(binding, { action: 'network' })).entries.length, 2);
+  });
+
+  it('reads page cookies with redaction unless credentials are requested', async () => {
+    globalThis.__ideDom = undefined;
+    const vscode = fakeVscode({
+      cdp(message, helpers) {
+        if (message.method === 'Network.getCookies') {
+          return { cookies: [{ name: 'sid', value: 's3cret', domain: 'example.com', path: '/', secure: true, httpOnly: true, sameSite: 'Lax', expires: 123 }] };
+        }
+        return pageEvalCdp(message, helpers);
+      }
+    });
+    const host = createIdeBrowserHost(vscode);
+    const binding = { sessionId: 's', workerId: 'w' };
+    await host.open('https://example.com/app');
+    const redacted = await host.call(binding, { action: 'cookies' });
+    assert.equal(redacted.cookies[0].name, 'sid');
+    assert.equal(redacted.cookies[0].value_present, true);
+    assert.equal(redacted.cookies[0].value, undefined);
+    const withValues = await host.call(binding, { action: 'cookies', include_credentials: true });
+    assert.equal(withValues.cookies[0].value, 's3cret');
+  });
+
+  it('buffers CDP events for cdp_events', async () => {
+    globalThis.__ideDom = undefined;
+    let emit;
+    const vscode = fakeVscode({ cdp(message, helpers) { emit = helpers.emit; return pageEvalCdp(message, helpers); } });
+    const host = createIdeBrowserHost(vscode);
+    const binding = { sessionId: 's', workerId: 'w' };
+    await host.open('https://example.com');
+    await host.call(binding, { action: 'snapshot' });
+    emit('Page.loadEventFired', { timestamp: 1 });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const events = await host.call(binding, { action: 'cdp_events', query: 'loadEventFired' });
+    assert.ok(events.entries.some(item => item.method === 'Page.loadEventFired'));
+  });
+
+  it('fills an already-open Browser editor pane instead of returning IDE_BROWSER_NOT_OPEN', async () => {
+    globalThis.__ideDom = undefined;
+    const vscode = fakeVscode({ cdp: pageEvalCdp, browserPane: true });
+    const host = createIdeBrowserHost(vscode);
+    const result = await host.call({ sessionId: 's', workerId: 'w' }, { action: 'navigate', url: 'https://example.com/pane' });
+    assert.equal(result.code, undefined);
+    assert.equal(result.url, 'https://example.com/pane');
+    assert.equal(vscode.tabs.length, 1);
+    assert.equal(vscode.tabs[0].url, 'https://example.com/pane');
+  });
+
+  it('opens an agent page through the bridge fallback without returning NOT_OPEN', async () => {
+    const vscode = fakeVscode({ cdp: pageEvalCdp });
+    const host = createIdeBrowserHost(vscode);
+    const opened = await host.handle('openAgentPage', { url: 'https://example.com/auto' });
+    assert.equal(opened.opened, true);
+    assert.equal(opened.url, 'https://example.com/auto');
+    assert.equal(vscode.tabs.length, 1);
+    const result = await host.call({ sessionId: 's', workerId: 'w' }, { action: 'navigate', url: 'https://example.com/auto' });
+    assert.equal(result.code, undefined);
+  });
+
+  it('intercepts JS dialogs so navigate/click never hang', async () => {
+    globalThis.__ideDom = undefined;
+    const methods = [];
+    let emit;
+    const vscode = fakeVscode({
+      cdp(message, helpers) {
+        methods.push(message.method);
+        emit = helpers.emit;
+        return pageEvalCdp(message, helpers);
+      }
+    });
+    const host = createIdeBrowserHost(vscode);
+    await host.open('https://example.com');
+    await host.call({ sessionId: 's', workerId: 'w' }, { action: 'snapshot' });
+    emit('Page.javascriptDialogOpening', { type: 'alert', message: 'hello', url: 'https://example.com' });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.ok(methods.includes('Page.handleJavaScriptDialog'), 'the host must answer the dialog');
+    const listed = await host.call({ sessionId: 's', workerId: 'w' }, { action: 'dialogs' });
+    assert.equal(listed.dialogs[0].message, 'hello');
+    const policy = await host.call({ sessionId: 's', workerId: 'w' }, { action: 'dialog_policy', accept: false, prompt_text: 'ok' });
+    assert.equal(policy.accept, false);
+    assert.equal(policy.prompt_text, 'ok');
+  });
+
+  it('reports IDE_BROWSER_NOT_OPEN instead of opening the browser for an agent action', async () => {
+    globalThis.__ideDom = undefined;
+    const activity = [];
+    const vscode = fakeVscode({ cdp: pageEvalCdp });
+    const host = createIdeBrowserHost(vscode, { onActivity: event => activity.push(event) });
+    const result = await host.call({ sessionId: 's', workerId: 'w' }, { action: 'navigate', url: 'https://example.com/agent' });
+    assert.equal(result.code, 'IDE_BROWSER_NOT_OPEN');
+    assert.equal(result.url, 'https://example.com/agent');
+    assert.equal(vscode.tabs.length, 0, 'the browser page must not open automatically');
+    assert.equal(activity.at(-1).active, true, 'the conversation is told the agent needs the browser');
+    assert.equal(activity.at(-1).url, 'https://example.com/agent');
+  });
+
+  it('reports IDE_BROWSER_NOT_OPEN for tab_new when no page is open', async () => {
+    globalThis.__ideDom = undefined;
+    const vscode = fakeVscode({ cdp: pageEvalCdp });
+    const host = createIdeBrowserHost(vscode);
+    const result = await host.call({ sessionId: 's', workerId: 'w' }, { action: 'tab_new', url: 'https://example.com/new' });
+    assert.equal(result.code, 'IDE_BROWSER_NOT_OPEN');
+    assert.equal(vscode.tabs.length, 0);
+  });
+
+  it('still operates an already-open page without opening another tab', async () => {
+    globalThis.__ideDom = undefined;
+    const vscode = fakeVscode({ cdp: pageEvalCdp });
+    const host = createIdeBrowserHost(vscode);
+    await host.open('https://example.com');
+    const result = await host.call({ sessionId: 's', workerId: 'w' }, { action: 'navigate', url: 'https://example.com/next' });
+    assert.equal(result.url, 'https://example.com/next');
+    assert.equal(vscode.tabs.length, 1);
   });
 });

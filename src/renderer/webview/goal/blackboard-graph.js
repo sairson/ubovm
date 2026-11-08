@@ -5,7 +5,26 @@
   const put = (n, text) => { if (n.textContent !== text) n.textContent = text; };
   let graphSequence = 0;
   const NODE_WIDTH = 240, NODE_HEIGHT = 128, COLUMN_STEP = 288, ROW_STEP = 208;
-  window.createBlackboardGraph = (container, { factText, statusText, actionsContainer, onDetail }) => {
+  // Nodes are drawn as spheres inside a stable 240x128 card footprint, so the
+  // layout constants and drag hit area stay unchanged while edges attach to the
+  // visible circle. Unknown node kinds fall back to the rectangular card.
+  const shapeOf = node => node?.kind === 'root' ? { circle: true, w: 96, h: 96 }
+    : node?.kind === 'frontier' ? { circle: true, w: 32, h: 32 }
+    : node?.kind === 'goal' ? { circle: true, w: 128, h: 128 }
+    : node?.kind === 'fact' ? { circle: true, w: 128, h: 128 }
+    : node?.kind === 'intent' ? { circle: true, w: 128, h: 128 }
+    : { circle: false, w: NODE_WIDTH, h: NODE_HEIGHT };
+  // Intersect the center-to-center vector with the visible shape. Spheres need a
+  // radial offset; using the rectangle corner for a diagonal edge would leave a
+  // visible gap between the line and the ball.
+  const edgeOffset = (shape, dx, dy) => {
+    const length = Math.hypot(dx, dy);
+    if (!length) return { x: 0, y: 0 };
+    if (shape.circle) { const radius = shape.w / 2; return { x: dx / length * radius, y: dy / length * radius }; }
+    const scale = 1 / Math.max(Math.abs(dx) / (shape.w / 2), Math.abs(dy) / (shape.h / 2));
+    return { x: dx * scale, y: dy * scale };
+  };
+  window.createBlackboardGraph = (container, { factText, statusText, actionsContainer, onDetail, onRefresh }) => {
     const graphId = ++graphSequence;
     const controls = el('div', 'graph-controls');
     controls.setAttribute('role', 'group'); controls.setAttribute('aria-label', tr('画布缩放'));
@@ -18,11 +37,20 @@
     const search = el('input', 'graph-search'); search.type = 'search'; search.placeholder = '搜索事实、意图或关键词'; search.setAttribute('aria-label', '搜索探索图');
     const next = el('button', '', tr('下一项')); next.type = 'button';
     const searchCount = el('span', 'graph-search-count'); searchCount.setAttribute('role', 'status');
+    const refresh = el('button', 'graph-refresh', tr('刷新'));
+    refresh.type = 'button';
+    refresh.setAttribute('aria-label', tr('刷新黑板')); refresh.title = tr('重新读取并渲染黑板');
+    refresh.addEventListener('click', () => {
+      if (disposed) return;
+      refresh.disabled = true;
+      try { onRefresh?.(); } catch (error) { console.warn('[UBOVM] Blackboard refresh failed', error); }
+      setTimeout(() => { if (!disposed) refresh.disabled = false; }, 800);
+    });
     const trace = el('select', 'graph-trace'); trace.setAttribute('aria-label', '探索路径');
     for (const [value, label] of [['all', '全部路径'], ['upstream', '追溯上游证据'], ['downstream', '追踪下游分支']]) {
       const option = el('option', '', label); option.value = value; trace.append(option);
     }
-    navigation.append(search, next, searchCount, trace);
+    navigation.append(search, next, searchCount, refresh, trace);
     actionsContainer?.replaceChildren();
     const viewport = el('div', 'graph-viewport'); viewport.tabIndex = 0; viewport.setAttribute('aria-label', '任务关系图，可横向和纵向滚动');
     const canvas = el('div', 'graph-canvas');
@@ -142,7 +170,13 @@
       viewportSize = size;
       if (!resizeFrame) resizeFrame = requestAnimationFrame(() => {
         resizeFrame = 0;
-        if (!blocked() && !drag && !panGesture && lastSnapshot) render(lastSnapshot, true);
+        if (!blocked() && !drag && !panGesture && lastSnapshot) {
+          // A narrower/wider viewport must reflow automatically placed nodes;
+          // otherwise their old x positions widen the canvas beyond the viewport.
+          // Manually dragged positions stay where the user put them.
+          automaticPositions.clear();
+          render(lastSnapshot, true);
+        }
       });
     });
     observer.observe(viewport);
@@ -188,17 +222,13 @@
         const from = positions.get(source), to = positions.get(target === GOAL_TARGET ? GOAL_TARGET : target);
         const parent = byId.get(source), child = target === GOAL_TARGET ? { kind: 'goal' } : byId.get(target);
         if (!from || !to || !parent || !child) continue;
-        const parentHeight = parent.kind === 'root' ? 48 : NODE_HEIGHT;
-        const parentWidth = parent.kind === 'root' ? 88 : NODE_WIDTH;
-        const targetHeight = child.kind === 'frontier' ? 32 : NODE_HEIGHT;
-        const targetWidth = child.kind === 'frontier' ? 32 : NODE_WIDTH;
-        const cx = from.x + NODE_WIDTH / 2, cy = from.y + NODE_HEIGHT / 2;
-        const dx = to.x - from.x, dy = to.y - from.y;
-        let start = 1 / Math.max(Math.abs(dx) / (parentWidth / 2), Math.abs(dy) / (parentHeight / 2));
-        let end = 1 / Math.max(Math.abs(dx) / (targetWidth / 2), Math.abs(dy) / (targetHeight / 2));
-        if (!Number.isFinite(start + end) || start + end >= 1) start = end = .5;
-        const x1 = cx + dx * start, y1 = cy + dy * start;
-        const x2 = cx + dx * (1 - end), y2 = cy + dy * (1 - end);
+        const parentShape = shapeOf(parent), targetShape = shapeOf(child);
+        const fromCenter = { x: from.x + NODE_WIDTH / 2, y: from.y + NODE_HEIGHT / 2 };
+        const toCenter = { x: to.x + NODE_WIDTH / 2, y: to.y + NODE_HEIGHT / 2 };
+        const dx = toCenter.x - fromCenter.x, dy = toCenter.y - fromCenter.y;
+        const startOffset = edgeOffset(parentShape, dx, dy), endOffset = edgeOffset(targetShape, dx, dy);
+        const x1 = fromCenter.x + startOffset.x, y1 = fromCenter.y + startOffset.y;
+        const x2 = toCenter.x - endOffset.x, y2 = toCenter.y - endOffset.y;
         const angle = Math.atan2(y2 - y1, x2 - x1);
         const route = `M${x1},${y1} L${x2},${y2}`;
         cached.line.setAttribute('d', `${route} M${x2 - 6 * Math.cos(angle - .5)},${y2 - 6 * Math.sin(angle - .5)} L${x2},${y2} L${x2 - 6 * Math.cos(angle + .5)},${y2 - 6 * Math.sin(angle + .5)}`);
@@ -483,20 +513,16 @@
           line.dataset.source = parent; line.dataset.target = n.id;
           line.dataset.kind = edge.goal ? 'achieves' : edge.intentId ? 'explores' : 'derives'; line.dataset.status = edge.status || '';
           if (edge.intentId) line.dataset.intentId = edge.intentId;
-          const parentHeight = byId.get(parent).kind === 'root' ? 48 : NODE_HEIGHT;
-          const parentWidth = byId.get(parent).kind === 'root' ? 88 : NODE_WIDTH;
-          const targetHeight = n.kind === 'frontier' ? 32 : NODE_HEIGHT;
-          const targetWidth = n.kind === 'frontier' ? 32 : NODE_WIDTH;
-          // Intersect the center-to-center line with both node bounds. This
-          // stays straight across ranks and follows nodes dragged sideways/upward.
-          const cx = from.x + NODE_WIDTH / 2, cy = from.y + NODE_HEIGHT / 2;
-          const dx = p.x - from.x, dy = p.y - from.y;
-          let start = 1 / Math.max(Math.abs(dx) / (parentWidth / 2), Math.abs(dy) / (parentHeight / 2));
-          let end = 1 / Math.max(Math.abs(dx) / (targetWidth / 2), Math.abs(dy) / (targetHeight / 2));
-          // Overlapping nodes have no exposed segment; do not reverse the edge.
-          if (!Number.isFinite(start + end) || start + end >= 1) start = end = .5;
-          const x1 = cx + dx * start, y1 = cy + dy * start;
-          const x2 = cx + dx * (1 - end), y2 = cy + dy * (1 - end);
+          const parentShape = shapeOf(byId.get(parent)), targetShape = shapeOf(n);
+          // Intersect the center-to-center line with both visible shapes. Circles
+          // need a radial offset; rectangular fallback keeps the old behavior.
+          const parentPosition = positions.get(parent);
+          const fromCenter = { x: parentPosition.x + NODE_WIDTH / 2, y: parentPosition.y + NODE_HEIGHT / 2 };
+          const toCenter = { x: p.x + NODE_WIDTH / 2, y: p.y + NODE_HEIGHT / 2 };
+          const dx = toCenter.x - fromCenter.x, dy = toCenter.y - fromCenter.y;
+          const startOffset = edgeOffset(parentShape, dx, dy), endOffset = edgeOffset(targetShape, dx, dy);
+          const x1 = fromCenter.x + startOffset.x, y1 = fromCenter.y + startOffset.y;
+          const x2 = toCenter.x - endOffset.x, y2 = toCenter.y - endOffset.y;
           const angle = Math.atan2(y2 - y1, x2 - x1);
           const route = `M${x1},${y1} L${x2},${y2}`;
           line.setAttribute('d', `${route} M${x2 - 6 * Math.cos(angle - .5)},${y2 - 6 * Math.sin(angle - .5)} L${x2},${y2} L${x2 - 6 * Math.cos(angle + .5)},${y2 - 6 * Math.sin(angle + .5)}`);

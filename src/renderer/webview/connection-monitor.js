@@ -9,8 +9,9 @@
     // gap (reply already queued) from sleep/background where state may be stale.
     let lastPong = 0;
     let wasHidden = document.hidden;
-    // One missed probe is usually UI/extension-host churn; require two consecutive
-    // failures before declaring hard disconnect so operating the IDE does not flash offline.
+    // One missed probe is usually UI/extension-host churn. A miss is evidence of
+    // slowness, not proof of death, so the page keeps probing, keeps its pending
+    // operations, and only surfaces a sustained silence as a passive banner.
     let missCount = 0;
     // Transient agent-runtime flaps (respawn / RPC heartbeat) must not banner the page
     // until confirmed across consecutive acknowledgements.
@@ -31,14 +32,17 @@
     }
     function noteMiss() {
       // One post-show miss (timeout or failed bridge delivery) is usually panel
-      // churn; soft-reconnect without counting toward hard disconnect.
+      // churn; soft-reconnect without counting toward the sustained banner.
       if (Date.now() < graceUntil) {
         graceUntil = 0;
         change('reconnecting');
         return;
       }
       missCount += 1;
-      if (missCount >= 2) change('disconnected');
+      // No timeout kills the page's connection: the probe keeps running, pending
+      // operations keep their own deadlines, and a late reply completes recovery.
+      // Sustained silence is only reported as a non-blocking "unresponsive" state.
+      if (missCount >= 2) change('unresponsive');
       else change('reconnecting');
     }
     function probe() {
@@ -103,6 +107,16 @@
         return true;
       }
       if (['disconnected', 'closed'].includes(backend.status)) {
+        // A worker that is being respawned reports disconnected while recovery is
+        // already in flight. Keep the UI in soft-reconnecting for the first few
+        // probes; a persistent failure still raises the offline banner so a real
+        // outage is not hidden indefinitely.
+        if (backend.recovering === true && backend.status === 'disconnected') {
+          backendMissCount += 1;
+          if (backendMissCount >= 4) change('backend-disconnected');
+          else change('reconnecting');
+          return true;
+        }
         backendMissCount += 1;
         if (backendMissCount >= 2) change('backend-disconnected');
         else change('reconnecting');
@@ -132,17 +146,20 @@
       pending = undefined; lastTick = Date.now(); missCount = 0; backendMissCount = 0;
       if (document.hidden) { clearInterval(timer); timer = undefined; return; }
       if (disposed || suspended) return;
-      // A hidden page may have missed backend changes; require a fresh acknowledgement.
+      // A hidden page may have missed backend changes; probe fresh without
+      // flashing a reconnect banner. The page resyncs its own state on visibility,
+      // and a failed probe still escalates through noteMiss().
       openGrace();
-      change('reconnecting'); startClock(); probe();
+      startClock(); probe();
     }
     function suspend() { suspended = true; clearInterval(timer); timer = undefined; pending = undefined; }
     function resume() {
       if (disposed || !suspended) return;
       suspended = false; wasHidden = document.hidden; lastTick = Date.now(); missCount = 0; backendMissCount = 0;
-      // Require fresh confirmation and trigger the consumer's state resync.
+      // Require a fresh probe, but keep the last known status while it is in
+      // flight. The page requests a full state resync on pageshow independently;
+      // this avoids a reconnect flash for a normal hide/show cycle.
       openGrace();
-      change('reconnecting');
       startClock(); probe();
     }
     function dispose() { disposed = true; suspend(); window.removeEventListener('message', receive); document.removeEventListener('visibilitychange', visible); window.removeEventListener('pagehide', suspend); window.removeEventListener('pageshow', resume); }

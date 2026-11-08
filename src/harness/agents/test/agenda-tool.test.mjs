@@ -21,17 +21,26 @@ test('exploration_todo lists projected intent status and recorded directions', a
   const data = before.details;
   // The pending intent is projected as planned.
   assert.equal(data.counts.planned, 1);
-  assert.match(textOf(before), /# Shared exploration agenda/);
+  // One payload: the structured agenda is the only representation. The
+  // previous rendered markdown copy of the same entries is gone.
+  assert.equal(textOf(before), JSON.stringify(data));
+  assert.equal(Object.hasOwn(data, 'text'), false);
+  assert.doesNotMatch(textOf(before), /# Shared exploration agenda/);
   const written = await tool.execute('write', { action: 'write', items: [
     { id: 'headers', content: 'Check cache headers on the edge', dedupe_key: 'edge cache headers', method: 'fetch twice', acceptance: 'two cache states observed' }
   ] });
-  assert.equal(written.details.directions.length, 1);
-  assert.equal(written.details.directions[0].status, 'planned');
-  assert.match(written.details.directions[0].dedupe_key, /edge cache headers/);
+  // Write confirms the changed direction plus counts instead of restating the agenda.
+  assert.deepEqual(written.details.written, [{ id: 'headers', status: 'planned' }]);
+  assert.equal(Object.hasOwn(written.details, 'open'), false);
+  assert.equal(written.details.counts.total > 0, true);
   const listed = await tool.execute('list', { action: 'list' });
+  assert.equal(listed.details.directions.length, 1);
+  assert.equal(listed.details.directions[0].status, 'planned');
+  assert.match(listed.details.directions[0].dedupe_key, /edge cache headers/);
   const direction = listed.details.open.find(item => item.kind === 'direction');
   assert.equal(direction.title, 'Check cache headers on the edge');
   assert.equal(direction.method, 'fetch twice');
+  assert.equal(direction.dedupe_key, 'edge cache headers');
 });
 
 test('exploration_todo updates and drops Reason directions atomically', async () => {
@@ -43,11 +52,33 @@ test('exploration_todo updates and drops Reason directions atomically', async ()
   const updated = await tool.execute('update', { action: 'update', direction_id: 'one', status: 'done', acceptance: 'verified twice' });
   assert.equal(updated.details.updated.status, 'done');
   assert.equal(updated.details.updated.acceptance, 'verified twice');
+  assert.equal(Object.hasOwn(updated.details, 'open'), false);
+  assert.equal(updated.details.counts.total > 0, true);
   assert.equal(store.snapshot(['agenda']).agenda.length, 2);
   await tool.execute('update', { action: 'update', direction_id: 'two', status: 'dropped' });
   assert.equal(store.snapshot(['agenda']).agenda.find(entry => entry.id === 'two').status, 'dropped');
   await assert.rejects(tool.execute('update', { action: 'update', direction_id: 'missing', status: 'done' }), /was not found/);
-  await assert.rejects(tool.execute('update', { action: 'update', direction_id: 'one', status: 'urgent' }), /Agenda status/);
+  // Unknown lifecycle words fall back to planned instead of failing the tool turn.
+  const coerced = await tool.execute('update', { action: 'update', direction_id: 'one', status: 'urgent' });
+  assert.equal(coerced.details.updated.status, 'planned');
+  assert.deepEqual(coerced.details.normalized_status, [{ from: 'urgent', to: 'planned', fallback: true }]);
+});
+
+test('exploration_todo normalizes common lifecycle words to canonical direction status', async () => {
+  const { tool } = await fixture();
+  const written = await tool.execute('write', { action: 'write', items: [
+    { id: 'a', content: 'Pending direction', status: 'pending' },
+    { id: 'b', content: 'Running direction', status: 'in_progress' },
+    { id: 'c', content: 'Finished direction', status: 'completed' },
+    { id: 'd', content: 'Cancelled direction', status: 'cancelled' }
+  ] });
+  assert.deepEqual(written.details.written.map(entry => entry.status), ['planned', 'active', 'done', 'dropped']);
+  assert.deepEqual(written.details.normalized_status, [
+    { from: 'pending', to: 'planned' },
+    { from: 'in_progress', to: 'active' },
+    { from: 'completed', to: 'done' },
+    { from: 'cancelled', to: 'dropped' }
+  ]);
 });
 
 test('exploration_todo replaces only its own directions and validates input', async () => {

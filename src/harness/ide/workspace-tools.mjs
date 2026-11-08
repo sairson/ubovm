@@ -2,8 +2,8 @@ import { open, readFile, readdir, realpath, stat } from 'node:fs/promises';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { Type } from 'typebox';
 import { flagHelpProperties, withProgressiveDisclosure } from '../intools/shared/disclosure.mjs';
-import { detectImageMime, MAX_IMAGE_BYTES } from '../intools/shared/image-info.mjs';
-import { WORKSPACE_LIST_CATALOG, WORKSPACE_READ_CATALOG } from '../intools/shared/tool-catalogs.mjs';
+import { detectImageMime, imageDimensions, imageFormat, MAX_IMAGE_BYTES } from '../intools/shared/image-info.mjs';
+import { WORKSPACE_LIST_CATALOG } from '../intools/shared/tool-catalogs.mjs';
 
 const failure = (code, message) => Object.assign(new Error(message), { code });
 const inside = (root, path) => { const value = relative(root, path); return value === '' || value !== '..' && !value.startsWith(`..${sep}`) && !isAbsolute(value); };
@@ -12,35 +12,40 @@ const result = value => ({ content: [{ type: 'text', text: JSON.stringify(value)
 /** Read-only workspace capabilities. Canonical paths prevent traversal through symlinks.
  * Path note: ubovm/src/renderer/workbench/ and ubovm/src/renderer/webview/ are siblings;
  * startup.html/workbench.css live under workbench/, not webview/. If a webview/... lookup misses,
- * did-you-mean: retry under workbench/. Large files (e.g. workbench.css ~1715 lines,
- * message-view.css 300+ lines): page read_workspace_file via nextLine loop; code to edit pages
- * via read_workspace_code nextOffset loop; on tool_defect re-read with the other read tool. */
-export async function createWorkspaceTools(workspaceRoots = [], { unbounded = false } = {}) {
+ * did-you-mean: retry under workbench/. read_workspace_code is the canonical file read
+ * (line paging via startLine/lineCount); these base tools stay read-only. */
+export async function createWorkspaceTools(workspaceRoots = [], { unbounded = false, externalImages = true } = {}) {
   if (!Array.isArray(workspaceRoots) || workspaceRoots.some(root => typeof root !== 'string')) throw new TypeError('workspaceRoots must be an array of paths');
   const roots = [...new Set(await Promise.all(workspaceRoots.map(root => realpath(resolve(root)))))];
-  async function locate(input = {}, signal) {
+  async function locate(input = {}, signal, { external = false } = {}) {
     signal?.throwIfAborted();
     const index = input.root ?? 0, requested = input.path ?? '.';
     const root = roots[index];
-    if (!Number.isInteger(index) || (!root && !unbounded)) throw failure('WORKSPACE_REQUIRED', 'Select an open workspace root before reading files');
+    if (!Number.isInteger(index) || (!root && !unbounded && !(external && typeof requested === 'string' && isAbsolute(requested)))) throw failure('WORKSPACE_REQUIRED', 'Select an open workspace root before reading files');
     if (typeof requested !== 'string' || requested.includes('\0') || requested.replace(/^[A-Za-z]:/, '').includes(':')) throw failure('INVALID_WORKSPACE_PATH', 'Invalid workspace path');
     // 完全模式 resolves against the workspace root when there is one, but accepts
     // absolute and escaping paths and never enforces the boundary.
     const origin = root ?? process.cwd();
     const candidate = resolve(origin, requested);
-    if (!unbounded && !inside(origin, candidate)) throw failure('WORKSPACE_BOUNDARY', 'Path is outside the selected workspace');
+    // read_image may inspect absolute local images outside the roots (read-only).
+    // Relative traversal keeps the workspace boundary: only an explicit absolute
+    // path can widen the image read.
+    const outsideRequested = !inside(origin, candidate);
+    const externalPath = external && outsideRequested && isAbsolute(requested);
+    if (!unbounded && outsideRequested && !externalPath) throw failure('WORKSPACE_BOUNDARY', 'Path is outside the selected workspace');
     let canonical;
     try { canonical = await realpath(candidate); }
     catch (error) {
       if (error.code === 'ENOENT' || error.code === 'ENOTDIR') {
         signal?.throwIfAborted();
-        return { path: candidate, root: index, missing: true, missingCode: error.code, display: (root ? relative(root, candidate) : candidate) || requested || '.' };
+        return { path: candidate, root: index, external: Boolean(externalPath || outsideRequested), missing: true, missingCode: error.code, display: (root && inside(root, candidate) ? relative(root, candidate) : candidate) || requested || '.' };
       }
       throw error;
     }
-    if (!unbounded && !inside(origin, canonical)) throw failure('WORKSPACE_BOUNDARY', 'Resolved path is outside the selected workspace');
+    if (!unbounded && !inside(origin, canonical) && !externalPath) throw failure('WORKSPACE_BOUNDARY', 'Resolved path is outside the selected workspace');
     signal?.throwIfAborted();
-    return { path: canonical, root: index, display: (root && inside(root, canonical) ? relative(root, canonical) : canonical) || '.' };
+    const externalRead = !root || !inside(root, canonical);
+    return { path: canonical, root: index, external: externalRead, display: (root && inside(root, canonical) ? relative(root, canonical) : canonical) || '.' };
   }
   const base = { root: Type.Optional(Type.Integer({ minimum: 0 })), path: Type.Optional(Type.String()) };
   return [
@@ -83,81 +88,41 @@ export async function createWorkspaceTools(workspaceRoots = [], { unbounded = fa
         return result({ root: target.root, path: target.display, exists: true, entries: page.map(item => ({ name: item.name, type: item.isSymbolicLink() ? 'symlink' : item.isDirectory() ? 'directory' : item.isFile() ? 'file' : 'other' })), offset, totalEntries: entries.length, nextOffset, truncated: nextOffset !== null });
       }
     }, { ...WORKSPACE_LIST_CATALOG, mode: 'flag' }),
-    withProgressiveDisclosure({
-      name: 'read_workspace_file', recovery: 'retry-read-only', label: 'Read workspace file',
-      description: `${WORKSPACE_READ_CATALOG.description} Path: ubovm/src/renderer/workbench/ and ubovm/src/renderer/webview/ are siblings; startup.html/workbench.css are under workbench/. Large files page via nextLine; editable code via read_workspace_code nextOffset; on tool_defect use the other read tool.${unbounded ? ' 完全模式 is active: path may be any absolute path on this machine.' : ''}`,
-      parameters: Type.Object({
-        ...base,
-        path: Type.Optional(Type.String()),
-        startLine: Type.Optional(Type.Integer({ minimum: 1 })),
-        lineCount: Type.Optional(Type.Integer({ minimum: 1, maximum: 400 })),
-        ...flagHelpProperties()
-      }, { additionalProperties: false }),
-      async execute(_id, input, signal) {
-        requirePath(input.path);
-        const target = await locate(input, signal);
-        if (target.missing) {
-          return result({
-            exists: false, path: target.display, root: target.root, content: null,
-            startLine: input.startLine ?? 1, endLine: null, truncated: false, fileTruncated: false, lineTruncated: false, accessibleLines: 0, nextLine: null,
-            guidance: 'This file does not exist. Create it if needed; a missing path is not a tool failure.'
-          });
-        }
-        const startLine = input.startLine ?? 1, lineCount = input.lineCount ?? 200;
-        if (!Number.isSafeInteger(startLine) || startLine < 1 || !Number.isSafeInteger(lineCount) || lineCount < 1 || lineCount > 400) throw new TypeError('Invalid line range');
-        if (!(await stat(target.path)).isFile()) throw failure('WORKSPACE_NOT_FILE', 'Path must be a regular file');
-        const handle = await open(target.path, 'r');
-        try {
-          const info = await handle.stat();
-          if (!info.isFile()) throw failure('WORKSPACE_NOT_FILE', 'Path must be a regular file');
-          const maximum = 4 << 20, buffer = Buffer.alloc(Math.min(info.size, maximum));
-          let bytes = 0;
-          while (bytes < buffer.length) { signal?.throwIfAborted(); const read = await handle.read(buffer, bytes, buffer.length - bytes, null); if (!read.bytesRead) break; bytes += read.bytesRead; }
-          signal?.throwIfAborted();
-          const fileTruncated = info.size > bytes;
-          let text;
-          try {
-            // A byte cap may bisect a valid character; with streaming decode
-            // only that unfinished suffix is omitted. Invalid interior bytes
-            // must never silently become replacement characters in evidence.
-            text = new TextDecoder('utf-8', { fatal: true }).decode(buffer.subarray(0, bytes), { stream: fileTruncated });
-          } catch { throw failure('WORKSPACE_BINARY_FILE', 'Only valid UTF-8 text files are supported'); }
-          if (text.includes('\0')) throw failure('WORKSPACE_BINARY_FILE', 'Only UTF-8 text files are supported');
-          const lines = text ? text.split(/\r?\n/) : [];
-          if (text.endsWith('\n')) lines.pop();
-          const selected = lines.slice(startLine - 1, startLine - 1 + lineCount);
-          let content = '', count = 0, outputBytes = 0, lineTruncated = false;
-          for (const line of selected) { const next = `${startLine + count}: ${line}\n`, size = Buffer.byteLength(next); if (outputBytes + size > 128 << 10) break; content += next; count++; outputBytes += size; }
-          if (!count && selected.length) { content = `${startLine}: ${Array.from(selected[0]).slice(0, 30000).join('')}\n[line truncated]\n`; count = 1; lineTruncated = true; }
-          const nextLine = count && startLine - 1 + count < lines.length ? startLine + count : null;
-          return result({ exists: true, path: target.display, root: target.root, startLine, endLine: count ? startLine + count - 1 : null, content,
-            truncated: fileTruncated || lineTruncated || nextLine !== null, fileTruncated, lineTruncated, accessibleLines: lines.length, nextLine });
-        } finally { await handle.close(); }
-      }
-    }, { ...WORKSPACE_READ_CATALOG, mode: 'flag' }),
     {
       name: 'read_image', recovery: 'retry-read-only', label: '读取图片',
-      description: `Read one image file from the workspace and return it to the model. Supports PNG, JPEG, WebP and GIF up to ${Math.round(MAX_IMAGE_BYTES / 1024 / 1024)} MiB. Use this for screenshots, diagrams, design references, OCR or visual checks. The path follows the same workspace boundary as read_workspace_file; 完全模式 accepts any absolute path. The returned metadata includes path, MIME type and byte size.`,
+      description: `Read one local image file and return it to the model as an image plus bounded metadata. Supports PNG, JPEG, WebP and GIF up to ${Math.round(MAX_IMAGE_BYTES / 1024 / 1024)} MiB; metadata includes path, MIME type, format, byte size and pixel dimensions. Use this for screenshots, diagrams, design references, OCR or visual checks instead of describing an image from its name. A relative path follows the workspace boundary; an absolute local path outside the workspace is also allowed read-only (external=true) and non-image files are rejected. ${unbounded ? '完全模式 is active: any absolute path on this machine is accepted.' : ''}`,
       parameters: Type.Object({
         root: Type.Optional(Type.Integer({ minimum: 0 })),
         path: Type.String({ minLength: 1 }),
       }, { additionalProperties: false }),
       async execute(_id, input, signal) {
         requirePath(input.path);
-        const target = await locate(input, signal);
+        const target = await locate(input, signal, { external: externalImages });
+        const external = target.external === true;
         if (target.missing) {
-          return result({ exists: false, path: target.display, root: target.root, mimeType: null, bytes: 0,
+          return result({ exists: false, path: target.display, root: target.root, mimeType: null, format: null, bytes: 0, width: null, height: null, external,
             guidance: 'This image does not exist. Check the path before reading it again.' });
         }
         const info = await stat(target.path);
         if (!info.isFile()) throw failure('WORKSPACE_NOT_FILE', 'Path must be a regular image file');
-        if (info.size > MAX_IMAGE_BYTES) throw failure('IMAGE_TOO_LARGE', `Image exceeds ${MAX_IMAGE_BYTES} bytes (${Math.round(MAX_IMAGE_BYTES / 1024 / 1024)} MiB). Use a smaller image or a screenshot crop.`);
         signal?.throwIfAborted();
+        // Read the header first so an external non-image path is rejected without
+        // loading or returning its full contents.
+        const header = Buffer.alloc(Math.min(info.size, 32));
+        const handle = await open(target.path, 'r');
+        try { await handle.read(header, 0, header.length, 0); }
+        finally { await handle.close(); }
+        signal?.throwIfAborted();
+        const headerMime = detectImageMime(header);
+        if (!headerMime) throw failure('IMAGE_UNSUPPORTED', 'Unsupported image bytes. Use PNG, JPEG, WebP or GIF.');
+        if (info.size > MAX_IMAGE_BYTES) throw failure('IMAGE_TOO_LARGE', `Image exceeds ${MAX_IMAGE_BYTES} bytes (${Math.round(MAX_IMAGE_BYTES / 1024 / 1024)} MiB). Use a smaller image or a screenshot crop.`);
         const buffer = await readFile(target.path);
         signal?.throwIfAborted();
         const mimeType = detectImageMime(buffer);
         if (!mimeType) throw failure('IMAGE_UNSUPPORTED', 'Unsupported image bytes. Use PNG, JPEG, WebP or GIF.');
-        const metadata = { exists: true, path: target.display, root: target.root, mimeType, bytes: buffer.length };
+        const dimensions = imageDimensions(buffer);
+        const metadata = { exists: true, path: target.display, root: target.root, mimeType, format: imageFormat(mimeType) ?? null, bytes: buffer.length,
+          width: dimensions?.width ?? null, height: dimensions?.height ?? null, external };
         return {
           content: [
             { type: 'image', data: buffer.toString('base64'), mimeType },

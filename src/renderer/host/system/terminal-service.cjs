@@ -6,13 +6,19 @@ const cleanLabel = value => String(value).replace(/[\x00-\x1f\x7f-\x9f]/g, ' ').
 const dimensions = value => ({ columns: Math.max(1, Math.min(65535, Math.floor(value?.columns || 80))), rows: Math.max(1, Math.min(65535, Math.floor(value?.rows || 24))) });
 
 /** The renderer only sees terminal bytes; connection credentials stay in this host. */
-function createTerminalService(vscode, { readConfiguration, loadSSH, openSettings }) {
+function createTerminalService(vscode, { readConfiguration, loadSSH, openSettings, setDefaultProfile }) {
   const terminals = new Set(), pending = new Set(), targets = new Map();
   let disposed = false;
   const assertTrusted = () => {
     if (disposed) throw new Error('终端服务已关闭。');
     if (!vscode.workspace.isTrusted) throw new Error('请先信任当前工作区，再打开终端。');
   };
+  // A default id can outlive the profile it points at (import, migration, a
+  // hand-edited setting). Treat the first configured profile as the default so
+  // one stale id cannot hide every reachable server.
+  const defaultIdOf = (profiles, defaultId) => profiles.some(profile => profile.id === defaultId) ? defaultId : profiles[0]?.id;
+  const labelOf = profile => cleanLabel(profile.name || `${profile.username}@${profile.host}`);
+  const endpointOf = profile => cleanLabel(`${profile.username}@${profile.host}:${profile.port ?? 22}`);
   const localOptions = () => {
     // Resolve the native executable without going through a contributed profile.
     if (!vscode.env.shell) throw new Error('当前系统没有可用的终端 Shell。');
@@ -196,15 +202,76 @@ function createTerminalService(vscode, { readConfiguration, loadSSH, openSetting
     catch { configurationFailed = true; }
     if (disposed) return;
     assertTrusted();
-    const profiles = configuration?.profiles ?? [], defaultId = configuration?.defaultId ?? profiles[0]?.id;
-    const entries = profiles.map(profile => ({ label: '$(remote) ' + cleanLabel(profile.name || `${profile.username}@${profile.host}`),
-      description: profile.id === defaultId ? '默认 SSH' : 'SSH', detail: cleanLabel(`${profile.username}@${profile.host}:${profile.port ?? 22}`), target: 'ssh', profileId: profile.id }));
+    const profiles = configuration?.profiles ?? [], defaultId = defaultIdOf(profiles, configuration?.defaultId);
+    const entries = profiles.map(profile => ({ label: '$(remote) ' + labelOf(profile),
+      description: profile.id === defaultId ? '默认 SSH' : 'SSH', detail: endpointOf(profile), target: 'ssh', profileId: profile.id }));
     entries.unshift({ label: '$(terminal) 当前系统终端', description: '默认 · 本机', target: 'local' });
     entries.push({ label: '$(settings-gear) 配置 SSH 连接', target: 'settings' });
-    const choice = await vscode.window.showQuickPick(entries, { title: '新建终端',
-      placeHolder: configurationFailed ? 'SSH 配置读取失败，可打开本地终端或配置 SSH 连接' : '选择当前系统终端或 SSH 连接' });
+    const choice = await vscode.window.showQuickPick(entries, { title: profiles.length > 1 ? '新建终端 · 选择远程主机' : '新建终端',
+      placeHolder: configurationFailed ? 'SSH 配置读取失败，可打开本地终端或配置 SSH 连接'
+        : profiles.length > 1 ? `已配置 ${profiles.length} 台 Linux 服务器，选择要连接的一台` : '选择当前系统终端或 SSH 连接' });
     if (!choice || disposed) return;
-    return choice.target === 'settings' ? openSettings() : open(choice.target, choice.profileId);
+    if (choice.target === 'settings') return openSettings();
+    const terminal = open(choice.target, choice.profileId);
+    // Choosing another server is the right moment to offer making it the
+    // default: the agent's remote commands run against the default profile.
+    if (choice.target === 'ssh' && profiles.length > 1 && choice.profileId !== defaultId && typeof setDefaultProfile === 'function') {
+      const profile = profiles.find(item => item.id === choice.profileId);
+      const chosen = profile ? labelOf(profile) : cleanLabel(choice.detail);
+      void vscode.window.showInformationMessage(`已打开 ${chosen} 终端。以后默认使用这台服务器吗？`, '设为默认', '保持现状')
+        .then(action => {
+          if (action !== '设为默认' || disposed || !profile) return;
+          return Promise.resolve(setDefaultProfile(profile.id)).then(
+            () => vscode.window.showInformationMessage('已设为默认远程主机，下一轮任务生效。'),
+            error => vscode.window.showErrorMessage('设置默认远程主机失败：' + cleanLabel(error?.message || error)));
+        }, () => {});
+    }
+    return terminal;
+  }
+
+  /** Switch the default remote host used by the agent and by new SSH terminals. */
+  async function selectDefault() {
+    assertTrusted();
+    let configuration;
+    try { configuration = await readConfiguration(); }
+    catch (error) {
+      void vscode.window.showErrorMessage('读取 SSH 配置失败：' + cleanLabel(error?.message || error));
+      return;
+    }
+    if (disposed) return;
+    const profiles = configuration?.profiles ?? [];
+    if (!profiles.length) return openSettings();
+    const defaultId = defaultIdOf(profiles, configuration?.defaultId);
+    const entries = profiles.map(profile => ({ label: (profile.id === defaultId ? '$(check) ' : '$(remote) ') + labelOf(profile),
+      description: profile.id === defaultId ? '当前默认' : '设为默认', detail: endpointOf(profile), id: profile.id }));
+    const choice = await vscode.window.showQuickPick(entries, { title: '选择远程主机',
+      placeHolder: 'Agent 的远程命令与远程终端使用这台 Linux 服务器' });
+    if (!choice || disposed) return;
+    if (choice.id === defaultId) { void vscode.window.showInformationMessage('已是当前默认远程主机。'); return; }
+    if (typeof setDefaultProfile !== 'function') return openSettings();
+    try {
+      await setDefaultProfile(choice.id);
+      void vscode.window.showInformationMessage(`已切换远程主机：${choice.detail}`);
+    } catch (error) {
+      void vscode.window.showErrorMessage('切换远程主机失败：' + cleanLabel(error?.message || error));
+    }
+  }
+
+  /** The toolbar entry: reuse the live SSH terminal, else ask when several exist. */
+  async function openRemote(preserveFocus = false) {
+    assertTrusted();
+    for (const [terminal, kind] of [...targets].reverse()) {
+      if (kind !== 'ssh' || terminal.exitStatus !== undefined || !pending.has(terminal.creationOptions?.pty)) continue;
+      terminal.show(preserveFocus);
+      remember(terminal, 'ssh');
+      return terminal;
+    }
+    let profiles = [];
+    try { profiles = (await readConfiguration())?.profiles ?? []; } catch { /* the default profile reports its own error */ }
+    if (disposed) return;
+    // With several configured servers, never guess which one the user meant.
+    if (profiles.length > 1) return select();
+    return switchTo('ssh', preserveFocus);
   }
 
   function register() {
@@ -249,7 +316,7 @@ function createTerminalService(vscode, { readConfiguration, loadSSH, openSetting
     targets.clear();
     if (errors.length) throw new AggregateError(errors, '部分终端资源释放失败，已尝试清理其他终端。');
   }
-  return { open, switchTo, select, register, dispose };
+  return { open, openRemote, switchTo, select, selectDefault, register, dispose };
 }
 
 module.exports = { createTerminalService };

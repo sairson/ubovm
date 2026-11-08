@@ -39,7 +39,7 @@
 }
 .project-switcher-header {
   display: flex; align-items: center; gap: 10px;
-  padding: 16px 18px 12px; border-bottom: 1px solid var(--border);
+  padding: 16px 18px 12px; border-bottom: 1px solid var(--border-hairline);
   flex: 0 0 auto;
 }
 .project-switcher-header h2 {
@@ -52,7 +52,7 @@
   border: 0; border-radius: 8px; background: transparent; color: var(--muted);
   font: inherit; font-size: var(--fs-sm, 12px); cursor: pointer;
 }
-#project-switcher-close:hover { background: var(--hover); color: var(--ink); }
+#project-switcher-close:hover { background: var(--surface-hover); color: var(--ink); }
 #project-switcher-close:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
 
 #project-switcher-list-pane {
@@ -62,10 +62,11 @@
 .project-switcher-search-wrap {
   display: flex; align-items: center; gap: 8px;
   margin: 0 16px 10px; padding: 0 12px;
-  border: 1px solid var(--border); border-radius: 10px; background: var(--wash);
+  border: 1px solid var(--border); border-radius: 10px; background: var(--surface-subtle);
   flex: 0 0 auto;
+  box-shadow: var(--dsw-inset);
 }
-.project-switcher-search-wrap:focus-within { border-color: var(--focus); background: var(--canvas); }
+.project-switcher-search-wrap:focus-within { border-color: var(--focus); background: var(--surface); }
 .project-switcher-search-wrap svg { width: 15px; height: 15px; flex-shrink: 0; fill: none; stroke: currentColor; stroke-width: 1.7; color: var(--muted); }
 #project-switcher-search {
   flex: 1; min-width: 0; border: 0; outline: none; background: transparent;
@@ -82,7 +83,7 @@
 .project-switcher-cta:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
 .project-switcher-cta-icon {
   display: grid; place-items: center; width: 28px; height: 28px; border-radius: 8px;
-  background: color-mix(in srgb, var(--ink) 8%, var(--canvas)); color: var(--ink); flex-shrink: 0;
+  background: var(--surface-raised); color: var(--ink); flex-shrink: 0;
 }
 .project-switcher-cta-icon svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.8; }
 .project-switcher-cta strong { font-weight: 600; font-size: var(--fs-md, 13px); }
@@ -98,14 +99,14 @@
   background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; user-select: none;
 }
 .project-switcher-row:hover, .project-switcher-row.is-active { background: var(--overlay-hover-background, var(--hover)); }
-.project-switcher-row.is-current { background: color-mix(in srgb, var(--accent) 10%, var(--canvas)); }
+.project-switcher-row.is-current { background: var(--selection-bg); }
 .project-switcher-row.is-current.is-active, .project-switcher-row.is-current:hover {
-  background: color-mix(in srgb, var(--accent) 16%, var(--canvas));
+  background: var(--surface-raised);
 }
 .project-switcher-row:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
 .project-switcher-icon {
   display: grid; place-items: center; width: 28px; height: 28px; border-radius: 8px;
-  background: color-mix(in srgb, var(--ink) 6%, var(--canvas)); color: var(--muted); flex-shrink: 0;
+  background: var(--surface-subtle); color: var(--muted); flex-shrink: 0;
 }
 .project-switcher-icon svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.7; }
 .project-switcher-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
@@ -119,11 +120,11 @@
 }
 .project-switcher-badge {
   flex-shrink: 0; font-size: 10px; font-weight: 600; line-height: 1.2; padding: 2px 6px; border-radius: 999px;
-  color: var(--accent); background: var(--accent-wash);
+  color: var(--focus); background: color-mix(in srgb, var(--focus) 10%, transparent);
 }
 .project-switcher-badge.running {
-  color: var(--vscode-editorWarning-foreground, #9a6b00);
-  background: color-mix(in srgb, var(--vscode-editorWarning-foreground, #9a6b00) 14%, var(--canvas));
+  color: var(--vscode-editorWarning-foreground, var(--state-warning));
+  background: var(--state-warning-wash);
 }
 .project-switcher-actions { display: flex; gap: 2px; opacity: 0; transition: opacity 120ms; }
 .project-switcher-row:hover .project-switcher-actions,
@@ -133,28 +134,29 @@
   display: grid; place-items: center; width: 28px; height: 28px; border: 0; border-radius: 7px;
   background: transparent; color: var(--muted); cursor: pointer; padding: 0;
 }
-.project-switcher-action:hover:enabled { background: var(--wash); color: var(--ink); }
+.project-switcher-action:hover:enabled { background: var(--surface-hover); color: var(--ink); }
 .project-switcher-action.danger:hover:enabled {
-  color: var(--vscode-errorForeground, #b44a3d);
-  background: color-mix(in srgb, var(--vscode-errorForeground, #b44a3d) 10%, var(--canvas));
+  color: var(--vscode-errorForeground, var(--state-error));
+  background: var(--state-error-wash);
 }
 .project-switcher-action:disabled { opacity: .35; cursor: default; }
 .project-switcher-action svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.7; }
 #project-switcher-empty, #project-switcher-error, #project-switcher-create-error {
   margin: 0 18px 10px; font-size: var(--fs-sm, 12px); line-height: var(--lh-ui, 1.55); color: var(--muted);
 }
-#project-switcher-error, #project-switcher-create-error { color: var(--vscode-errorForeground, #a8453f); }
+#project-switcher-error, #project-switcher-create-error { color: var(--vscode-errorForeground, var(--state-error)); }
 #project-switcher-create { padding: 14px 18px 16px; display: flex; flex-direction: column; gap: 12px; min-height: 0; flex: 1 1 auto; }
 .project-switcher-field { display: flex; flex-direction: column; gap: 7px; }
 .project-switcher-field label { font-size: var(--fs-xs, 11px); font-weight: 500; color: var(--muted); letter-spacing: .02em; }
 .project-switcher-field input {
   box-sizing: border-box; width: 100%; padding: 10px 12px; border: 1px solid var(--border);
-  border-radius: 9px; background: var(--canvas); color: var(--ink);
+  border-radius: 9px; background: var(--surface); color: var(--ink);
   font: inherit; font-size: var(--fs-md, 13px); line-height: var(--lh-tight, 1.4);
+  box-shadow: var(--dsw-inset);
 }
 .project-switcher-field input:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
 .project-switcher-path {
-  margin: 0; padding: 10px 12px; border-radius: 9px; background: var(--wash);
+  margin: 0; padding: 10px 12px; border-radius: 9px; background: var(--surface-subtle);
   color: var(--muted); font-size: var(--fs-sm, 12px); line-height: var(--lh-ui, 1.55); overflow-wrap: anywhere;
 }
 .project-switcher-create-actions { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; margin-top: 4px; }

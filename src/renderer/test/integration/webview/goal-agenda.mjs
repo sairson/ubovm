@@ -62,6 +62,11 @@ test('exploration agenda tab shows shared status, worker steps, blockers and evi
     // Narrow layout must stay inside the panel without horizontal scrolling.
     await page.setViewportSize({ width: 430, height: 900 });
     await frames(); await frames();
+    // The wrapped header keeps the active page name; the secondary graph badge
+    // yields that space instead.
+    assert.equal(await page.locator('#goal-current-view').isVisible(), true);
+    assert.equal(await page.locator('#goal-current-view').textContent(), '议程');
+    assert.equal(await page.locator('#goal-graph-status').isVisible(), false);
     const overflow = await page.evaluate(() => {
       const panel = document.getElementById('goal-agenda');
       return { scroll: panel.scrollWidth, client: panel.clientWidth };

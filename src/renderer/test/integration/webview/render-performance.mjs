@@ -139,6 +139,9 @@ test('thinking action refresh retries an identical snapshot after rendering fail
     const part = { id: 'thinking', type: 'thinking', text: '```html\n<div>x</div>\n```', status: 'completed' };
     try {
       UBOVMMessage.update(target, '', { parts: [part] });
+      // Markdown bodies are parsed lazily while a card is collapsed; expand it
+      // first so the failure and retry both exercise the render path.
+      const card = target.querySelector('.thinking-card'); card.open = true; card.dispatchEvent(new Event('toggle'));
       const options = { parts: [part], onPreviewHtml() {} };
       window.UBOVMMarkdown = { ...original, update() { throw Error('injected failure'); } };
       let failed = false;
@@ -173,6 +176,8 @@ test('released thinking and summary toggles cannot recreate Markdown views', asy
         changes.push(updates - before);
       }
       UBOVMMessage.update(target, '', { parts: [{ id: 'fresh', type: 'thinking', text: '**Fresh**', status: 'completed' }] });
+      // A fresh collapsed card has no Markdown body until expanded.
+      const freshCard = target.querySelector('.thinking-card'); freshCard.open = true; freshCard.dispatchEvent(new Event('toggle'));
       return { changes, fresh: target.querySelector('strong')?.textContent };
     } finally { UBOVMMessage.release(target); target.remove(); window.UBOVMMarkdown = original; }
   });
@@ -935,7 +940,7 @@ test('thinking and schedule logs keep following new content until the reader scr
   current.execution = {
     status: 'running', busy: true,
     parts: Array.from({ length: 40 }, (_, i) => ({
-      id: 'thought-' + i, type: 'thinking', source: 'reason', status: 'completed',
+      id: 'step-' + i, type: 'text', status: 'completed',
       startedAt: 1000 + i, text: ('规划步骤 ' + i + '。\n').repeat(12)
     }))
   };
@@ -946,7 +951,7 @@ test('thinking and schedule logs keep following new content until the reader scr
   await send(page, current);
   await waitBottom();
   current.execution.parts.push({
-    id: 'thought-live', type: 'thinking', source: 'reason', status: 'running',
+    id: 'step-live', type: 'text', status: 'streaming',
     startedAt: 2000, text: ('继续推进。\n').repeat(20)
   });
   await send(page, current);
@@ -959,7 +964,7 @@ test('thinking and schedule logs keep following new content until the reader scr
   await page.locator('#goal-log-bottom').click();
   await waitBottom();
   current.execution.parts.push({
-    id: 'thought-after', type: 'thinking', source: 'reason', status: 'running',
+    id: 'step-after', type: 'text', status: 'streaming',
     startedAt: 3000, text: ('回到底部后继续。\n').repeat(16)
   });
   await send(page, current);
@@ -1242,34 +1247,39 @@ test('collapsed long code fences skip tokenization until expanded', async t => {
   assert.ok(result.shortTokens > 0, 'short fences still highlight immediately');
 });
 
-test('session loading fills the conversation column and switch overlay uses a thread skeleton', async t => {
+test('session loading and switch overlays center the loading animation', async t => {
   const page = await pageFor(t);
   const startup = await page.evaluate(() => {
     const loading = document.getElementById('page-loading');
     const main = document.getElementById('main-content').getBoundingClientRect();
     const box = loading.getBoundingClientRect();
-    let opacity = 1;
-    for (let node = loading; node; node = node.parentElement) opacity *= Number(getComputedStyle(node).opacity);
-    const label = loading.querySelector('#page-loading-label').getBoundingClientRect();
-    const thread = loading.querySelector('.skeleton-thread').getBoundingClientRect();
+    const loader = loading.querySelector('.page-loader');
+    const loaderBox = loader.getBoundingClientRect();
+    const labelBox = loading.querySelector('#page-loading-label').getBoundingClientRect();
     return {
-      opacity, fills: box.height > main.height * 0.55,
-      thread: Boolean(loading.querySelector('.skeleton-thread')),
-      composer: Boolean(loading.querySelector('.skeleton-composer')),
-      statusAboveThread: label.bottom <= thread.top + 1,
+      fills: box.height > main.height * 0.55,
+      centerX: Math.abs((loaderBox.left + loaderBox.width / 2) - (main.left + main.width / 2)),
+      centerY: Math.abs(((loaderBox.top + labelBox.bottom) / 2) - (main.top + main.height / 2)),
+      labelBelow: labelBox.top >= loaderBox.bottom - 1,
+      skeletonHidden: getComputedStyle(loading.querySelector('.loading-skeleton')).display === 'none',
+      spinner: getComputedStyle(loader).animationName,
     };
   });
-  assert.equal(startup.opacity, 1);
-  assert.equal(startup.thread, true);
-  assert.equal(startup.composer, true);
-  assert.equal(startup.statusAboveThread, true, 'startup status must stay readable above the thread skeleton');
-  assert.equal(startup.fills, true, 'startup skeleton should occupy the conversation column');
+  assert.equal(startup.fills, true, 'startup loader should occupy the conversation column');
+  assert.ok(startup.centerX < 2, 'startup loader must be horizontally centered');
+  assert.ok(startup.centerY < 2, 'startup loader group must be vertically centered');
+  assert.equal(startup.labelBelow, true, 'the status line sits under the centered spinner');
+  assert.equal(startup.skeletonHidden, true, 'the old top-aligned skeleton is no longer visible');
+  assert.match(startup.spinner, /loading-spin/);
   await send(page, state('load-session-a'));
   await page.waitForFunction(() => sent.some(message => message.action === 'contentReady'));
   const switching = await page.evaluate(next => {
     window.dispatchEvent(new MessageEvent('message', { data: next }));
     return new Promise(resolve => requestAnimationFrame(() => {
       const loader = document.getElementById('route-loading');
+      const main = document.getElementById('main-content').getBoundingClientRect();
+      const spinner = loader.querySelector('.page-loader').getBoundingClientRect();
+      const label = document.getElementById('route-loading-label').getBoundingClientRect();
       resolve({
         hidden: loader.hidden,
         kind: loader.dataset.kind,
@@ -1277,15 +1287,18 @@ test('session loading fills the conversation column and switch overlay uses a th
         barsDisplay: getComputedStyle(loader.querySelector('.route-loading-lines')).display,
         opacity: getComputedStyle(loader).opacity,
         label: document.getElementById('route-loading-label').textContent,
+        centerX: Math.abs((spinner.left + spinner.width / 2) - (main.left + main.width / 2)),
+        centerY: Math.abs(((spinner.top + label.bottom) / 2) - (main.top + main.height / 2)),
       });
     }));
   }, state('load-session-b'));
   assert.equal(switching.hidden, false);
   assert.equal(switching.kind, 'session');
-  assert.notEqual(switching.sessionDisplay, 'none');
+  assert.equal(switching.sessionDisplay, 'none', 'the switch overlay no longer shows a top-aligned thread skeleton');
   assert.equal(switching.barsDisplay, 'none');
   assert.equal(switching.opacity, '1');
   assert.match(switching.label, /正在加载会话/);
+  assert.ok(switching.centerX < 2 && switching.centerY < 2, 'the switch spinner sits in the page center');
 });
 
 test('an open settings dialog does not block conversation contentReady after a session switch', async t => {
@@ -1652,7 +1665,7 @@ test('loading and page switches remain opaque from their first animation frame',
   assert.equal(await page.locator('#settings-load-error').isVisible(), true);
 });
 
-test('goal overview logs Reason thinking, worker dispatch and tools without replacing history with the result', async t => {
+test('goal overview logs the DSH reasoning line, worker dispatch and tools without replacing history with the result', async t => {
   const page = await pageFor(t);
   const message = state('overview-output', 'goal');
   message.execution = { status: 'running', busy: true, parts: [
@@ -1660,21 +1673,30 @@ test('goal overview logs Reason thinking, worker dispatch and tools without repl
     { id: 'tool', type: 'tool', name: 'read_workspace_file', status: 'completed', args: '{}', output: '检查结果', startedAt: 3000 }
   ], workers: [{ id: 'worker-1', name: '检查项目', description: '读取项目结构', status: 'running', startedAt: 2000, parts: [] }] }; message.busy = true;
   await send(page, message);
-  assert.deepEqual(await page.locator('.goal-log-entry').evaluateAll(rows => rows.map(row => row.dataset.logId)), ['part:thought', 'worker:worker-1', 'part:tool']);
-  assert.equal(await page.locator('.goal-log-body .thinking-body').isVisible(), true);
+  const entries = page.locator('.goal-log-entry');
+  assert.equal(await entries.count(), 3);
+  assert.equal(await page.locator('.goal-log-entry[data-kind="reasoning"] .goal-log-reasoning-line').textContent(), '先检查项目入口。');
+  // DSH-style reasoning line: one collapsed line, never a thinking card.
+  assert.equal(await page.locator('.goal-log-entry[data-kind="reasoning"] .goal-log-reasoning').evaluate(node => node.open), false);
+  assert.equal(await page.locator('.goal-log-entry .thinking-card:not(.summary-card)').count(), 0);
+  assert.equal(await page.locator('.goal-log-entry[data-kind="tool"] .tool-card').count(), 1);
+  assert.equal(await page.locator('.tool-group').count(), 0, 'goal log keeps one card per tool row');
   assert.match(await page.locator('#goal-output-content').textContent(), /先检查项目入口/);
   await page.locator('.goal-log-worker').click();
   assert.equal(await page.locator('#worker-panel').isVisible(), true);
   await page.getByRole('button', { name: '关闭 Worker 详情' }).click();
-  await page.locator('.thinking-summary').click();
+  // Reading the line is a gesture: expand, collapse, and the manual state survives ticks.
+  await page.locator('.goal-log-reasoning-summary').click(); await paint(page);
+  await page.locator('.goal-log-reasoning-summary').click(); await paint(page);
   message.execution.parts[0].text += '继续检查依赖。'; await send(page, message);
-  assert.equal(await page.locator('.thinking-card').getAttribute('open'), null);
+  assert.equal(await page.locator('.goal-log-entry[data-kind="reasoning"] .goal-log-reasoning').evaluate(node => node.open), false, 'a streaming tick never reopens the line');
   message.busy = false; message.execution.busy = false; message.execution.status = 'completed';
   message.execution.result = { summary: '检查已完成。' }; await send(page, message);
   assert.equal(await page.locator('#goal-output-title').textContent(), '思考与调度日志');
   assert.match(await page.locator('#goal-output-content').textContent(), /检查已完成/);
   assert.match(await page.locator('#goal-output-content').textContent(), /先检查项目入口/);
-  await page.locator('.thinking-summary').click();
+  await page.locator('.goal-log-reasoning-summary').click(); await paint(page);
+  assert.match(await page.locator('.goal-log-entry[data-kind="reasoning"] .goal-log-reasoning-markdown').textContent(), /继续检查依赖/);
   await page.screenshot({ path: '.cache/goal-execution-log.png' });
   await send(page, state('empty-output', 'goal'));
   assert.equal(await page.locator('#goal-output-content').isVisible(), false);
@@ -1690,7 +1712,9 @@ test('overview shows only the full-width Reason log across viewport sizes', asyn
       { id: 'plan', type: 'thinking', source: 'reason', status: 'completed', startedAt: now - 60000, endedAt: now - 45000, text: '先确认 **浏览器安装流程** 和工具卡片的状态更新路径。\n\n把检查拆成两个独立任务：一个验证下载与重试，另一个检查界面交互。等待结果后，再整合发现并验证。' },
       { id: 'review', type: 'thinking', source: 'reason', status: 'running', startedAt: now - 8000, text: '安装流程已经检查完成，正在核对界面的状态变化。\n\n- 失败的工具保持收起\n- 思考日志默认展开\n- 用户手动选择在流式更新中保留' },
       { id: 'private-worker', type: 'thinking', source: 'worker', text: '仅在 Worker 详情显示', status: 'running' },
-      ...Array.from({ length: 10 }, (_, index) => ({ id: 'bulk-' + index, type: 'thinking', source: 'reason', status: 'completed', startedAt: now - 7000 + index, text: '补充检查项 ' + index + '：继续核对下载、重试、界面状态与窄屏布局，确认日志在面板内滚动而不是撑高页面。'.repeat(2) }))
+      ...Array.from({ length: 10 }, (_, index) => ({ id: 'bulk-' + index, type: 'thinking', source: 'reason', status: 'completed', startedAt: now - 7000 + index, text: '补充检查项 ' + index + '：继续核对下载、重试、界面状态与窄屏布局，确认日志在面板内滚动而不是撑高页面。'.repeat(2) })),
+      // Long-form answer text keeps the panel scrollable while reasoning is a single line.
+      ...Array.from({ length: 24 }, (_, index) => ({ id: 'answer-' + index, type: 'text', status: 'completed', startedAt: now - 30000 + index, text: '验证结论段落 ' + index + '：' + '继续核对下载、重试、界面状态与窄屏布局，确认日志在面板内滚动而不是撑高页面。'.repeat(4) }))
     ], workers: [
       { id: 'done', name: '验证安装流程', description: '检查下载、重复点击和失败重试。', status: 'completed', createdAt: now - 50000, startedAt: now - 48000, finishedAt: now - 12000 },
       { id: 'active', name: '检查界面交互', description: '验证工具卡片和思考日志的展开状态。', status: 'running', createdAt: now - 40000, startedAt: now - 35000, parts: [{ id: 'test', type: 'tool', name: 'run_linux_ssh_command', status: 'running' }] },
@@ -1700,6 +1724,9 @@ test('overview shows only the full-width Reason log across viewport sizes', asyn
     assert.equal(await page.locator('#worker-list, [data-overview-panel="workers"], #goal-overview-split, .goal-panel-controls').count(), 0);
     assert.equal(await page.locator('[data-log-id="worker:done"] .goal-log-state').textContent(), '已派发');
     assert.equal(await page.locator('[data-log-id="part:private-worker"]').count(), 0);
+    assert.equal(await page.locator('.goal-log-entry[data-kind="reasoning"]').count(), 1);
+    assert.equal(await page.locator('.goal-log-entry[data-kind="reasoning"] .goal-log-reasoning').evaluate(node => node.open), false, 'reasoning stays a collapsed DSH line');
+    assert.equal(await page.locator('.goal-log-entry .thinking-card:not(.summary-card)').count(), 0, 'reason thinking is not an in-block card');
     assert.equal(await page.locator('#goal-panels').evaluate(n => n.scrollWidth <= n.clientWidth), true);
     if (width >= 900) {
       const journal = await page.locator('.goal-output-panel').boundingBox();
@@ -1741,12 +1768,19 @@ test('goal page switcher supports keyboard navigation and restores reading posit
   const page = await pageFor(t, { viewport: { width: 1100, height: 760 } });
   const initial = state('goal-navigation', 'goal');
   initial.goal.criteria = Array.from({ length: 20 }, (_, index) => ({ id: 'c' + index, text: '验收条件 ' + index + '：保留页面中的阅读位置与输入内容。'.repeat(8), done: false }));
+  // The overview log now owns the reading position: it fills the workspace and
+  // scrolls internally, so the switcher must preserve that inner scroll.
+  initial.execution.parts = Array.from({ length: 40 }, (_, index) => ({
+    id: 'navigation-log-' + index, type: 'text', status: 'completed', startedAt: Date.now() + index,
+    text: '第 ' + index + ' 条调度记录：保留页面中的阅读位置。'.repeat(3)
+  }));
   await send(page, initial);
   assert.equal(await page.locator('#goal-tabs').getAttribute('aria-orientation'), 'vertical');
   assert.equal(await page.locator('#goal-tabs button').count(), 5);
   assert.equal(await page.locator('#goal-prompt-form').isVisible(), false);
   await page.locator('.goal-acceptance-panel > summary').click();
-  await page.locator('#goal-panels').evaluate(node => { node.scrollTop = 240; });
+  await page.waitForFunction(() => { const node = document.getElementById('goal-output-content'); return node && node.scrollHeight > node.clientHeight + 280; });
+  await page.locator('#goal-output-content').evaluate(node => { node.scrollTop = 240; });
   await page.locator('#goal-view-switcher > summary').click();
   await page.locator('#goal-tab-overview').focus();
   await page.keyboard.press('ArrowDown'); await paint(page);
@@ -1755,7 +1789,7 @@ test('goal page switcher supports keyboard navigation and restores reading posit
   assert.equal(await page.locator('#goal-tab-board').getAttribute('aria-selected'), 'true');
   assert.equal(await page.locator('#goal-prompt-form').isVisible(), false);
   await page.keyboard.press('Home'); await paint(page);
-  assert.equal(await page.locator('#goal-panels').evaluate(node => node.scrollTop), 240);
+  assert.equal(await page.locator('#goal-output-content').evaluate(node => node.scrollTop), 240);
   await page.keyboard.press('End'); await paint(page);
   assert.equal(await page.locator('#goal-tab-notes').getAttribute('aria-selected'), 'true');
   assert.equal(await page.locator('#goal-prompt-form').count(), 0);
@@ -1909,6 +1943,9 @@ test('typing coalesces persistence and a fast session switch flushes the previou
   const page = await pageFor(t);
   await send(page, state());
   await page.evaluate(() => {
+    // Ignore the one-time fresh-session state write during page bootstrap; this
+    // assertion is about coalescing user typing, not startup housekeeping.
+    window.persistCount = 0;
     const input = document.querySelector('#prompt-input');
     for (let index = 0; index < 80; index++) {
       input.value = '尚未提交的草稿 ' + index;
@@ -2223,11 +2260,14 @@ test('edge labels hide when nodes overlap them and remain accessible at low zoom
 test('goal header substitutes module actions and restores overview controls', async t => {
   const page = await pageFor(t), message = state('module-actions', 'goal');
   await send(page, state('assist-actions'));
-  assert.equal(await page.locator('#review-code-changes').isVisible(), true);
-  assert.equal(await page.locator('#open-browser').isVisible(), true);
+  assert.equal(await page.locator('#assist-more > summary').isVisible(), true);
+  assert.equal(await page.locator('#open-files').isVisible(), true);
+  assert.equal(await page.locator('#open-browser').isVisible(), false, 'the browser lives in the overflow menu');
+  assert.equal(await page.locator('#review-code-changes').isVisible(), false, 'code-change actions live in the overflow menu');
   assert.equal(await page.locator('#goal-header-more').isVisible(), false);
   message.execution.blackboard = { sessionId: 'module-actions', rootId: 'root', nodes: [{ id: 'root', kind: 'root', parentIds: [] }] };
   await send(page, message);
+  assert.equal(await page.locator('#assist-more > summary').isVisible(), false);
   assert.equal(await page.locator('#review-code-changes').isVisible(), false);
   assert.equal(await page.locator('#open-browser').isVisible(), false);
   assert.equal(await page.locator('#validate-code-changes').isVisible(), false);
@@ -2279,8 +2319,9 @@ test('goal header substitutes module actions and restores overview controls', as
     return false;
   }), false, 'goal topbar controls must not overlap at narrow widths');
   await send(page, state('assist-actions'));
-  assert.equal(await page.locator('#review-code-changes').isVisible(), true);
-  assert.equal(await page.locator('#open-browser').isVisible(), true);
+  assert.equal(await page.locator('#assist-more > summary').isVisible(), true);
+  assert.equal(await page.locator('#open-files').isVisible(), true);
+  assert.equal(await page.locator('#open-browser').isVisible(), false);
   assert.equal(await page.locator('#goal-header-more').isVisible(), false);
 });
 
@@ -2323,7 +2364,7 @@ test('opening Worker shows waiting, suppresses rapid clicks and releases control
 test('long-lived logs bound rendered rows, page older records and release hidden sessions', async t => {
   const page = await pageFor(t);
   const current = state('long-log', 'goal');
-  current.execution.parts = Array.from({length: 3000}, (_, i) => ({ id: 'part-' + i, type: 'thinking', source: 'reason', status: 'completed', text: '记录 ' + i, startedAt: i + 1 }));
+  current.execution.parts = Array.from({length: 3000}, (_, i) => ({ id: 'part-' + i, type: 'text', status: 'completed', text: '记录 ' + i, startedAt: i + 1 }));
   await send(page, current);
   assert.equal(await page.locator('.goal-log-entry').count(), 120);
   assert.match(await page.locator('.goal-log-pager').textContent(), /3000/);
@@ -2408,7 +2449,7 @@ test('route loader paints before heavy content and entry motion starts only afte
     return await new Promise(resolve => requestAnimationFrame(() => resolve({
       loader: !document.getElementById('route-loading').hidden,
       busy: document.getElementById('main-content').getAttribute('aria-busy'),
-      spinner: getComputedStyle(document.getElementById('route-loading-label'), '::before').animationName,
+      spinner: getComputedStyle(document.querySelector('#route-loading .page-loader')).animationName,
       graphs: document.querySelectorAll('.graph-canvas').length,
       animations: committedAnimations.length
     })));

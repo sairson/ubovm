@@ -59,7 +59,7 @@ test('assist mode renders the session todo board from execution memory', () => {
   assert.match(css, /\.assist-todos-item\[data-status="in_progress"\]::before \{[^}]*animation: tool-spin/);
   // The active task is the board's selected row: rail, tint and heavier text.
   assert.match(css, /\.assist-todos-item\[data-status="in_progress"\] \{ background: color-mix\(in srgb, var\(--accent\) 12%, var\(--canvas\)\); box-shadow: inset 3px 0 0 var\(--accent\); color: var\(--ink\); font-weight: 600; \}/);
-  assert.match(app, /if \(item\.status === 'in_progress'\) row\.setAttribute\('aria-current', 'true'\)/);
+  assert.match(app, /if \(item\.status === 'in_progress'\) row\.element\.setAttribute\('aria-current', 'true'\)/);
   // Finished work reads as done: muted, struck-through text.
   assert.match(css, /\.assist-todos-item\[data-status="completed"\] \.assist-todos-text \{[^}]*text-decoration: line-through;/);
   // Hover stays inside the scroll container so row/owner highlights keep rounded corners.

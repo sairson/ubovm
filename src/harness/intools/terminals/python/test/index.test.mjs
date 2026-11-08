@@ -10,6 +10,7 @@ import { contained } from '../../../shared/common.mjs';
 import { pythonPolicy, pythonEnvironment, pythonCommand, resolvePython, privatePythonPaths } from '../policy.mjs';
 import { acquirePythonLease } from '../lease.mjs';
 import { runPythonSandbox } from '../execution.mjs';
+import { diagnosePythonFailure } from '../diagnostics.mjs';
 import { runLocalProcess } from '../../../shared/process/local-process.mjs';
 
 async function fixture(t) {
@@ -121,7 +122,7 @@ test('Python runner delivers output before completion and allows cancellation fr
   });`);
   const controller = new AbortController(), updates = [];
   await assert.rejects(runPythonSandbox({ cwd: workspace, outputDirectory: directory, timeout: 3, maxOutputBytes: 1024 }, controller.signal,
-    update => { updates.push(update.content[0].text); controller.abort(new Error('cancel after Python output')); }, pathToFileURL(runner)), /cancel after Python output/);
+    update => { updates.push(update.content[0].text); if (update.content[0].text.includes('live-python')) controller.abort(new Error('cancel after Python output')); }, pathToFileURL(runner)), /cancel after Python output/);
   assert.equal(updates.join(''), 'live-python');
 });
 
@@ -248,4 +249,77 @@ print('permissions-ok')
   assert.equal(await readFile(join(workspace, '.env.production'), 'utf8'), 'FIXTURE_SECRET=keep');
   assert.equal(await readFile(join(workspace, '.ssh/config'), 'utf8'), 'fixture private configuration');
   assert.equal(await readFile(join(workspace, 'ordinary.txt'), 'utf8'), 'allowed');
+});
+
+test('host forwards runner phases as execution_state updates without touching streamed output', async t => {
+  const { directory, workspace } = await fixture(t);
+  const runner = join(directory, 'phase-runner.mjs');
+  await writeFile(runner, `process.on('message', message => {
+    if (message.type === 'cancel') { process.send({ type: 'result', exitCode: null, error: 'cancelled', cleanupConfirmed: true }, () => process.disconnect()); return; }
+    process.send({ type: 'phase', phase: 'preparing' });
+    process.send({ type: 'phase', phase: 'running' });
+    process.stdout.write('phase-output');
+    setTimeout(() => process.send({ type: 'result', exitCode: 0, cleanupConfirmed: true }, () => process.disconnect()), 50);
+  });`);
+  const updates = [];
+  const result = await runPythonSandbox({ cwd: workspace, outputDirectory: join(directory, 'out'), timeout: 3, maxOutputBytes: 1024 },
+    undefined, item => updates.push(item), pathToFileURL(runner));
+  assert.equal(result.details.exit_code, 0);
+  const states = updates.flatMap(item => item.details?.execution_state ? [item.details.execution_state] : []);
+  assert.equal(states[0], 'queued');
+  assert(states.includes('preparing') && states.includes('running'));
+  assert(states.indexOf('preparing') < states.indexOf('running'));
+  assert.equal(new Set(states).size, states.length, 'at most one update per phase transition');
+  // Phase updates carry empty text, so the stdout stream concatenates unchanged.
+  assert(updates.every(item => item.details?.execution_state === undefined || item.content[0].text === ''));
+  assert.equal(updates.filter(item => item.content[0].text).map(item => item.content[0].text).join(''), 'phase-output');
+  assert.match(result.content[0].text, /phase-output/);
+});
+
+test('queued phase is emitted before admission and cancellation reports stopping', async t => {
+  const { workspace } = await fixture(t);
+  const updates = [];
+  await assert.rejects(runPythonSandbox({ cwd: workspace, outputDirectory: join(workspace, 'out'), timeout: 30 },
+    AbortSignal.abort(new Error('cancel-before-run')), item => updates.push(item)), /cancel-before-run/);
+  assert.deepEqual(updates.map(item => item.details?.execution_state), ['queued', 'stopping']);
+  assert(updates.every(item => item.content[0].text === ''));
+});
+
+test('successful result lists bounded output artifacts with byte sizes', async t => {
+  const { directory, workspace } = await fixture(t);
+  const runner = join(directory, 'artifact-runner.cjs');
+  await writeFile(runner, `const { writeFileSync } = require('node:fs');
+const { join } = require('node:path');
+process.on('message', message => {
+  if (message.type !== 'run') return;
+  try { writeFileSync(join(message.request.outputDirectory, 'artifact.txt'), '0123456789'); } catch { /* fallback fixture uses a non-directory */ }
+  process.send({ type: 'result', exitCode: 0, cleanupConfirmed: true, outputDirectory: message.request.outputDirectory }, () => process.disconnect());
+});`);
+  const outputDirectory = join(workspace, '.ubovm-python-output', 'run-artifacts');
+  await mkdir(outputDirectory, { recursive: true });
+  const request = { cwd: workspace, outputDirectory, timeout: 3, maxOutputBytes: 1024 };
+  const result = await runPythonSandbox(request, undefined, undefined, pathToFileURL(runner));
+  assert.equal(result.details.exit_code, 0);
+  assert.match(result.content[0].text, /outputs: artifact\.txt \(10 bytes\)/);
+  assert.match(result.content[0].text, /output_directory:/);
+  // An unlistable output tree only loses the artifact hint; it never fails the run.
+  const notDirectory = join(directory, 'not-a-directory');
+  await writeFile(notDirectory, 'plain file');
+  const fallback = await runPythonSandbox({ ...request, outputDirectory: notDirectory }, undefined, undefined, pathToFileURL(runner));
+  assert.equal(fallback.details.exit_code, 0);
+  assert.doesNotMatch(fallback.content[0].text, /outputs:/);
+});
+
+test('diagnostics give Chinese recovery for write denials, timeouts, and unprovisioned sandboxes', () => {
+  const denied = diagnosePythonFailure("Traceback (most recent call last):\n  File \"main.py\", line 3, in <module>\n    open('report.txt', 'w').write('x')\nPermissionError: [WinError 5] Access is denied: 'C:\\work\\report.txt'");
+  assert.equal(denied.kind, 'write-denied');
+  assert.match(denied.recovery, /UBOVM_PYTHON_OUTPUT/);
+  assert.equal(diagnosePythonFailure('OSError: [Errno 1] Operation not permitted').kind, 'write-denied');
+  const timeout = diagnosePythonFailure('[PYTHON_TIMEOUT] Python execution timed out after 30 seconds');
+  assert.equal(timeout.kind, 'timeout');
+  assert.match(timeout.recovery, /timeout_seconds/);
+  const unavailable = diagnosePythonFailure('Python sandbox is not provisioned. Use the IDE Python sandbox setup command.');
+  assert.equal(unavailable.kind, 'sandbox-unavailable');
+  assert.match(unavailable.recovery, /初始化 Python 沙箱/);
+  assert.match(unavailable.summary, /未执行/);
 });

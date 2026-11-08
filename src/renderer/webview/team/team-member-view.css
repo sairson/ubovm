@@ -11,6 +11,13 @@
   width: 100%;
   background: var(--canvas);
   color: var(--ink);
+  /* Neutral active accent, matching the Team popover: ink mixes, never the
+     blue brand/state token. Semantic error/warning colors stay untouched. */
+  --team-active: color-mix(in srgb, var(--ink) 64%, var(--canvas));
+  --team-active-strong: var(--ink);
+  --team-active-line: color-mix(in srgb, var(--ink) 30%, transparent);
+  --team-active-line-strong: color-mix(in srgb, var(--ink) 46%, transparent);
+  --team-active-fill: color-mix(in srgb, var(--ink) 10%, var(--canvas));
 }
 #team-member-view[hidden] { display: none !important; }
 
@@ -25,7 +32,7 @@
 .team-member-view-header {
   flex: 0 0 auto;
   width: 100%;
-  border-bottom: 1px solid color-mix(in srgb, var(--border) 65%, transparent);
+  border-bottom: 1px solid var(--border-hairline);
   background: var(--canvas);
 }
 .team-member-view-bar,
@@ -91,10 +98,10 @@
   width: 40px;
   height: 40px;
   margin-top: 1px;
-  border: 1px solid color-mix(in srgb, var(--accent) 20%, var(--border));
+  border: 1px solid var(--team-active-line);
   border-radius: 12px;
-  background: color-mix(in srgb, var(--accent) 9%, var(--canvas));
-  color: var(--accent);
+  background: var(--team-active-fill);
+  color: var(--team-active-strong);
   font-family: var(--font-ui);
   font-size: 14px;
   font-weight: 600;
@@ -102,10 +109,10 @@
   letter-spacing: .03em;
   user-select: none;
 }
-.team-member-view-avatar[data-status="running"] { color: var(--dsw-alias-state-business-primary); border-color: color-mix(in srgb, var(--dsw-alias-state-business-primary) 30%, var(--border)); background: color-mix(in srgb, var(--dsw-alias-state-business-primary) 10%, var(--canvas)); }
-.team-member-view-avatar[data-status="provisioning"] { color: var(--dsw-alias-state-warn-label); border-color: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 32%, var(--border)); background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 10%, var(--canvas)); }
-.team-member-view-avatar[data-status="failed"] { color: var(--dsw-alias-state-error-primary); border-color: color-mix(in srgb, var(--dsw-alias-state-error-primary) 32%, var(--border)); background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 9%, var(--canvas)); }
-.team-member-view-avatar[data-status="inactive"] { color: var(--dsw-alias-label-tertiary); border-color: var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-layer-2); }
+.team-member-view-avatar[data-status="running"] { color: var(--team-active-strong); border-color: var(--team-active-line-strong); background: var(--team-active-fill); }
+.team-member-view-avatar[data-status="provisioning"] { color: var(--state-warning); border-color: color-mix(in srgb, var(--state-warning) 34%, var(--border)); background: var(--state-warning-wash); }
+.team-member-view-avatar[data-status="failed"] { color: var(--state-error); border-color: color-mix(in srgb, var(--state-error) 34%, var(--border)); background: var(--state-error-wash); }
+.team-member-view-avatar[data-status="inactive"] { color: var(--dsw-alias-label-tertiary); border-color: var(--border-hairline); background: var(--surface-subtle); }
 /* Status is never color-only: the dot repeats the chip text beside it. */
 .team-member-view-avatar::after {
   content: '';
@@ -118,9 +125,9 @@
   border-radius: 50%;
   background: var(--dsw-alias-state-idle-primary);
 }
-.team-member-view-avatar[data-status="running"]::after { background: var(--dsw-alias-state-business-primary); animation: team-member-view-pulse 1.6s ease-in-out infinite; }
-.team-member-view-avatar[data-status="provisioning"]::after { background: var(--dsw-alias-state-warn-primary); }
-.team-member-view-avatar[data-status="failed"]::after { background: var(--dsw-alias-state-error-primary); }
+.team-member-view-avatar[data-status="running"]::after { background: var(--state-running); animation: team-member-view-pulse 1.6s ease-in-out infinite; }
+.team-member-view-avatar[data-status="provisioning"]::after { background: var(--state-warning); }
+.team-member-view-avatar[data-status="failed"]::after { background: var(--state-error); }
 
 .team-member-view-heading { display: flex; flex: 1 1 auto; flex-direction: column; gap: 2px; min-width: 0; }
 .team-member-view-breadcrumb {
@@ -173,7 +180,7 @@
   white-space: nowrap;
 }
 .team-member-view-activity::before { content: ''; flex: 0 0 4px; width: 4px; height: 4px; border-radius: 50%; background: currentColor; opacity: .45; }
-#team-member-view[data-status="running"] .team-member-view-activity::before { background: var(--dsw-alias-state-business-primary); opacity: 1; animation: team-member-view-pulse 1.6s ease-in-out infinite; }
+#team-member-view[data-status="running"] .team-member-view-activity::before { background: var(--team-active); opacity: 1; animation: team-member-view-pulse 1.6s ease-in-out infinite; }
 .team-member-view-description {
   margin: 2px 0 0;
   color: var(--dsw-alias-label-secondary);
@@ -193,33 +200,49 @@
   align-self: flex-start;
   margin-top: 2px;
   padding: 3px 9px 3px 8px;
-  border: 1px solid color-mix(in srgb, currentColor 22%, transparent);
+  border: 1px solid var(--border-hairline);
   border-radius: 999px;
-  background: color-mix(in srgb, currentColor 8%, var(--canvas));
+  background: var(--surface-raised);
+  box-shadow: var(--dsw-sheen-quiet);
   color: var(--dsw-alias-label-tertiary);
   font-size: 11px;
   font-weight: 500;
   line-height: 16px;
   white-space: nowrap;
 }
-.team-member-view-chip[data-status="running"] { color: var(--dsw-alias-state-business-primary); }
-.team-member-view-chip[data-status="provisioning"] { color: var(--dsw-alias-state-warn-label); }
-.team-member-view-chip[data-status="failed"] { color: var(--dsw-alias-state-error-primary); }
+.team-member-view-chip[data-status="running"] { color: var(--dsw-alias-label-primary); }
+.team-member-view-chip[data-status="provisioning"] { color: var(--state-warning); }
+.team-member-view-chip[data-status="failed"] { color: var(--state-error); }
 .team-member-view-live {
   flex: 0 0 auto;
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: currentColor;
+  /* Live semantics match the team roster: running = active ink accent. */
+  background: var(--team-active);
   animation: team-member-view-pulse 1.6s ease-in-out infinite;
 }
 .team-member-view-live[hidden] { display: none; }
+/* Waiting to start uses amber without the running pulse; failures use error red.
+ * The chip text remains the non-colour-only signal. */
+#team-member-view[data-status="provisioning"] .team-member-view-live {
+  background: var(--state-warning);
+  animation: none;
+}
+#team-member-view[data-status="failed"] .team-member-view-live {
+  background: var(--state-error);
+  animation: none;
+}
+#team-member-view[data-status="inactive"] .team-member-view-live {
+  background: var(--dsw-alias-label-tertiary);
+  animation: none;
+}
 .team-member-view-member-error {
   flex: 0 0 auto;
   width: min(100%, var(--reading));
   margin: 4px auto 0;
   padding: 0 var(--gutter);
-  color: var(--dsw-alias-state-error-primary);
+  color: var(--state-error);
   font-size: 12px;
   line-height: 18px;
   overflow-wrap: anywhere;
@@ -305,7 +328,7 @@
   width: min(100%, var(--reading));
   margin-inline: auto;
   padding: 16px var(--gutter) 4px;
-  color: var(--dsw-alias-state-error-primary);
+  color: var(--state-error);
   font-size: 13px;
   line-height: 1.6;
   overflow-wrap: anywhere;
@@ -324,9 +347,10 @@
 .team-member-message-user .team-member-message-text {
   max-width: min(100%, 620px);
   padding: 11px 15px;
-  border: 1px solid color-mix(in srgb, var(--dsw-alias-border-l2) 80%, transparent);
+  border: 1px solid var(--border-hairline);
   border-radius: 14px 14px 4px 14px;
-  background: color-mix(in srgb, var(--ink) 4%, var(--canvas));
+  background: var(--surface-subtle);
+  box-shadow: var(--dsw-micro), var(--dsw-sheen-quiet);
   color: var(--dsw-alias-label-primary);
   font-size: 14px;
   line-height: 1.75;
@@ -363,3 +387,7 @@
   .team-member-history-loading::before { animation: none; }
   .team-member-view-history.is-entering { animation: none; }
 }
+
+.team-member-view-usage { color: var(--dsw-alias-label-tertiary); font-size: 11px; font-variant-numeric: tabular-nums; }
+.team-member-view-usage::before { content: '��'; margin: 0 6px; color: var(--dsw-alias-label-tertiary); }
+

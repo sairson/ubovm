@@ -36,7 +36,17 @@ test('cancelling one waiter does not release the install lease or abort another 
   const f = fixture(), controller = new AbortController(); let finish;
   f.backend.installWindowsSandboxAsync = () => new Promise(resolve => { finish = () => { f.setState(installed); resolve({}); }; });
   const first = waitForPythonSetup(f.setup, controller.signal), second = waitForPythonSetup(f.setup);
-  await new Promise(resolve => setImmediate(resolve)); controller.abort(new Error('stop waiting'));
+  // ACL repair runs before installation; wait until the installer actually
+  // starts instead of assuming a single macrotask.
+  await new Promise((resolve, reject) => {
+    const deadline = Date.now() + 10000;
+    const timer = setInterval(() => {
+      if (typeof finish === 'function') { clearInterval(timer); resolve(); }
+      else if (Date.now() > deadline) { clearInterval(timer); reject(new Error('Python setup did not start installing')); }
+    }, 10);
+    timer.unref?.();
+  });
+  controller.abort(new Error('stop waiting'));
   await assert.rejects(first, /stop waiting/); assert.equal(f.counts.released, 0);
   finish(); assert((await second).ready); assert.equal(f.counts.released, 1);
 });

@@ -61,7 +61,7 @@ diff --git a/src/vs/workbench/browser/parts/compositeBar.ts b/src/vs/workbench/b
 diff --git a/src/vs/workbench/browser/parts/compositeBarActions.ts b/src/vs/workbench/browser/parts/compositeBarActions.ts
 --- a/src/vs/workbench/browser/parts/compositeBarActions.ts
 +++ b/src/vs/workbench/browser/parts/compositeBarActions.ts
-@@ -583,47 +583,54 @@ export class CompositeActionViewItem extends CompositeBarActionViewItem {
+@@ -581,47 +581,54 @@ export class CompositeActionViewItem extends CompositeBarActionViewItem {
  		this._register(addDisposableListener(this.container, EventType.CONTEXT_MENU, e => {
  			EventHelper.stop(e, true);
 -

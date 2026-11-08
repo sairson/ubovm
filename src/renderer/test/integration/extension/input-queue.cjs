@@ -4,23 +4,29 @@ const assert = require('node:assert/strict');
 const { readFileSync } = require('node:fs');
 const { runInNewContext } = require('node:vm');
 const { randomUUID } = require('node:crypto');
+const path = require('node:path');
 const { createSessions, inputMessageId, inputMessageIds } = require('../../../harness/session/sessions.cjs');
 const source = readFileSync(require.resolve('../../../extension.cjs'), 'utf8');
 
 async function fixture() {
   let saved, busy = false, status = 'idle', failSave = false, failStart = false;
   const starts = [];
+  const warnings = [];
+  const fileContexts = new Map();
+  const pendingImages = new Map();
   const vscode = { EventEmitter: class { event() {} fire() {} dispose() {} } };
   const context = { workspaceState: { get: () => undefined, update: async (_, value) => {
     if (failSave) { failSave = false; throw Error('disk failed'); } saved = structuredClone(value);
   } } };
   const sessions = createSessions(vscode, context, undefined, { isBusy: () => busy }); await sessions.ready;
   const id = sessions.current().id;
-  const sandbox = { sessions, inputMessageId, inputMessageIds, randomUUID, setTimeout, Date, vscode: { window: { showErrorMessage() {} } }, stoppedInputQueues: new Set(), scheduledInputQueues: new Set(), shuttingDown: false, messageQueue: Promise.resolve(),
+  const sandbox = { sessions, inputMessageId, inputMessageIds, randomUUID, setTimeout, Date, path, structuredClone,
+    pendingImages, fileContexts, vscode: { window: { showErrorMessage() {}, showWarningMessage(message) { warnings.push(String(message)); } } }, stoppedInputQueues: new Set(), scheduledInputQueues: new Set(), steeringSchedules: new Set(), shuttingDown: false, messageQueue: Promise.resolve(),
     errorText: error => error.message, output: { appendLine() {} }, publishState() {},
     assertCurrentSession: expected => assert.equal(expected, sessions.current().id),
     assertCanRun: () => { if (busy) throw Error('busy'); },
     executionContext: async () => ({ content: 'captured attachment' }), restoreExecution: async () => {},
+    markFullAccess: () => {}, openAssistant: async () => {},
     harness: { isBusy: () => busy, state: () => ({ status, canSteer: busy, runId: 'run-one' }),
       start: async value => { if (failStart) throw Error('start failed'); starts.push(value); busy = true; status = 'running'; },
       cancel: () => { setTimeout(() => { busy = false; status = 'interrupted'; }, 10); } },
@@ -28,7 +34,7 @@ async function fixture() {
       const task = sandbox.messageQueue.then(mutation); sandbox.messageQueue = task.catch(() => {}); return task;
     } };
   runInNewContext(source.slice(source.indexOf('  function submitPrompt('), source.indexOf('  function runGoal(')), sandbox);
-  return { sessions, id, starts, sandbox, saved: () => saved, failSave: () => { failSave = true; }, failStart: () => { failStart = true; },
+  return { sessions, id, starts, warnings, sandbox, fileContexts, pendingImages, saved: () => saved, failSave: () => { failSave = true; }, failStart: () => { failStart = true; },
     finish: (value = 'completed') => { busy = false; status = value; }, send: text => sandbox.submitPrompt(text, id, 'manual') };
 }
 
@@ -173,13 +179,30 @@ test('a lone follow-up during a steerable run is delivered immediately without s
   assert.equal(steered.steeringStatus, 'accepted');
 });
 
-test('follow-ups join the queue when earlier inputs are already waiting', async () => {
+test('waiting inputs are steered in FIFO order once the run can steer', async () => {
   const f = await fixture();
-  await f.send('first'); await f.send('queued');
-  f.sandbox.harness.steer = async () => assert.fail('must not jump the waiting queue');
+  await f.send('first');
+  await f.send('queued');
+  const received = [];
+  f.sandbox.harness.steer = async (id, input) => { received.push({ sessionId: id, ...input }); return true; };
   await f.send('also later');
-  assert.deepEqual(f.sessions.current().inputQueue.map(item => item.text), ['queued', 'also later']);
+  assert.deepEqual(received.map(item => item.text), ['queued', 'also later']);
+  assert.equal(received[0].context.content, 'captured attachment');
+  assert.equal(f.starts.length, 1, 'steering must not start another turn');
+  assert.equal(f.sessions.current().inputQueue.length, 0);
+});
+
+test('an input queued before steering was ready is delivered at the next steerable transition', async () => {
+  const f = await fixture();
+  await f.send('first');
+  await f.send('early');
+  const received = [];
+  f.sandbox.harness.steer = async (id, input) => { received.push({ sessionId: id, ...input }); return true; };
+  f.sandbox.scheduleSteer(f.id);
+  await f.sandbox.messageQueue;
+  assert.deepEqual(received.map(item => item.text), ['early']);
   assert.equal(f.starts.length, 1);
+  assert.equal(f.sessions.current().inputQueue.length, 0);
 });
 
 test('completion bursts share one pending input dispatch per session', async () => {
@@ -202,8 +225,7 @@ test('completion during dispatch can still schedule the next queued input', asyn
     f.sandbox.scheduleInputs(f.id);
   };
   f.sandbox.scheduleInputs(f.id);
-  await f.sandbox.messageQueue;
-  await f.sandbox.messageQueue;
+  for (let index = 0; index < 6; index++) await f.sandbox.messageQueue;
   assert.deepEqual(f.starts.map(item => item.text), ['first', 'second', 'third']);
   assert.equal(f.sessions.current().inputQueue.length, 0);
   assert.equal(f.sandbox.scheduledInputQueues.size, 0);
@@ -303,7 +325,8 @@ test('a stop arriving during dispatch persistence prevents the next agent from l
 
 test('a launch failure does not replay an ambiguously accepted input', async () => {
   const f = await fixture(); f.failStart(); await f.send('recover me');
-  assert.equal(f.sessions.current().inputQueue.length, 0);
+  assert.equal(f.sessions.current().inputQueue[0].text, 'recover me');
+  assert.equal(f.sessions.current().inputQueue[0].delivery, 'sending');
   assert.equal(f.sessions.current().messages[0].text, 'recover me');
   assert.equal(f.sessions.current().queuePaused, true);
 });
@@ -328,3 +351,165 @@ test('reload preserves queued input and execution branch but pauses automatic se
   assert.equal(reopened.current().executionBranch, f.sessions.current().executionBranch);
   assert.equal(reopened.current().inputQueue[0].text, 'queued');
 });
+
+test('published queue projection carries bounded metadata and never context content', async () => {
+  const f = await fixture();
+  // Normalize the vm-realm result into this realm for strict comparison.
+  const projected = JSON.parse(JSON.stringify(f.sandbox.publishedInputQueue({ inputQueue: [
+    { id: 'full', text: '带图输入', approvalMode: 'manual', modelId: 'deepseek-chat', delivery: 'uncertain',
+      images: [{ id: 'img-a', path: '/attachments/a.png' }, { id: 'img-b', path: '/attachments/b.png' }],
+      context: { workspace: 'ws', file: '/ws/src/app.ts', content: 'secret snapshot body' },
+      contextMeta: { label: 'src/app.ts', kind: 'selection', range: 'L10–12' } },
+    { id: 'plain', text: '只有文本' }
+  ] })));
+  assert.deepEqual(projected, [
+    { id: 'full', text: '带图输入', delivery: 'uncertain', modelId: 'deepseek-chat', imageCount: 2, approvalMode: 'manual',
+      context: { label: 'src/app.ts', kind: 'selection', range: 'L10–12' } },
+    { id: 'plain', text: '只有文本' }
+  ]);
+  assert.deepEqual(Object.keys(projected[1]), ['id', 'text'], 'absent metadata must be omitted instead of published as undefined');
+  assert.equal('context' in projected[1], false);
+  assert.equal(JSON.stringify(projected).includes('secret snapshot body'), false, 'context content must never reach the webview');
+  assert.deepEqual(JSON.parse(JSON.stringify(f.sandbox.publishedInputQueue(undefined))), []);
+});
+
+test('enqueue captures bounded, content-free metadata for selection, file, active and empty context', async () => {
+  const f = await fixture();
+  await f.send('first');
+  const longLabel = 'src/' + 'nested/'.repeat(30) + 'selection.ts';
+  const longRange = 'L' + '1'.repeat(100);
+  f.sandbox.fileContexts.set(f.id, { kind: 'selection', label: longLabel, path: '/ws/selection.ts', rangeLabel: longRange,
+    snapshot: { file: '/ws/selection.ts', content: 'selected code body' } });
+  await f.send('second');
+  f.sandbox.fileContexts.set(f.id, { label: 'notes.md', path: '/ws/notes.md' });
+  await f.send('third');
+  f.sandbox.fileContexts.delete(f.id);
+  f.sandbox.executionContext = async () => ({ workspace: 'ws', file: '/ws/src/active.ts', content: 'active body' });
+  await f.send('fourth');
+  f.sandbox.executionContext = async () => ({ content: 'captured attachment' });
+  await f.send('fifth');
+  const queue = f.sessions.current().inputQueue;
+  assert.deepEqual(queue.map(item => item.text), ['second', 'third', 'fourth', 'fifth']);
+  const selection = queue[0].contextMeta;
+  assert.equal(selection.kind, 'selection');
+  assert(selection.label.length <= 120, 'labels stay bounded to 120 chars');
+  assert(selection.label.endsWith('…'));
+  assert(selection.label.startsWith('src/nested/'));
+  assert(selection.range.length <= 80, 'ranges stay bounded to 80 chars');
+  assert(selection.range.endsWith('…'));
+  assert.equal(JSON.stringify(selection).includes('selected code body'), false, 'metadata must not embed file contents');
+  assert.deepEqual(Object.keys(selection).sort(), ['kind', 'label', 'range']);
+  assert.deepEqual(queue[1].contextMeta, { label: 'notes.md', kind: 'file' });
+  assert.deepEqual(queue[2].contextMeta, { label: 'active.ts', kind: 'active' });
+  assert.equal(queue[3].contextMeta, undefined);
+  // The bounded metadata survives persistence alongside the full snapshot.
+  assert.equal(f.saved().sessions[0].inputQueue[0].contextMeta.kind, 'selection');
+  // Recall of an implicit active-editor row restores it as an explicit snapshot.
+  const active = queue[2];
+  await f.sandbox.changeInputQueue({ sessionId: f.id, action: 'removeInput', inputId: active.id });
+  const restored = structuredClone(f.sandbox.fileContexts.get(f.id));
+  assert.deepEqual(restored, { kind: 'file-drop', label: 'active.ts', path: '/ws/src/active.ts',
+    snapshot: { workspace: 'ws', file: '/ws/src/active.ts', content: 'active body' } });
+});
+
+test('recall restores queued images and the captured context snapshot for the next send', async () => {
+  const f = await fixture();
+  const capturedContext = { workspace: 'ws', file: '/ws/src/app.ts', content: 'snapshot body', unsaved: true };
+  f.sandbox.executionContext = async () => ({ ...capturedContext });
+  await f.send('first');
+  f.sandbox.pendingImages.set(f.id, [{ id: 'img-queued', path: '/attachments/queued.png' }, { id: 'img-other', path: '/attachments/other.png' }]);
+  f.sandbox.fileContexts.set(f.id, { kind: 'selection', label: 'src/app.ts', path: '/ws/src/app.ts', rangeLabel: 'L3–5',
+    snapshot: { file: '/ws/src/app.ts', content: 'selected body' } });
+  await f.send('recall me');
+  const captured = f.sessions.current().inputQueue[0];
+  assert.equal(f.pendingImages.get(f.id), undefined, 'enqueue consumes pending images');
+  assert.deepEqual(captured.images.map(image => image.id), ['img-queued', 'img-other']);
+  assert.deepEqual(captured.context, capturedContext);
+  assert.deepEqual(captured.contextMeta, { label: 'src/app.ts', kind: 'selection', range: 'L3–5' });
+  // Images the user attached after the input was queued must survive and stay first.
+  f.pendingImages.set(f.id, [{ id: 'img-other', path: '/attachments/other.png' }, { id: 'img-new', path: '/attachments/new.png' }]);
+  await f.sandbox.changeInputQueue({ sessionId: f.id, action: 'removeInput', inputId: captured.id });
+  assert.equal(f.sessions.current().inputQueue.length, 0);
+  assert.deepEqual(structuredClone(f.pendingImages.get(f.id)).map(image => image.id), ['img-other', 'img-new', 'img-queued']);
+  assert.deepEqual(structuredClone(f.sandbox.fileContexts.get(f.id)), {
+    kind: 'selection', label: 'src/app.ts', path: '/ws/src/app.ts', rangeLabel: 'L3–5', snapshot: capturedContext
+  });
+  assert.equal(f.starts.length, 1, 'recall never replays the input');
+  // The next send through executionContext() reuses the snapshot and restored images.
+  f.sandbox.executionContext = async () => {
+    const attached = f.fileContexts.get(f.id);
+    if (attached?.kind === 'selection' || attached?.kind === 'file-drop') return { workspace: 'ws', ...structuredClone(attached.snapshot) };
+    return { workspace: 'ws', content: 'reread from disk' };
+  };
+  await f.send('send again');
+  const resent = f.sessions.current().inputQueue[0];
+  assert.deepEqual(resent.context, capturedContext, 'resubmit reuses the captured snapshot instead of re-reading the file');
+  assert.deepEqual(resent.contextMeta, { label: 'src/app.ts', kind: 'selection', range: 'L3–5' });
+  assert.deepEqual(resent.images.map(image => image.id), ['img-other', 'img-new', 'img-queued']);
+});
+
+test('recall replaces a different composer context and tells the operator once', async () => {
+  const f = await fixture();
+  const capturedContext = { workspace: 'ws', file: '/ws/src/queued.ts', content: 'queued body' };
+  f.sandbox.executionContext = async () => ({ ...capturedContext });
+  await f.send('first');
+  f.sandbox.fileContexts.set(f.id, { kind: 'selection', label: 'queued.ts', path: '/ws/src/queued.ts', rangeLabel: 'L1–2',
+    snapshot: { file: '/ws/src/queued.ts', content: 'queued body' } });
+  await f.send('queued with context');
+  const item = f.sessions.current().inputQueue[0];
+  assert.equal(item.contextMeta.label, 'queued.ts');
+  // The user attaches a different context while the recalled row waits.
+  f.sandbox.fileContexts.set(f.id, { label: 'newer.md', path: '/ws/newer.md' });
+  await f.sandbox.changeInputQueue({ sessionId: f.id, action: 'removeInput', inputId: item.id });
+  assert.deepEqual(structuredClone(f.sandbox.fileContexts.get(f.id)), {
+    kind: 'selection', label: 'queued.ts', path: '/ws/src/queued.ts', rangeLabel: 'L1–2', snapshot: capturedContext
+  });
+  assert.equal(f.warnings.length, 1, 'replacing a different context must be announced once');
+  assert.match(f.warnings[0], /替换.*上下文/);
+});
+
+test('recall of a plain text row leaves composer attachments untouched', async () => {
+  const f = await fixture();
+  await f.send('first'); await f.send('plain queued');
+  const item = f.sessions.current().inputQueue[0];
+  assert.equal(item.contextMeta, undefined);
+  assert.equal(item.images, undefined);
+  const descriptor = { label: 'keep.md', path: '/ws/keep.md' };
+  f.sandbox.fileContexts.set(f.id, descriptor);
+  f.pendingImages.set(f.id, [{ id: 'keep-image', path: '/attachments/keep.png' }]);
+  await f.sandbox.changeInputQueue({ sessionId: f.id, action: 'removeInput', inputId: item.id });
+  assert.equal(f.fileContexts.get(f.id), descriptor, 'recall must not replace an unrelated composer chip');
+  assert.deepEqual(structuredClone(f.pendingImages.get(f.id)).map(image => image.id), ['keep-image']);
+});
+
+test('failed queue removal never restores attachments into the composer', async () => {
+  const f = await fixture();
+  await f.send('first');
+  f.sandbox.pendingImages.set(f.id, [{ id: 'img-held', path: '/attachments/held.png' }]);
+  f.sandbox.fileContexts.set(f.id, { kind: 'selection', label: 'src/held.ts', path: '/ws/held.ts', rangeLabel: 'L1',
+    snapshot: { file: '/ws/held.ts', content: 'held body' } });
+  await f.send('queued with attachments');
+  const item = f.sessions.current().inputQueue[0];
+  f.sandbox.pendingImages.delete(f.id);
+  f.sandbox.fileContexts.delete(f.id);
+  f.failSave();
+  await assert.rejects(f.sandbox.changeInputQueue({ sessionId: f.id, action: 'removeInput', inputId: item.id }), /disk/);
+  assert.equal(f.sessions.current().inputQueue.length, 1, 'failed save keeps the queued row');
+  assert.equal(f.pendingImages.get(f.id), undefined, 'failed save must not restore images');
+  assert.equal(f.fileContexts.get(f.id), undefined, 'failed save must not restore the context chip');
+});
+
+test('recall of a delivery-uncertain row still restores its attachments without replay', async () => {
+  const f = await fixture();
+  await f.send('first');
+  f.sandbox.pendingImages.set(f.id, [{ id: 'img-uncertain', path: '/attachments/uncertain.png' }]);
+  await f.send('queued image');
+  const item = f.sessions.current().inputQueue[0];
+  await f.sessions.updateInputQueue(f.id, current => ({ inputQueue: current.inputQueue.map(input => input.id === item.id ? { ...input, delivery: 'uncertain' } : input) }));
+  await f.sandbox.changeInputQueue({ sessionId: f.id, action: 'removeInput', inputId: item.id });
+  assert.equal(f.sessions.current().inputQueue.length, 0);
+  assert.deepEqual(structuredClone(f.sandbox.pendingImages.get(f.id)).map(image => image.id), ['img-uncertain']);
+  assert.equal(f.starts.length, 1, 'recall of an uncertain delivery must not replay it');
+});
+
+

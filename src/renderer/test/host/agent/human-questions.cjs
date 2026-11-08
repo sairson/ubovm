@@ -19,6 +19,19 @@ test('question capacity rejects overload and releases on cancellation', async ()
   assert.deepEqual((await Promise.all([b, c])).map(answer => answer.cancelled), [true, true]);
 });
 
+test('cancelling a conversation settles only its pending questions', async () => {
+  const service = createHumanQuestions();
+  const first = service.request({ ...details, conversationId: 'first' });
+  const second = service.request({ ...details, conversationId: 'second' });
+  assert.equal(service.cancelConversation('first'), 1);
+  assert.deepEqual(await first, { selected: [], custom: '', cancelled: true });
+  assert.equal(service.snapshot('first')[0].status, 'cancelled');
+  assert.equal(service.snapshot('second')[0].status, 'pending');
+  assert.equal(service.respond({ id: service.snapshot('second')[0].id, conversationId: 'second', selected: ['a'] }), true);
+  assert.equal((await second).selected[0], 'a');
+  service.dispose();
+});
+
 test('invalid questions fail closed without reserving capacity', async () => {
   const service = createHumanQuestions({ maxPending: 1 });
   await assert.rejects(service.request({ ...details, options: [] }), TypeError);

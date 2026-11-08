@@ -85,9 +85,11 @@ test('duplicate visibility notifications preserve the probe deadline and only on
       for (let i = 0; i < 100; i++) f.document.emit('visibilitychange');
       f.step(now);
     }
-    // First timeout soft-fails to reconnecting; the second consecutive miss becomes disconnected.
+    // First timeout soft-fails to reconnecting; the second consecutive miss
+    // surfaces a passive unresponsive state, never a hard disconnect.
     assert.equal(f.changes.includes('reconnecting'), true);
-    assert.equal(f.changes.at(-1), 'disconnected');
+    assert.equal(f.changes.at(-1), 'unresponsive');
+    assert.equal(f.changes.includes('disconnected'), false);
     assert.equal(f.clocks.size, 1);
     f.document.hidden = true; f.document.emit('visibilitychange');
     assert.equal(f.clocks.size, 0);
@@ -98,6 +100,25 @@ test('duplicate visibility notifications preserve the probe deadline and only on
     f.reply(); assert.equal(f.changes.at(-1), 'connected');
   } finally { f.monitor.dispose(); }
   assert.equal(f.clocks.size, 0);
+});
+
+test('a runtime that is already recovering stays in soft reconnect before a persistent outage banner', () => {
+  const f = fixture();
+  try {
+    f.reply();
+    for (let index = 0; index < 3; index++) {
+      f.monitor.probe();
+      f.window.emit('message', { data: { type: 'connectionStatus', probeId: f.messages.at(-1).probeId, backend: { status: 'disconnected', recovering: true, attempts: 1, retryAt: Date.now() + 5000 } } });
+    }
+    assert.equal(f.changes.includes('backend-disconnected'), false);
+    assert.equal(f.changes.at(-1), 'reconnecting');
+    f.monitor.probe();
+    f.window.emit('message', { data: { type: 'connectionStatus', probeId: f.messages.at(-1).probeId, backend: { status: 'disconnected', recovering: true, attempts: 2 } } });
+    assert.equal(f.changes.at(-1), 'backend-disconnected', 'persistent recovery failure must not hide the outage');
+    f.monitor.probe();
+    f.reply();
+    assert.equal(f.changes.at(-1), 'connected');
+  } finally { f.monitor.dispose(); }
 });
 
 test('backend disconnect requires two consecutive acknowledgements', () => {
@@ -150,11 +171,12 @@ test('post-show false delivery uses grace before counting toward disconnect', as
     assert.equal(f.changes.includes('disconnected'), false);
     f.flush();
     await Promise.resolve();
-    assert.equal(f.changes.at(-1), 'disconnected', 'two counted false deliveries disconnect');
+    assert.equal(f.changes.at(-1), 'unresponsive', 'sustained false deliveries surface a passive banner');
+    assert.equal(f.changes.includes('disconnected'), false, 'a probe miss never declares the host dead');
   } finally { f.monitor.dispose(); }
 });
 
-test('a single false delivery soft-reconnects; two consecutive failures disconnect', async () => {
+test('a single false delivery soft-reconnects; sustained failures stay advisory', async () => {
   let rejectOld, sends = 0;
   const f = fixture(() => {
     sends += 1;
@@ -166,7 +188,7 @@ test('a single false delivery soft-reconnects; two consecutive failures disconne
     f.document.hidden = true; f.document.emit('visibilitychange');
     f.document.hidden = false; f.document.emit('visibilitychange');
     await Promise.resolve();
-    assert.equal(f.changes.at(-1), 'reconnecting', 'post-show false delivery must not flash hard disconnect');
+    assert.equal(f.changes.at(-1), 'reconnecting', 'post-show false delivery must not flash a hard state');
     assert.equal(f.changes.includes('disconnected'), false);
     // Soft miss schedules an immediate follow-up probe; first counted false stays soft.
     f.flush();
@@ -174,7 +196,8 @@ test('a single false delivery soft-reconnects; two consecutive failures disconne
     assert.equal(f.changes.at(-1), 'reconnecting', 'first counted false delivery soft-reconnects');
     f.flush();
     await Promise.resolve();
-    assert.equal(f.changes.at(-1), 'disconnected', 'two counted false deliveries disconnect');
+    assert.equal(f.changes.at(-1), 'unresponsive', 'sustained failures surface a passive banner');
+    assert.equal(f.changes.includes('disconnected'), false);
     f.monitor.probe(); f.reply();
     rejectOld(new Error('late send failure'));
     await Promise.resolve(); await Promise.resolve();
@@ -201,9 +224,10 @@ test('page detects host loss only after consecutive misses and recovers without 
   for (now = 5; now <= 20; now += 5) tick();
   assert.equal(changes.at(-1), 'reconnecting', 'first timeout is a soft miss');
   for (now = 25; now <= 40; now += 5) tick();
-  assert.equal(changes.at(-1), 'disconnected', 'second consecutive timeout disconnects');
+  assert.equal(changes.at(-1), 'unresponsive', 'sustained timeout is advisory, not a hard disconnect');
+  assert.equal(changes.includes('disconnected'), false, 'no probe deadline ever declares the host dead');
   window.emit('message', { data: { type: 'connectionStatus', probeId: old, backend: { status: 'connected' } } });
-  assert.equal(changes.at(-1), 'disconnected');
+  assert.equal(changes.at(-1), 'unresponsive');
   window.emit('message', { data: { type: 'connectionStatus', probeId: messages.at(-1).probeId, backend: { status: 'disconnected' } } });
   assert.equal(changes.at(-1), 'reconnecting', 'one backend failure soft-reconnects');
   monitor.probe();
@@ -215,7 +239,7 @@ test('page detects host loss only after consecutive misses and recovers without 
   document.hidden = true; document.emit('visibilitychange'); now += 1000;
   assert.equal(tick, undefined);
   document.hidden = false; document.emit('visibilitychange');
-  assert.equal(changes.at(-1), 'reconnecting', 'sleep/backgrounding must not imply a crash');
+  assert.equal(changes.at(-1), 'connected', 'sleep/backgrounding probes silently until it fails');
   window.emit('message', { data: { type: 'connectionStatus', probeId: messages.at(-1).probeId, backend: { status: 'connected' } } });
   assert.equal(changes.at(-1), 'connected');
   assert(messages.every(message => message.action === 'connectionProbe'));

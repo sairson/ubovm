@@ -22,10 +22,10 @@ export const BROWSER_ACTIONS = Object.freeze([
 
 const strings = ['page_id', 'url', 'ref', 'query', 'role', 'value', 'key', 'wait_for', 'script', 'pattern', 'flags',
   'source', 'name', 'identity_ref', 'owner_identity_ref', 'other_identity_ref', 'request_ref', 'method',
-  'request_id', 'parent_id', 'entry_id', 'depth', 'level', 'topic'];
+  'request_id', 'parent_id', 'entry_id', 'depth', 'level', 'topic', 'format', 'prompt_text', 'frame_id'];
 const integers = ['backend_node_id', 'page', 'page_size', 'limit', 'after_sequence', 'max_bytes', 'offset',
-  'max_chars', 'max_elements', 'max_nodes', 'max_matches', 'max_source_chars', 'max_candidates', 'delta_x', 'delta_y'];
-const booleans = ['clear', 'include_text', 'include_ignored', 'include_anonymous', 'include_credentials', 'allow_unsafe', 'checked', 'full_page', 'allow_popups'];
+  'max_chars', 'max_elements', 'max_nodes', 'max_matches', 'max_source_chars', 'max_candidates', 'delta_x', 'delta_y', 'quality'];
+const booleans = ['clear', 'include_text', 'include_ignored', 'include_anonymous', 'include_credentials', 'allow_unsafe', 'checked', 'full_page', 'allow_popups', 'accept', 'wait_for_navigation', 'await_promise', 'user_gesture', 'ignore_cache'];
 
 /** Flat parameter bag; per-action requirements are disclosed via action=help. */
 export const browserActionParameters = Type.Object({
@@ -81,11 +81,9 @@ export function createBrowserTools({ manager = new BrowserManager(), sessionId, 
   const scope = { sessionId, workerId, target };
   const ide = isIdeBrowserManager(manager);
   const backend = ide ? 'ide-browser' : 'obscura';
-  const available = new Set(
-    ide
-      ? ['help', ...(manager.supportedActions?.length ? manager.supportedActions : IDE_BROWSER_ACTIONS)]
-      : BROWSER_ACTIONS
-  );
+  const available = new Set(ide
+    ? ['help', ...(manager.supportedActions?.length ? manager.supportedActions : IDE_BROWSER_ACTIONS)]
+    : ['help', ...browserActionsForBackend('obscura')]);
   return [{
     name: 'browser_action', label: 'Browser action', executionMode: 'sequential',
     description: ide ? BROWSER_IDE_DESCRIPTION : BROWSER_CORE_DESCRIPTION,
@@ -117,7 +115,7 @@ export function createBrowserTools({ manager = new BrowserManager(), sessionId, 
   }, {
     name: 'browser_connection_status', label: 'Browser connection status', executionMode: 'sequential',
     description: ide
-      ? 'Inspect IDE Integrated Browser readiness without launching a separate Chromium. For action catalog use browser_action action=help.'
+      ? 'Inspect IDE Integrated Browser readiness (mode/page_open/supported_actions/agent_control). Browser actions need an open IDE page; for hidden background browsing disable「使用 IDE 内嵌浏览器」and use the standalone Chromium mode. For action catalog use browser_action action=help.'
       : 'Inspect browser configuration without launching or downloading a browser. For action catalog use browser_action action=help.',
     parameters: Type.Object({}, { additionalProperties: false }),
     execute: async (_id, _args, signal) => {
@@ -128,7 +126,7 @@ export function createBrowserTools({ manager = new BrowserManager(), sessionId, 
         source: status?.source || backend,
         help: { action: 'help', topic: 'core' },
         available_tiers: ide
-          ? BROWSER_HELP_TIERS.filter(tier => ['core', 'interaction', 'tabs', 'inspect'].includes(tier))
+          ? BROWSER_HELP_TIERS.filter(tier => ['core', 'interaction', 'tabs', 'inspect', 'protocol', 'security'].includes(tier))
           : [...BROWSER_HELP_TIERS],
       });
     },

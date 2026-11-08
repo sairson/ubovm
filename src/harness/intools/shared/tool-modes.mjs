@@ -11,7 +11,6 @@
  * local state, spawn/stop work, change configuration, or answer a human.
  */
 export const PARALLEL_READ_TOOLS = Object.freeze([
-  'read_workspace_file',
   'read_image',
   'list_workspace_files',
   'read_workspace_code',
@@ -19,9 +18,7 @@ export const PARALLEL_READ_TOOLS = Object.freeze([
   'list_workspace_changes',
   'search_workspace',
   'navigate_workspace_code',
-  'analyze_workspace_call_chain',
   'preview_workspace_rename',
-  'preview_workspace_edits',
   'inspect_workspace_project',
   'get_workspace_diagnostics',
   'read_context_evidence',

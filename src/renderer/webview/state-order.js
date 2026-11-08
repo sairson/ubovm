@@ -134,8 +134,26 @@
           console.warn('[UBOVM] Dropping stale execution update.', { viewRevision: next, seq: sequence });
           return null;
         }
-        const execution = normalizeExecution(message.execution);
-        validateExecution(execution);
+        const normalized = normalizeExecution(message.execution);
+        validateExecution(normalized);
+        // Heavy projections (board/graph/agenda/memory/log history) are omitted
+        // from most live ticks: the host deletes each unchanged projection
+        // independently, so a tick that changes only ONE revision can carry e.g.
+        // a new board while omitting unchanged memory (or the reverse). Absence
+        // means "unchanged", never "empty": keep the last projection for this
+        // conversation instead of blanking the board/summary/domain ledger for
+        // one frame (the visible "header jumps / card flickers" symptom). A
+        // genuinely empty projection is sent as an explicit empty value.
+        const preserved = normalized && object(current.execution) ? { ...current.execution } : undefined;
+        const execution = message.partialExecution === true && preserved
+          ? { ...preserved, ...normalized }
+          : normalized;
+        if (preserved) {
+          for (const key of ['blackboard', 'graph', 'agenda', 'memory', 'logHistory']) {
+            if (key in execution || !(key in preserved)) continue;
+            execution[key] = preserved[key];
+          }
+        }
         if (next) executionRevision = next;
         if (sequence) executionSequence = sequence;
         const nextState = { ...current, execution, busy: message.busy };
@@ -165,6 +183,34 @@
         // updates even if a newer execution delta arrived first.
         if (current?.conversation?.id === normalized.conversation.id && next && next < executionRevision) {
           return { ...normalized, execution: current.execution, busy: current.busy };
+        }
+        // A session update (for example deleting a note) can publish a full
+        // state whose execution snapshot no longer carries memory, even though
+        // the last execution tick did. Keep the notebook's Agent records
+        // instead of letting the full snapshot wipe them.
+        if (current?.conversation?.id === normalized.conversation.id
+          && normalized.execution && !('memory' in normalized.execution)
+          && current.execution && 'memory' in current.execution) {
+          normalized.execution = { ...normalized.execution, memory: current.execution.memory };
+        }
+        // A full session snapshot may be published from a light execution
+        // projection that omits heavy fields. Treat omitted board/graph/agenda
+        // like memory: keep the last complete projection instead of blanking the
+        // blackboard for one frame (the visible "nodes blink" symptom).
+        if (current?.conversation?.id === normalized.conversation.id && normalized.execution && current.execution) {
+          const preserved = ['blackboard', 'graph', 'agenda', 'logHistory', 'parts', 'workers', 'activities',
+            'result', 'error', 'streamText', 'phase', 'usage', 'contextUsage', 'team', 'teamWatch', 'workerViewError'];
+          const merged = {};
+          const statusChanged = normalized.execution.status !== current.execution.status;
+          for (const key of preserved) {
+            if (key in normalized.execution || !(key in current.execution)) continue;
+            // A stale execution payload describes the previous run. Once the
+            // status changes, its error and team projection must not keep the
+            // failure surface or the Team popover alive.
+            if (statusChanged && ['error', 'team', 'teamWatch', 'workerViewError'].includes(key)) continue;
+            merged[key] = current.execution[key];
+          }
+          if (Object.keys(merged).length) normalized.execution = { ...normalized.execution, ...merged };
         }
         if (next) executionRevision = next;
         return normalized;

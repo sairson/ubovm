@@ -1,7 +1,20 @@
 'use strict';
 const MAX_ASSISTANT_MESSAGE_LENGTH = 64000;
 const REDACTED = '[REDACTED]';
+// Tool-result images are display evidence, not model context: the host inlines a
+// bounded, detached copy so the page can show screenshots without re-reading the
+// file. Base64 is kept <= 400k chars per image and <= 1.6M chars per snapshot so
+// every structured-clone of the state stays cheap.
+const TOOL_IMAGE_MIMES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+const TOOL_IMAGE_MAX_BASE64 = 400000;
+const TOOL_IMAGE_MAX_COUNT = 4;
+const TOOL_IMAGE_MAX_TOTAL_BASE64 = 1600000;
+const TOOL_IMAGE_LIMITS = Object.freeze({ maxBase64CharsPerImage: TOOL_IMAGE_MAX_BASE64, maxImages: TOOL_IMAGE_MAX_COUNT, maxBase64CharsTotal: TOOL_IMAGE_MAX_TOTAL_BASE64 });
+const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
 const STREAMING_TOOLS = new Set(['run_linux_ssh_command', 'run_local_skill_script', 'run_local_shell_command', 'run_python', 'manage_python_environment', 'upload_sftp', 'deploy_remote_service']);
+// Lifecycle phases a process tool may report while it is running. Shell/SSH
+// phases come with a command id; Python reports its sandbox phases directly.
+const EXECUTION_STATES = new Set(['queued', 'starting', 'preflight', 'preparing', 'running', 'cleanup', 'stopping']);
 const secretField = key => /^(?:token|auth|cookie|setcookie)$/i.test(key.replace(/[^a-z0-9]/gi, '')) || /api.?key|authorization|password|passwd|private.?key|secret|credential|access.?token|refresh.?token|session.?token/i.test(key);
 function redactText(value) {
   return String(value)
@@ -11,6 +24,24 @@ function redactText(value) {
     .replace(/\b(authorization|proxy-authorization)["']?\s*[:=]\s*(?:["']?)(?:Bearer|Basic)?\s*[^\r\n,;"'}]+/gi, `$1: ${REDACTED}`)
     .replace(/\b(api[_-]?key|access[_-]?token|refresh[_-]?token|password|passwd|client[_-]?secret|token)["']?\s*[:=]\s*(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;}]+)/gi, `$1=${REDACTED}`)
     .replace(/\b(Bearer|Basic)\s+[a-zA-Z0-9+/_~.=-]{8,}/gi, `$1 ${REDACTED}`);
+}
+/**
+ * Validate one tool-result image payload for the persisted UI projection.
+ * Returns a detached { mimeType, data, width?, height?, bytes?, name? } object or
+ * undefined. Base64 is never truncated: a payload over the cap is omitted and
+ * reported through part.imageOmitted instead of showing a broken image.
+ */
+function sanitizeToolImage(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const mimeType = typeof value.mimeType === 'string' && TOOL_IMAGE_MIMES.has(value.mimeType) ? value.mimeType : undefined;
+  const data = typeof value.data === 'string' ? value.data : '';
+  if (!mimeType || !data || data.length > TOOL_IMAGE_MAX_BASE64 || data.length % 4 !== 0 || !BASE64.test(data)) return undefined;
+  const image = { mimeType, data };
+  if (Number.isSafeInteger(value.width) && value.width > 0 && value.width <= 0x7fffffff) image.width = value.width;
+  if (Number.isSafeInteger(value.height) && value.height > 0 && value.height <= 0x7fffffff) image.height = value.height;
+  if (Number.isSafeInteger(value.bytes) && value.bytes > 0) image.bytes = value.bytes;
+  if (typeof value.name === 'string' && value.name.trim()) image.name = value.name.trim().slice(0, 120);
+  return image;
 }
 function safeDisplay(value, depth = 0, seen = new Set()) {
   if (depth > 8) return '[Nested content omitted]';
@@ -51,6 +82,10 @@ function redactDisplayObject(value, depth = 0) {
   if (value === null || typeof value !== 'object') return value;
   if (depth > 10) return '[Nested content omitted]';
   if (Array.isArray(value)) return value.slice(0, 500).map(item => redactDisplayObject(item, depth + 1));
+  // Already-validated tool-image payloads must bypass the generic 64000-char
+  // string clamp: clipping base64 would publish a corrupt image.
+  const image = sanitizeToolImage(value);
+  if (image) return image;
   return Object.fromEntries(Object.entries(value).slice(0, 200).filter(([key]) => !['thinking', 'thoughtSignature', 'thinkingSignature'].includes(key)).map(([key, item]) => [key, secretField(key) ? REDACTED : redactDisplayObject(item, depth + 1)]));
 }
 // Summary telemetry is host-authored, but it still crosses into persisted UI
@@ -91,20 +126,31 @@ function cleanTimelineParts(value) {
       const fallbackReasons = part.type === 'summary' ? sanitizeSummaryFallbackReasons(part.fallbackReasons) : undefined;
       // This whitelist persists only the provider's displayable plaintext.
       // Provider signatures and encrypted/redacted blocks never enter the UI.
-      parts.push({ id: part.id, type: part.type, text: clipped(text, 12000), status: part.status, source: part.source, startedAt,
+      // Thinking is user-facing reasoning: keep it complete so the expanded
+      // card can show the whole thought. Summaries and answer text remain
+      // bounded; ordinary text is not reasoning content.
+      const projectedText = part.type === 'thinking' ? text : clipped(text, 12000);
+      parts.push({ id: part.id, type: part.type, text: projectedText, status: part.status, source: part.source, startedAt,
         ...(part.type === 'summary' ? { fallback: part.fallback === true,
           ...Object.fromEntries(['beforeTokens', 'afterTokens'].filter(key => Number.isSafeInteger(part[key]) && part[key] >= 0).map(key => [key, part[key]])),
           ...(kinds ? { kinds } : {}),
           ...(fallbackReasons ? { fallbackReasons } : {}) } : {}),
         ...(Number.isFinite(part.endedAt) && part.endedAt >= startedAt ? { endedAt: part.endedAt } : {}),
         ...(typeof part.workerId === 'string' && part.workerId ? { workerId: part.workerId.slice(0, 200) } : {}),
-        ...(part.truncated || text.length > 12000 ? { truncated: true } : {}) });
+        ...(part.type === 'summary' && (part.truncated || text.length > 12000) ? { truncated: true } : {}) });
     } else if (part.type === 'tool' && typeof part.name === 'string' && part.name && ['running', 'completed', 'failed', 'interrupted'].includes(part.status)) {
       const args = formatToolValue(part.args ?? '', 4000), output = formatToolValue(part.output ?? '', 12000, STREAMING_TOOLS.has(part.name));
       const startedAt = Number.isFinite(part.startedAt) && part.startedAt >= 0 ? part.startedAt : 0;
+      const image = sanitizeToolImage(part.image);
+      // A tool that produced an image it could not safely inline (too large,
+      // corrupt, or over the snapshot budget) keeps an explicit note instead of
+      // silently looking like a text-only result.
+      const imageOmitted = part.imageOmitted === true || Boolean(part.image && !image);
       parts.push({ id: part.id, type: 'tool', name: redactText(part.name).slice(0, 128), status: part.status, args: args.text, output: output.text, startedAt,
+        ...(image ? { image } : {}),
+        ...(imageOmitted ? { imageOmitted: true } : {}),
         ...(part.background === true ? { background: true } : {}),
-        ...(part.status === 'running' && part.commandId && ['queued', 'starting', 'running', 'stopping'].includes(part.executionState) ? { executionState: part.executionState } : {}),
+        ...(part.status === 'running' && (part.commandId || STREAMING_TOOLS.has(part.name)) && EXECUTION_STATES.has(part.executionState) ? { executionState: part.executionState } : {}),
         ...(['run_local_shell_command', 'run_linux_ssh_command'].includes(part.name) && typeof part.commandId === 'string' && /^[a-f0-9-]{36}$/.test(part.commandId) ? { commandId: part.commandId, ...(part.interruptRequested === true ? { interruptRequested: true } : {}) } : {}),
         ...(Number.isFinite(part.endedAt) && part.endedAt >= startedAt ? { endedAt: part.endedAt } : {}),
         ...(typeof part.workerId === 'string' && part.workerId ? { workerId: part.workerId.slice(0, 200) } : {}),
@@ -112,6 +158,21 @@ function cleanTimelineParts(value) {
         ...(part.truncated || args.truncated || output.truncated ? { truncated: true } : {}) });
     } else continue;
     seen.add(part.id);
+  }
+  // Snapshot-wide image budget: newest tool images win, older payloads are
+  // dropped to an imageOmitted note so the page never receives an unbounded
+  // payload (the whole state is cloned on every publish).
+  let imageCount = 0, imageChars = 0;
+  for (let index = parts.length - 1; index >= 0; index--) {
+    const image = parts[index].image;
+    if (!image) continue;
+    if (imageCount >= TOOL_IMAGE_MAX_COUNT || imageChars + image.data.length > TOOL_IMAGE_MAX_TOTAL_BASE64) {
+      delete parts[index].image;
+      parts[index].imageOmitted = true;
+      continue;
+    }
+    imageCount++;
+    imageChars += image.data.length;
   }
   return parts.filter(part => part.type !== 'thinking' || part.text.trim());
 }
@@ -264,7 +325,7 @@ function teamTranscriptConversation(messages, { maxEntries = 40, maxParts = 200,
           texts.push(text);
           pushPart({ parts }, { id: `team:text:${index}:${parts.length}`, type: 'text', text, status: 'completed' });
         } else if (content.type === 'thinking' && content.redacted !== true && typeof content.thinking === 'string' && content.thinking.trim()) {
-          pushPart({ parts }, { id: `team:thinking:${index}:${parts.length}`, type: 'thinking', text: content.thinking.slice(0, maxText), status: 'completed',
+          pushPart({ parts }, { id: `team:thinking:${index}:${parts.length}`, type: 'thinking', text: content.thinking, status: 'completed',
             source: 'assistant', ...(timestamp === undefined ? {} : { startedAt: timestamp, endedAt: timestamp }) });
         } else if (content.type === 'toolCall' && typeof content.id === 'string' && content.id && typeof content.name === 'string' && content.name) {
           const part = { id: teamPartId('tool', index, content.id.slice(0, 80)), type: 'tool', name: content.name.slice(0, 120),
@@ -364,4 +425,4 @@ function accumulateUsage(current, next) {
   return base;
 }
 
-module.exports = { cleanTimelineParts, formatToolValue, redactDisplayObject, projectTeam, teamTranscriptConversation, interruptExecution, workerDisplayText, reasonConclusion, sanitizeUsage, usageSignature, accumulateUsage, STREAMING_TOOLS };
+module.exports = { cleanTimelineParts, formatToolValue, redactDisplayObject, sanitizeToolImage, TOOL_IMAGE_LIMITS, projectTeam, teamTranscriptConversation, interruptExecution, workerDisplayText, reasonConclusion, sanitizeUsage, usageSignature, accumulateUsage, STREAMING_TOOLS };

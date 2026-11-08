@@ -64,14 +64,14 @@ async function startLoopbackModel({ readPath, marker }) {
       else if (phase === 'conclude') {
         const evidence = messages.map(text).findLast(value => value.includes('Host tool evidence ledger:'));
         const ledger = jsonAfter(evidence, 'Host tool evidence ledger:');
-        const read = ledger.find(entry => entry.toolName === 'read_workspace_file' && entry.status === 'completed' && !entry.isError);
+        const read = ledger.find(entry => entry.toolName === 'read_workspace_code' && entry.status === 'completed' && !entry.isError);
         assert(read, 'Conclusion needs a successfully executed workspace read');
         assert(read.observations.some(value => value.includes(marker)), 'Tool evidence must contain the actual marker');
         content = { version: 1, outcome: 'confirmed', statement: `文件包含 ${marker}`, coverage: [{ point: keyPoint, status: 'confirmed', result: `实际读取 ${marker}` }], evidence: [{ toolCallId: read.toolCallId, observation: `读取到 ${marker}` }], failedChecks: [], limitations: [] };
       } else if (phase === 'execute') {
         const read = messages.findLast(message => message.role === 'tool');
         if (read) { assert(text(read).includes(marker)); content = `已读取文件，证据 ${read.tool_call_id}：${marker}`; }
-        else toolCall = { id: `smoke_read_${++sequence}`, type: 'function', function: { name: 'read_workspace_file', arguments: JSON.stringify({ path: readPath }) } };
+        else toolCall = { id: `smoke_read_${++sequence}`, type: 'function', function: { name: 'read_workspace_code', arguments: JSON.stringify({ path: readPath, startLine: 1, lineCount: 400 }) } };
       } else {
         const latest = messages.findLast(message => message.role === 'user');
         content = 'SMOKE_ASSIST_REPLY ' + text(latest).split('\n\nEditor context')[0];

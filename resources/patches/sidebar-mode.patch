@@ -2,7 +2,7 @@ diff --git a/src/vs/workbench/browser/parts/views/treeView.ts b/src/vs/workbench
 index fa8d7aed..f1a1d963 100644
 --- a/src/vs/workbench/browser/parts/views/treeView.ts
 +++ b/src/vs/workbench/browser/parts/views/treeView.ts
-@@ -129,6 +129,249 @@ export class TreeViewPane extends ViewPane {
+@@ -129,6 +129,325 @@ export class TreeViewPane extends ViewPane {
  
  	protected override renderBody(container: HTMLElement): void {
  		this._container = container;
@@ -101,6 +101,53 @@ index fa8d7aed..f1a1d963 100644
 +				bar.appendChild(button);
 +				return button;
 +			});
++			const compose = container.ownerDocument.createElement('div');
++			compose.className = 'ubovm-sidebar-compose';
++			const workspaceButton = container.ownerDocument.createElement('div');
++			workspaceButton.className = 'ubovm-compose-workspace';
++			const workspaceLabel = container.ownerDocument.createElement('span');
++			workspaceLabel.className = 'ubovm-compose-label';
++			workspaceLabel.textContent = '工作区';
++			workspaceButton.append(workspaceLabel);
++			const chatButton = container.ownerDocument.createElement('button');
++			chatButton.type = 'button';
++			chatButton.className = 'ubovm-compose-new';
++			const chatIcon = container.ownerDocument.createElement('span');
++			chatIcon.className = 'codicon codicon-add';
++			chatIcon.setAttribute('aria-hidden', 'true');
++			const chatLabel = container.ownerDocument.createElement('span');
++			chatLabel.className = 'ubovm-compose-label';
++			chatButton.append(chatIcon, chatLabel);
++			const workspaceActions = container.ownerDocument.createElement('div');
++			workspaceActions.className = 'ubovm-workspace-actions';
++			const makeWorkspaceAction = (icon, title, command) => {
++				const button = container.ownerDocument.createElement('button');
++				button.type = 'button';
++				button.className = 'ubovm-workspace-action';
++				button.title = title;
++				button.setAttribute('aria-label', title);
++				const symbol = container.ownerDocument.createElement('span');
++				symbol.className = 'codicon codicon-' + icon;
++				symbol.setAttribute('aria-hidden', 'true');
++				button.append(symbol);
++				button.addEventListener('click', () => openComposeCommand(command));
++				workspaceActions.appendChild(button);
++				return button;
++			};
++			const searchAction = makeWorkspaceAction('search', '搜索会话', 'ubovm.searchConversations');
++			const manageAction = makeWorkspaceAction('settings', '管理工作区', 'ubovm.manageProjects');
++			const newProjectAction = makeWorkspaceAction('new-folder', '新建工作区', 'ubovm.newProject');
++			const workspaceRow = container.ownerDocument.createElement('div');
++			workspaceRow.className = 'ubovm-workspace-row';
++			workspaceRow.append(workspaceButton, workspaceActions);
++			compose.append(chatButton, workspaceRow);
++			const openComposeCommand = command => {
++				if (disposed || pending || !shellUnlocked()) { return; }
++				pending = 'command:' + command;
++				update();
++				void this.openerService.open('command:' + command, { allowCommands: [command] }).finally(() => { pending = ''; update(); });
++			};
++			chatButton.addEventListener('click', () => openComposeCommand(this.contextKeyService.getContextKeyValue('ubovm.mode') === 'goal' ? 'ubovm.newGoal' : 'ubovm.newChat'));
 +			const management = container.ownerDocument.createElement('nav');
 +			management.className = 'ubovm-sidebar-management';
 +			management.setAttribute('aria-label', '管理配置');
@@ -177,6 +224,12 @@ index fa8d7aed..f1a1d963 100644
 +			const chrome = (zh, en) => this.contextKeyService.getContextKeyValue('ubovm.interfaceLocale') === 'en' ? en : zh;
 +			const update = () => {
 +				if (disposed) { return; }
++				// Keep both mode keys mounted even if a host rerender or another
++				// contribution replaces the pane body children.
++				for (const button of buttons) {
++					if (button.parentElement !== bar) { bar.appendChild(button); }
++					if (button.hidden) { button.hidden = false; }
++				}
 +				const mode = this.contextKeyService.getContextKeyValue('ubovm.mode');
 +				const ready = this.contextKeyService.getContextKeyValue('ubovm.contentReady') === true;
 +				// Sticky shell unlock: first paint keeps the sessions sidebar live.
@@ -220,6 +273,17 @@ index fa8d7aed..f1a1d963 100644
 +						button.removeAttribute('aria-current');
 +					}
 +				}
++				const workspaceCopy = this.contextKeyService.getContextKeyValue('ubovm.workspaceLabel');
++				const workspaceName = typeof workspaceCopy === 'string' && workspaceCopy ? workspaceCopy : '';
++				workspaceLabel.textContent = chrome('工作区', 'Workspace');
++				workspaceButton.title = workspaceName ? chrome('当前工作区：', 'Workspace: ') + workspaceName : chrome('工作区', 'Workspace');
++				searchAction.disabled = !!pending || !mode || !unlocked;
++				manageAction.disabled = !!pending || !mode || !unlocked;
++				newProjectAction.disabled = !!pending || !mode || !unlocked;
++				chatLabel.textContent = chrome('新会话', 'New session');
++				chatButton.title = mode === 'goal' ? chrome('新建探索', 'New exploration') : chrome('新建对话', 'New chat');
++				chatButton.setAttribute('aria-label', chatButton.title);
++				chatButton.disabled = !!pending || !mode || !unlocked;
 +				bar.classList.toggle('ubovm-settings-navigation', !!page);
 +				for (const button of buttons) {
 +					const selected = button.dataset.mode === mode;
@@ -239,7 +303,7 @@ index fa8d7aed..f1a1d963 100644
 +					button.setAttribute('aria-label', button.title);
 +				}
 +			};
-+			const navigationKeys = new Set(['ubovm.mode', 'ubovm.settingsPage', 'ubovm.contentReady', 'ubovm.interfaceLocale', 'ubovm.assistRunning', 'ubovm.goalRunning']);
++			const navigationKeys = new Set(['ubovm.mode', 'ubovm.settingsPage', 'ubovm.contentReady', 'ubovm.interfaceLocale', 'ubovm.workspaceLabel', 'ubovm.assistRunning', 'ubovm.goalRunning']);
 +			this._register(this.contextKeyService.onDidChangeContext(event => {
 +				if (event.affectsSome(navigationKeys)) { update(); }
 +			}));
@@ -263,18 +327,19 @@ index fa8d7aed..f1a1d963 100644
 +			this._register({ dispose: () => widthObserver?.disconnect() });
 +			container.appendChild(bar);
 +			container.appendChild(management);
++			container.appendChild(compose);
 +			container.appendChild(loading);
 +			update();
 +		}
  		super.renderBody(container);
  		this.renderTreeView(container);
  	}
-@@ -138,6 +381,8 @@ export class TreeViewPane extends ViewPane {
+@@ -138,6 +457,8 @@ export class TreeViewPane extends ViewPane {
  	}
  
  	protected override layoutBody(height: number, width: number): void {
-+		// Keep in sync with workbench.css chrome budget (modes 42 + management 40).
-+		if (this.id === 'ubovm.sessions') { height = Math.max(0, height - 82); }
++		// Keep in sync with workbench.css chrome budget (modes 42 + compose 82 + management/bottom 46).
++		if (this.id === 'ubovm.sessions') { height = Math.max(0, height - 174); }
  		super.layoutBody(height, width);
  		this.layoutTreeView(height, width);
  	}

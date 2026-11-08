@@ -23,6 +23,8 @@ test('operation errors preserve drafts, show safe details, dismiss and recover f
     assert.ok(request);
     await send({ type: 'uiResult', requestId: request.requestId, ok: false, error: 'ECONNREFUSED token=private' });
     assert.match(await page.locator('#ui-error-message').innerText(), /无法连接/);
+    assert.match(await page.locator('#ui-error-hint').innerText(), /网络/);
+    assert.equal(await page.locator('#ui-error-copy').isVisible(), true);
     assert.equal(await page.locator('#ui-error-title').innerText(), '发送消息未完成');
     assert.doesNotMatch(await page.locator('#ui-error-detail').textContent(), /private/);
     assert.equal(await composer.inputValue(), '保留这份草稿');

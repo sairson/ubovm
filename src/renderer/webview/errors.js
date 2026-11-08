@@ -50,6 +50,7 @@
     let hint = '', category = 'OPERATION_FAILED';
     if (/AbortError|ABORT_ERR|^CANCELLED\b|^(?:Error )?(?:cancelled|canceled)(?:$|[.:])/i.test(match.trim())) { category = 'CANCELLED'; message = tr('操作已取消。'); }
     else if (/AGENT_HEARTBEAT_TIMEOUT|AGENT_THREAD_EXIT/i.test(match)) { category = code || (/AGENT_HEARTBEAT_TIMEOUT/i.test(match) ? 'AGENT_HEARTBEAT_TIMEOUT' : 'AGENT_THREAD_EXIT'); message = tr('Agent 后端连接已中断。'); hint = tr('运行中的任务已停止；若出现“继续执行”，可从检查点恢复，请勿重复提交。'); }
+    else if (/AGENT_MANUAL_RESTART/i.test(match)) { category = 'AGENT_MANUAL_RESTART'; message = tr('Agent 后端已重新启动。'); hint = tr('执行记录已保留；如任务需要继续，请从检查点“继续执行”。'); }
     else if (/SERVICE_CLOSED/i.test(match)) { category = 'SERVICE_CLOSED'; message = tr('Agent 服务已关闭。'); hint = tr('请重新打开面板或重启应用后再试。'); }
     else if (/RPC_BUSY/i.test(match)) { category = 'RPC_BUSY'; message = tr('Agent 正在处理其他请求。'); hint = tr('请稍候再试，或先停止当前执行。'); }
     else if (/ByteString|greater than 255|Latin-1 compatible|ISO-8859-1|HTTP headers cannot contain/i.test(match)) {

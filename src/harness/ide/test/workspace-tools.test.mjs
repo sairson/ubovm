@@ -1,60 +1,28 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createWorkspaceTools } from '../workspace-tools.mjs';
 
-async function fixture(t, bytes) {
-  const root = await mkdtemp(join(tmpdir(), 'workspace-read-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
-  await writeFile(join(root, 'data.txt'), bytes);
-  const [, tool] = await createWorkspaceTools([root]);
-  return input => tool.execute('read', { path: 'data.txt', ...input });
-}
-
 async function workspace(t) {
   const root = await mkdtemp(join(tmpdir(), 'workspace-list-'));
   t.after(() => rm(root, { recursive: true, force: true }));
+  await mkdir(join(root, 'nested'));
   await writeFile(join(root, 'data.txt'), 'ok');
+  await writeFile(join(root, 'nested', 'inner.txt'), 'inner');
   const tools = await createWorkspaceTools([root]);
   return {
     root,
-    list: (input = {}) => tools[0].execute('list', input),
-    read: (input = {}) => tools[1].execute('read', input)
+    tools,
+    list: (input = {}) => tools.find(tool => tool.name === 'list_workspace_files').execute('list', input),
   };
 }
 
-test('workspace text rejects malformed UTF-8 instead of fabricating replacement characters', async t => {
-  const read = await fixture(t, Buffer.from([0x61, 0xc3, 0x28]));
-  await assert.rejects(read(), error => error.code === 'WORKSPACE_BINARY_FILE');
-});
-
-test('workspace text omits a codepoint bisected by its byte cap', async t => {
-  const prefix = 'a\n'.repeat(((4 << 20) - 2) / 2);
-  const read = await fixture(t, prefix + '😀tail');
-  const { details } = await read({ startLine: prefix.length / 2 + 1 });
-  assert.equal(details.fileTruncated, true);
-  assert.ok(!details.content.includes('\ufffd'));
-});
-
-test('oversized lines preserve emoji boundaries and pagination advances to the next line', async t => {
-  const read = await fixture(t, 'a' + '😀'.repeat(40000) + '\nnext');
-  const { details } = await read();
-  assert.equal(details.lineTruncated, true);
-  assert.equal(details.nextLine, 2);
-  assert.ok(details.content.isWellFormed());
-  assert.ok(Buffer.byteLength(details.content) <= 128 << 10);
-  assert.match((await read({ startLine: details.nextLine })).details.content, /2: next/);
-});
-
-test('workspace pagination preserves CRLF lines and rejects outside paths', async t => {
-  const read = await fixture(t, 'first\r\n第二\r\nlast\r\n');
-  const first = (await read({ lineCount: 1 })).details;
-  assert.equal(first.content, '1: first\n');
-  assert.equal(first.nextLine, 2);
-  assert.equal((await read({ startLine: 2 })).details.content, '2: 第二\n3: last\n');
-  await assert.rejects(read({ path: '../outside' }), error => error.code === 'WORKSPACE_BOUNDARY');
+test('base workspace tools advertise listing and image reads but not read_workspace_file', async t => {
+  const f = await workspace(t);
+  assert.deepEqual(f.tools.map(tool => tool.name), ['list_workspace_files', 'read_image'],
+    'read_workspace_code is the canonical file read; the base read tool is gone');
 });
 
 test('missing directories and files are observations, not tool failures', async t => {
@@ -68,13 +36,23 @@ test('missing directories and files are observations, not tool failures', async 
   const asFile = await f.list({ path: 'data.txt' });
   assert.equal(asFile.details.exists, true);
   assert.equal(asFile.details.reason, 'not_directory');
-  const missing = await f.read({ path: 'selftest/app.js' });
-  assert.equal(missing.isError, undefined);
-  assert.equal(missing.details.exists, false);
-  assert.equal(missing.details.content, null);
-  const present = await f.read({ path: 'data.txt' });
+  assert.deepEqual(asFile.details.entries, []);
+  const present = await f.list({});
   assert.equal(present.details.exists, true);
-  assert.match(present.details.content, /1: ok/);
+  assert.deepEqual(present.details.entries.map(entry => [entry.name, entry.type]), [['data.txt', 'file'], ['nested', 'directory']]);
+});
+
+test('directory pages continue with nextOffset and truncate cleanly', async t => {
+  const f = await workspace(t);
+  const first = await f.list({ limit: 1 });
+  assert.equal(first.details.entries.length, 1);
+  assert.equal(first.details.totalEntries, 2);
+  assert.equal(first.details.nextOffset, 1);
+  assert.equal(first.details.truncated, true);
+  const second = await f.list({ offset: first.details.nextOffset, limit: 1 });
+  assert.equal(second.details.nextOffset, null);
+  assert.equal(second.details.truncated, false);
+  await assert.rejects(f.list({ limit: 501 }), () => true);
 });
 
 test('完全模式 lifts the workspace boundary while the default mode still rejects escapes', async t => {
@@ -85,17 +63,32 @@ test('完全模式 lifts the workspace boundary while the default mode still rej
 
   // Default (人工/自动) keeps the boundary contract.
   const confined = await createWorkspaceTools([root]);
-  await assert.rejects(confined[1].execute('read', { path: '..' + join('/', 'escape.txt') }), error => error.code === 'WORKSPACE_BOUNDARY');
-  await assert.rejects(confined[1].execute('read', { path: join(outside, 'far.txt') }), error => error.code === 'WORKSPACE_BOUNDARY');
+  const confinedList = confined.find(tool => tool.name === 'list_workspace_files');
+  await assert.rejects(confinedList.execute('list', { path: '..' + join('/', 'escape') }), error => error.code === 'WORKSPACE_BOUNDARY');
+  await assert.rejects(confinedList.execute('list', { path: join(outside, 'far.txt') }), error => error.code === 'WORKSPACE_BOUNDARY');
 
-  // 完全模式 reads any absolute path on the machine.
+  // 完全模式 lists any absolute path on the machine.
   const open = await createWorkspaceTools([root], { unbounded: true });
-  const far = await open[1].execute('read', { path: join(outside, 'far.txt') });
+  const openList = open.find(tool => tool.name === 'list_workspace_files');
+  const far = await openList.execute('list', { path: outside });
   assert.equal(far.details.exists, true);
-  assert.match(far.details.content, /outside the workspace root/);
-  // A workspace-relative read still resolves against the open root.
-  await writeFile(join(root, 'near.txt'), 'inside');
-  const near = await open[1].execute('read', { path: 'near.txt' });
-  assert.equal(near.details.exists, true);
-  assert.match(near.details.content, /1: inside/);
+  assert.deepEqual(far.details.entries.map(entry => entry.name), ['far.txt']);
+});
+
+test('read_image is the only base tool that may widen to absolute external paths', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'workspace-image-root-'));
+  const outside = await mkdtemp(join(tmpdir(), 'workspace-image-outside-'));
+  t.after(() => Promise.all([rm(root, { recursive: true, force: true }), rm(outside, { recursive: true, force: true })]));
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nXQAAAAASUVORK5CYII=', 'base64');
+  await writeFile(join(outside, 'screen.png'), png);
+
+  const tools = await createWorkspaceTools([root]);
+  // The listing stays bounded; only the read-only image tool accepts the file.
+  await assert.rejects(tools.find(tool => tool.name === 'list_workspace_files').execute('list', { path: outside }), error => error.code === 'WORKSPACE_BOUNDARY');
+  const read = await tools.find(tool => tool.name === 'read_image').execute('read', { path: join(outside, 'screen.png') });
+  assert.equal(read.details.external, true);
+  assert.equal(read.details.mimeType, 'image/png');
+  assert.equal(read.details.width, 1);
+  assert.equal(read.details.height, 1);
+  assert.equal(read.content.filter(part => part.type === 'image').length, 1);
 });

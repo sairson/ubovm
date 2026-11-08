@@ -14,7 +14,6 @@ const SECOND = 1000;
 
 /** Per-tool deadlines for tools that do not enforce their own timeout. */
 export const TOOL_TIMEOUTS = Object.freeze({
-  read_workspace_file: 30 * SECOND,
   read_image: 60 * SECOND,
   list_workspace_files: 30 * SECOND,
   read_workspace_code: 30 * SECOND,
@@ -22,9 +21,7 @@ export const TOOL_TIMEOUTS = Object.freeze({
   list_workspace_changes: 30 * SECOND,
   search_workspace: 60 * SECOND,
   navigate_workspace_code: 30 * SECOND,
-  analyze_workspace_call_chain: 30 * SECOND,
   preview_workspace_rename: 60 * SECOND,
-  preview_workspace_edits: 60 * SECOND,
   inspect_workspace_project: 30 * SECOND,
   get_workspace_diagnostics: 30 * SECOND,
   read_context_evidence: 30 * SECOND,
@@ -55,7 +52,6 @@ const SKIP_TIMEOUT = new Set([
   'load_skill',
   'todo',
   'note',
-  'delivery_workflow',
   'domain_inventory',
   'learn_capability',
   'browser_action',
@@ -64,13 +60,19 @@ const SKIP_TIMEOUT = new Set([
 
 const MCP_PREFIX = 'mcp_';
 const MCP_TIMEOUT_MS = 60 * SECOND;
+// Third-party plugin tools are ordinary host functions with no process-level
+// deadline of their own; a hung extension must not stall an agent run forever.
+const PLUGIN_PREFIX = 'plugin_';
+const PLUGIN_TIMEOUT_MS = 5 * 60 * SECOND;
 
 export function timeoutMsFor(name) {
   if (typeof name !== 'string' || !name) return undefined;
   if (SKIP_TIMEOUT.has(name)) return undefined;
   const configured = TOOL_TIMEOUTS[name];
   if (configured) return configured;
-  return name.startsWith(MCP_PREFIX) ? MCP_TIMEOUT_MS : undefined;
+  if (name.startsWith(MCP_PREFIX)) return MCP_TIMEOUT_MS;
+  if (name.startsWith(PLUGIN_PREFIX)) return PLUGIN_TIMEOUT_MS;
+  return undefined;
 }
 
 function abortReason(signal) {
@@ -209,7 +211,7 @@ export function applyToolRuntime(tools, { gate = createParallelGate(), timeouts 
     if (!tool || typeof tool.name !== 'string' || !tool.name) throw new TypeError('Every tool requires a nonempty name');
     let wrapped = tool;
     const configured = typeof timeouts === 'function' ? timeouts(tool.name) : timeouts[tool.name];
-    const timeoutMs = configured ?? (tool.name.startsWith(MCP_PREFIX) ? MCP_TIMEOUT_MS : undefined);
+    const timeoutMs = configured ?? (tool.name.startsWith(MCP_PREFIX) ? MCP_TIMEOUT_MS : tool.name.startsWith(PLUGIN_PREFIX) ? PLUGIN_TIMEOUT_MS : undefined);
     if (timeoutMs && !SKIP_TIMEOUT.has(tool.name)) wrapped = withToolTimeout(wrapped, timeoutMs);
     if (tool.executionMode === 'parallel') wrapped = withParallelGate(wrapped, gate);
     return wrapped;

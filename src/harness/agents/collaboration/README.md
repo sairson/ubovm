@@ -65,8 +65,10 @@ Budget exhaustion aborts the shared signal with `HARNESS_CALL_LIMIT`; deadlines
 use `HARNESS_TIME_LIMIT`. Cooperative tools/models must honor cancellation;
 cleanup is awaited rather than overlapping a replacement run with old writes.
 This deadline cannot forcibly interrupt synchronous code blocking the worker;
-the IDE transport heartbeat remains responsible for detecting an unresponsive
-backend. Completed effects are not rolled back or automatically replayed.
+the IDE transport heartbeat marks such a backend as unresponsive (`stalled`)
+but intentionally does not terminate it, so a long synchronous step is never
+mistaken for a crash. Completed effects are not rolled back or automatically
+replayed.
 
 This manager currently covers collaboration/assist execution. Goal-mode
 Reason/Worker scheduling and checkpoints retain their existing management.

@@ -35,7 +35,7 @@ test('MCP instruction provider tells the agent which servers are connected', asy
   try {
     const status = mcp.instructionProvider();
     assert.match(status, /MCP servers/);
-    assert.match(status, /local \(stdio\): connected; tools: mcp_local_read/);
+    assert.match(status, /local \(stdio\): connected; tools: mcp__local__read/);
     assert.match(status, /connected from the next turn/);
   } finally { await mcp.close(); }
 });
@@ -50,4 +50,50 @@ test('MCP instruction provider is empty without configured servers', async () =>
   const mcp = await createMcpMiddleware({ servers: [] });
   assert.equal(mcp.instructionProvider(), '');
   await mcp.close();
+});
+
+test('MCP diagnostics keep the numeric HTTP status and the server error body', async t => {
+  const { createServer } = await import('node:http');
+  const server = createServer((_request, response) => {
+    response.writeHead(401, { 'content-type': 'application/json' });
+    response.end('{"code":401,"message":"invalid mcp key"}');
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const mcp = await createMcpMiddleware({ servers: [{ name: 'remote', transport: 'streamable_http',
+    url: `http://127.0.0.1:${server.address().port}/mcp`, required: false }], connectTimeoutMs: 5000 });
+  try {
+    const [diagnostic] = mcp.diagnostics();
+    assert.equal(diagnostic.connected, false);
+    assert.match(diagnostic.error, /\(401\)/);
+    assert.match(diagnostic.error, /invalid mcp key/);
+    assert.match(mcp.instructionProvider(), /remote \(streamable_http\): NOT connected .*invalid mcp key/);
+  } finally { await mcp.close(); }
+});
+
+test('MCP TLS options are validated and only accepted for HTTP transports', async () => {
+  await assert.rejects(createMcpMiddleware({ servers: [{ name: 'local', command: 'unused', insecureTls: true }] }), /TLS/);
+  await assert.rejects(createMcpMiddleware({ servers: [{ name: 'remote', transport: 'sse', url: 'https://example.test/sse', tlsCa: 'not a certificate' }] }), /PEM/);
+  await assert.rejects(createMcpMiddleware({ servers: [{ name: 'remote', transport: 'sse', url: 'https://example.test/sse', insecureTls: 'yes' }] }), /insecureTls/);
+  // accepted for HTTP transports (the unreachable endpoint only fails later)
+  const mcp = await createMcpMiddleware({ servers: [{ name: 'remote', transport: 'sse', url: 'https://127.0.0.1:1/mcp', insecureTls: true, required: false }], connectTimeoutMs: 1000 });
+  assert.equal(mcp.diagnostics()[0].connected, false);
+  await mcp.close().catch(() => {});
+});
+
+test('host-level insecureTls applies to every HTTP server and is validated', async () => {
+  await assert.rejects(createMcpMiddleware({ servers: [], insecureTls: 'yes' }), /insecureTls option must be boolean/);
+  const mcp = await createMcpMiddleware({ servers: [
+    { name: 'local', command: 'unused', required: false },
+    { name: 'remote', transport: 'streamable_http', url: 'https://127.0.0.1:1/mcp', required: false },
+  ], insecureTls: true, connectTimeoutMs: 1000 });
+  try {
+    const [local, remote] = mcp.diagnostics();
+    assert.equal(local.connected, false);
+    assert.equal(remote.connected, false);
+    // The opt-out path uses the dedicated https fetch, so a refused connection
+    // surfaces the raw Node error instead of undici's opaque "fetch failed".
+    assert.match(remote.error, /ECONNREFUSED|connect/);
+    assert.doesNotMatch(remote.error, /fetch failed/);
+  } finally { await mcp.close().catch(() => {}); }
 });

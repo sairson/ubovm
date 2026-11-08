@@ -35,6 +35,52 @@ export function interruptedHistory(messages, limits) {
   return boundedHistory(retained, limits);
 }
 
+// Pruned turns are gone from the transcript, but the next model call must still
+// know whose objective was lost and that effects may already exist. Keep bounded,
+// verbatim user anchors plus a tool-effect census in the gap metadata; the
+// conversation injects that metadata into the system prompt.
+const ANCHOR_LIMIT = 8, ANCHOR_CHARS = 512, ANCHOR_BYTES = 4096, EVIDENCE_SCAN_LIMIT = 512;
+function gapEvidence(messages) {
+  const anchors = [], toolNames = new Set();
+  let toolCalls = 0, failedCalls = 0, scanned = 0;
+  for (const message of messages) {
+    if (++scanned > EVIDENCE_SCAN_LIMIT) break;
+    if (!message || typeof message !== 'object') continue;
+    if (message.role === 'user') {
+      const text = plain(message).trim();
+      if (!text || anchors.length >= ANCHOR_LIMIT) continue;
+      // Host-compacted checkpoints are durable summaries, not user instructions.
+      if (text.startsWith('Compacted historical context (')) continue;
+      anchors.push({ ...(message.timestamp === undefined ? {} : { timestamp: message.timestamp }),
+        complete: Buffer.byteLength(text, 'utf8') <= ANCHOR_CHARS,
+        text: text.length <= ANCHOR_CHARS ? text : text.slice(0, ANCHOR_CHARS) });
+    } else if (message.role === 'assistant') {
+      for (const part of Array.isArray(message.content) ? message.content : []) {
+        if (part?.type !== 'toolCall') continue;
+        toolCalls++;
+        if (typeof part.name === 'string' && toolNames.size < 16) toolNames.add(part.name);
+      }
+    } else if (message.role === 'toolResult' && message.isError === true) failedCalls++;
+  }
+  while (anchors.length > 1 && Buffer.byteLength(JSON.stringify(anchors), 'utf8') > ANCHOR_BYTES) anchors.pop();
+  return { ...(anchors.length ? { userAnchors: anchors } : {}),
+    ...(toolCalls ? { toolCalls, toolNames: [...toolNames], failedCalls } : {}) };
+}
+
+function mergeGapEvidence(gap, messages) {
+  const evidence = gapEvidence(messages);
+  const anchors = [];
+  for (const anchor of [...(gap.userAnchors ?? []), ...(evidence.userAnchors ?? [])]) {
+    if (anchors.length >= ANCHOR_LIMIT) break;
+    if (!anchors.some(item => item.text === anchor.text)) anchors.push(anchor);
+  }
+  while (anchors.length > 1 && Buffer.byteLength(JSON.stringify(anchors), 'utf8') > ANCHOR_BYTES) anchors.pop();
+  const toolCalls = (gap.toolCalls ?? 0) + (evidence.toolCalls ?? 0);
+  const failedCalls = (gap.failedCalls ?? 0) + (evidence.failedCalls ?? 0);
+  const toolNames = [...new Set([...(gap.toolNames ?? []), ...(evidence.toolNames ?? [])])].slice(0, 16);
+  return { ...(anchors.length ? { userAnchors: anchors } : {}), ...(toolCalls ? { toolCalls, toolNames, failedCalls } : {}) };
+}
+
 /** Drop complete old turns using one sizing pass; never split tool exchanges. */
 export function boundedHistory(messages, limits = {}) {
   const maximumMessages = limits.maxHistoryMessages ?? 200, maximumBytes = limits.maxHistoryBytes ?? 4 << 20;
@@ -46,19 +92,23 @@ export function boundedHistory(messages, limits = {}) {
   while (messages.length - start > maximumMessages || bytes > maximumBytes) {
     let nextTurn = start + 1;
     while (nextTurn < messages.length && messages[nextTurn].role !== 'user') nextTurn++;
-    if (nextTurn === messages.length) return compactTurn(messages.slice(start), maximumBytes, { droppedMessages: start, droppedBytes });
+    if (nextTurn === messages.length) return compactTurn(messages.slice(start), maximumBytes,
+      { droppedMessages: start, droppedBytes, ...gapEvidence(messages.slice(0, start)) });
     for (; start < nextTurn; start++) { bytes -= sizes[start] + 1; droppedBytes += sizes[start] + 1; }
   }
-  return { messages: messages.slice(start), omitted: start > 0, ...(start > 0 ? { historyGap: { kind: 'turns-omitted', droppedMessages: start, droppedBytes } } : {}) };
+  return { messages: messages.slice(start), omitted: start > 0,
+    ...(start > 0 ? { historyGap: { kind: 'turns-omitted', droppedMessages: start, droppedBytes, ...gapEvidence(messages.slice(0, start)) } } : {}) };
 }
 
 function compactTurn(messages, maximumBytes, gap = {}) {
-  const first = messages.find(message => message.role === 'user');
+  // Preserve every user message in the collapsed turn, not only the first: a
+  // mid-turn correction is user intent, and a single-user assumption silently
+  // dropped earlier objectives in oversized turns.
+  const users = messages.filter(message => message.role === 'user');
   const last = messages.findLast(message => message.role === 'assistant' && message.stopReason === 'stop');
-  const prompt = first ? plain(first) : '', answer = last ? plain(last) : '';
   const compact = length => [
-    ...(first ? [{ ...first, content: prompt.slice(0, length) }] : []),
-    ...(last ? [{ ...last, content: [{ type: 'text', text: answer.slice(0, length) }] }] : [])
+    ...users.map(message => ({ ...message, content: plain(message).slice(0, length) })),
+    ...(last ? [{ ...last, content: [{ type: 'text', text: plain(last).slice(0, length) }] }] : [])
   ];
   const fits = value => Buffer.byteLength(JSON.stringify(value)) <= maximumBytes;
   // Metadata is retained for provider compatibility. Never persist an oversized
@@ -70,5 +120,6 @@ function compactTurn(messages, maximumBytes, gap = {}) {
     if (fits(compact(middle))) low = middle;
     else high = middle - 1;
   }
-  return { messages: compact(low), omitted: true, historyGap: { kind: 'turn-compacted', droppedMessages: gap.droppedMessages ?? 0, droppedBytes: gap.droppedBytes ?? 0, retainedCharsPerMessage: low } };
+  return { messages: compact(low), omitted: true,
+    historyGap: { kind: 'turn-compacted', droppedMessages: gap.droppedMessages ?? 0, droppedBytes: gap.droppedBytes ?? 0, retainedCharsPerMessage: low, ...mergeGapEvidence(gap, messages) } };
 }

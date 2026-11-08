@@ -2,7 +2,7 @@
   "name": "ubovm-core",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "publisher": "ubovm",
   "private": true,
   "license": "MIT",
@@ -33,6 +33,41 @@
   },
   "contributes": {
     "commands": [
+      {
+        "command": "ubovm.installVsixPlugin",
+        "title": "%command.installVsixPlugin%",
+        "category": "UBOVM"
+      },
+      {
+        "command": "ubovm.installPluginFromUrl",
+        "title": "%command.installPluginFromUrl%",
+        "category": "UBOVM"
+      },
+      {
+        "command": "ubovm.searchOpenVsxPlugin",
+        "title": "%command.searchOpenVsxPlugin%",
+        "category": "UBOVM"
+      },
+      {
+        "command": "ubovm.openPluginMarketplace",
+        "title": "%command.openPluginMarketplace%",
+        "category": "UBOVM"
+      },
+      {
+        "command": "ubovm.openPlugin",
+        "title": "%command.openPlugin%",
+        "category": "UBOVM"
+      },
+      {
+        "command": "ubovm.showInstalledPlugins",
+        "title": "%command.showInstalledPlugins%",
+        "category": "UBOVM"
+      },
+      {
+        "command": "ubovm.openPluginsFolder",
+        "title": "%command.openPluginsFolder%",
+        "category": "UBOVM"
+      },
       {
         "command": "ubovm.setupPythonSandbox",
         "title": "%command.setupPythonSandbox%",
@@ -133,6 +168,12 @@
         "icon": "$(list-selection)"
       },
       {
+        "command": "ubovm.selectSshHost",
+        "title": "%command.selectSshHost%",
+        "category": "UBOVM",
+        "icon": "$(server-environment)"
+      },
+      {
         "command": "ubovm.openSource",
         "title": "%command.openSource%",
         "category": "UBOVM",
@@ -143,6 +184,12 @@
         "title": "%command.showRuntimeInfo%",
         "category": "UBOVM",
         "icon": "$(info)"
+      },
+      {
+        "command": "ubovm.exportDiagnostics",
+        "title": "%command.exportDiagnostics%",
+        "category": "UBOVM",
+        "icon": "$(file-medical)"
       },
       {
         "command": "ubovm.openAssistant",
@@ -205,6 +252,12 @@
         "icon": "$(chevron-right)"
       },
       {
+        "command": "ubovm.openFiles",
+        "title": "%command.openFiles%",
+        "category": "UBOVM",
+        "icon": "$(folder-opened)"
+      },
+      {
         "command": "ubovm.createFirstFile",
         "title": "%command.createFirstFile%",
         "category": "UBOVM",
@@ -215,6 +268,12 @@
         "title": "%command.openSettings%",
         "category": "UBOVM",
         "icon": "$(settings-gear)"
+      },
+      {
+        "command": "ubovm.restartAgentBackend",
+        "title": "%command.restartAgentBackend%",
+        "category": "UBOVM",
+        "icon": "$(debug-restart)"
       },
       {
         "command": "ubovm.openMcp",
@@ -297,6 +356,7 @@
     },
     "configurationDefaults": {
       "security.workspace.trust.enabled": false,
+      "workbench.iconTheme": "vs-seti",
       "json.schemaDownload.trustedDomains": {
         "*": true
       },
@@ -582,9 +642,10 @@
           "type": "object",
           "scope": "machine",
           "default": {
-            "servers": []
+            "servers": [],
+            "insecureTls": true
           },
-          "description": "本机配置的 MCP 服务，支持 stdio、streamable_http、sse。只读取用户设置，每个运行独立连接并在结束时释放。",
+          "description": "本机配置的 MCP 服务，支持 stdio、streamable_http、sse。工具以 mcp__<server>__<tool> 暴露；每个运行独立连接并在结束时释放。对话安装后会立即验证连接。默认忽略 HTTPS 证书校验（insecureTls=true），避免自签名证书导致服务不可用；需要严格校验时关闭该开关，并在单个服务上填写 tlsCa 或保持默认严格模式。",
           "properties": {
             "servers": {
               "type": "array",
@@ -636,6 +697,14 @@
                   "url": {
                     "type": "string"
                   },
+                  "insecureTls": {
+                    "type": "boolean",
+                    "description": "允许该 HTTPS 服务使用自签名或不受信任的证书（只对该服务生效）。"
+                  },
+                  "tlsCa": {
+                    "type": "string",
+                    "description": "为该 HTTPS 服务额外信任的 PEM 证书。填写后仍校验证书链。"
+                  },
                   "headers": {
                     "type": "object",
                     "additionalProperties": {
@@ -654,6 +723,11 @@
                 },
                 "additionalProperties": false
               }
+            },
+            "insecureTls": {
+              "type": "boolean",
+              "default": true,
+              "description": "忽略所有 MCP 服务的 HTTPS 证书校验（默认开启）。关闭后按证书校验，自签名服务需要单独声明。"
             },
             "connectTimeoutMs": {
               "type": "integer",
@@ -825,6 +899,11 @@
           "id": "ubovm-blackboard",
           "title": "%view.blackboard%",
           "icon": "media/icon.svg"
+        },
+        {
+          "id": "ubovm-goal-chat",
+          "title": "%view.goalChat%",
+          "icon": "media/icon.svg"
         }
       ]
     },
@@ -850,6 +929,14 @@
           "id": "ubovm.blackboardDetails",
           "name": "%view.blackboard%",
           "contextualTitle": "%view.blackboard%"
+        }
+      ],
+      "ubovm-goal-chat": [
+        {
+          "type": "webview",
+          "id": "ubovm.goalChat",
+          "name": "%view.goalChat%",
+          "contextualTitle": "%view.goalChat%"
         }
       ]
     },
@@ -923,18 +1010,18 @@
       ],
       "view/title": [
         {
+          "command": "ubovm.newGoal",
+          "when": "view == ubovm.goalChat",
+          "group": "navigation@1"
+        },
+        {
+          "command": "ubovm.openFiles",
+          "when": "view == ubovm.goalChat",
+          "group": "navigation@2"
+        },
+        {
           "command": "ubovm.openBrowser",
           "when": "view == workbench.explorer.fileView || view == workbench.explorer.emptyView",
-          "group": "navigation@0"
-        },
-        {
-          "command": "ubovm.manageProjects",
-          "when": "view == ubovm.sessions && !ubovm.settingsPage",
-          "group": "navigation@-1"
-        },
-        {
-          "command": "ubovm.newProject",
-          "when": "view == ubovm.sessions && !ubovm.settingsPage",
           "group": "navigation@0"
         },
         {
@@ -968,11 +1055,6 @@
           "group": "navigation@3"
         },
         {
-          "command": "ubovm.searchConversations",
-          "when": "view == ubovm.sessions && !ubovm.settingsPage",
-          "group": "navigation@1"
-        },
-        {
           "command": "ubovm.hideSessions",
           "when": "view == ubovm.sessions",
           "group": "navigation@4"
@@ -981,11 +1063,6 @@
           "command": "ubovm.hideFiles",
           "when": "view == workbench.explorer.fileView || view == workbench.explorer.emptyView",
           "group": "navigation@99"
-        },
-        {
-          "submenu": "ubovm.create",
-          "when": "view == ubovm.sessions && !ubovm.settingsPage",
-          "group": "navigation@2"
         }
       ],
       "commandPalette": [
@@ -1054,6 +1131,16 @@
         "key": "ctrl+shift+l",
         "mac": "cmd+shift+l",
         "when": "!terminalFocus && activeEditor != 'workbench.editor.browser'"
+      },
+      {
+        "command": "ubovm.openSettings",
+        "key": "ctrl+,",
+        "mac": "cmd+,"
+      },
+      {
+        "command": "ubovm.selectSshHost",
+        "key": "ctrl+alt+t",
+        "mac": "cmd+alt+t"
       }
     ],
     "themes": [

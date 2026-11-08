@@ -1,7 +1,7 @@
 <dialog id="settings-dialog" aria-labelledby="settings-title">
   <div class="settings-shell">
-    <header class="settings-header"><button type="button" id="settings-close" aria-label="返回对话">← <span>返回对话</span></button><h2 id="settings-title">系统配置</h2><span class="settings-header-note">凭据加密保存在本机</span></header>
-    <div class="settings-locale"><div class="settings-locale-row"><div class="settings-locale-copy"><span id="settings-locale-label">界面语言</span><p id="settings-locale-current">当前语言：中文</p></div><div class="settings-locale-options" role="group" aria-labelledby="settings-locale-label"><button type="button" id="settings-locale-zh" data-locale="zh-CN" aria-pressed="true">中文</button><button type="button" id="settings-locale-en" data-locale="en" aria-pressed="false">English</button></div></div><div id="settings-locale-notice" class="settings-locale-notice" hidden><p id="settings-locale-notice-text">下次启动将切换界面语言。</p><button type="button" id="settings-locale-restart">重新启动</button></div></div>
+    <header class="settings-header"><button type="button" id="settings-close" aria-label="返回对话">← <span>返回对话</span></button><div class="settings-header-copy"><h2 id="settings-title">系统配置</h2><span class="settings-header-note">凭据加密保存在本机</span></div><div class="settings-locale"><span id="settings-locale-label" class="settings-visually-hidden">界面语言</span><p id="settings-locale-current" class="settings-visually-hidden">当前语言：中文</p><div class="settings-locale-options" role="group" aria-labelledby="settings-locale-label"><button type="button" id="settings-locale-zh" data-locale="zh-CN" aria-pressed="true">中文</button><button type="button" id="settings-locale-en" data-locale="en" aria-pressed="false">English</button></div></div></header>
+    <div id="settings-locale-notice" class="settings-locale-notice" hidden><p id="settings-locale-notice-text">下次启动将切换界面语言。</p><button type="button" id="settings-locale-restart">重新启动</button></div>
     <div id="settings-progress" hidden aria-hidden="true"><span></span></div>
     <div class="settings-layout"><form id="settings-form">
       <section id="settings-initialization" hidden aria-label="首次初始化配置">
@@ -9,7 +9,7 @@
         <h3 id="settings-init-title" tabindex="-1">准备 UBOVM 工作环境</h3>
         <p>先连接对话模型，再配置远程命令环境。每步单独保存，下次打开可从中断处继续。</p>
         <nav aria-label="初始化步骤">
-          <button type="button" data-setup-step="model">1 · 模型</button>
+          <button type="button" data-setup-step="model">1 · 模型配置</button>
           <button type="button" data-setup-step="ssh">2 · 远程环境</button>
           <button type="button" data-setup-step="web">3 · 可选能力</button>
         </nav>

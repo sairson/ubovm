@@ -17,7 +17,7 @@ test.after(async () => browser?.close());
 const longDescription = '实现团队服务、任务板与等待机制，并为每一处持久化改动补齐测试；同时核对 Webview 面板、工具卡片和英文文案是否与主对话一致。'
   + '这里再补充一段足够长的说明，用来验证两行截断与展开按钮在真实溢出时才会出现，而不是按字符数猜测。';
 const lead = { name: 'lead', role: 'lead', status: 'running', description: '协调团队并汇总结果', updatedAt: start };
-const alice = { name: 'alice', role: 'teammate', status: 'running', context: 'fork', description: '实现后端服务与测试', activity: { label: 'team_task_update', status: 'running', at: start }, updatedAt: start };
+const alice = { name: 'alice', role: 'teammate', status: 'running', context: 'fork', description: '实现后端服务与测试', activity: { label: 'team_task_update', status: 'running', at: start }, usage: { input: 1200, output: 300, totalTokens: 1500 }, updatedAt: start };
 const bob = { name: 'bob', role: 'teammate', status: 'inactive', context: 'fresh', description: '等待分配任务' };
 const task = (id, overrides = {}) => ({
   id, revision: 1, subject: '实现协作服务', description: '实现团队服务与任务板。', status: 'pending',
@@ -152,8 +152,9 @@ test('roster shows lead highlight, statuses, activity and failed diagnostics', a
     assert.equal(await card.getAttribute('data-status'), member.status);
     const status = await card.locator('.team-member-status').textContent();
     assert.equal(status, { running: '运行中', inactive: '未运行', provisioning: '准备中', failed: '失败' }[member.status]);
+    if (member.usage) assert.equal(await card.locator('.team-member-usage').textContent(), '1.5K tokens');
     const dot = card.locator('.team-member-dot');
-    const stateName = { running: 'ongoing', provisioning: 'ongoing', failed: 'error', inactive: 'inactive' }[member.status];
+    const stateName = { running: 'ongoing', provisioning: 'waiting', failed: 'error', inactive: 'inactive' }[member.status];
     assert.equal(await dot.getAttribute('data-state'), stateName);
     if (member.status === 'inactive') assert.equal(await dot.locator('svg').count(), 1, 'inactive members use a person icon');
     else assert.equal(await dot.locator('svg').count(), 0);
@@ -165,6 +166,47 @@ test('roster shows lead highlight, statuses, activity and failed diagnostics', a
   const bobCard = members.filter({ hasText: 'bob' }).first();
   assert.equal(await bobCard.locator('.team-current-tag').isVisible(), false, 'only the Lead carries the main-agent tag');
   assert.equal(await bobCard.locator('.team-member-description').getAttribute('title'), '等待分配任务');
+  // Running / waiting / failed must be three distinct non-transparent dot colours,
+  // with the running spinner kept and waiting deliberately static.
+  const dotFacts = () => f.page.evaluate(() => {
+    const card = name => [...document.querySelectorAll('#team-panel .team-member')]
+      .find(node => node.querySelector('.team-member-name-text')?.textContent === name);
+    const read = name => {
+      const dot = card(name)?.querySelector('.team-member-dot');
+      const style = dot ? getComputedStyle(dot) : null;
+      return {
+        state: dot?.dataset.state,
+        background: style?.backgroundColor || '',
+        afterAnimation: dot ? getComputedStyle(dot, '::after').animationName : '',
+        icon: Boolean(dot?.querySelector('svg'))
+      };
+    };
+    return { running: read('alice'), waiting: read('dave'), failed: read('carol'), inactive: read('bob') };
+  });
+  const assertDistinctDots = (facts, theme) => {
+    assert.equal(facts.running.state, 'ongoing');
+    assert.equal(facts.waiting.state, 'waiting');
+    assert.equal(facts.failed.state, 'error');
+    assert.equal(facts.running.afterAnimation, 'team-member-spin', theme + ': running dot keeps its spinner');
+    assert.equal(facts.waiting.afterAnimation, 'none', theme + ': waiting dot must not reuse the running spinner');
+    assert.equal(facts.failed.afterAnimation, 'none', theme + ': failed dot stays static');
+    for (const key of ['running', 'waiting', 'failed']) {
+      assert.match(facts[key].background, /^(rgb|color\(srgb)/, theme + ': ' + key + ' dot is not transparent');
+      assert.notEqual(facts[key].background, 'rgba(0, 0, 0, 0)', theme + ': ' + key + ' dot has a real colour');
+      assert.notEqual(facts[key].background, 'transparent');
+    }
+    const colours = [facts.running.background, facts.waiting.background, facts.failed.background];
+    assert.equal(new Set(colours).size, 3, theme + ': running/waiting/failed dots must use three distinct colours');
+    assert.equal(facts.inactive.icon, true, theme + ': inactive keeps the gray person icon');
+  };
+  assertDistinctDots(await dotFacts(), 'light');
+  await f.page.screenshot({ path: screenshotDirectory + '/team-panel-status-dots-light.png' });
+  await f.page.evaluate(() => document.body.classList.add('vscode-dark'));
+  await f.paint();
+  assertDistinctDots(await dotFacts(), 'dark');
+  await f.page.screenshot({ path: screenshotDirectory + '/team-panel-status-dots-dark.png' });
+  await f.page.evaluate(() => document.body.classList.remove('vscode-dark'));
+  await f.paint();
 });
 
 test('task board renders readiness, owners, dependencies, write scopes and warnings', async t => {
@@ -352,6 +394,9 @@ test('reduced motion disables ongoing pulses and spinner rings', async t => {
     return getComputedStyle(element, pseudo).animationName;
   }, { selector, pseudo });
   assert.equal(await animation('#team-panel .team-member-dot[data-state="ongoing"]', '::after'), 'none');
+  assert.equal(await animation('#team-panel .team-member-dot[data-state="waiting"]'), 'none');
+  assert.equal(await animation('#team-panel .team-member-dot[data-state="waiting"]', '::after'), 'none');
+  assert.equal(await f.page.locator('#team-panel .team-member-dot[data-state="waiting"]').evaluate(node => getComputedStyle(node).backgroundColor), 'rgb(245, 158, 11)', 'waiting keeps its static amber colour under reduced motion');
   assert.equal(await animation('#team-panel .team-task-dot[data-state="ongoing"]'), 'none');
 });
 

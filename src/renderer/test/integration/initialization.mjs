@@ -38,7 +38,7 @@ test('startup opens initialization only for missing configuration and preserves 
   const source = readFileSync(new URL('../../extension.cjs', import.meta.url), 'utf8');
   const start = source.indexOf("else if (message.action === 'ready') {");
   const block = source.slice(start + 'else '.length, source.indexOf("else if (message.action === 'toolApproval')", start));
-  for (const [model, ssh, revision, pending, expected] of [[false, false, 0, 0, 1], [true, false, 0, 0, 1], [false, true, 0, 0, 1], [true, true, 0, 0, 0], [false, false, 8, 8, 0], [false, false, 9, 0, 1]]) {
+  for (const [model, ssh, revision, pending, expected] of [[false, false, 0, 0, 1], [true, false, 0, 0, 0], [false, true, 0, 0, 1], [true, true, 0, 0, 0], [false, false, 8, 8, 0], [false, false, 9, 0, 1]]) {
     let opens = 0;
     const context = vm.createContext({ message: { action: 'ready' }, welcomeReady: false, settingsOpenRevision: revision, settingsOpening: pending,
       publishState() {}, modelConfiguration: { status: () => ({ configured: model }) }, readSSHStatus: () => ({ configured: ssh }),
@@ -83,21 +83,25 @@ test('initialization saves steps, retains failed drafts, resumes and finishes wi
     assert.equal(await page.locator('[data-setting="modelId"]').inputValue(), 'ctf-model');
     assert.equal(await page.locator('[data-setting="apiKey"]').inputValue(), 'test-private-key');
     await save();
-    await page.locator('#settings-add-ssh').waitFor();
-    assert.equal(await page.locator('#settings-finish').isDisabled(), true);
-    // An interrupted setup reopens at its missing step without losing persisted credentials.
+    await page.locator('.settings-browser-card').waitFor();
+    assert.equal(await page.locator('#settings-finish').isEnabled(), true, 'a valid model alone finishes the required setup');
+    assert.equal((await service.snapshot()).initialization.complete, true);
+    // An interrupted setup reopens on the optional remaining step without losing
+    // persisted credentials.
     await page.locator('#settings-close').click();
     await open();
-    await page.locator('#settings-add-ssh').waitFor();
-    assert.equal(await page.locator('.settings-ssh-profile').count(), 1);
-    assert.equal(await page.locator('[data-setup-step="ssh"]').getAttribute('aria-current'), 'step');
+    await page.locator('.settings-browser-card').waitFor();
+    assert.equal(await page.locator('[data-setup-step="web"]').getAttribute('aria-current'), 'step');
     assert.equal(await page.locator('[data-setup-step="model"]').getAttribute('aria-current'), null);
+    // SSH is optional but still reachable from the setup steps.
+    await page.locator('[data-setup-step="ssh"]').click();
+    await page.locator('[data-setting="host"]').waitFor();
     assert.equal(await page.locator('[data-setting="host"]').getAttribute('required'), '');
     await page.locator('[data-setting="host"]').fill('192.0.2.10');
     await page.locator('[data-setting="username"]').fill('ctf');
     await save();
     await page.locator('.settings-browser-card').waitFor();
-    assert.equal(await page.locator('#settings-finish').isEnabled(), true);
+    assert.equal((await service.snapshot()).initialization.ssh, true);
     assert.equal((await service.snapshot()).initialization.complete, true);
     assert.equal(JSON.stringify(await service.snapshot()).includes('test-private-key'), false);
     await page.setViewportSize({ width: 390, height: 844 });
@@ -149,17 +153,16 @@ test('completion rechecks external edits, retains its page on failure and protec
     await page.waitForFunction(() => !document.querySelector('#settings-finish').disabled);
     assert.equal(await page.locator('#settings-dialog').isVisible(), true);
     assert.equal(await page.locator('[data-setting="headless"]').isChecked(), true, 'discarded optional draft cannot become a clean unsaved form after read failure');
-    // An external edit invalidates the default SSH while the wizard is open.
+    // Losing the optional default SSH must not block completion: the model is the
+    // only required first-run configuration.
     values.intools.ssh.defaultId = 'removed';
     await page.locator('#settings-finish').click();
     const current = await lastRead();
     await post({ type: 'settingsResult', requestId: failed.requestId, ok: true, data: { initialization: { complete: true } } });
     assert.equal(await page.locator('#settings-dialog').isVisible(), true, 'a stale completion response cannot close the page');
     await post({ type: 'settingsResult', requestId: current.requestId, ok: true, data: await service.snapshot({ includeSkills: false }) });
-    await page.locator('#settings-add-ssh').waitFor();
-    assert.equal(await page.locator('#settings-finish').isDisabled(), true);
-    assert.equal(await page.evaluate(() => document.activeElement.id), 'settings-init-title');
-    assert.match(await page.locator('#settings-status').textContent(), /基础配置已发生变化/);
+    await page.waitForFunction(() => !document.querySelector('#settings-dialog').open);
+    assert.equal(await page.locator('#settings-dialog').isVisible(), false, 'an optional SSH loss does not block completion');
     assert.equal(await page.evaluate(() => document.querySelector('#settings-dialog').scrollWidth <= innerWidth), true);
     assert.deepEqual(errors, []);
   } finally { await browser.close(); }

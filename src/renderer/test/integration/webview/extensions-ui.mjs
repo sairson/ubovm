@@ -35,17 +35,27 @@ test('Skills catalog and MCP lifecycle remain usable on narrow and wide pages', 
       if (process.env.UBOVM_UI_PREVIEW && width === 1100) await page.screenshot({ path: process.env.UBOVM_UI_PREVIEW + '/skills.png' });
       await page.locator('.settings-skill-card summary').first().click();
       await page.evaluate(data => window.postMessage({ type: 'openSettings', page: 'mcp', data }, '*'), data);
+      const sectionAdvanced = page.locator('#settings-fields > details.settings-advanced').first();
+      await sectionAdvanced.locator('summary').click();
+      assert.equal(await page.locator('#setting-insecureTls').isVisible(), true);
+      assert.equal(await page.locator('#setting-insecureTls').isChecked(), true);
+      await sectionAdvanced.locator('summary').click();
       await page.locator('#settings-add-mcp').click();
       const card = page.locator('[data-server-card]');
       assert.equal(await card.locator('[data-setting="enabled"]').isChecked(), true);
       await card.getByText('工具权限与连接选项', { exact: true }).click();
-      assert.equal(await card.locator('[data-setting="cwd"]').isVisible(), false);
+      assert.equal(await card.locator('[data-setting="cwd"]').isVisible(), true);
+      assert.equal(await card.locator('[data-setting="insecureTls"]').isVisible(), false);
       await card.getByText('工具权限与连接选项', { exact: true }).click();
       await card.locator('[data-setting="name"]').fill('my-service');
       assert.equal(await card.locator('h4').textContent(), 'my-service');
       await card.locator('[data-setting="transport"]').selectOption('streamable_http');
       assert.equal(await card.locator('[data-setting="url"]').isVisible(), true);
       assert.equal(await card.locator('[data-setting="command"]').isVisible(), false);
+      await card.getByText('工具权限与连接选项', { exact: true }).click();
+      assert.equal(await card.locator('[data-setting="cwd"]').isVisible(), false);
+      assert.equal(await card.locator('[data-setting="insecureTls"]').isVisible(), true);
+      await card.getByText('工具权限与连接选项', { exact: true }).click();
       await card.locator('[data-setting="enabled"]').uncheck();
       assert.match(await page.locator('.settings-library-summary').textContent(), /0 个已启用/);
       assert.equal(await page.locator('#settings-form').evaluate(node => node.scrollWidth <= node.clientWidth), true);
@@ -55,7 +65,7 @@ test('Skills catalog and MCP lifecycle remain usable on narrow and wide pages', 
       if (process.env.UBOVM_UI_PREVIEW && width === 1100) await page.screenshot({ path: process.env.UBOVM_UI_PREVIEW + '/mcp.png' });
       await card.locator('.settings-server-edit').click();
       await card.getByRole('button', { name: '移除服务' }).click();
-      assert.equal(await page.locator('#setting-servers .settings-empty').isVisible(), true);
+      assert.equal(await page.locator('#setting-servers .settings-empty').first().isVisible(), true);
       assert.deepEqual(errors, []);
       await page.close();
     }

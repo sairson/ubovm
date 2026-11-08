@@ -25,6 +25,16 @@ function validateRole(options) {
   if (!['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].includes(options.thinkingLevel ?? 'off')) throw new TypeError('Invalid thinkingLevel');
 }
 const TRANSCRIPT_IMAGE_LIMIT = 4;
+// Older attributed images leave the model context. Keep the local path in the
+// placeholder so a vision-capable model can re-inspect it with read_image
+// instead of losing the evidence completely.
+function historicalImagePlaceholder(image, position, { removed = true } = {}) {
+  const name = typeof image?.name === 'string' && image.name.trim() ? image.name.trim().slice(0, 120) : `图片 ${position + 1}`;
+  const localPath = typeof image?.path === 'string' && image.path && image.path.length <= 4096 && !image.path.includes('\0') ? image.path : '';
+  return localPath
+    ? `[${removed ? '较早的图片已从上下文移除' : '图片未发送'}：${name}（本地路径：${localPath}）；如需继续分析，请用 read_image 读取该路径。]`
+    : `[${removed ? '较早的图片已从上下文移除' : '图片未发送'}：${name}]`;
+}
 function compactTranscriptImages(transcript, limit = TRANSCRIPT_IMAGE_LIMIT) {
   if (!transcript || !Array.isArray(transcript.messages)) return transcript;
   const messages = transcript.messages.map(message => ({ ...message }));
@@ -52,7 +62,7 @@ async function initialHistory(messages, client, text, images = []) {
     if (!['user', 'assistant'].includes(message?.role) || typeof message.text !== 'string') continue;
     if (message.role === 'user') {
       const imageParts = message.images?.length && !allowedImages.has(index)
-        ? message.images.map((image, position) => ({ type: 'text', text: `[较早的图片已从上下文移除：${typeof image?.name === 'string' && image.name.trim() ? image.name.trim().slice(0, 120) : `图片 ${position + 1}`}]` }))
+        ? message.images.map((image, position) => ({ type: 'text', text: historicalImagePlaceholder(image, position) }))
         : await loadImageParts(message.images, { model: client.model, strict: false });
       history.push({ role: 'user', content: [{ type: 'text', text: message.text }, ...imageParts], timestamp: Date.now() });
     } else {
@@ -69,8 +79,10 @@ async function initialHistory(messages, client, text, images = []) {
 }
 
 /** One conversational turn: Chat coordinates Swarm Workers by default, then replies. */
-export async function runCollaboration({ configuration = {}, sessionId, directory, workspaceRoots = [], unbounded = false, messages = [], text, images = [], context, signal, onEvent, requestToolApproval, askHuman, registerSteering } = {}) {
+export async function runCollaboration({ configuration = {}, sessionId, directory, workspaceRoots = [], unbounded = false, messages = [], text, images = [], context, signal, onEvent, requestToolApproval, askHuman, registerSteering, transient = false, inspectOnly = false } = {}) {
   if (signal !== undefined && !(signal instanceof AbortSignal)) throw new TypeError('signal must be an AbortSignal');
+  if (typeof transient !== 'boolean') throw new TypeError('transient must be a boolean');
+  if (typeof inspectOnly !== 'boolean') throw new TypeError('inspectOnly must be a boolean');
   signal?.throwIfAborted();
   if (!Array.isArray(images)) throw new TypeError('images must be an array');
   const hasImages = images.length > 0;
@@ -181,7 +193,10 @@ export async function runCollaboration({ configuration = {}, sessionId, director
     }
     if (configuration.skills) skills = await createSkillsMiddleware({ ...configuration.skills, state: load('skills') ?? configuration.skills.state, persist: state => save('skills', state), onEvent: report });
     if (configuration.mcp) mcp = await createMcpMiddleware({ ...configuration.mcp, signal: turnSignal });
-    const workspaceTools = await createWorkspaceTools(workspaceRoots, { unbounded });
+    // Inspection-only turns (exploration sidebar) never receive workspace,
+    // shell, MCP, skills or collaboration tools: the host supplies the exact
+    // inspection/management toolset through configuration.tools.
+    const workspaceTools = inspectOnly ? [] : await createWorkspaceTools(workspaceRoots, { unbounded });
     const getWorkerEvidence = workerId => load(`collaboration:worker:${workerId}:pending-turn`);
     const resultTool = ownerId => withProgressiveDisclosure({
       name: 'read_worker_result', label: 'Read worker result',
@@ -360,7 +375,7 @@ export async function runCollaboration({ configuration = {}, sessionId, director
           const { backend, ...request } = input;
           return tool.execute(id, { ...request, ...(modelProfile ? { modelProfile } : {}) }, signal);
         } });
-      const tools = [...workspaceTools, ...mcp?.tools ?? [], ...internal ? await internal.tools(binding) : [],
+      const tools = inspectOnly ? [...extra] : [...workspaceTools, ...mcp?.tools ?? [], ...internal ? await internal.tools(binding) : [],
         ...skills ? await skills.tools(binding) : [], ...summary ? await summary.tools(binding) : [], ...extra, runtime.tool, project.tool, evidenceTool(workerId), resultTool(workerId), ...swarmTools,
         ...(team && workerId === sessionId ? team.toolsFor('lead') : [])];
       const guardWrites = tool => ({ ...tool,
@@ -373,7 +388,7 @@ export async function runCollaboration({ configuration = {}, sessionId, director
           return tool.execute(id, input, signal);
         } });
       return tools.map(tool => {
-        const guarded = tool.name === 'edit_workspace_file' || tool.name === 'edit_workspace_files' ? guardWrites(tool) : tool;
+        const guarded = tool.name === 'edit_workspace_files' ? guardWrites(tool) : tool;
         return guarded.name === 'inspect_harness' ? { ...guarded,
         execute: async (id, input, signal) => {
           if (input?.help === true) return tool.execute(id, input, signal);
@@ -405,8 +420,11 @@ export async function runCollaboration({ configuration = {}, sessionId, director
     const invoke = async ({ workerId, parentId, task, signal: workerSignal, dependencies = [], profile: profileId, modelProfile, images: turnImages = [] }) => {
       const lead = workerId === sessionId;
       const prefix = lead ? '' : `collaboration:worker:${workerId}:`;
-      const stored = lead ? load('transcript') : undefined;
-      const workerLoad = key => load(prefix + key), workerSave = (key, value) => save(prefix + key, value);
+      const stored = lead && !transient ? load('transcript') : undefined;
+      // Transient turns (sidebar chats) carry their own bounded history from the
+      // host and must not reuse or overwrite the durable collaboration transcript.
+      const workerLoad = transient && lead ? () => undefined : key => load(prefix + key);
+      const workerSave = transient && lead ? () => {} : (key, value) => save(prefix + key, value);
       const profile = project.get(profileId);
       const selectedClient = lead ? client : selectModel({ modelProfile: selectSpawn({ modelProfile }, profile) });
       const scope = applyHarnessProfile({ profile, options: lead ? chatOptions : workerOptions,

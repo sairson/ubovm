@@ -1,0 +1,194 @@
+/* Exploration overview: domain inventory ledger.
+ * Renders the agent-maintained `domain_inventory` coverage authority so the
+ * operator can see the seed scope, discovered hosts and what still needs
+ * testing without opening a tool card. Goal mode is monochrome; only real
+ * semantic states (done / waiting / blocked) carry colour. */
+.goal-domain-panel {
+  flex: 0 1 auto;
+  min-height: 0;
+  max-height: min(42vh, 360px);
+  margin-top: 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--canvas);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.goal-domain-panel[hidden] { display: none; }
+.goal-domain-summary {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  min-height: 44px;
+  padding: 7px 12px;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+.goal-domain-summary::-webkit-details-marker { display: none; }
+.goal-domain-panel[open] > .goal-domain-summary { border-bottom: 1px solid var(--border-hairline); }
+.goal-domain-summary:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+.goal-domain-icon { display: grid; place-items: center; flex: 0 0 20px; width: 20px; height: 20px; color: var(--muted); }
+.goal-domain-icon svg { width: 16px; height: 16px; }
+.goal-domain-copy { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.goal-domain-copy strong { color: var(--ink); font-size: 12.5px; font-weight: 600; line-height: 1.5; white-space: nowrap; }
+.goal-domain-copy small {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.goal-domain-coverage {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding: 1px 7px;
+  border: 1px solid var(--border-hairline);
+  border-radius: 5px;
+  background: var(--surface-subtle);
+  color: var(--ink);
+  font-size: 11px;
+  line-height: 17px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.goal-domain-coverage[data-complete="true"] {
+  border-color: color-mix(in srgb, var(--state-success) 32%, transparent);
+  background: var(--state-success-wash);
+  color: var(--state-success);
+}
+.goal-domain-counts { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; min-width: 0; }
+.goal-domain-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 6px;
+  border: 1px solid var(--border-hairline);
+  border-radius: 5px;
+  background: var(--surface-subtle);
+  color: var(--muted);
+  font-size: 10.5px;
+  line-height: 16px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.goal-domain-chip::before { content: ''; flex: 0 0 5px; width: 5px; height: 5px; border-radius: 50%; background: currentColor; opacity: .7; }
+.goal-domain-chip[data-status="in_progress"] { border-color: var(--border); background: var(--surface-raised); color: var(--ink); }
+.goal-domain-chip[data-status="in_progress"]::before { opacity: 1; }
+.goal-domain-chip[data-status="tested"] {
+  border-color: color-mix(in srgb, var(--state-success) 30%, transparent);
+  background: var(--state-success-wash);
+  color: var(--state-success);
+}
+.goal-domain-chip[data-status="skipped"], .goal-domain-chip[data-status="out_of_scope"] { opacity: .82; }
+.goal-domain-chevron {
+  flex: 0 0 8px;
+  width: 8px;
+  height: 8px;
+  margin-left: 2px;
+  border-right: 1.5px solid var(--muted);
+  border-bottom: 1.5px solid var(--muted);
+  transform: rotate(45deg);
+  transition: transform .16s var(--dsw-ease);
+}
+.goal-domain-panel[open] .goal-domain-chevron { transform: rotate(225deg); }
+.goal-domain-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  padding: 10px 12px 11px;
+  overflow: hidden;
+}
+.goal-domain-panel[open] > .goal-domain-body { flex: 1; overflow-y: auto; scrollbar-gutter: stable; }
+.goal-domain-scope-row { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; margin: 0; }
+.goal-domain-label { flex: 0 0 auto; color: var(--muted); font-size: 11px; }
+.goal-domain-seeds { display: flex; flex-wrap: wrap; gap: 5px; min-width: 0; }
+.goal-domain-seed {
+  padding: 0 6px;
+  border: 1px solid var(--border-hairline);
+  border-radius: 4px;
+  background: var(--surface-subtle);
+  color: var(--ink);
+  font: 11px/18px var(--font-code);
+  white-space: nowrap;
+}
+.goal-domain-seed[data-more="true"] { color: var(--muted); background: transparent; border-style: dashed; border-color: var(--border); }
+.goal-domain-meter { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.goal-domain-meter progress {
+  appearance: none;
+  flex: 1;
+  min-width: 0;
+  height: 3px;
+  border: 0;
+  border-radius: 3px;
+  overflow: hidden;
+  background: var(--border-hairline);
+}
+.goal-domain-meter progress::-webkit-progress-bar { background: var(--border-hairline); border-radius: 3px; }
+.goal-domain-meter progress::-webkit-progress-value { background: var(--ink); border-radius: 3px; }
+.goal-domain-meter span { flex: 0 0 auto; color: var(--muted); font-size: 11px; line-height: 1.5; font-variant-numeric: tabular-nums; }
+.goal-domain-table-wrap { min-height: 0; overflow: auto; border: 1px solid var(--border-hairline); border-radius: 7px; }
+.goal-domain-table { width: 100%; border-collapse: collapse; font-size: 11.5px; line-height: 1.45; }
+.goal-domain-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 4px 9px;
+  border-bottom: 1px solid var(--border-hairline);
+  background: var(--surface-subtle);
+  color: var(--muted);
+  font-weight: 500;
+  text-align: left;
+  white-space: nowrap;
+}
+.goal-domain-table td { padding: 4px 9px; border-top: 1px solid var(--border-hairline); color: var(--ink); vertical-align: top; }
+.goal-domain-table tbody tr:first-child td { border-top: 0; }
+.goal-domain-table tbody tr:hover td { background: var(--surface-hover); }
+.goal-domain-host { display: block; min-width: 0; overflow-wrap: anywhere; font-family: var(--font-code); font-size: 11px; }
+.goal-domain-parent { display: block; color: var(--muted); font-size: 10.5px; }
+.goal-domain-kind, .goal-domain-discovery { color: var(--muted); white-space: nowrap; }
+.goal-domain-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 6px;
+  border: 1px solid var(--border-hairline);
+  border-radius: 4px;
+  background: var(--surface-subtle);
+  color: var(--muted);
+  font-size: 10.5px;
+  line-height: 17px;
+  white-space: nowrap;
+}
+.goal-domain-state::before { content: ''; flex: 0 0 5px; width: 5px; height: 5px; border-radius: 50%; background: currentColor; opacity: .7; }
+.goal-domain-state[data-status="in_progress"] { border-color: var(--border); background: var(--surface-raised); color: var(--ink); }
+.goal-domain-state[data-status="in_progress"]::before { opacity: 1; }
+.goal-domain-state[data-status="tested"] {
+  border-color: color-mix(in srgb, var(--state-success) 30%, transparent);
+  background: var(--state-success-wash);
+  color: var(--state-success);
+}
+.goal-domain-state[data-status="out_of_scope"], .goal-domain-state[data-status="skipped"] { opacity: .82; }
+.goal-domain-evidence { color: var(--muted); font-size: 10.5px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.goal-domain-empty { margin: 0; padding: 12px; color: var(--muted); font-size: 11.5px; line-height: 1.7; }
+.goal-domain-empty[hidden], .goal-domain-table[hidden] { display: none; }
+.goal-domain-caption { margin: 0; color: var(--muted); font-size: 10.5px; line-height: 1.7; overflow-wrap: anywhere; }
+.goal-domain-caption:empty { display: none; }
+@media (max-width: 720px) {
+  .goal-domain-copy small { display: none; }
+  .goal-domain-counts { display: none; }
+  .goal-domain-coverage { margin-left: auto; }
+  .goal-domain-panel { max-height: min(44vh, 340px); }
+}
+@media (max-width: 560px) {
+  .goal-domain-table :is(th, td):nth-child(3), .goal-domain-table :is(th, td):nth-child(5) { display: none; }
+  .goal-domain-body { padding: 9px 10px 10px; }
+}
+@media (forced-colors: active) {
+  .goal-domain-panel, .goal-domain-table-wrap, .goal-domain-seed, .goal-domain-state, .goal-domain-chip { border: 1px solid ButtonText; }
+}

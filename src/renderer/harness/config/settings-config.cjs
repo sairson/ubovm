@@ -21,7 +21,7 @@ function sshConfigurationStatus(ssh) {
   const profile = entries.find(entry => entry?.id === (ssh?.defaultId || entries[0]?.id));
   const configured = Boolean(profile && ['host', 'username'].every(key => typeof profile[key] === 'string' && profile[key].trim())
     && (profile.port === undefined || Number.isInteger(profile.port) && profile.port > 0 && profile.port <= 65535));
-  return configured ? { configured: true } : { configured: false, error: '请先在“系统配置 → SSH 连接”配置有效的默认 SSH 连接，才能运行 IDE 任务。' };
+  return configured ? { configured: true } : { configured: false, error: '请先在“系统配置 → SSH 连接”配置有效的默认 SSH 连接，才能使用 SSH 远端命令、SFTP 和部署。聊天、编辑与本地工具不依赖 SSH。' };
 }
 function readSSHStatus(vscode) {
   const entry = vscode.workspace.getConfiguration('ubovm').inspect('intools');
@@ -138,12 +138,46 @@ function validateMcpServer(server, names) {
   if (server.cwd !== undefined && (typeof server.cwd !== 'string' || !server.cwd.trim() || server.cwd.includes('\0'))) throw new Error('MCP 工作目录无效。');
   if (server.tools !== undefined && (!Array.isArray(server.tools) || server.tools.some(tool => typeof tool !== 'string' || !tool || tool.includes('\0')) || new Set(server.tools).size !== server.tools.length)) throw new Error('MCP 允许工具必须是不重复的非空名称数组。');
   if (server.toolNamePrefix !== undefined && (typeof server.toolNamePrefix !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$/.test(server.toolNamePrefix))) throw new Error('MCP 工具名称前缀无效。');
+  if (server.insecureTls !== undefined && typeof server.insecureTls !== 'boolean') throw new Error('“允许自签名证书”必须是开关值。');
+  if (server.tlsCa !== undefined && (typeof server.tlsCa !== 'string' || !server.tlsCa.trim() || !server.tlsCa.includes('-----BEGIN CERTIFICATE-----') || server.tlsCa.length > 65536)) throw new Error('自定义 CA 证书必须是 PEM 格式（-----BEGIN CERTIFICATE-----）。');
+  if (transport === 'stdio' && (server.insecureTls !== undefined || server.tlsCa !== undefined)) throw new Error('stdio 服务不支持 TLS 选项，请先切换到 HTTP 传输。');
   return server;
 }
 function stringMap(value, label) {
   if (value === undefined) return undefined;
   if (!plain(value) || Object.values(value).some(entry => typeof entry !== 'string')) throw new Error(`${label} 必须是字符串映射。`);
   return value;
+}
+const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
+const HEADER_NAME = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+const RESERVED_CREDENTIAL_NAMES = new Set(['__proto__', 'constructor', 'prototype']);
+// Environment/header names and values are validated here as well as in the
+// MCP client so a hand-written settings file cannot smuggle control characters
+// into a child process environment or an HTTP request.
+function validateCredentialEntry(kind, name, value) {
+  if (RESERVED_CREDENTIAL_NAMES.has(name)) throw new Error(kind === 'env' ? `MCP 环境变量名“${name}”无效。` : `MCP 请求头名称“${name}”无效。`);
+  if (kind === 'env' ? !ENV_NAME.test(name) : !HEADER_NAME.test(name)) throw new Error(kind === 'env' ? `MCP 环境变量名“${name}”无效。` : `MCP 请求头名称“${name}”无效。`);
+  if (typeof value !== 'string') throw new Error(kind === 'env' ? 'MCP 环境变量必须是字符串值。' : 'MCP 请求头必须是字符串值。');
+  if (value.includes('\0')) throw new Error('MCP 凭据值不能包含 NUL 字符。');
+  if (kind === 'headers' && /[\r\n]/.test(value)) throw new Error('MCP 请求头值不能包含换行。');
+  if (value.length > 32768) throw new Error('MCP 凭据值过长。');
+}
+function validateCredentialMap(kind, value) {
+  if (!plain(value)) throw new Error(kind === 'env' ? 'MCP 环境变量必须是对象。' : 'MCP 请求头必须是对象。');
+  for (const [name, entry] of Object.entries(value)) validateCredentialEntry(kind, name, entry);
+  return value;
+}
+function mergeCredentialMap(kind, current, patch) {
+  if (patch === undefined) return current;
+  if (patch === null) return undefined;
+  if (!plain(patch)) throw new Error(kind === 'env' ? 'MCP 环境变量补丁必须是对象。' : 'MCP 请求头补丁必须是对象。');
+  const next = Object.fromEntries(Object.entries(plain(current) ? current : {}).map(([name, entry]) => [name, entry]));
+  for (const [name, entry] of Object.entries(patch)) {
+    if (entry === null) { delete next[name]; continue; }
+    validateCredentialEntry(kind, name, entry);
+    next[name] = entry;
+  }
+  return Object.keys(next).length ? next : undefined;
 }
 
 function createSettingsConfiguration(vscode, context) {
@@ -192,7 +226,16 @@ function createSettingsConfiguration(vscode, context) {
     for (const role of ['reason', 'worker']) { values[role] = scrub(object(source[role])); delete values[role].model; }
     values.mcp = scrub(object(source.mcp));
     secretState.mcp = { credentials: false };
-    for (const server of source.mcp?.servers ?? []) if (server.env || server.headers || secrets.get(mcpKey(server))) secretState.mcp.credentials = true;
+    const mcpCredentialKeys = {};
+    for (const server of source.mcp?.servers ?? []) {
+      const saved = await readVault(vaultContext, mcpKey(server));
+      const keysOf = (stored, legacy) => [...new Set([...(plain(stored) ? Object.keys(stored) : []), ...(plain(legacy) ? Object.keys(legacy) : [])])]
+        .filter(key => typeof (stored?.[key] ?? legacy?.[key]) === 'string');
+      const envKeys = keysOf(saved.env, server.env);
+      const headerKeys = keysOf(saved.headers, server.headers);
+      if (envKeys.length || headerKeys.length) mcpCredentialKeys[server.name] = { env: envKeys, headers: headerKeys };
+      if (server.env || server.headers || envKeys.length || headerKeys.length) secretState.mcp.credentials = true;
+    }
     values.skills = scrub(object(source.skills));
     delete values.skills.directories;
     delete values.skills.skills;
@@ -222,8 +265,10 @@ function createSettingsConfiguration(vscode, context) {
     let modelConfigured = false;
     try { modelConfig(source.model); modelConfigured = true; } catch { /* Form defaults are not saved configuration. */ }
     const initialization = { model: modelConfigured, ssh: sshConfigurationStatus(sourceTools.ssh).configured };
-    initialization.complete = initialization.model && initialization.ssh;
-    return { revision: stamp, values, secretState, sections, sshFields, mcpFields, modelPresets: availableModelPresets, skillsCatalog, modelProfiles, initialization };
+    // SSH is optional: it only gates remote tools, which are filtered out when
+    // no default host exists. A valid model is the only first-run requirement.
+    initialization.complete = initialization.model;
+    return { revision: stamp, values, secretState, sections, sshFields, mcpFields, mcpCredentialKeys, modelPresets: availableModelPresets, skillsCatalog, modelProfiles, initialization };
   }
   async function commit(section, input, expectedRevision) {
     if (typeof expectedRevision !== 'string' || expectedRevision !== revision()) throw new Error('配置已发生变化，请重新载入后再保存。');
@@ -410,8 +455,24 @@ function createSettingsConfiguration(vscode, context) {
         const previous = old.mcp?.servers?.find(s => mcpKey(s) === mcpKey(server));
         let secret = credentials === null ? {} : { ...(previous?.env ? { env: previous.env } : {}), ...(previous?.headers ? { headers: previous.headers } : {}), ...await readVault(context, mcpKey(server)) };
         if (Object.hasOwn(supplied, server.name)) {
-          secret = supplied[server.name];
-          if (!plain(secret) || Object.keys(secret).some(key => !['env', 'headers'].includes(key)) || Object.values(secret).some(value => !plain(value) || Object.values(value).some(v => typeof v !== 'string'))) throw new Error('MCP 凭据仅支持字符串形式的 env 和 headers。');
+          const entry = supplied[server.name];
+          if (!plain(entry) || Object.keys(entry).some(key => !['env', 'headers', '$merge'].includes(key))) throw new Error('MCP 凭据仅支持 env 和 headers。');
+          if (entry.$merge === true) {
+            // The settings form edits one variable at a time and never receives
+            // secret values back. A merge patch therefore carries only changed
+            // names (null removes one) and leaves every other stored value alone.
+            const merged = { ...secret };
+            const env = mergeCredentialMap('env', merged.env, entry.env);
+            const headers = mergeCredentialMap('headers', merged.headers, entry.headers);
+            if (env === undefined) delete merged.env; else merged.env = env;
+            if (headers === undefined) delete merged.headers; else merged.headers = headers;
+            secret = merged;
+          } else {
+            const replacement = Object.fromEntries(Object.entries(entry).filter(([key]) => key !== '$merge'));
+            if (Object.hasOwn(replacement, 'env')) validateCredentialMap('env', replacement.env);
+            if (Object.hasOwn(replacement, 'headers')) validateCredentialMap('headers', replacement.headers);
+            secret = replacement;
+          }
         }
         secrets.set(mcpKey(server), Object.keys(secret).length ? JSON.stringify(secret) : undefined);
       }
@@ -433,6 +494,8 @@ function createSettingsConfiguration(vscode, context) {
         const openIntents = next.openIntents ?? 5;
         if ((next.maxConcurrency ?? 3) > openIntents) throw new Error('并行任务数不能超过同时进行上限。');
         if ((next.maxIntents ?? 5) > openIntents) throw new Error('每轮新增任务上限不能超过同时进行上限。');
+        const reviewIntervalMs = next.reviewIntervalMs ?? 120000;
+        if (reviewIntervalMs !== 0 && (reviewIntervalMs < 30000 || reviewIntervalMs > 600000)) throw new Error('周期复盘间隔必须为 0（关闭），或 30000–600000 毫秒（至少 30 秒），避免过密复盘持续消耗模型调用。');
       }
       if (section === 'skills') { delete next.directories; delete next.skills; }
       changes.set(section, next);
@@ -451,6 +514,8 @@ function createSettingsConfiguration(vscode, context) {
     if (typeof overwrite !== 'boolean') throw new Error('overwrite 必须是布尔值。');
     const env = stringMap(credentials.env, 'MCP env');
     const headers = stringMap(credentials.headers, 'MCP headers');
+    if (env !== undefined) validateCredentialMap('env', env);
+    if (headers !== undefined) validateCredentialMap('headers', headers);
     if (Object.keys(credentials).some(key => !['env', 'headers'].includes(key))) throw new Error('MCP 凭据仅支持 env 和 headers。');
     return state.run(async () => {
       const old = raw();

@@ -16,5 +16,13 @@ export class SSHCommandsPool {
   get(id = this.defaultId) { return this.#profiles.get(id); }
   require(id = this.defaultId) { const profile = this.get(id); if (!profile) throw new Error(`SSH profile is not configured: ${id ?? '(default)'}`); return profile; }
   summaries() { return [...this.#profiles.entries()].map(([id, profile]) => profile.summary(id === this.defaultId)); }
-  async close() { await Promise.all([...this.#profiles.values()].map(profile => profile.close())); }
+  async close() {
+    // Attempt every connection even if one close throws, and wait for slow
+    // cleanups before reporting an aggregate failure.
+    const errors = [];
+    await Promise.all([...this.#profiles.values()].map(async profile => {
+      try { await profile.close(); } catch (error) { errors.push(error); }
+    }));
+    if (errors.length) throw new AggregateError(errors, 'Failed to close one or more SSH connections');
+  }
 }

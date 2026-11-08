@@ -11,6 +11,7 @@ import { createInternalTools, MemoryStore } from './intools/index.mjs';
 import { createPiWorker } from './worker-agents/index.mjs';
 import { createPiReason } from './agents/index.mjs';
 import { createAgendaTool } from './agents/agenda-tool.mjs';
+import { createReasonWorkerTools } from './agents/worker-tools.mjs';
 import { createKnowledgeReflector } from './learning/background.mjs';
 import { createModelClient } from './model.mjs';
 import { HarnessDatabase } from './blackboard/database/database.mjs';
@@ -21,6 +22,16 @@ import { createSkillsMiddleware } from './middleware/skills.mjs';
 const directories = new Set();
 const databaseOwners = new WeakMap();
 const constructionKey = Symbol('HarnessSession');
+// Live streaming projections are delivered to session listeners but never
+// persisted as event rows. Providers emit one update per streamed token/partial,
+// so durably writing them turned a normal goal run into a multi-GB event log
+// (measured in the field: 929,729 rows / 6.4 GB for one four-hour exploration,
+// nearly all of it `reason.event` / `worker.event` payloads). The host persists
+// the goal timeline, worker views, blackboard/memory documents and checkpoints
+// separately, so recovery does not depend on these rows; lifecycle events keep
+// being persisted for the SDK event-history API.
+const TRANSIENT_EVENT_TYPES = new Set(['reason.event', 'worker.event', 'middleware.event']);
+const persistsSessionEvent = type => !TRANSIENT_EVENT_TYPES.has(type);
 const clone = value => structuredClone(value);
 const failure = (code, message, cause) => Object.assign(new Error(message, cause === undefined ? undefined : { cause }), { code });
 const errorData = error => ({ name: error?.name ?? 'Error', message: String(error?.message ?? error), ...(typeof error?.code === 'string' ? { code: error.code } : {}) });
@@ -62,9 +73,10 @@ function summaryAborted(error, signal) {
 function graphBudgetChars(reasonConfig) {
   const window = reasonConfig?.client?.model?.contextWindow ?? reasonConfig?.options?.model?.contextWindow ?? 128000;
   const tokens = Number.isSafeInteger(window) && window > 0 ? window : 128000;
-  // Leave room for the system policy, agenda and repair text. The renderer keeps
-  // every node/edge even when it must degrade fact detail.
-  return Math.max(12000, Math.min(800000, Math.floor(tokens * 0.55 * 4) - 60000));
+  // Leave room for the system policy, agenda and repair text. Cap the graph at
+  // a fixed budget instead of scaling it with a large context window: a later
+  // review must not consume 100k+ tokens just because the model could accept it.
+  return Math.max(12000, Math.min(60000, Math.floor(tokens * 0.55 * 4) - 60000));
 }
 function combineTransforms(host, summary) {  if (!host && !summary) return undefined;
   return async event => {
@@ -128,6 +140,9 @@ export class HarnessSession {
   #edits = new Set();
   #active;
   #controller;
+  // The coordinator exists only while a run is active; its Reason review owns
+  // the alias-scoped Worker control surface reused by the sidebar chat.
+  #coordinator;
   #closing;
   #closed = false;
   #unsubscribe;
@@ -176,11 +191,77 @@ export class HarnessSession {
   graphView() {
     const snapshot = this.#board.snapshot();
     if (this.#graphCache?.revision === snapshot.revision) return this.#graphCache.view;
-    const view = buildGraphView(snapshot, { maxChars: graphBudgetChars(this.#reasonConfig) });
+    const view = buildGraphView(snapshot, { maxChars: graphBudgetChars(this.#reasonConfig), maxNodes: 360 });
     this.#graphCache = { revision: snapshot.revision, view };
     return view;
   }
   graphInfo() { return this.graphView().stats; }
+  /**
+   * Tools for embedded chats that inspect an exploration: graph reading, intent
+   * (agenda) management and, while a Reason review is active, Worker management
+   * through the same alias-scoped control surface. Execution tools are never
+   * included, so a sidebar turn can observe and steer but not run commands.
+   */
+  chatTools() {
+    this.#assertOpen();
+    const text = value => ({ content: [{ type: 'text', text: JSON.stringify(value) }], details: value });
+    const tools = [];
+    if (!this.#reasonConfig.callback) {
+      tools.push(createExplorationGraphTool({ build: () => ({ snapshot: this.#board.snapshot() }), info: () => ({ stats: this.graphInfo() }) }));
+    }
+    // Intent creation is Reason's core job: the sidebar chat may add an intent
+    // with the same schema/board path, and later rounds dispatch Workers for it.
+    tools.push({
+      name: 'create_intent', label: 'Create exploration intent',
+      description: 'Create an exploration intent on the blackboard with the same schema Reason uses. The intent starts pending and the next exploration round/Worker slot dispatches it. Optional keyPoints guide the Worker; parentIds default to the root node (pass fact/intent node ids to branch from evidence). Use it when the user asks to add a direction or check that should be explored.',
+      parameters: { type: 'object', required: ['description'], additionalProperties: false, properties: {
+        description: { type: 'string', minLength: 1, maxLength: 4000 },
+        keyPoints: { type: 'array', maxItems: 16, items: { type: 'string', minLength: 1, maxLength: 2000 } },
+        parentIds: { type: 'array', minItems: 1, maxItems: 32, items: { type: 'string', minLength: 1, maxLength: 128 } },
+        priority: { type: 'string', enum: ['high', 'medium', 'low'] }
+      } },
+      execute: async (_id, input) => {
+        const snapshot = this.#board.snapshot();
+        const created = await this.addIntent({
+          description: input.description.trim(),
+          parentIds: input.parentIds?.length ? input.parentIds : [snapshot.rootId],
+          ...(input.keyPoints?.length ? { keyPoints: input.keyPoints } : {}),
+          ...(input.priority ? { priority: input.priority } : {})
+        });
+        const id = created?.id ?? created?.nodeId ?? created?.intentId ?? null;
+        const node = id ? this.#board.snapshot().nodes.find(item => item.id === id) : undefined;
+        return text({ intentId: id, status: node?.intent?.status ?? 'pending', revision: this.#board.snapshot().revision });
+      }
+    });
+    tools.push({
+      name: 'manage_intent', label: 'Manage exploration intent',
+      description: 'Manage an existing exploration intent by node id: action=hint attaches a direction for its next attempt, action=retry reopens an interrupted/failed intent, action=drop cancels a pending intent. Find node ids with the graph, agenda or status tools first.',
+      parameters: { type: 'object', required: ['intentId', 'action'], additionalProperties: false, properties: {
+        intentId: { type: 'string', minLength: 1, maxLength: 128 },
+        action: { type: 'string', enum: ['hint', 'retry', 'drop'] },
+        hint: { type: 'string', maxLength: 4000 },
+        reason: { type: 'string', maxLength: 1024 }
+      } },
+      execute: async (_id, input) => {
+        if (input.action === 'hint') {
+          if (typeof input.hint !== 'string' || !input.hint.trim()) throw new TypeError('hint must be a nonempty string');
+          await this.setHint(input.intentId, input.hint.trim());
+        } else if (input.action === 'retry') await this.retryIntent(input.intentId);
+        else await this.cancelIntent(input.intentId, input.reason);
+        const node = this.#board.snapshot().nodes.find(item => item.id === input.intentId);
+        return text({ intentId: input.intentId, status: node?.intent?.status ?? 'unknown', revision: this.#board.snapshot().revision });
+      }
+    });
+    const store = this.#runtime?.store;
+    if (store) {
+      tools.push(createAgendaTool({ store, build: () => buildExplorationAgenda({
+        snapshot: this.#board.snapshot(), memory: store.snapshot(['agenda'])
+      }), sessionId: this.id }));
+    }
+    const control = this.#coordinator?.workerControl?.();
+    if (control) tools.push(...createReasonWorkerTools({ control, maxActions: 64 }));
+    return tools;
+  }
   getContext(options) { return buildBlackboardContext(this.#board.snapshot(), options); }
   getState() { return clone({ sessionId: this.id, goal: this.goal, status: this.status, runId: this.#record.runId, result: this.#record.result, error: this.#record.error, revision: this.#board.snapshot().revision }); }
   events({ afterSequence = 0, limit = 100 } = {}) {
@@ -198,14 +279,17 @@ export class HarnessSession {
   #assertOpen() { if (this.#closed || this.#closing) throw failure('SESSION_CLOSED', 'Harness session is closed'); }
   #emit(type, detail = {}, runId = this.#record.runId) {
     let event = { ...detail, type, sessionId: this.id, runId, sequence: this.#sequence + 1, timestamp: new Date().toISOString() };
-    if (this.#database && !this.#storageFailure) {
+    if (this.#database && !this.#storageFailure && persistsSessionEvent(type)) {
       try { event = this.#database.appendEvent(this.id, JSON.parse(JSON.stringify(event))); }
       catch (cause) {
         this.#storageFailure = failure('SESSION_PERSISTENCE_FAILED', 'Session event could not be persisted', cause);
         this.#controller?.abort(this.#storageFailure);
       }
     }
-    this.#sequence = event.sequence;
+    // Transient events still advance the live sequence so listeners never see a
+    // duplicate; the durable row sequence is allowed to lag behind it because
+    // persisted lifecycle events remain ordered among themselves.
+    this.#sequence = Math.max(this.#sequence, event.sequence);
     if (!this.#database) { this.#history.push(clone(event)); if (this.#history.length > 1000) this.#history.shift(); }
     for (const listener of this.#listeners) observer(listener, event);
   }
@@ -231,6 +315,7 @@ export class HarnessSession {
     return pending;
   }
   addIntent(spec) { const copied = clone(spec); return this.#edit(() => this.#board.createIntent(copied)); }
+  cancelIntent(id, reason) { return this.#edit(() => this.#board.cancelIntent(id, typeof reason === 'string' && reason.trim() ? reason.trim() : 'Cancelled by the sidebar chat')); }
   addFact(spec) { const copied = clone(spec); return this.#edit(() => this.#board.createFact(copied)); }
   setHint(id, hint) { return this.#edit(() => this.#board.updateHint(id, hint)); }
   retryIntent(id) { return this.#edit(() => this.#board.retryIntent(id)); }
@@ -272,11 +357,28 @@ export class HarnessSession {
       const store = this.#runtime?.store;
       // Intent status and Worker plan steps are projected on every read; Reason's
       // direction entries live in the shared memory store so Workers see them too.
-      const agendaFor = () => buildExplorationAgenda({
-        snapshot: this.#board.snapshot(),
-        memory: store ? store.snapshot(['agenda']) : { agenda: [] }
-      });
-      const agendaText = options => { try { return renderAgenda(agendaFor(), options); } catch { return ''; } };
+      // Cache by blackboard revision + memory revision: reasoning reviews and each
+      // Worker phase read the same agenda, and rebuilding it from a cloned board
+      // for every model boundary was pure repeated work.
+      let agendaCache, agendaRenderCache;
+      const agendaFor = () => {
+        const snapshot = this.#board.snapshot();
+        const memoryRevision = store?.revision?.() ?? 0;
+        if (agendaCache && agendaCache.boardRevision === snapshot.revision && agendaCache.memoryRevision === memoryRevision) return agendaCache.value;
+        const value = buildExplorationAgenda({ snapshot, memory: store ? store.snapshot(['agenda']) : { agenda: [] } });
+        agendaCache = { boardRevision: snapshot.revision, memoryRevision, value };
+        return value;
+      };
+      const agendaText = options => {
+        try {
+          const agenda = agendaFor();
+          const key = options === undefined ? '' : JSON.stringify(options);
+          if (agendaRenderCache?.agenda === agenda && agendaRenderCache.key === key) return agendaRenderCache.text;
+          const text = renderAgenda(agenda, options);
+          agendaRenderCache = { agenda, key, text };
+          return text;
+        } catch { return ''; }
+      };
       const agendaTools = store && !reasonConfig.callback
         ? [createAgendaTool({ store, build: agendaFor, sessionId: this.id })]
         : [];
@@ -287,7 +389,7 @@ export class HarnessSession {
         : undefined;
       const reason = reasonConfig.callback ?? createPiReason({ ...reasonConfig.client, ...reasonConfig.options,
         extraTools: [...agendaTools, ...(graphTool ? [graphTool] : [])],
-        contextProvider: async () => agendaText(),
+        contextProvider: async () => agendaText({ compact: true }),
         evidenceProvider: async () => this.graphView().text,
         beforeModel: combineTransforms(reasonConfig.options?.beforeModel, this.#summary), onEvent: event => {
         if (active && !signal.aborted) { emit('reason.event', { event }); observer(reasonConfig.options.onEvent, event); }
@@ -308,7 +410,7 @@ export class HarnessSession {
       const worker = workerConfig.callback ?? createPiWorker({ ...workerConfig.client, ...workerConfig.options, tools,
         onProgress: combineHook(memory.onProgress, workerConfig.options?.onProgress),
         onToolResult: combineHook(memory.onToolResult, workerConfig.options?.onToolResult),
-        contextProvider: combineText(memory.contextProvider, async () => agendaText({ maxOpen: 10, maxDone: 4 }), workerConfig.options?.contextProvider),
+        contextProvider: combineText(memory.contextProvider, async () => agendaText({ maxOpen: 10, maxDone: 4, compact: true }), workerConfig.options?.contextProvider),
         instructionProvider: combineText(this.#skills?.instructionProvider, workerConfig.options?.instructionProvider),
         beforeModel: combineTransforms(workerConfig.options?.beforeModel, this.#summary),
         onEvent: event => { if (active && !signal.aborted) { emit('worker.event', { event }); observer(workerConfig.options.onEvent, event); } }
@@ -321,7 +423,7 @@ export class HarnessSession {
           } catch { return []; }
         },
         reason: async args => {
-          emit('reason.start', { revision: args.context.revision });
+          emit('reason.start', { revision: args.context.revision, ...(args.periodic ? { periodic: true } : {}) });
           try { const decision = await reason(args); signal.throwIfAborted(); emit('reason.decision', { revision: args.context.revision, decision }); return decision; }
           catch (error) { emit('reason.error', { revision: args.context.revision, error: errorData(error) }); throw error; }
         },
@@ -339,6 +441,7 @@ export class HarnessSession {
           } finally { unsubscribe(); }
         }
       });
+      this.#coordinator = coordinator;
       const result = await coordinator.run({ resume, signal });
       signal.throwIfAborted();
       await this.#save({ status: 'completed', result, error: null });
@@ -351,7 +454,7 @@ export class HarnessSession {
         throw failure('SESSION_PERSISTENCE_FAILED', 'Execution ended but its session state could not be persisted', new AggregateError([error, persistenceError]));
       }
       throw error;
-    } finally { active = false; }
+    } finally { active = false; this.#coordinator = undefined; }
   }
   close() {
     if (this.#closing) return this.#closing;
@@ -389,10 +492,11 @@ export async function createHarness(options = {}) {
   const { directory, onEvent, tools, intools = {}, maxConcurrency = 3, maxRounds = 0,
     workerTimeoutMs = 3600000, maxWorkerRetries = 1 } = options;
   const openIntents = options.openIntents ?? options.reason?.openIntents ?? 5;
+  const reviewIntervalMs = options.reviewIntervalMs ?? options.reason?.reviewIntervalMs ?? 120000;
   if (onEvent !== undefined && typeof onEvent !== 'function') throw new TypeError('onEvent must be a function');
   if (tools !== undefined && !Array.isArray(tools) && typeof tools !== 'function') throw new TypeError('tools must be an array or factory');
   for (const [key, value] of Object.entries({ maxConcurrency, openIntents })) if (!Number.isSafeInteger(value) || value < 1) throw new TypeError(`${key} must be a positive integer`);
-  for (const [key, value] of Object.entries({ maxRounds, workerTimeoutMs, maxWorkerRetries })) if (!Number.isSafeInteger(value) || value < 0) throw new TypeError(`${key} must be a nonnegative integer`);
+  for (const [key, value] of Object.entries({ maxRounds, workerTimeoutMs, maxWorkerRetries, reviewIntervalMs })) if (!Number.isSafeInteger(value) || value < 0) throw new TypeError(`${key} must be a nonnegative integer`);
   if (maxConcurrency > openIntents) throw new TypeError('maxConcurrency cannot exceed openIntents');
   if (Number.isSafeInteger(options.reason?.maxIntents) && options.reason.maxIntents > openIntents) {
     throw new TypeError('maxIntents cannot exceed openIntents');
@@ -544,7 +648,7 @@ export async function createHarness(options = {}) {
     const session = new HarnessSession(constructionKey, { board, runtime, record, metadataFile, directoryKey,
       database, databaseOwned, databaseSessionKey, lease, recordRevision, sequence: persisted?.eventSequence ?? 0,
       setMiddlewareObserver: callback => { dispatchMiddleware = callback; },
-      summary, skills, mcp, reason, worker, tools, onEvent, limits: { maxConcurrency, maxRounds, openIntents, workerTimeoutMs, maxWorkerRetries } });
+      summary, skills, mcp, reason, worker, tools, onEvent, limits: { maxConcurrency, maxRounds, openIntents, workerTimeoutMs, maxWorkerRetries, reviewIntervalMs } });
     return session;
   } catch (error) {
     const settled = await Promise.allSettled([runtime, summary, skills, mcp].filter(Boolean)

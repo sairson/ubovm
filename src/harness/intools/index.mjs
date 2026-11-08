@@ -1,7 +1,6 @@
 export { createPythonTool } from './terminals/python/index.mjs';
 export { createPythonEnvironmentTool } from './terminals/python/environment.mjs';
 export { createLocalShellTool } from './terminals/local-shell/index.mjs';
-export { createDeliveryTool } from './delivery/index.mjs';
 export {
   createSFTPUploadTool, createRemoteDeployTool, uploadSFTP, buildUploadManifest,
   UPLOAD_LIMITS, DEFAULT_UPLOAD_EXCLUDES, formatUploadBytes, recommendedUploadTimeoutSeconds,

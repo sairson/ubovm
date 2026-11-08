@@ -111,7 +111,7 @@ test('invalid cancellation signals never send work or consume reserved control c
   assert.deepEqual(methods, ['cancel', 'close']);
 });
 
-test('local scheduler stalls renew the probe; soft stall precedes a hard kill', () => {
+test('local scheduler stalls renew the probe; sustained silence only soft-stalls', () => {
   const { EventEmitter } = require('node:events');
   const { runInNewContext } = require('node:vm');
   const { readFileSync } = require('node:fs');
@@ -123,7 +123,7 @@ test('local scheduler stalls renew the probe; soft stall precedes a hard kill', 
     Date: { now: () => now }, setInterval: fn => { tick = fn; return { unref() {} }; }, clearInterval() {}
   });
   const rpc = module.exports.createRPC(port, () => {}, {
-    heartbeatInterval: 10, heartbeatTimeout: 60, heartbeatKillTimeout: 120,
+    heartbeatInterval: 10, heartbeatTimeout: 60,
     onClose: error => { failure = error; },
     onStallChange: stalled => stalls.push(stalled)
   });
@@ -142,30 +142,38 @@ test('local scheduler stalls renew the probe; soft stall precedes a hard kill', 
     assert.equal(failure, undefined, 'soft stall must keep the transport open');
     assert.equal(rpc.isStalled(), true);
     assert.equal(stalls.includes(true), true);
-    // Silence past heartbeatKillTimeout finally closes.
-    while (!failure && now < aliveAt + 400) { now += 10; tick(); }
-    assert.equal(failure?.code, 'AGENT_HEARTBEAT_TIMEOUT', 'prolonged silence still kills the peer');
+    // Sustained silence is never proof of death: only an actual port close ends
+    // the transport, so a long synchronous tool/model step survives.
+    while (now < aliveAt + 4000) { now += 10; tick(); }
+    assert.equal(failure, undefined, 'transport silence must never be treated as death');
+    assert.equal(rpc.isStalled(), true);
+    // Any peer traffic clears the stall without a restart.
+    port.emit('message', { type: 'request', id: 1, method: 'snapshot', args: [] });
+    assert.equal(rpc.isStalled(), false);
   } finally { rpc.close(); }
 });
 
-test('heartbeat soft-stalls before closing a silent live port', async () => {
+test('heartbeat soft-stalls without ever closing a silent live port', async () => {
   const { EventEmitter } = require('node:events');
   const port = new EventEmitter(); port.postMessage = () => {};
   let failure, stalled;
   const rpc = createRPC(port, () => {}, {
-    heartbeatInterval: 10, heartbeatTimeout: 40, heartbeatKillTimeout: 120,
+    heartbeatInterval: 10, heartbeatTimeout: 40,
     onClose: error => { failure = error; },
     onStallChange: value => { stalled = value; }
   });
   const keepAlive = setTimeout(() => {}, 2000);
   try {
-    const pending = rpc.call('stuck');
-    await new Promise(resolve => setTimeout(resolve, 70));
+    const pending = rpc.call('slow');
+    for (let waited = 0; waited < 2000 && stalled !== true; waited += 10) await new Promise(resolve => setTimeout(resolve, 10));
     assert.equal(stalled, true, 'first silence window soft-stalls');
     assert.equal(failure, undefined, 'soft stall must not close the transport');
     assert.equal(rpc.isStalled(), true);
-    await assert.rejects(pending, { code: 'AGENT_HEARTBEAT_TIMEOUT' });
-    assert.equal(failure.code, 'AGENT_HEARTBEAT_TIMEOUT');
+    // The slow call still completes: a late answer proves the peer was alive.
+    port.emit('message', { type: 'response', id: 1, value: 'done' });
+    assert.equal(await pending, 'done');
+    assert.equal(failure, undefined);
+    assert.equal(rpc.isStalled(), false);
   } finally { clearTimeout(keepAlive); rpc.close(); }
 });
 
@@ -181,7 +189,7 @@ test('peer RPC traffic clears stall without requiring the matching pong', () => 
     Date: { now: () => now }, setInterval: fn => { tick = fn; return { unref() {} }; }, clearInterval() {}
   });
   const rpc = module.exports.createRPC(port, () => 'ok', {
-    heartbeatInterval: 10, heartbeatTimeout: 40, heartbeatKillTimeout: 200,
+    heartbeatInterval: 10, heartbeatTimeout: 40,
     onClose: error => { failure = error; },
     onStallChange: stalled => stalls.push(stalled)
   });
@@ -344,8 +352,7 @@ test('invalid capacity and heartbeat settings fail before attaching transport li
     { maxPending: NaN }, { maxActive: Infinity }, { maxControl: 0 },
     { maxPending: 1.5 }, { heartbeatInterval: -1 }, { heartbeatInterval: 2147483648 },
     { heartbeatTimeout: NaN }, { heartbeatTimeout: 0 },
-    { heartbeatInterval: 10, heartbeatTimeout: 10 },
-    { heartbeatInterval: 10, heartbeatTimeout: 20, heartbeatKillTimeout: 10 }
+    { heartbeatInterval: 10, heartbeatTimeout: 10 }
   ]) {
     const port = new EventEmitter(); port.postMessage = () => {};
     assert.throws(() => createRPC(port, () => {}, settings), TypeError);
@@ -446,4 +453,21 @@ test('payload getter reentrancy preserves wire order and cannot exceed reserved 
   const { a: limited } = pair(t, () => 'ok', { maxPending: 1 });
   const constrained = { get value() { blocked = assert.rejects(limited.call('nested'), { code: 'RPC_BUSY' }); return 1; } };
   assert.equal(await limited.call('outer', [constrained]), 'ok'); await blocked;
+});
+
+test('startup grace keeps a synchronously initializing worker out of the stalled state', { timeout: 5000 }, async () => {
+  const { EventEmitter } = require('node:events');
+  const port = new EventEmitter();
+  port.postMessage = () => {};
+  const stalls = [];
+  const rpc = createRPC(port, () => 'ok', {
+    heartbeatInterval: 20, heartbeatTimeout: 50, heartbeatStartupGrace: 300,
+    onStallChange: stalled => stalls.push(stalled)
+  });
+  try {
+    await new Promise(resolve => setTimeout(resolve, 160));
+    assert.equal(stalls.includes(true), false, 'worker initialization must not flash a stall');
+    await new Promise(resolve => setTimeout(resolve, 260));
+    assert.equal(stalls.at(-1), true, 'after the grace window an unresponsive worker still stalls');
+  } finally { rpc.close(); }
 });

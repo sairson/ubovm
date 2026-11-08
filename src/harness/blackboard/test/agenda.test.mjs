@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Blackboard } from '../blackboard.mjs';
 import { MemoryStore } from '../../intools/shared/store/memory-store.mjs';
-import { buildExplorationAgenda, agendaDuplicate, renderAgenda, EXPLORATION_STOP_MARKER } from '../agenda.mjs';
+import { buildExplorationAgenda, agendaDuplicate, renderAgenda, classifyBlocker, EXPLORATION_STOP_MARKER } from '../agenda.mjs';
 
 async function fixture() {
   const board = new Blackboard({ sessionId: 'agenda-board', goal: 'verify the target' });
@@ -52,6 +52,8 @@ test('agenda projects intent status, Worker plan steps, evidence and gaps', asyn
   assert.equal(done.gaps.length, 2, 'partial coverage and self-reported limitation become gaps');
   assert.equal(byTitle('Failed DNS audit').status, 'blocked');
   assert.equal(byTitle('Failed DNS audit').blocker, 'resolver timed out');
+  assert.equal(byTitle('Failed DNS audit').blockerClass, 'network');
+  assert.match(byTitle('Failed DNS audit').methodAlternative, /网络/);
   assert.equal(byTitle('Dropped duplicate audit').status, 'dropped');
   assert.equal(byTitle('Check cache poisoning via CDN edge').kind, 'direction');
   assert.equal(byTitle('Check cache poisoning via CDN edge').method, 'send conflicting cache headers');
@@ -64,11 +66,29 @@ test('agenda projects intent status, Worker plan steps, evidence and gaps', asyn
   // Derived suggestions never create work; they only point at the gap / different method.
   assert(agenda.items.some(item => item.kind === 'suggestion' && /换一种方法/.test(item.title)));
   assert(agenda.items.some(item => item.kind === 'suggestion' && /补充验证/.test(item.title)));
+  const retry = agenda.items.find(item => item.kind === 'suggestion' && item.source === 'failure');
+  assert.equal(retry.blockerClass, 'network');
+  assert.match(retry.methodAlternative, /网络/);
+  assert.equal(agenda.pathReview.deadEnds[0].blockerClass, 'network');
+  assert.equal(agenda.pathReview.next[0].title, 'Queued header audit', 'high-priority planned work ranks first');
   const text = renderAgenda(agenda);
   assert.match(text, /# Shared exploration agenda/);
   assert.match(text, /never rerun completed content/);
   assert.match(text, /current: Collect response headers/);
   assert.match(text, /blocker: resolver timed out/);
+  assert.match(text, /Path review — wrong paths: .*:network/);
+  assert.match(text, /candidate next: .*:high/);
+  assert.match(text, /try: .*网络/);
+});
+
+test('blocker classification maps failure evidence to a materially different next method', () => {
+  assert.equal(classifyBlocker('401 Unauthorized from target'), 'auth');
+  assert.equal(classifyBlocker('429 too many requests'), 'rate-limit');
+  assert.equal(classifyBlocker('resolver timed out'), 'network');
+  assert.equal(classifyBlocker('404 not found'), 'missing');
+  assert.equal(classifyBlocker('nmap: command not found'), 'tooling');
+  assert.equal(classifyBlocker('target is out of scope'), 'scope');
+  assert.equal(classifyBlocker('unknown failure'), 'unknown');
 });
 
 test('agenda duplicate lookup catches identical and agenda-recorded descriptions', async () => {

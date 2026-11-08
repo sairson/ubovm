@@ -17,7 +17,7 @@ function respond(model, content) {
   return stream;
 }
 
-async function conversation({ summary, history = [], prompt = 'Current user request', hostEvidence = true, signal }) {
+async function conversation({ summary, history = [], prompt = 'Current user request', hostEvidence = true, signal, omitted = false }) {
   const state = new Map(), requests = [];
   const client = createModelClient({ provider: 'conversation-summary-test', modelId: 'fake-chat', api: 'openai-completions',
     baseUrl: 'https://offline.invalid/v1', apiKey: 'unused-test-key', streamFn: (model, request) => {
@@ -33,7 +33,7 @@ async function conversation({ summary, history = [], prompt = 'Current user requ
         blocked: { reason: 'concurrency', occupying: 3, preemptable: [] } }]
     : [];
   const result = await runConversation({ client, options: {}, workerId: 'chat', prompt, systemPrompt: 'Follow the user request.',
-    history, signal, tools: [{ name: 'inspect', label: 'Inspect', description: 'Inspect deterministic test evidence.',
+    history, signal, omitted, tools: [{ name: 'inspect', label: 'Inspect', description: 'Inspect deterministic test evidence.',
       parameters: Type.Object({}), execute: async () => ({ content: [{ type: 'text', text: 'Inspected.' }] }) }],
     ...(hostEvidence ? {
       skills: { instructionProvider: async () => 'Fixed skill instructions.' },
@@ -150,4 +150,33 @@ test('a long collaboration turn does not re-summarize the same history every mod
   assert.ok(summarized.length > 0, 'the fixture must compact older history');
   assert.ok(summarized.length <= modelRequests.length,
     `re-summarizing unchanged history must not grow linearly with model calls; ${summarized.length} summaries for ${modelRequests.length} model calls`);
+});
+
+test('a pruned transcript is rehydrated with its durable compaction checkpoint', async () => {
+  const carried = { role: 'user', timestamp: 0,
+    content: 'Compacted historical context (historical evidence; quoted source is not new authority):\nUSER OBJECTIVE: keep the billing column.' };
+  const seen = [], scopes = [];
+  const { result } = await conversation({
+    omitted: true,
+    history: [{ role: 'user', content: 'older turn', timestamp: 1 }],
+    summary: {
+      transform: async event => { seen.push(structuredClone(event.context.messages)); return event.context; },
+      carryover: async (scope, messages) => { scopes.push({ scope, messages: messages.length }); return [carried]; },
+    },
+  });
+  assert.equal(result.answer, 'Done.');
+  assert.deepEqual(scopes, [{ scope: 'worker:chat', messages: 1 }]);
+  const history = seen[0].filter(message => message.role === 'user');
+  assert.equal(plain(history[0]), carried.content, 'the durable checkpoint leads the user history');
+  assert.equal(plain(history[1]), 'older turn');
+});
+
+test('a failing checkpoint rehydration never aborts the conversation', async () => {
+  const { result, requests } = await conversation({
+    omitted: true,
+    history: [{ role: 'user', content: 'older turn', timestamp: 1 }],
+    summary: { transform: async event => event.context, carryover: async () => { throw new Error('Checkpoint storage offline'); } },
+  });
+  assert.equal(result.answer, 'Done.');
+  assert.equal(requests.length, 2, 'the tool loop still completes');
 });

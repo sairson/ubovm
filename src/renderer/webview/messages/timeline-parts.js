@@ -1,7 +1,7 @@
 (() => {
   'use strict';
   const TOOL_LABELS = Object.freeze({
-    delivery_workflow: '交付闭环', search_workspace: '搜索项目代码', inventory_workspace_dependencies: '盘点工作区依赖',
+    search_workspace: '搜索项目代码', inventory_workspace_dependencies: '盘点工作区依赖',
     scan_workspace_secrets: '扫描疑似密钥', analyze_workspace_call_chain: '分析代码调用链', navigate_workspace_code: '代码符号导航',
     get_workspace_diagnostics: '读取代码诊断', validate_workspace_changes: '验证代码修改', recover_workspace_changes: '恢复代码修改状态',
     read_workspace_code: '读取待编辑代码', edit_workspace_file: '编辑代码', list_workspace_changes: '查看代码更改',
@@ -42,7 +42,61 @@
   const FLAT_TOOLS = Object.freeze(new Set(['todo']));
   const isReadOnlyTool = name => typeof name === 'string' && name.length > 0
     && (READ_ONLY_TOOLS.has(name) || READ_ONLY_PREFIXES.some(prefix => name.startsWith(prefix)));
-  const isFlatToolCard = name => isReadOnlyTool(name) || FLAT_TOOLS.has(name);
+  // Some read tools return user-facing content (search result lists, fetched
+  // pages). They stay read-only semantically, but their card must be expandable
+  // so the user can inspect what was actually returned.
+  const EXPANDABLE_READ_TOOLS = Object.freeze(new Set(['web_search', 'fetch_web_content']));
+  const isFlatToolCard = name => (isReadOnlyTool(name) && !EXPANDABLE_READ_TOOLS.has(name)) || FLAT_TOOLS.has(name);
+  // Tools whose result carries a unified patch. The extension host returns the
+  // exact patch in the tool result; the card can therefore show the same diff
+  // DSH shows for write/edit instead of making the user read raw JSON.
+  const DIFF_TOOLS = Object.freeze(new Set(['edit_workspace_file', 'edit_workspace_files', 'preview_workspace_edits']));
+  const patchTotals = patch => {
+    let added = 0, removed = 0;
+    for (const line of String(patch || '').split('\n')) {
+      if (line.startsWith('+') && !line.startsWith('+++')) added++;
+      else if (line.startsWith('-') && !line.startsWith('---')) removed++;
+    }
+    return { added, removed };
+  };
+  function toolDiff(part) {
+    if (!part || !DIFF_TOOLS.has(part.name) || typeof part.output !== 'string' || !part.output || part.output.length > 512 * 1024) return null;
+    let data;
+    try { data = JSON.parse(part.output); } catch { return null; }
+    let fallbackPath = '';
+    try { const args = JSON.parse(part.args || '{}'); if (args && typeof args.path === 'string') fallbackPath = args.path; } catch { /* truncated args */ }
+    const entries = [], seen = new Set();
+    const add = item => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) return;
+      const diff = item.diff && typeof item.diff === 'object' && !Array.isArray(item.diff) ? item.diff : {};
+      const patch = [item.patch, diff.patch, item.unifiedDiff, item.unified_diff].find(value => typeof value === 'string' && value.trim());
+      if (!patch) return;
+      const path = typeof item.path === 'string' && item.path
+        ? item.path
+        : typeof item.file === 'string' && item.file ? item.file : fallbackPath;
+      const key = path + '\0' + patch;
+      if (seen.has(key)) return;
+      seen.add(key);
+      entries.push({ path, patch, added: Number.isSafeInteger(diff.added) ? diff.added : null,
+        removed: Number.isSafeInteger(diff.removed) ? diff.removed : null, approximate: diff.approximate === true });
+    };
+    if (Array.isArray(data)) data.forEach(add);
+    else if (data && typeof data === 'object') {
+      add(data);
+      for (const key of ['results', 'completed', 'files', 'changes']) if (Array.isArray(data[key])) data[key].forEach(add);
+    }
+    if (!entries.length) return null;
+    let added = 0, removed = 0, approximate = false;
+    for (const entry of entries) {
+      const counted = patchTotals(entry.patch);
+      entry.added = entry.added === null ? counted.added : entry.added;
+      entry.removed = entry.removed === null ? counted.removed : entry.removed;
+      added += entry.added; removed += entry.removed;
+      approximate = approximate || entry.approximate;
+    }
+    return { entries, added, removed, approximate };
+  }
+  const diffSummary = diff => !diff ? '' : [diff.added ? `+${diff.added}` : '', diff.removed ? `−${diff.removed}` : ''].filter(Boolean).join(' ') || (diff.entries.length ? '内容变更' : '');
   function eachToolPart(state, visit) {
     const seen = new Set();
     const walk = part => {
@@ -83,7 +137,7 @@
     }
     return visible.reverse();
   }
-  const api = { TOOL_LABELS, isBackgroundTool, isReadOnlyTool, isFlatToolCard, visibleTimelineParts, visibleActivities, displayActivityLabel, eachToolPart };
+  const api = { TOOL_LABELS, isBackgroundTool, isReadOnlyTool, isFlatToolCard, visibleTimelineParts, visibleActivities, displayActivityLabel, eachToolPart, toolDiff, diffSummary };
   if (typeof module === 'object' && module.exports) module.exports = api;
   if (typeof window === 'object') window.UBOVMTimeline = api;
 })();

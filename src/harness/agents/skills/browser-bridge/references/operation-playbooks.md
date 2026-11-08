@@ -18,7 +18,7 @@ Use the section matching the current operational problem. Keep all actions on Wo
 ## Stable interaction and waiting
 
 1. Call `accessibility` with a narrow `role` or `query` when the target control is known.
-2. Use the returned `backend_node_id` only with extension `browser-bridge`; use the returned `ref` only with Obscura.
+2. Use the returned `ref` from `accessibility`/`snapshot` with either backend; never use node-numeric ids or CSS selectors.
 3. Perform one semantic action. For forms, prefer `fill` then `press`/`click`; verify the resulting value or state before submission when consequences matter.
 4. Wait on `domcontentloaded`, `networkidle`, or a specific visible text only when the action truly requires it. Avoid fixed sleeps.
 5. Refresh semantic state after navigation, submission, hydration, modal replacement, or route change.
@@ -29,11 +29,11 @@ For inaccessible custom controls, try `snapshot`, keyboard navigation, then a na
 
 Use three complementary inventories:
 
-- `sitemap`: routes actually observed, parameter names, body shapes, status/MIME, request counts, and recent request IDs.
-- `script_scan`: static leads in loaded inline/external JavaScript, including API, GraphQL, WebSocket, upload, and auth paths.
-- `network`: runtime-only calls, redirects, preflights, initiators, polling, WebSocket frames, and service-worker traffic.
+- `sitemap` (standalone mode): routes actually observed, parameter names, body shapes, status/MIME, request counts, and recent request IDs.
+- `script_scan` (standalone mode): static leads in loaded inline/external JavaScript, including API, GraphQL, WebSocket, upload, and auth paths.
+- `network` (both modes): runtime-only calls, redirects, preflights, initiators, polling, WebSocket frames, and service-worker traffic.
 
-Start with the normal user journey so authenticated and lazy-loaded routes appear. Traverse Sitemap origin → directory → request → query/body nodes with pagination. Validate script-only leads by normal navigation or bounded runtime traffic; do not report an endpoint solely because it appears in a bundle.
+In IDE mode, use `network` plus normal navigation instead of sitemap/script_scan. Start with the normal user journey so authenticated and lazy-loaded routes appear. Validate script-only leads by normal navigation or bounded runtime traffic; do not report an endpoint solely because it appears in a bundle.
 
 ## Network correlation and response evidence
 
@@ -43,11 +43,13 @@ Start with the normal user journey so authenticated and lazy-loaded routes appea
 4. Correlate request and response events by `requestId`; record method, normalized URL, initiator/timestamp, redirect chain, status, MIME, and cache/service-worker indicators.
 5. Retrieve `network_body` only for the decisive request and only the necessary page. Respect `base64_encoded` and pagination.
 6. Re-snapshot the resulting UI and independently re-read durable state after writes.
-7. Call `network_stop`; use `cdp_detach` only when all page-scoped protocol work is complete.
+7. Call `network_stop`; use `cdp_detach` (standalone only) only when all page-scoped protocol work is complete.
 
 Do not clear an event page before recording its `next_sequence`. Do not treat `loadingFailed`, a timeout, or missing body as proof the server rejected or accepted the action.
 
 ## Identity-aware replay and authorization
+
+Standalone Obscura mode only: IDE mode supports `cookies`/`storage` but not `identity_*`, `request_*` or `authz_compare`. Switch modes for opaque replay, and never dump credentials.
 
 1. Establish owner access through the normal UI and capture identity A with `identity_capture`.
 2. Capture the decisive owner request with Network and save it as an opaque `request_ref`.
@@ -63,13 +65,13 @@ Preserve raw mutation order for duplicate-key/parser tests. If the application s
 
 - Observe URL, history, visible route, and Network together; a client route change may not issue a request.
 - Capture bootstrap/hydration payloads and lazy API calls narrowly. Compare server-rendered markup, post-hydration DOM, and subsequent state only when relevant to a source/sink hypothesis.
-- Use `script_scan` for route strings and APIs, then inspect the matching runtime request or function behavior with a narrow `evaluate`.
+- Use `script_scan` (standalone only) for route strings and APIs, then inspect the matching runtime request or function behavior with a narrow `evaluate`.
 - For state stores, query only named keys/objects relevant to the test. Do not dump global objects, all storage, or framework internals.
 - Record client-side validation separately from the server response. Bypassing a disabled control is not an authorization finding without server impact.
 
 ## Frames, popups, and multiple pages
 
-- Use `tabs` after an action expected to open a window. Retain distinct page IDs and bind each to origin and identity.
+- Use `tabs` after an action expected to open a window. Retain distinct page IDs and bind each to origin and identity. `popup_policy` is standalone-only; in IDE mode use `tabs` and the IDE's own tab behavior, and never close user tabs.
 - Prefer a new Worker-owned page for a tester-controlled cross-origin initiator. Confirm its identity assumptions separately because browser-profile state may be shared.
 - For same-origin frames, use targeted `evaluate` or CDP DOM/Runtime with the relevant execution context. For cross-origin frames, rely on top-level UI, Network, frame-tree, and security events; do not assume DOM access.
 - Record opener/source relationships for OAuth, `postMessage`, reverse-tabnabbing, or callback workflows. Close only pages created by the test.
@@ -108,7 +110,7 @@ Never use interception to redirect credentials cross-origin, silently alter unre
 
 - **Disconnect/binding error:** stop actions, call `browser_connection_status`, and resume only when connected.
 - **Missing/closed page:** call `tabs`; create a new page only if the old state is not required. Re-establish identity and baseline.
-- **Stale element:** refresh accessibility/snapshot; for Obscura retry once only with the supplied fresh `ref`.
+- **Stale element:** refresh accessibility/snapshot; retry once only with the fresh `ref`.
 - **Navigation timeout:** inspect current URL and semantic state before retrying. The navigation may have completed.
 - **No Network events:** ensure capture started on the correct page before the action; repeat one harmless baseline, not the security mutation.
 - **Body unavailable:** use response metadata, a fresh normal request, or a narrow page-visible control. Do not loop identical body reads.

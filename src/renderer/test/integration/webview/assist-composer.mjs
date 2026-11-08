@@ -40,6 +40,23 @@ test('queue sits above the composer without resizing or reflowing Worker cards',
   }
 });
 let browser;
+test('a dispatched input leaves the waiting queue immediately and reappears only when delivery is unresolved', async () => {
+  const f = await fixture();
+  try {
+    const dispatched = { id: 'dispatched', text: '已经提交的输入', delivery: 'sending' };
+    await f.emit(state('dispatch-chat', { busy: true,
+      execution: { status: 'running', busy: true, runId: 'run-dispatch' }, inputQueue: [dispatched] }));
+    assert.equal(await f.page.locator('#input-queue').isVisible(), false, 'sending input must not look queued');
+    assert.equal(await f.page.locator('.input-queue-row').count(), 0);
+
+    await f.emit(state('dispatch-chat', { busy: true, queuePaused: true,
+      execution: { status: 'running', busy: true, runId: 'run-dispatch' }, inputQueue: [dispatched] }));
+    assert.equal(await f.page.locator('#input-queue').isVisible(), true, 'uncertain delivery must be reviewable');
+    assert.equal(await f.page.locator('.input-queue-row').count(), 1);
+    assert.match(await f.page.locator('.input-queue-status').textContent(), /正在发送/);
+  } finally { await f.close(); }
+});
+
 test('outline retains focused entries, ignores stale clicks, and releases old session navigation immediately', async () => {
   const f = await fixture();
   try {
@@ -253,6 +270,26 @@ test('composer shows a live context-window meter when the host reports usage', a
   } finally { await f.close(); }
 });
 
+test('fresh welcome hides the empty usage meter and exposes a Skills entry', async () => {
+  const f = await fixture();
+  try {
+    await f.emit(state('fresh-welcome'));
+    await f.frames();
+    assert.equal(await f.page.locator('#empty-state').isVisible(), true);
+    assert.equal(await f.page.locator('#context-usage').isVisible(), false, '0K/0K usage is noise on a blank welcome page');
+    assert.equal(await f.page.locator('.shortcut').count(), 4);
+    const skills = f.page.locator('.shortcut[data-action="openSkills"]');
+    assert.equal(await skills.isVisible(), true);
+    assert.match(await skills.textContent(), /打开 Skills/);
+    await skills.click();
+    await f.frames();
+    assert.ok(await f.page.evaluate(() => window.hostMessages.some(message => message.action === 'openSkills')), 'the welcome shortcut opens the Skills page');
+    await f.emit(state('fresh-welcome', { messages: [{ id: 'hello', role: 'user', text: '你好' }], conversationUsage: { totalTokens: 1200 } }));
+    await f.frames();
+    assert.equal(await f.page.locator('#context-usage').isVisible(), true, 'the meter returns once the conversation has usage');
+  } finally { await f.close(); }
+});
+
 test('queued input steering targets the current session and leaves the composer draft intact', async () => {
   const f = await fixture();
   try {
@@ -276,7 +313,10 @@ test('queued input steering targets the current session and leaves the composer 
     assert.equal((await f.page.locator('#composer-status').textContent()).trim(), '执行中 · Enter 立刻引导');
     assert.equal(await f.page.locator('#submit-prompt').getAttribute('data-action-mode'), 'steer');
     await f.emit(state('steering-chat', { inputQueue: [{ id: 'unknown', text: '待核实方向', delivery: 'uncertain' }], queuePaused: true }));
-    assert.equal(await button.textContent(), '送达待确认');
+    // Delivery state is a dedicated warning pill now; the steer button keeps
+    // one stable label so its reason can be explained in the title.
+    assert.equal(await f.page.locator('.input-queue-delivery').textContent(), '送达待确认');
+    assert.equal(await button.textContent(), '引导');
     assert.equal(await button.isDisabled(), true);
     assert.equal(await f.page.getByRole('button', { name: '继续发送队列', exact: true }).isDisabled(), true);
     assert.equal(await f.page.getByRole('button', { name: '取回编辑', exact: true }).isEnabled(), true);
@@ -626,6 +666,27 @@ test('assist input grows, shrinks, limits long text, and respects IME and keyboa
   } finally { await f.close(); }
 });
 
+test('assist send is optimistic and restores the draft only when the host rejects it', async () => {
+  const f = await fixture();
+  try {
+    await f.emit(state());
+    await f.fill('立即清空');
+    await f.input.press('Enter');
+    const sent = await f.sent('prompt');
+    assert.equal(sent.length, 1);
+    assert.equal(await f.input.inputValue(), '', 'the submitted draft leaves the composer before the acknowledgment');
+    assert.equal(await f.page.locator('#prompt-form').getAttribute('data-state'), 'sending', 'the composer reports the in-flight send');
+    await f.ack(sent[0], false);
+    assert.equal(await f.input.inputValue(), '立即清空', 'a rejected request brings the text back');
+    assert.equal(await f.page.locator('#ui-error').isVisible(), true);
+    await f.input.press('Enter');
+    const retried = (await f.sent('prompt')).at(-1);
+    assert.equal(retried.text, '立即清空');
+    await f.ack(retried);
+    assert.equal(await f.input.inputValue(), '', 'a successful retry keeps the composer empty');
+  } finally { await f.close(); }
+});
+
 test('busy assist runs queue inputs while acknowledgments and session changes preserve ownership', async () => {
   const f = await fixture();
   try {
@@ -862,7 +923,7 @@ test('composer and long user messages fit narrow, wide, short and dark IDE surfa
         const rectangle = geometry[key];
         assert(rectangle.width > 0 && rectangle.height > 0, `${label}: ${key} has a usable box`);
         assert(rectangle.left >= -1 && rectangle.right <= viewport.width + 1, `${label}: ${key} fits horizontally`);
-        assert(rectangle.top >= -1 && rectangle.bottom <= viewport.height + 1, `${label}: ${key} remains visible vertically`);
+        assert(rectangle.top >= -1 && rectangle.bottom <= viewport.height + 1, `${label}: ${key} remains visible vertically ${JSON.stringify(rectangle)}`);
       }
       assert(geometry.messageWidth <= geometry.messageClient + 1, `${label}: unbroken user text wraps inside its reading column`);
       assert(geometry.user.left >= geometry.composer.left - 2 && geometry.user.right <= geometry.composer.right + 2, `${label}: user messages stay inside the composer reading column: ${JSON.stringify({ user: geometry.user, composer: geometry.composer })}`);
@@ -893,4 +954,234 @@ test('composer and long user messages fit narrow, wide, short and dark IDE surfa
       if (viewport.height === 360) await f.page.screenshot({ path: `${screenshotDirectory}/assist-composer-short.png` });
     } finally { await f.close(); }
   }
+});
+
+test('queue cards show bounded metadata chips, delivery pills and paused reasons', async () => {
+  for (const width of [900, 320]) {
+    const f = await fixture({ width, height: 800 });
+    try {
+      const modelSelection = { provider: 'deepseek', selected: 'deepseek-v4-flash', models: ['deepseek-v4-flash', 'deepseek-v4-pro'], defaultModel: 'deepseek-v4-flash' };
+      const running = { busy: true, queuePaused: true, modelSelection, execution: { status: 'running', busy: true, canSteer: true, runId: 'run-meta' } };
+      await f.emit(state('queue-meta', {
+        ...running,
+        inputQueue: [
+          { id: 'meta-busy', text: '带图片与选中上下文的输入', imageCount: 2, modelId: 'deepseek-v4-pro', approvalMode: 'auto',
+            context: { label: '组件.tsx', kind: 'selection', range: 'L12–48' } },
+          { id: 'meta-sending', text: '已派发的输入', delivery: 'sending' },
+          { id: 'meta-uncertain', text: '待核实的输入', delivery: 'uncertain' }
+        ]
+      }));
+      const first = f.page.locator('[data-input-id="meta-busy"]');
+      assert.equal(await first.locator('.input-queue-chip[data-chip="images"]').textContent(), '图片 ×2');
+      assert.equal(await first.locator('.input-queue-chip[data-chip="images"]').getAttribute('title'), '入队时附带 2 张图片');
+      assert.equal(await first.locator('.input-queue-chip[data-chip="context"]').textContent(), '选中 组件.tsx');
+      assert.match(await first.locator('.input-queue-chip[data-chip="context"]').getAttribute('title'), /入队时的上下文：组件\.tsx · L12–48/);
+      assert.equal(await first.locator('.input-queue-chip[data-chip="approval"]').textContent(), '自动');
+      assert.equal(await first.locator('.input-queue-chip[data-chip="approval"]').getAttribute('title'), '入队时的执行方式；发出时沿用入队快照');
+      assert.equal(await first.locator('.input-queue-chip[data-chip="model"]').textContent(), 'deepseek-v4-pro');
+      assert.equal(await first.locator('.input-queue-chip[data-chip="model"]').getAttribute('title'), '入队时模型：deepseek-v4-pro');
+      assert.equal(await first.locator('.input-queue-chip[data-chip="next-turn"]').textContent(), '下一轮');
+      assert.equal(await first.locator('.input-queue-steer').isDisabled(), true, 'an image input cannot steer the live turn');
+      assert.match(await first.locator('.input-queue-steer').getAttribute('title'), /带图片的输入会在下一轮发送/);
+      assert.equal(await f.page.locator('[data-input-id="meta-sending"] .input-queue-delivery').textContent(), '发送中');
+      assert.equal(await f.page.locator('[data-input-id="meta-uncertain"] .input-queue-delivery').textContent(), '送达待确认');
+      const status = f.page.locator('.input-queue-status');
+      assert.equal(await status.getAttribute('role'), 'status');
+      assert.equal(await status.getAttribute('aria-live'), 'polite');
+      assert.equal(await status.getAttribute('aria-atomic'), 'true');
+      if (width === 900) {
+        await f.page.screenshot({ path: `${screenshotDirectory}/queue-cards-light-900.png` });
+        await f.page.evaluate(() => {
+          document.body.classList.add('vscode-dark');
+          for (const [key, value] of Object.entries({ '--vscode-foreground': '#d4d4d4', '--vscode-descriptionForeground': '#a6a6a6', '--vscode-editor-background': '#1e1e1e', '--vscode-panel-border': '#383838', '--vscode-focusBorder': '#6b8eae' })) document.documentElement.style.setProperty(key, value);
+        });
+        await f.frames();
+        await f.page.screenshot({ path: `${screenshotDirectory}/queue-cards-dark-900.png` });
+      } else {
+        const geometry = await f.page.evaluate(() => {
+          const list = document.querySelector('.input-queue-list');
+          return { documentWidth: document.documentElement.scrollWidth, innerWidth, listScroll: list.scrollWidth, listClient: list.clientWidth };
+        });
+        assert(geometry.documentWidth <= geometry.innerWidth, 'queue metadata never forces a horizontal page scroll');
+        assert(geometry.listScroll <= geometry.listClient + 1, 'queue rows clip their metadata inside the list');
+        await f.page.screenshot({ path: `${screenshotDirectory}/queue-cards-narrow-320.png` });
+      }
+      // Fields that match the composer snapshot need no chip at all.
+      await f.emit(state('queue-meta', {
+        ...running,
+        inputQueue: [{ id: 'meta-matched', text: '与当前设置一致的输入', approvalMode: 'manual', modelId: 'deepseek-v4-flash' }]
+      }));
+      assert.equal(await f.page.locator('[data-input-id="meta-matched"] .input-queue-chip').count(), 0);
+      // Paused reasons: interrupted/failed is explicit, delivery review is its own.
+      await f.emit(state('queue-meta', {
+        modelSelection,
+        inputQueue: Array.from({ length: 20 }, (_, index) => ({ id: `paused-${index}`, text: `失败后的待发送输入 ${index}` })),
+        execution: { status: 'interrupted', busy: false }
+      }));
+      assert.equal(await f.page.locator('.input-queue-status').textContent(), '已暂停 · 上一轮已停止或失败，请核实后继续');
+      assert.equal(await f.page.locator('.input-queue-count').textContent(), '20 / 20');
+      assert.equal(await f.page.locator('.input-queue-count').getAttribute('title'), '队列最多 20 条');
+      await f.emit(state('queue-meta', { modelSelection, queuePaused: true, inputQueue: [{ id: 'uncertain', text: '待核实', delivery: 'uncertain' }] }));
+      assert.equal(await f.page.locator('.input-queue-status').textContent(), '请核实引导送达状态');
+      await f.emit(state('queue-meta', {
+        modelSelection, busy: true, queuePaused: true, inputQueue: [{ id: 'paused-plain', text: '暂停中的输入' }],
+        execution: { status: 'running', busy: true, canSteer: true, runId: 'run-paused' }
+      }));
+      assert.equal(await f.page.locator('.input-queue-status').textContent(), '已暂停');
+    } finally { await f.close(); }
+  }
+});
+
+test('a full queue explains itself and keeps the draft instead of sending', async () => {
+  const f = await fixture();
+  try {
+    const inputQueue = Array.from({ length: 20 }, (_, index) => ({ id: `full-${index}`, text: `待发送输入 ${index}` }));
+    const running = { busy: true, inputQueue, execution: { status: 'running', busy: true, canSteer: true, runId: 'run-full' } };
+    await f.emit(state('queue-full', running));
+    await f.fill('第 21 条消息');
+    assert.equal(await f.page.locator('#submit-prompt').getAttribute('aria-label'), '队列已满');
+    assert.match(await f.page.locator('#submit-prompt').getAttribute('title'), /队列已满/);
+    await f.input.press('Enter');
+    assert.equal((await f.sent('prompt')).length, 0, 'a full queue refuses the optimistic send');
+    assert.equal(await f.input.inputValue(), '第 21 条消息', 'the refused draft stays in the composer');
+    assert.equal(await f.page.locator('#ui-error').isVisible(), true);
+    assert.match(await f.page.locator('#ui-error-message').textContent(), /输入队列最多保留 20 条消息/);
+    await f.emit(state('queue-full', { ...running, inputQueue: inputQueue.slice(1) }));
+    assert.equal(await f.page.locator('#submit-prompt').getAttribute('aria-label'), '加入队列');
+    await f.input.press('Enter');
+    assert.equal((await f.sent('prompt')).length, 1, 'removing one queued input restores the normal send path');
+  } finally { await f.close(); }
+});
+
+test('queue preview lists metadata and copies the full text through the host', async () => {
+  const f = await fixture();
+  try {
+    const item = {
+      id: 'preview-meta', text: '完整内容 👋\n'.repeat(20), imageCount: 2, modelId: 'deepseek-v4-pro', approvalMode: 'auto',
+      context: { label: '组件.tsx', kind: 'selection', range: 'L3–9' }
+    };
+    const chars = Array.from(item.text).length;
+    await f.emit(state('preview-meta', {
+      inputQueue: [item], modelSelection: { provider: 'deepseek', selected: 'deepseek-v4-flash', models: ['deepseek-v4-flash', 'deepseek-v4-pro'] }
+    }));
+    await f.page.locator('[data-input-id="preview-meta"] .input-queue-text').click();
+    const dialog = f.page.locator('#queue-preview');
+    assert.equal(await dialog.isVisible(), true);
+    const meta = dialog.locator('.queue-preview-meta');
+    assert.match(await meta.textContent(), new RegExp(`第 1 条 · ${chars} 字符`));
+    assert.match(await meta.textContent(), /图片 ×2/);
+    assert.match(await meta.textContent(), /选中 组件\.tsx/);
+    assert.match(await meta.textContent(), /自动/);
+    assert.match(await meta.textContent(), /deepseek-v4-pro/);
+    assert.equal(await dialog.locator('.queue-preview-content').textContent(), item.text);
+    const copy = dialog.getByRole('button', { name: '复制完整输入', exact: true });
+    await copy.click();
+    const request = (await f.sent('copyText')).at(-1);
+    assert.equal(request.text, item.text, 'the copy request carries the exact queued text');
+    await f.ack(request);
+    await f.frames();
+    assert.equal(await copy.textContent(), '已复制', 'the copy control confirms the acknowledged copy');
+    await f.page.keyboard.press('Escape'); await f.frames();
+    assert.equal(await dialog.isVisible(), false);
+    assert.equal(await f.page.locator('[data-input-id="preview-meta"] .input-queue-text').evaluate(node => node === document.activeElement), true, 'closing returns focus to the row');
+  } finally { await f.close(); }
+});
+
+test('arrow keys walk the queue rows and prevent page scrolling', async () => {
+  const f = await fixture();
+  try {
+    const inputQueue = Array.from({ length: 5 }, (_, index) => ({ id: `kbd-${index}`, text: `键盘行 ${index}` }));
+    await f.emit(state('queue-keys', { inputQueue, busy: true, execution: { status: 'running', busy: true, canSteer: true, runId: 'run-keys' } }));
+    const active = () => f.page.evaluate(() => document.activeElement?.closest('.input-queue-row')?.dataset.inputId);
+    await f.page.locator('[data-input-id="kbd-1"] .input-queue-text').focus();
+    assert.equal(await active(), 'kbd-1');
+    await f.page.keyboard.press('ArrowDown');
+    assert.equal(await active(), 'kbd-2');
+    await f.page.keyboard.press('ArrowUp');
+    assert.equal(await active(), 'kbd-1');
+    await f.page.keyboard.press('End');
+    assert.equal(await active(), 'kbd-4');
+    await f.page.keyboard.press('Home');
+    assert.equal(await active(), 'kbd-0');
+    // From a row action the arrow key moves to the next row's preview button.
+    await f.page.locator('[data-input-id="kbd-0"] [data-queue-action="remove"]').focus();
+    await f.page.keyboard.press('ArrowDown');
+    assert.equal(await active(), 'kbd-1');
+    const handled = await f.page.evaluate(() => {
+      const button = document.querySelector('[data-input-id="kbd-2"] .input-queue-text');
+      button.focus();
+      const event = new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true });
+      button.dispatchEvent(event);
+      return { prevented: event.defaultPrevented, active: document.activeElement?.closest('.input-queue-row')?.dataset.inputId };
+    });
+    assert.deepEqual(handled, { prevented: true, active: 'kbd-3' });
+  } finally { await f.close(); }
+});
+
+test('new queue rows are revealed and highlighted only when the reader is at the end', async () => {
+  const f = await fixture();
+  try {
+    const execution = { status: 'running', busy: true, canSteer: true, runId: 'run-auto' };
+    const items = Array.from({ length: 12 }, (_, index) => ({ id: `auto-${index}`, text: `条目 ${index}` }));
+    await f.emit(state('queue-auto', { inputQueue: items, busy: true, execution }));
+    const list = f.page.locator('.input-queue-list');
+    const atEnd = () => list.evaluate(node => node.scrollHeight - node.scrollTop - node.clientHeight <= 8);
+    const highlighted = id => f.page.locator(`[data-input-id="${id}"]`).evaluate(node => node.classList.contains('input-queue-row-new'));
+    assert.equal(await atEnd(), true, 'the first render of a hidden queue reveals the newest row');
+    assert.equal(await highlighted('auto-11'), true, 'the newest row gets the one-shot arrival highlight');
+    await list.evaluate(node => { node.scrollTop = 40; });
+    await f.emit(state('queue-auto', { inputQueue: [...items, { id: 'auto-12', text: '新条目' }], busy: true, execution }));
+    assert.equal(await list.evaluate(node => node.scrollTop), 40, 'a reader who scrolled up keeps their position');
+    assert.equal(await highlighted('auto-12'), false);
+    await list.evaluate(node => { node.scrollTop = node.scrollHeight; });
+    await f.emit(state('queue-auto', { inputQueue: [...items, { id: 'auto-12', text: '新条目' }, { id: 'auto-13', text: '再一条' }], busy: true, execution }));
+    assert.equal(await atEnd(), true, 'a reader at the end is carried to the newest row');
+    assert.equal(await highlighted('auto-13'), true);
+  } finally { await f.close(); }
+});
+
+test('recall restores the queued approval snapshot without overwriting a newer draft', async () => {
+  const f = await fixture();
+  try {
+    await f.emit(state('recall-approval', { inputQueue: [{ id: 'recall-one', text: '恢复快照', approvalMode: 'auto' }] }));
+    assert.equal(await f.page.locator('input[name="tool-approval-mode"][value="manual"]').isChecked(), true);
+    await f.fill('新草稿');
+    await f.page.getByRole('button', { name: '取回编辑', exact: true }).click();
+    const request = (await f.sent('removeInput')).at(-1);
+    assert.equal(request.inputId, 'recall-one');
+    await f.ack(request);
+    assert.equal(await f.input.inputValue(), '恢复快照\n\n新草稿', 'queued text is inserted above the newer draft');
+    assert.equal(await f.page.locator('input[name="tool-approval-mode"][value="auto"]').isChecked(), true, 'the queued approval snapshot is restored');
+  } finally { await f.close(); }
+});
+
+test('queue cards and preview are translated while English is active', async () => {
+  const f = await fixture();
+  try {
+    await f.page.evaluate(() => window.UBOVMi18n.setLocale('en'));
+    await f.frames();
+    const execution = { status: 'running', busy: true, canSteer: true, runId: 'run-en' };
+    await f.emit(state('queue-en', {
+      busy: true, queuePaused: true, execution,
+      modelSelection: { provider: 'deepseek', selected: 'deepseek-v4-flash', models: ['deepseek-v4-flash', 'deepseek-v4-pro'] },
+      inputQueue: [
+        { id: 'en-one', text: 'Queued content', imageCount: 2, modelId: 'deepseek-v4-pro', approvalMode: 'auto',
+          context: { label: 'Component.tsx', kind: 'selection', range: 'L1–2' } },
+        { id: 'en-two', text: 'Dispatched content', delivery: 'sending' }
+      ]
+    }));
+    const chrome = await f.page.evaluate(() => [...document.querySelectorAll(
+      '#input-queue .input-queue-chip, #input-queue .input-queue-status, #input-queue .input-queue-delivery, #input-queue .input-queue-count, #input-queue .input-queue-label, #input-queue .input-queue-resume'
+    )].map(node => node.textContent.trim()).filter(text => /[\u4e00-\u9fff]/.test(text)));
+    assert.deepEqual(chrome, [], 'no Chinese remains in queue chrome while English is active');
+    assert.equal(await f.page.locator('[data-input-id="en-one"] [data-chip="images"]').getAttribute('title'), 'Queued with 2 images');
+    assert.equal(await f.page.locator('[data-input-id="en-one"] [data-chip="context"]').textContent(), 'Selection Component.tsx');
+    await f.page.locator('[data-input-id="en-one"] .input-queue-text').click();
+    const previewChrome = await f.page.evaluate(() => document.querySelector('.queue-preview-meta').textContent);
+    assert.match(previewChrome, /Item 1 · \d+ characters/);
+    assert.match(previewChrome, /Images ×2/);
+    assert.match(previewChrome, /Selection Component\.tsx/);
+    assert.equal(await f.page.locator('.queue-preview-copy').textContent(), 'Copy');
+    await f.page.keyboard.press('Escape');
+  } finally { await f.close(); }
 });

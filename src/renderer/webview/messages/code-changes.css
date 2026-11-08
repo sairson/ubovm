@@ -1,6 +1,7 @@
 .code-change-card {
   margin-top: 16px; padding: 12px 14px; border: 0.5px solid var(--border); border-radius: var(--dsw-radius-md);
-  background: color-mix(in srgb, var(--ink) 2.5%, var(--canvas)); font-size: 12px; min-width: 0;
+  background: var(--surface-subtle); font-size: 12px; min-width: 0;
+  box-shadow: var(--dsw-elevation-soft);
 }
 .code-change-heading { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 12px; }
 .code-change-heading > strong { font-size: 13px; font-weight: 600; letter-spacing: .01em; }
@@ -14,12 +15,12 @@
   font-weight: 600; letter-spacing: .01em;
 }
 .code-change-files {
-  display: grid; grid-template-columns: minmax(0, 1fr) max-content max-content;
+  display: grid; grid-template-columns: minmax(0, 1fr) max-content max-content max-content;
   list-style: none; margin: 8px 0 10px; padding: 0;
 }
 .code-change-file {
   display: grid; grid-template-columns: subgrid; grid-column: 1 / -1; align-items: center; column-gap: 10px;
-  padding: 7px 0; border-top: 0.5px solid color-mix(in srgb, var(--border) 70%, transparent);
+  padding: 7px 0; border-top: 0.5px solid var(--border-hairline);
 }
 .code-change-file:first-child { border-top: 0; padding-top: 2px; }
 .code-change-path {
@@ -28,38 +29,48 @@
 }
 .code-change-kind {
   flex: 0 0 auto; padding: 1px 6px; border-radius: 999px; font-size: 10px; font-weight: 600; letter-spacing: .02em;
-  color: var(--muted); background: color-mix(in srgb, var(--ink) 6%, transparent);
+  color: var(--muted); background: var(--surface-raised);
 }
-.code-change-kind[data-kind="create"] { color: var(--vscode-gitDecoration-addedResourceForeground, #2da44e); background: color-mix(in srgb, var(--vscode-gitDecoration-addedResourceForeground, #2da44e) 12%, transparent); }
-.code-change-kind[data-kind="delete"] { color: var(--vscode-gitDecoration-deletedResourceForeground, #cf222e); background: color-mix(in srgb, var(--vscode-gitDecoration-deletedResourceForeground, #cf222e) 12%, transparent); }
-.code-change-kind[data-kind="conflict"] { color: var(--vscode-editorWarning-foreground, #976b30); background: color-mix(in srgb, var(--vscode-editorWarning-foreground, #976b30) 12%, transparent); }
-.code-change-kind[data-kind="pending"] { color: var(--vscode-editorWarning-foreground, #976b30); background: color-mix(in srgb, var(--vscode-editorWarning-foreground, #976b30) 10%, transparent); }
+.code-change-kind[data-kind="create"] { color: var(--vscode-gitDecoration-addedResourceForeground, var(--state-success)); background: var(--state-success-wash); }
+.code-change-kind[data-kind="delete"] { color: var(--vscode-gitDecoration-deletedResourceForeground, var(--state-error)); background: var(--state-error-wash); }
+.code-change-kind[data-kind="conflict"] { color: var(--vscode-editorWarning-foreground, var(--state-warning)); background: var(--state-warning-wash); }
+.code-change-kind[data-kind="pending"] { color: var(--vscode-editorWarning-foreground, var(--state-warning)); background: var(--state-warning-wash); }
 .code-change-kind[data-kind="undone"] { color: var(--muted); }
 .code-change-counts {
   display: inline-flex; align-items: baseline; gap: 2px; color: var(--muted);
   font-variant-numeric: tabular-nums; font-weight: 600; letter-spacing: .01em; white-space: nowrap;
 }
-.code-change-added { color: var(--vscode-gitDecoration-addedResourceForeground, #2da44e); }
-.code-change-removed { color: var(--vscode-gitDecoration-deletedResourceForeground, #cf222e); }
+.code-change-added { color: var(--vscode-gitDecoration-addedResourceForeground, var(--state-success)); }
+.code-change-removed { color: var(--vscode-gitDecoration-deletedResourceForeground, var(--state-error)); }
 .code-change-count-sep, .code-change-approx { color: var(--muted); font-weight: 500; }
-.code-change-card button { cursor: pointer; border: 0.5px solid var(--border); border-radius: var(--dsw-radius-sm); padding: 5px 8px; background: var(--canvas); color: inherit; }
-.code-change-card button:hover:enabled { background: var(--hover); }
+.code-change-card button { cursor: pointer; border: 0.5px solid var(--border); border-radius: var(--dsw-radius-sm); padding: 5px 8px; background: var(--surface); color: inherit; }
+.code-change-card button:hover:enabled { background: var(--surface-hover); }
 .code-change-card button:disabled { cursor: default; opacity: .5; }
-.code-change-card button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.code-change-undo { font-size: 12px; }
+.code-change-card button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.code-change-open { display: inline-flex; align-items: center; justify-content: center; gap: 4px; width: auto; height: 26px; min-height: 26px; padding: 0 7px; color: var(--muted); border-color: transparent; background: transparent; }
+.code-change-open svg { flex: 0 0 auto; width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.code-change-open-label { font-size: 11px; font-weight: 500; line-height: 1; }
+.code-change-open:hover:enabled { color: var(--ink); background: var(--surface-hover); border-color: var(--border); }
+@media (max-width: 520px) {
+  .code-change-open { width: 24px; padding: 0; }
+  .code-change-open-label { display: none; }
+}
+.code-change-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 2px; }
+.code-change-undo, .code-change-validate, .code-change-review { font-size: 11.5px; }
+.code-change-validate { color: var(--ink); }
 .code-change-scope { margin: 8px 0 0; color: var(--muted); font-size: 11px; line-height: 1.55; }
-.code-change-error { color: var(--vscode-errorForeground, #b42318); margin: 8px 0 0; }
+.code-change-warning { margin: 8px 0 0; color: var(--vscode-editorWarning-foreground, var(--state-warning)); font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
+.code-change-error { color: var(--vscode-errorForeground, var(--state-error)); margin: 8px 0 0; }
 .code-change-card.code-change-empty { color: var(--muted); }
 .code-change-card.code-change-empty .code-change-heading > strong { font-weight: 500; color: var(--ink); }
-body.vscode-dark .code-change-added, body.vscode-dark .code-change-kind[data-kind="create"] {
-  color: var(--vscode-gitDecoration-addedResourceForeground, #3fb950);
-}
-body.vscode-dark .code-change-removed, body.vscode-dark .code-change-kind[data-kind="delete"] {
-  color: var(--vscode-gitDecoration-deletedResourceForeground, #f85149);
-}
-body.vscode-dark .code-change-kind[data-kind="create"] { background: color-mix(in srgb, var(--vscode-gitDecoration-addedResourceForeground, #3fb950) 16%, transparent); }
-body.vscode-dark .code-change-kind[data-kind="delete"] { background: color-mix(in srgb, var(--vscode-gitDecoration-deletedResourceForeground, #f85149) 16%, transparent); }
 @media (forced-colors: active) {
   .code-change-added, .code-change-kind[data-kind="create"] { color: LinkText; }
   .code-change-removed, .code-change-kind[data-kind="delete"] { color: Mark; }
 }
+
+.code-change-more { margin: 0 0 10px; }
+.code-change-more > summary { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 0 2px; color: var(--muted); font-size: 11px; cursor: pointer; list-style: none; }
+.code-change-more > summary::-webkit-details-marker { display: none; }
+.code-change-more > summary::after { content: '?'; font-size: 14px; line-height: 1; transform: rotate(90deg); transition: transform 140ms ease; }
+.code-change-more[open] > summary::after { transform: rotate(-90deg); }
+.code-change-more .code-change-files { margin: 4px 0 0; }

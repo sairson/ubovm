@@ -3,7 +3,8 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const {
-  visibleTimelineParts, visibleActivities, displayActivityLabel, isBackgroundTool, isReadOnlyTool, isFlatToolCard
+  visibleTimelineParts, visibleActivities, displayActivityLabel, isBackgroundTool, isReadOnlyTool, isFlatToolCard,
+  toolDiff, diffSummary
 } = require('../../../webview/messages/timeline-parts.js');
 
 describe('timeline-parts', () => {
@@ -57,7 +58,7 @@ describe('timeline-parts', () => {
       assert.equal(isReadOnlyTool(name), true, `${name} should be treated as read-only`);
     }
     for (const name of ['edit_workspace_file', 'run_local_shell_command', 'run_python', 'deploy_remote_service', 'upload_sftp',
-      'delivery_workflow', 'validate_workspace_changes', 'spawn_worker', 'wait_workers', 'note', 'todo', 'browser_action', 'mcp_custom_probe']) {
+      'validate_workspace_changes', 'spawn_worker', 'wait_workers', 'note', 'todo', 'browser_action', 'mcp_custom_probe']) {
       assert.equal(isReadOnlyTool(name), false, `${name} must keep its result body`);
     }
     assert.equal(isReadOnlyTool(''), false);
@@ -69,10 +70,38 @@ describe('timeline-parts', () => {
     assert.equal(isReadOnlyTool('todo'), false, 'todo mutates state even though its card is flat');
     assert.equal(isFlatToolCard('read_workspace_file'), true);
     assert.equal(isFlatToolCard('list_workspace_files'), true);
+    assert.equal(isFlatToolCard('web_search'), false, 'search result lists are user-facing and expandable');
+    assert.equal(isFlatToolCard('fetch_web_content'), false, 'fetched page content is expandable');
     assert.equal(isFlatToolCard('edit_workspace_file'), false);
     assert.equal(isFlatToolCard('note'), false, 'notes keep their result body');
     assert.equal(isFlatToolCard(''), false);
     assert.equal(isFlatToolCard(undefined), false);
+  });
+
+  it('extracts unified patches from edit results', () => {
+    const output = JSON.stringify({ path: 'src/a.js', operation: 'replace', changed: true,
+      diff: { added: 1, removed: 1, firstChangedLine: 1, patch: '@@ -1,1 +1,1 @@\n-const value = 1;\n+const value = 2;' } });
+    const diff = toolDiff({ name: 'edit_workspace_file', args: JSON.stringify({ path: 'src/a.js' }), output });
+    assert.equal(diff.entries.length, 1);
+    assert.equal(diff.entries[0].path, 'src/a.js');
+    assert.equal(diff.added, 1);
+    assert.equal(diff.removed, 1);
+    assert.match(diff.entries[0].patch, /^@@ /);
+    assert.equal(diffSummary(diff), '+1 −1');
+    assert.deepEqual(toolDiff({ name: 'edit_workspace_file', output: 'not json' }), null);
+    assert.deepEqual(toolDiff({ name: 'read_workspace_file', output: JSON.stringify({ diff: { patch: '@@ -1 +1 @@' } }) }), null);
+  });
+
+  it('extracts patches from batch and preview result arrays', () => {
+    const output = JSON.stringify({ status: 'applied', completed: [
+      { index: 0, path: 'a.js', diff: { added: 1, removed: 0, patch: '@@ -0,0 +1 @@\n+a' } },
+      { index: 1, path: 'b.js', diff: { added: 0, removed: 2, patch: '@@ -1,2 +0,0 @@\n-b\n-c' } }
+    ] });
+    const diff = toolDiff({ name: 'edit_workspace_files', output });
+    assert.deepEqual(diff.entries.map(entry => entry.path), ['a.js', 'b.js']);
+    assert.equal(diff.added, 1);
+    assert.equal(diff.removed, 2);
+    assert.equal(diffSummary(diff), '+1 −2');
   });
 
   it('localizes leaked snake_case tool ids instead of showing protocol names', () => {

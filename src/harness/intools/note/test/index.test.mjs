@@ -58,13 +58,63 @@ test('structured writes infer category for nested, JSON and flat assets', async 
   assert.equal((await call({ action: 'list', vulnerability_type: 'sqlInjection' })).total, 1);
 });
 
+test('flag ledger records observed flags and gates verified states on real evidence', async () => {
+  const { call, tool } = fixture();
+  const flag = { value: 'flag{observed_only}', target: 'https://ctf.example/challenge/1', source: 'response body' };
+  const found = await call({ action: 'write', note_type: 'flag', flag });
+  assert.equal(found.status, 'saved');
+  assert.equal(found.note.note_type, 'flag');
+  assert.equal(found.note.flag.status, 'found');
+  const duplicate = await call({ action: 'write', flag });
+  assert.equal(duplicate.status, 'already_known');
+  assert.equal(duplicate.note.seen_count, 2);
+  await assert.rejects(call({ action: 'write', flag: { ...flag, status: 'verified' } }), /flag.verification/);
+  await assert.rejects(call({ action: 'write', flag: { ...flag, status: 'verified', verification: 'accepted by checker' } }), /flag.evidence or flag.tool_call_ids/);
+  await assert.rejects(call({ action: 'write', flag: { ...flag, status: 'plausible' } }), /flag.status/);
+  const verified = await call({ action: 'write', flag: { ...flag, status: 'verified', verification: 'accepted by checker', evidence: ['checker output: accepted'] } });
+  assert.equal(verified.note.flag.status, 'verified');
+  assert.equal(verified.note.flag.verification, 'accepted by checker');
+  const noDowngrade = await call({ action: 'write', flag: { ...flag, status: 'found' } });
+  assert.equal(noDowngrade.note.flag.status, 'verified');
+  const listed = await call({ action: 'list', note_type: 'flag' });
+  assert.equal(listed.total, 1);
+  assert.equal(listed.notes[0].flag.value, flag.value);
+  const summary = tool.summary();
+  assert.match(summary, /Security engagement ledger/);
+  assert.match(summary, /flag\{observed_only\}/);
+  assert.match(summary, /"status":"verified"/);
+});
+
+test('engagement scope ledger keeps authorized and excluded targets together', async () => {
+  const { call } = fixture();
+  const saved = await call({ action: 'write', scope: {
+    targets: ['app.example.test', 'api.example.test'],
+    out_of_scope: ['admin.example.test'],
+    authorization: 'signed rules of engagement 2026-11-04',
+    rules: 'read-only, low rate'
+  } });
+  assert.equal(saved.status, 'saved');
+  assert.equal(saved.note.note_type, 'scope');
+  assert.deepEqual(saved.note.scope.targets, ['app.example.test', 'api.example.test']);
+  const merged = await call({ action: 'write', scope: {
+    targets: ['api.example.test', 'app.example.test'],
+    out_of_scope: ['admin.example.test', 'billing.example.test']
+  } });
+  assert.equal(merged.status, 'already_known');
+  assert.deepEqual(merged.note.scope.targets, ['app.example.test', 'api.example.test']);
+  assert.deepEqual(merged.note.scope.out_of_scope, ['admin.example.test', 'billing.example.test']);
+  assert.equal(merged.note.scope.authorization, 'signed rules of engagement 2026-11-04');
+  await assert.rejects(call({ action: 'write', scope: { targets: [] } }), /scope.targets/);
+  assert.equal((await call({ action: 'list', note_type: 'scope' })).total, 1);
+});
+
 test('plain notes and legacy category aliases still work', async () => {
   const { call, tool } = fixture();
   for (const note_type of [undefined, 'note', 'NOTE', 'note-knowledge', 'note_knowledge']) {
     assert.equal((await call({ action: 'write', note_type, content: '原始笔记' })).note.content, '原始笔记');
   }
   assert.equal((await call({ action: 'list' })).total, 5);
-  assert.deepEqual(tool.parameters.properties.note_type.anyOf.map(item => item.const), ['note', 'asset', 'vulnerability']);
+  assert.deepEqual(tool.parameters.properties.note_type.anyOf.map(item => item.const), ['note', 'asset', 'vulnerability', 'flag', 'scope']);
 });
 
 test('invalid inputs remain actionable and never mutate stored notes', async () => {
@@ -72,7 +122,7 @@ test('invalid inputs remain actionable and never mutate stored notes', async () 
   for (const type of ['', 'a', '1endpoint', 'http/endpoint', '资产', 'x'.repeat(65)]) {
     await assert.rejects(call({ action: 'write', note_type: 'asset', asset: { type, locator: '/' } }), /asset.type/);
   }
-  await assert.rejects(call({ action: 'write', note_type: 'fact', content: 'claim' }), /expected note, asset, or vulnerability.*promotion_kind/);
+  await assert.rejects(call({ action: 'write', note_type: 'fact', content: 'claim' }), /expected note, asset, vulnerability, flag, or scope.*promotion_kind/);
   await assert.rejects(call({ action: 'write', asset: {}, vulnerability: {} }), /Specify note_type/);
   await assert.rejects(call({ action: 'write', asset: { type: 'endpoint' } }), /asset.locator/);
   assert.equal(store.snapshot().notes.length, 0);

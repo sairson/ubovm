@@ -198,6 +198,12 @@ test('background task dock aggregates commands, streams selected logs and stops 
   assert(await dock.isVisible());
   assert.equal(await f.page.locator('#messages .tool-card').count(), 0);
   assert.equal(await dock.evaluate(element => getComputedStyle(element).position), 'fixed');
+  // The fixed dock must clear the composer instead of covering its input row.
+  const dockGap = () => f.page.evaluate(() => ({
+    dockBottom: Math.round(document.querySelector('#background-tasks').getBoundingClientRect().bottom),
+    composerTop: Math.round(document.querySelector('#prompt-form').getBoundingClientRect().top)
+  }));
+  assert(await dockGap().then(({ dockBottom, composerTop }) => dockBottom <= composerTop), JSON.stringify(await dockGap()));
   assert.match(await dock.locator('.background-tasks-count').textContent(), /2 运行中/);
   assert.equal(await dock.locator('.background-tasks-body').isVisible(), false);
   await dock.locator('.background-tasks-toggle').click();
@@ -227,6 +233,7 @@ test('background task dock aggregates commands, streams selected logs and stops 
   await f.frames();
   const bounds = await dock.boundingBox(); assert(bounds.x >= 0 && bounds.x + bounds.width <= 320);
   assert(await dock.getByRole('button', { name: '停止任务', exact: true }).isVisible());
+  assert(await dockGap().then(({ dockBottom, composerTop }) => dockBottom <= composerTop), JSON.stringify(await dockGap()));
   assert(await f.page.locator('#prompt-input').isVisible());
   await f.page.screenshot({ path: screenshotDirectory + '/background-tasks-dark-narrow.png' });
   await f.emit(state([], { conversation: { id: 'other' }, execution: { status: 'idle', parts: [] } }));
@@ -510,13 +517,16 @@ test('new project delivery panel shows blockers, preserves drafts and isolates c
   assert.equal(await panel.locator('details').getAttribute('open'), null);
 });
 
-test('independent task entries retain mandatory SSH and only prepare drafts', async t => {
+test('independent task entries never require the optional SSH connection', async t => {
   const f = await fixture(t);
   const idle = { busy: false, messages: [], execution: { status: 'idle', busy: false, parts: [] } };
   await f.emit(state([], { ...idle, ssh: { configured: false } }));
   await f.page.locator('#prompt-input').fill('独立代码审计');
-  assert(await f.page.locator('#submit-prompt').isDisabled());
-  assert.match(await f.page.locator('#provider-label').textContent(), /SSH/);
+  // The composer state updates on the next render frame (batched), so wait for
+  // it before asserting the send button state.
+  await f.frames();
+  assert.equal(await f.page.locator('#submit-prompt').isDisabled(), false, 'a local task must start without SSH');
+  assert.doesNotMatch(await f.page.locator('#provider-label').textContent(), /SSH/);
   await f.emit(state([], { ...idle, ssh: { configured: true } }));
   assert.equal(await f.page.locator('#submit-prompt').isDisabled(), false);
   const cards = f.page.locator('[data-prompt]'); assert.equal(await cards.count(), 6);
@@ -534,16 +544,16 @@ function state(parts, overrides = {}) {
     execution: { status: 'running', busy: true, parts, streamText: '', activities: [] }, ...overrides
   };
 }
-async function fixture(t, options = {}) {
+async function fixture(t, { savedState, ...options } = {}) {
   const page = await browser.newPage({ viewport: { width: 1000, height: 800 }, ...options });
   page.setDefaultTimeout(7000);
   const errors = [], requests = [];
   page.on('pageerror', error => errors.push(error.message));
   page.on('request', request => { if (/^https?:/.test(request.url()) && request.url() !== 'http://tool-cards.test/') requests.push(request.url()); });
-  await page.addInitScript(() => {
+  await page.addInitScript(saved => {
     window.hostMessages = [];
-    window.acquireVsCodeApi = () => ({ getState: () => ({}), setState() {}, postMessage: message => hostMessages.push(message) });
-  });
+    window.acquireVsCodeApi = () => ({ getState: () => saved, setState() {}, postMessage: message => hostMessages.push(message) });
+  }, savedState ?? {});
   const html = renderWebview({ version: 'test', workspaceName: 'UBOVM', nonce: 'tool-cards-test' });
   await page.route('http://tool-cards.test/', route => route.fulfill({ contentType: 'text/html', body: html }));
   await page.route('https://blocked-preview.invalid/**', route => route.abort());
@@ -602,7 +612,7 @@ test('closed HTML previews reject detached actions and late copy completion', as
   assert.equal(result.closed, true); assert.equal(result.restored, true);
 });
 
-test('folded commands expose a bounded live tail and retain failures without opening logs', async t => {
+test('folded failed commands match normal cards and reveal errors only when expanded', async t => {
   const f = await fixture(t);
   let part = tool('live-tail', { name: 'run_linux_ssh_command', status: 'running', output: 'old\n'.repeat(10000) + '\u001b[32mfirst\u001b[0m\nsecond\n' });
   await f.emit(state([part]));
@@ -616,8 +626,14 @@ test('folded commands expose a bounded live tail and retain failures without ope
   assert.equal((await f.card(0).locator('.tool-output').textContent()).length, 20000);
   await f.toggle(0);
   part = { ...part, status: 'failed', output: 'connection failed' }; await f.emit(state([part]));
-  assert.equal(await preview.textContent(), 'connection failed');
-  assert.equal(await f.card(0).evaluate(node => node.open), false);
+  // Same collapsed row as a successful card: the error text is not echoed in
+  // the summary, only the status turns red.
+  assert.equal(await preview.isVisible(), false);
+  assert.equal(await preview.textContent(), '');
+  assert.equal(await f.card(0).getAttribute('data-status'), 'failed');
+  await f.toggle(0);
+  assert.match(await f.card(0).locator('.tool-output').textContent(), /connection failed/);
+  await f.toggle(0);
   part = { ...part, status: 'completed' }; await f.emit(state([part]));
   assert.equal(await preview.isVisible(), false);
   assert.equal(await preview.textContent(), '');
@@ -883,13 +899,16 @@ test('legacy history with only auxiliary parts retains its saved answer without 
 
 test('incomplete historical timelines retain their final body and reconcile later recovered parts', async t => {
   const f = await fixture(t), answer = 'Final **saved answer**';
+  // Use an expandable call: read-only cards stay flat by design, so they cannot
+  // exercise a retained open disclosure.
+  const liveTool = tool('live-tool', { name: 'run_local_shell_command', args: '{}', output: 'export const ready = true;' });
   const publish = parts => f.emit(state([], { busy: false, execution: { status: 'idle' },
     messages: [{ id: 'cached-answer', role: 'assistant', text: answer, parts }] }));
-  await publish([intro, read]);
+  await publish([intro, liveTool]);
   assert.equal(await f.page.locator('#messages .response-text strong').allTextContents().then(values => values.includes('saved answer')), true);
   await f.toggle(0);
   await f.page.evaluate(() => { window.cachedTool = document.querySelector('#messages .tool-card'); });
-  await publish([intro, read, text('final', answer)]);
+  await publish([intro, liveTool, text('final', answer)]);
   assert.equal(await f.page.locator('#messages .response-text strong').allTextContents().then(values => values.filter(value => value === 'saved answer').length), 1);
   assert(await f.page.evaluate(() => cachedTool === document.querySelector('#messages .tool-card') && cachedTool.open));
   await publish([intro, read, text('final', 'Final **saved')]);
@@ -903,9 +922,10 @@ test('incomplete historical timelines retain their final body and reconcile late
 });
 
 test('tool expansion keeps the trigger stable and reverses rapid toggles with keyboard access', async t => {
-  const f = await fixture(t);
+  const f = await fixture(t, { reducedMotion: 'reduce' });
   const expandable = tool('expandable', { name: 'run_local_shell_command', args: '{}' });
   await f.emit(state([expandable]));
+  await f.frames();
   const card = f.card(0), summary = card.locator(':scope > summary');
   const measure = () => summary.evaluate(element => {
     const bounds = element.getBoundingClientRect();
@@ -927,6 +947,25 @@ test('tool expansion keeps the trigger stable and reverses rapid toggles with ke
   assert.equal(await card.evaluate(element => element.open), true);
   assert.deepEqual(await measure(), before);
   await f.page.screenshot({ path: screenshotDirectory + '/tool-card-interaction.png' });
+});
+
+test('edit tool cards expose the exact unified diff instead of raw JSON', async t => {
+  const f = await fixture(t);
+  const output = JSON.stringify({ path: 'src/example.js', operation: 'replace', changed: true,
+    diff: { added: 1, removed: 1, firstChangedLine: 1,
+      patch: '@@ -1,1 +1,1 @@\n-const value = 1;\n+const value = 2;' } });
+  const edit = tool('edit', { name: 'edit_workspace_file', args: JSON.stringify({ path: 'src/example.js', operation: 'replace' }), output });
+  await f.emit(state([edit], { execution: { status: 'running', busy: true, parts: [edit] } }));
+  const card = f.card(0);
+  assert.equal(await card.locator('.tool-diff-stat').textContent(), '+1−1');
+  await f.toggle(0);
+  const diff = card.locator('.tool-diff');
+  assert.equal(await diff.isVisible(), true);
+  assert.equal(await diff.locator('.tool-diff-line[data-kind="add"]').textContent(), '+const value = 2;');
+  assert.equal(await diff.locator('.tool-diff-line[data-kind="remove"]').textContent(), '-const value = 1;');
+  assert.equal(await diff.locator('.tool-diff-path').textContent(), 'src/example.js');
+  assert.equal(await card.locator('.tool-output').isVisible(), false);
+  await f.page.screenshot({ path: screenshotDirectory + '/tool-diff-card.png' });
 });
 
 test('read-only tool cards stay a flat row that cannot expand', async t => {
@@ -1085,6 +1124,29 @@ test('tool groups remain inline with prose and retain expanded nodes through str
   assert.equal(await f.card(3).locator('.tool-time').textContent(), '2.5s');
 });
 
+test('running non-streaming tool cards lock their disclosure while streaming tools stay expandable', async t => {
+  const f = await fixture(t);
+  const runningEdit = tool('running-edit', { name: 'edit_workspace_file', args: '{"path":"src/a.mjs","content":"x"}', status: 'running', endedAt: undefined, output: '' });
+  const runningShell = tool('running-shell', { name: 'run_local_shell_command', args: '{}', status: 'running', endedAt: undefined, output: 'partial\n' });
+  const completedEdit = tool('completed-edit', { name: 'edit_workspace_file', args: '{"path":"src/b.mjs","content":"y"}', output: '' });
+  await f.emit(state([runningEdit, runningShell, completedEdit]));
+  assert.equal(await f.card(0).getAttribute('data-expandable'), 'false');
+  assert.equal(await f.card(1).getAttribute('data-expandable'), 'true');
+  assert.equal(await f.card(0).locator(':scope > summary').evaluate(node => node.tabIndex), -1);
+  assert.equal(await f.card(1).locator(':scope > summary').evaluate(node => node.tabIndex), 0);
+  assert.equal(await f.card(2).getAttribute('data-expandable'), 'true');
+  await f.toggle(0);
+  assert.equal(await f.card(0).evaluate(node => node.open), false, 'a running non-streaming card must not expand');
+  await f.toggle(1);
+  assert.equal(await f.card(1).evaluate(node => node.open), true, 'a streaming tool can expand while running');
+  await f.emit(state([{ ...runningEdit, status: 'completed', endedAt: start + 500, output: 'done' }, runningShell, completedEdit]));
+  assert.equal(await f.card(0).getAttribute('data-expandable'), 'true');
+  await f.toggle(0);
+  assert.equal(await f.card(0).evaluate(node => node.open), true, 'a finished tool can expand again');
+  await f.emit(state([{ ...runningEdit, status: 'running', output: '' }, runningShell, completedEdit]));
+  assert.equal(await f.card(0).evaluate(node => node.open), false, 'becoming running again collapses an open non-streaming card');
+});
+
 test('running, completed, failed and interrupted calls expose real state without automatic expansion', async t => {
   const f = await fixture(t);
   let parts = [tool('changing', { name: 'run_local_shell_command', args: '{}', status: 'running', endedAt: undefined, output: '' }), tool('done', { name: 'run_local_shell_command', args: '{}' }), tool('stopped', { name: 'run_local_shell_command', args: '{}', status: 'interrupted', output: '', endedAt: start + 800 })];
@@ -1106,7 +1168,9 @@ test('running, completed, failed and interrupted calls expose real state without
   assert.equal(await f.card(2).locator('.tool-status').textContent(), '已停止');
   parts = [{ ...parts[0], status: 'failed', endedAt: start + 700, output: 'ENOENT: file not found' }, ...parts.slice(1)];
   await f.emit(state(parts));
-  assert.equal(await f.card(0).getAttribute('data-status'), 'failed');
+  await f.frames();
+  const statuses = await f.page.locator('#messages .tool-card').evaluateAll(nodes => nodes.map(node => node.dataset.status));
+  assert.equal(statuses[0], 'failed', JSON.stringify(statuses));
   assert.equal(await f.card(0).evaluate(node => node.open), false, 'failure must not automatically expand the card');
   assert.equal(await f.card(0).locator('.tool-output').isVisible(), false);
   await f.toggle(0);
@@ -1120,7 +1184,7 @@ test('running, completed, failed and interrupted calls expose real state without
   assert.equal(await f.card(0).locator(':scope > summary').evaluate(node => document.activeElement === node), true, 'stream updates retain keyboard focus');
   await f.card(2).locator(':scope > summary').focus();
   await f.page.keyboard.press('Enter');
-  await f.frames(); // Native toggle delivers the deferred detail render asynchronously.
+  await f.card(2).locator('.tool-output').waitFor({ state: 'visible' });
   assert.match(await f.card(2).locator('.tool-output').textContent(), /停止/);
   assert.equal(await f.card(2).locator('.tool-output').isVisible(), true, 'native summaries support keyboard expansion');
   await f.page.keyboard.press('Space');
@@ -1186,16 +1250,48 @@ test('web_search results render as readable links instead of raw JSON dumps', as
   await f.emit(state([search, empty]));
   assert.match(await f.card(0).locator('.tool-path').textContent(), /CVE-2024-1234 advisory · 2 条结果/);
   const card = f.card(0);
-  // Web search is a read operation: a flat row that keeps target/status and
-  // never echoes results.
-  assert.equal(await card.getAttribute('data-readonly'), 'true');
-  assert.equal(await card.locator('.tool-chevron').isVisible(), false);
+  // Web search is read-only semantically, but its result list is user-facing
+  // content and must be expandable.
+  assert.equal(await card.getAttribute('data-readonly'), 'false');
+  assert.equal(await card.locator('.tool-chevron').isVisible(), true);
   assert.equal(await card.locator('.tool-search').isVisible(), false);
-  assert.equal(await card.locator('.tool-output').isVisible(), false);
   assert.equal(await card.locator('.tool-search-link').count(), 0);
+  await card.locator('.tool-card-summary').click();
+  await f.page.waitForTimeout(250);
+  assert.equal(await card.locator('.tool-search').isVisible(), true);
+  assert.equal(await card.locator('.tool-search-link').count(), 2);
   assert.equal(await card.locator('.tool-search script').count(), 0);
+  assert.match(await card.locator('.tool-search').textContent(), /Advisory/);
+  await f.card(1).locator('.tool-card-summary').click();
+  await f.page.waitForTimeout(250);
+  assert.equal(await f.card(1).locator('.tool-search').isVisible(), true);
   assert.equal(await f.card(1).locator('.tool-search-link').count(), 0);
   assert.equal(await f.page.evaluate(() => document.querySelectorAll('#messages .tool-search-link[href^="javascript:"]').length), 0);
+});
+
+test('fetch and browser JSON results render as structured expandable content', async t => {
+  const f = await fixture(t);
+  const fetch = tool('fetch-structured', {
+    name: 'fetch_web_content',
+    args: JSON.stringify({ url: 'https://example.com/report' }),
+    output: JSON.stringify({
+      status: 'ok', verification_status: 'verified', content_title: 'Security advisory',
+      final_url: 'https://example.com/report', source_host: 'example.com', content_type: 'text/html',
+      http_status: 200, content: 'Advisory body with the affected versions and remediation.', links: [{ url: 'https://example.com/patch', text: 'Patch notes' }],
+      warnings: ['A sample warning']
+    })
+  });
+  await f.emit(state([fetch]));
+  const card = f.card(0);
+  assert.equal(await card.getAttribute('data-readonly'), 'false');
+  await card.locator('.tool-card-summary').click();
+  await f.page.waitForTimeout(250);
+  assert.equal(await card.locator('.tool-structured').isVisible(), true);
+  assert.match(await card.locator('.tool-structured').textContent(), /Security advisory/);
+  assert.match(await card.locator('.tool-structured').textContent(), /Advisory body/);
+  assert.match(await card.locator('.tool-structured').textContent(), /Patch notes/);
+  assert.equal(await card.locator('.tool-output').isVisible(), false);
+  assert.equal(await card.locator('.tool-structured-raw').isVisible(), true);
 });
 
 test('tool actions await copy receipts, open explicit file paths and isolate HTML preview from the chat', async t => {
@@ -1207,9 +1303,12 @@ test('tool actions await copy receipts, open explicit file paths and isolate HTM
   const secondRoot = tool('second-root', { args: '{"path":"src/special%file#draft?.mjs","root":1}', output: 'file from the second workspace' });
   await f.emit(state([read, accidentalPath, malformedFile, htmlTool, secondRoot]));
   await f.page.locator('#messages .tool-group-toggle').click();
+  await f.page.locator('#assist-more > summary').click();
   await f.page.locator('#review-code-changes').click();
   const review = (await f.sent('reviewCodeChanges')).at(-1);
   assert(review?.sessionId, 'diff review must carry the originating conversation');
+  assert.equal(await f.page.locator('#assist-more').evaluate(node => node.open), false, 'selecting an action closes the overflow menu');
+  await f.page.locator('#assist-more > summary').click();
   await f.page.locator('#validate-code-changes').click();
   assert.equal((await f.sent('validateCodeChanges')).at(-1).sessionId, review.sessionId);
   const readCard = f.card(0);
@@ -1429,4 +1528,145 @@ test('composer selects automatic or manual approval per conversation and sends t
   const bounds = await select.boundingBox();
   assert(bounds.x >= 0 && bounds.x + bounds.width <= 320);
   await f.page.screenshot({ path: screenshotDirectory + '/composer-approval.png' });
+});
+
+test('entering full approval mode needs an explicit danger confirmation', async t => {
+  const f = await fixture(t);
+  const idle = { busy: false, execution: { status: 'idle', busy: false, parts: [], activities: [] } };
+  await f.emit(state([], { ...idle, requireToolApproval: true }));
+  const select = f.page.locator('#tool-approval-mode');
+  const selected = () => select.locator('input:checked').inputValue();
+  const modal = f.page.locator('#ubovm-modal');
+  assert.equal(await selected(), 'manual');
+  const openFull = async () => {
+    await select.locator('label').filter({ hasText: '完全' }).click();
+    await modal.waitFor({ state: 'visible' });
+  };
+
+  await openFull();
+  assert.equal(await selected(), 'manual', 'full mode must not apply before confirmation');
+  assert.equal(await modal.locator('#ubovm-modal-title').textContent(), '进入完全模式？');
+  assert.equal(await modal.locator('#ubovm-modal-confirm').textContent(), '进入完全模式');
+  assert.match(await modal.locator('#ubovm-modal-confirm').getAttribute('class'), /danger-button/);
+  await modal.locator('#ubovm-modal-cancel').click();
+  await f.frames();
+  assert.equal(await selected(), 'manual', 'cancelling keeps the previous mode');
+
+  await openFull();
+  await modal.locator('#ubovm-modal-confirm').click();
+  await f.frames();
+  assert.equal(await selected(), 'full');
+  await f.page.locator('#prompt-input').fill('full scope run');
+  await f.page.locator('#submit-prompt').click();
+  assert.equal((await f.ack('prompt')).approvalMode, 'full');
+});
+
+test('a persisted full approval mode is not restored without confirmation', async t => {
+  const f = await fixture(t, { savedState: { drafts: { 'inline-tool-cards': { approvalMode: 'full' } } } });
+  await f.emit(state([], { busy: false, execution: { status: 'idle', busy: false, parts: [], activities: [] } }));
+  assert.equal(await f.page.locator('#tool-approval-mode input:checked').inputValue(), 'manual');
+  assert.equal(await f.page.locator('#ubovm-modal').getAttribute('open'), null);
+});
+
+test('python tool cards name the script, the first meaningful code line, or the package set', async t => {
+  const f = await fixture(t);
+  const scripted = tool('python-script', { name: 'run_python', args: JSON.stringify({ script: 'scripts/fetch_page.py', reason: '抓取页面' }), status: 'running', endedAt: undefined, output: '' });
+  const inline = tool('python-code', { name: 'run_python', args: JSON.stringify({ code: '\n# 读取销售表\n\nimport pandas as pd\nprint(pd)', reason: '检查数据' }) });
+  const environment = tool('python-env', { name: 'manage_python_environment', args: JSON.stringify({ action: 'sync', packages: ['numpy', 'pandas'], reason: '安装依赖' }) });
+  await f.emit(state([scripted, inline, environment]));
+  assert.equal(await f.card(0).locator('.tool-path').textContent(), 'scripts/fetch_page.py', 'a script card names its path');
+  assert.equal(await f.card(1).locator('.tool-path').textContent(), 'import pandas as pd', 'inline code names its first meaningful line, skipping blank and comment lines');
+  assert.equal(await f.card(2).locator('.tool-path').textContent(), 'sync · 2 个包 · numpy, pandas', 'environment cards name the action and package set');
+});
+
+test('non-streaming running tool cards show a bounded progress preview until they finish', async t => {
+  const f = await fixture(t);
+  let part = { ...tool('mcp-progress', { name: 'mcp__acme__deploy' }), status: 'running', endedAt: undefined, output: '上传步骤 1/2\n检查远程目录' };
+  await f.emit(state([part]));
+  const card = f.card(0), preview = card.locator('.tool-live-preview');
+  assert.equal(await card.getAttribute('data-expandable'), 'false', 'a running non-streaming card stays locked');
+  assert.equal(await card.evaluate(element => element.open), false);
+  assert.equal(await preview.isVisible(), true, 'progress is visible without expanding the card');
+  assert.equal(await preview.textContent(), '上传步骤 1/2\n检查远程目录');
+  assert.equal(await preview.getAttribute('data-status'), 'running');
+  part = { ...part, output: part.output + '\n上传步骤 2/2' };
+  await f.emit(state([part]));
+  assert.equal(await preview.textContent(), '检查远程目录\n上传步骤 2/2', 'the preview keeps only the latest two lines');
+  part = { ...part, status: 'completed', endedAt: start + 900 };
+  await f.emit(state([part]));
+  assert.equal(await preview.isVisible(), false, 'a finished card hides the preview');
+  assert.equal(await preview.textContent(), '');
+});
+
+test('python sandbox phases show their own labels and waiting placeholders', async t => {
+  const f = await fixture(t);
+  const phases = [['preflight', '检查沙箱', '正在检查沙箱环境…'], ['preparing', '准备环境', '正在准备运行环境…'], ['cleanup', '清理沙箱', '正在清理沙箱环境…']];
+  const parts = phases.map(([executionState], index) => tool('python-phase-' + index, {
+    name: 'run_python', args: JSON.stringify({ code: 'print(1)' }), status: 'running', endedAt: undefined, output: '', executionState
+  }));
+  await f.emit(state(parts));
+  for (const [index, [executionState, label, placeholder]] of phases.entries()) {
+    const card = f.card(index);
+    assert.equal(await card.getAttribute('data-execution-state'), executionState);
+    const shown = await card.locator('.tool-status-label').evaluate(element => ({ text: element.textContent, position: getComputedStyle(element).position }));
+    assert.deepEqual(shown, { text: label, position: 'static' }, 'the phase label is revealed in the collapsed row');
+    assert.equal(await card.getAttribute('data-streaming'), 'false', 'a non-running phase is not reported as streaming');
+    await f.toggle(index);
+    assert.equal(await card.locator('.tool-output').textContent(), placeholder);
+    await f.toggle(index);
+  }
+  // A phase-only update repaints the card even though the output is unchanged.
+  const settled = parts.map((part, index) => index === phases.length - 1
+    ? { ...part, executionState: 'running' }
+    : part);
+  await f.emit(state(settled));
+  assert.equal(await f.card(phases.length - 1).getAttribute('data-execution-state'), 'running');
+  const running = await f.card(phases.length - 1).locator('.tool-status-label').evaluate(element => ({ text: element.textContent, position: getComputedStyle(element).position }));
+  assert.deepEqual(running, { text: '运行中', position: 'absolute' }, 'the plain running label stays screen-reader only');
+  const catalog = await f.page.evaluate(() => ({
+    phases: [window.UBOVM_I18N_EN_MORE?.['检查沙箱'], window.UBOVM_I18N_EN_MORE?.['准备环境'], window.UBOVM_I18N_EN_MORE?.['清理沙箱']],
+    placeholders: [window.UBOVM_I18N_EN_MORE?.['正在检查沙箱环境…'], window.UBOVM_I18N_EN_MORE?.['正在准备运行环境…'], window.UBOVM_I18N_EN_MORE?.['正在清理沙箱环境…']],
+    exitCode: window.UBOVM_I18N_EN_MORE?.['退出码 {0}'],
+    packages: window.UBOVM_I18N_EN_MORE?.['{0} 个包'],
+  }));
+  assert.deepEqual(catalog, {
+    phases: ['Checking the sandbox', 'Preparing the environment', 'Cleaning up the sandbox'],
+    placeholders: ['Checking the sandbox environment…', 'Preparing the runtime environment…', 'Cleaning up the sandbox environment…'],
+    exitCode: 'Exit code {0}',
+    packages: '{0} packages',
+  });
+});
+
+test('execution phase updates repaint the card without an output change', async t => {
+  const f = await fixture(t);
+  let part = { ...tool('phase-only', { name: 'run_local_shell_command', args: JSON.stringify({ command: 'npm run build' }) }), status: 'running', endedAt: undefined, output: 'building', executionState: 'queued' };
+  await f.emit(state([part]));
+  const card = f.card(0), label = () => card.locator('.tool-status-label').evaluate(element => ({ text: element.textContent, position: getComputedStyle(element).position }));
+  assert.equal(await card.getAttribute('data-execution-state'), 'queued');
+  assert.deepEqual(await label(), { text: '排队中', position: 'static' });
+  // Only the phase changes: same id, status, args, output and timestamps.
+  part = { ...part, executionState: 'preparing' };
+  await f.emit(state([part]));
+  assert.equal(await card.getAttribute('data-execution-state'), 'preparing', 'a phase-only update must reach the card');
+  assert.deepEqual(await label(), { text: '准备环境', position: 'static' });
+  assert.equal(await card.locator('.tool-live-preview').textContent(), 'building', 'the progress preview is untouched by the phase repaint');
+});
+
+test('finished command cards append the real exit code to the expanded result info', async t => {
+  const f = await fixture(t);
+  let part = { ...tool('exit-code', { name: 'run_local_shell_command', args: JSON.stringify({ command: 'node --test' }) }), status: 'running', endedAt: undefined, output: 'ok 1\nok 2\n' };
+  await f.emit(state([part]));
+  await f.toggle(0);
+  const info = f.card(0).locator('.tool-result-info');
+  assert.equal(await info.textContent(), '接收中 · 2 行');
+  await f.toggle(0);
+  part = { ...part, status: 'completed', endedAt: start + 900, output: part.output + 'exit_code: 0\n' };
+  await f.emit(state([part]));
+  await f.toggle(0);
+  assert.equal(await info.textContent(), '3 行 · 退出码 0');
+  await f.toggle(0);
+  part = { ...part, status: 'failed', output: 'boom\nexit_code: 1\n' };
+  await f.emit(state([part]));
+  await f.toggle(0);
+  assert.equal(await info.textContent(), '2 行 · 退出码 1', 'a non-zero exit code stays visible on failed commands');
 });

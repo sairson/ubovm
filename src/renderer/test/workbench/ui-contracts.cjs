@@ -5,7 +5,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { createHash } = require('node:crypto');
-const { existsSync, readFileSync } = require('node:fs');
+const { existsSync, readdirSync, readFileSync } = require('node:fs');
 const path = require('node:path');
 
 const projectRoot = path.resolve(__dirname, '../../../..');
@@ -38,13 +38,22 @@ test('installed product trusts every domain for link protection', () => {
     'Packaged product.json must default-trust all domains so link prompts do not block the IDE.');
 });
 
-test('installed npm extension hides its view while retaining npm task support', () => {
-  const manifest = readJson(path.join(appRoot, 'extensions/npm/package.json'));
-  assert.equal(manifest.name, 'npm');
-  const views = Object.values(manifest.contributes?.views || {}).flat().filter(view => view.id === 'npm');
-  assert.equal(views.length, 1, 'The installed npm view must have one contribution.');
-  assert.equal(views[0].when, 'false', 'Hidden-by-default is insufficient: npm must have a false visibility condition.');
-  assert.ok(manifest.contributes.taskDefinitions.some(task => task.type === 'npm'), 'Hiding npm UI must retain task registration.');
+test('installed product has no extension marketplace and only curated extensions', () => {
+  assert.equal(product.extensionsGallery, undefined, 'Packaged product.json must not expose open-vsx.');
+  assert.ok(Array.isArray(product.builtInExtensionsEnabledWithAutoUpdates), 'Startup requires the auto-update array.');
+  assert.equal(product.updateUrl, '', 'VSCodium update endpoint must be removed.');
+  assert.ok(Array.isArray(product.builtInExtensions), 'Startup requires the built-in add-on array.');
+  assert.ok(product.defaultChatAgent, 'Startup requires defaultChatAgent.');
+  const extensions = readdirSync(path.join(appRoot, 'extensions'), { withFileTypes: true })
+    .filter(entry => entry.isDirectory()).map(entry => entry.name);
+  assert.ok(extensions.includes('ubovm-core'), 'The harness extension must remain built in.');
+  assert.ok(extensions.includes('typescript-language-features'), 'TypeScript language service must remain available.');
+  assert.ok(extensions.includes('json-language-features'), 'JSON language service must remain available.');
+  for (const removed of ['github', 'github-authentication', 'microsoft-authentication', 'ms-vscode.js-debug', 'mermaid-markdown-features', 'simple-browser', 'tunnel-forwarding', 'npm']) {
+    assert.equal(extensions.includes(removed), false, `${removed} must not be shipped in the harness runtime.`);
+  }
+  const allowed = configuration.settings?.['extensions.allowed'];
+  assert.equal(allowed, undefined, 'extensions.allowed hangs this runtime; do not add it.');
 });
 
 test('installed startup markup occurs once inside the workbench body', () => {

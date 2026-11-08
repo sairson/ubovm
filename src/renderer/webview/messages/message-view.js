@@ -13,9 +13,9 @@
   document.addEventListener('visibilitychange', () => { tick(); syncClock(); });
   window.addEventListener('ubovm-settings-visibility', () => { tick(); syncClock(); });
   const labels = { running: '运行中', completed: '完成', failed: '失败', interrupted: '已停止' };
-  const executionLabels = { queued: '排队中', starting: '准备中', running: '运行中', stopping: '正在停止' };
-  const tools = { delivery_workflow: '交付闭环', search_workspace: '搜索项目代码', inventory_workspace_dependencies: '盘点工作区依赖', scan_workspace_secrets: '扫描疑似密钥', analyze_workspace_call_chain: '分析代码调用链', navigate_workspace_code: '代码符号导航', get_workspace_diagnostics: '读取代码诊断', validate_workspace_changes: '验证代码修改', recover_workspace_changes: '恢复代码修改状态', read_workspace_code: '读取待编辑代码', edit_workspace_file: '编辑代码', list_workspace_changes: '查看代码更改', wait_workers: '等待并行任务', spawn_worker: '分派并行任务', manage_workers: '调度并行任务', cancel_workers: '中断并行任务', list_workers: '检查协作进展', read_worker_evidence: '查看任务记录', read_workspace_file: '读取文件', read_image: '读取图片', list_workspace_files: '查看目录', run_local_shell_command: '运行本地命令', run_python: '运行 Python 沙箱', manage_python_environment: '管理 Python 依赖', run_linux_ssh_command: '运行命令', upload_sftp: 'SFTP 上传', deploy_remote_service: '部署远程服务', fetch_web_content: '读取网页', web_search: '搜索网页', load_skill: '加载技能', read_skills_resource: '读取技能资源', run_local_skill_script: '执行技能脚本', note: '更新笔记', todo: '更新任务', browser_action: '浏览器操作', read_context_evidence: '读取上下文证据', install_skill: '安装技能', install_mcp_server: '安装 MCP 服务', browser_connection_status: '检查浏览器状态', domain_inventory: '登记域名资产', learn_capability: '记录能力', inspect_harness: '查看运行预算', manage_harness_project: '管理任务配置', read_worker_result: '读取任务结果', read_workspace_change: '读取代码改动快照', preview_workspace_edits: '预览代码修改', preview_workspace_rename: '预览符号重命名', edit_workspace_files: '批量编辑代码', inspect_workspace_project: '检查项目配置', list_assist_evidence: '查看已记录证据', record_assist_evidence: '记录证据', attach_assist_evidence: '关联证据', list_linked_goals: '查看关联目标', create_linked_goal: '创建关联目标', ask_human: '询问用户', spawn_teammate: '创建团队成员', send_message: '向团队发消息', list_agents: '查看团队成员', wait_agent: '等待团队进展', interrupt_agent: '中断团队成员', team_task_create: '创建任务', team_task_list: '查看任务板', team_task_get: '读取任务', team_task_update: '更新任务', background_commands: '后台任务', stop_worker: '停止 Worker', start_worker: '启动 Worker', prompt_worker: '派发 Worker 提示' };
-  const kinds = { delivery_workflow: 'memory', search_workspace: 'search', inventory_workspace_dependencies: 'search', scan_workspace_secrets: 'search', analyze_workspace_call_chain: 'search', navigate_workspace_code: 'search', get_workspace_diagnostics: 'search', validate_workspace_changes: 'tool', recover_workspace_changes: 'file', read_workspace_code: 'file', edit_workspace_file: 'file', list_workspace_changes: 'folder', read_workspace_file: 'file', read_image: 'file', list_workspace_files: 'folder', run_local_shell_command: 'terminal', run_python: 'terminal', manage_python_environment: 'terminal', run_linux_ssh_command: 'terminal', upload_sftp: 'file', deploy_remote_service: 'terminal', fetch_web_content: 'browser', web_search: 'search', load_skill: 'skill', read_skills_resource: 'skill', run_local_skill_script: 'terminal', note: 'memory', todo: 'memory', browser_action: 'browser', read_context_evidence: 'search', install_skill: 'skill', install_mcp_server: 'mcp', browser_connection_status: 'browser', domain_inventory: 'memory', learn_capability: 'memory', inspect_harness: 'tool', manage_harness_project: 'tool', read_worker_result: 'tool', read_workspace_change: 'file', preview_workspace_edits: 'file', preview_workspace_rename: 'search', edit_workspace_files: 'file', inspect_workspace_project: 'search', list_assist_evidence: 'memory', record_assist_evidence: 'memory', attach_assist_evidence: 'memory', list_linked_goals: 'memory', create_linked_goal: 'memory', ask_human: 'memory', spawn_teammate: 'team', send_message: 'team', list_agents: 'team', wait_agent: 'team', interrupt_agent: 'team', team_task_create: 'team', team_task_list: 'team', team_task_get: 'team', team_task_update: 'team', background_commands: 'terminal', stop_worker: 'team', start_worker: 'team', prompt_worker: 'team' };
+  const executionLabels = { queued: '排队中', starting: '准备中', preflight: '检查沙箱', preparing: '准备环境', running: '运行中', cleanup: '清理沙箱', stopping: '正在停止' };
+  const tools = { search_workspace: '搜索项目代码', inventory_workspace_dependencies: '盘点工作区依赖', scan_workspace_secrets: '扫描疑似密钥', analyze_workspace_call_chain: '分析代码调用链', navigate_workspace_code: '代码符号导航', get_workspace_diagnostics: '读取代码诊断', validate_workspace_changes: '验证代码修改', recover_workspace_changes: '恢复代码修改状态', read_workspace_code: '读取待编辑代码', edit_workspace_file: '编辑代码', list_workspace_changes: '查看代码更改', wait_workers: '等待并行任务', spawn_worker: '分派并行任务', manage_workers: '调度并行任务', cancel_workers: '中断并行任务', list_workers: '检查协作进展', read_worker_evidence: '查看任务记录', read_workspace_file: '读取文件', read_image: '读取图片', list_workspace_files: '查看目录', run_local_shell_command: '运行本地命令', run_python: '运行 Python 沙箱', manage_python_environment: '管理 Python 依赖', run_linux_ssh_command: '运行命令', upload_sftp: 'SFTP 上传', deploy_remote_service: '部署远程服务', fetch_web_content: '读取网页', web_search: '搜索网页', load_skill: '加载技能', read_skills_resource: '读取技能资源', run_local_skill_script: '执行技能脚本', note: '更新笔记', todo: '更新任务', browser_action: '浏览器操作', read_context_evidence: '读取上下文证据', install_skill: '安装技能', install_mcp_server: '安装 MCP 服务', browser_connection_status: '检查浏览器状态', domain_inventory: '登记域名资产', learn_capability: '记录能力', inspect_harness: '查看运行预算', manage_harness_project: '管理任务配置', read_worker_result: '读取任务结果', read_workspace_change: '读取代码改动快照', preview_workspace_edits: '预览代码修改', preview_workspace_rename: '预览符号重命名', edit_workspace_files: '批量编辑代码', inspect_workspace_project: '检查项目配置', list_assist_evidence: '查看已记录证据', record_assist_evidence: '记录证据', attach_assist_evidence: '关联证据', list_linked_goals: '查看关联目标', create_linked_goal: '创建关联目标', ask_human: '询问用户', spawn_teammate: '创建团队成员', send_message: '向团队发消息', list_agents: '查看团队成员', wait_agent: '等待团队进展', interrupt_agent: '中断团队成员', team_task_create: '创建任务', team_task_list: '查看任务板', team_task_get: '读取任务', team_task_update: '更新任务', background_commands: '后台任务', stop_worker: '停止 Worker', start_worker: '启动 Worker', prompt_worker: '派发 Worker 提示' };
+  const kinds = { search_workspace: 'search', inventory_workspace_dependencies: 'search', scan_workspace_secrets: 'search', analyze_workspace_call_chain: 'search', navigate_workspace_code: 'search', get_workspace_diagnostics: 'search', validate_workspace_changes: 'tool', recover_workspace_changes: 'file', read_workspace_code: 'file', edit_workspace_file: 'file', list_workspace_changes: 'folder', read_workspace_file: 'file', read_image: 'file', list_workspace_files: 'folder', run_local_shell_command: 'terminal', run_python: 'terminal', manage_python_environment: 'terminal', run_linux_ssh_command: 'terminal', upload_sftp: 'file', deploy_remote_service: 'terminal', fetch_web_content: 'browser', web_search: 'search', load_skill: 'skill', read_skills_resource: 'skill', run_local_skill_script: 'terminal', note: 'memory', todo: 'memory', browser_action: 'browser', read_context_evidence: 'search', install_skill: 'skill', install_mcp_server: 'mcp', browser_connection_status: 'browser', domain_inventory: 'memory', learn_capability: 'memory', inspect_harness: 'tool', manage_harness_project: 'tool', read_worker_result: 'tool', read_workspace_change: 'file', preview_workspace_edits: 'file', preview_workspace_rename: 'search', edit_workspace_files: 'file', inspect_workspace_project: 'search', list_assist_evidence: 'memory', record_assist_evidence: 'memory', attach_assist_evidence: 'memory', list_linked_goals: 'memory', create_linked_goal: 'memory', ask_human: 'memory', spawn_teammate: 'team', send_message: 'team', list_agents: 'team', wait_agent: 'team', interrupt_agent: 'team', team_task_create: 'team', team_task_list: 'team', team_task_get: 'team', team_task_update: 'team', background_commands: 'terminal', stop_worker: 'team', start_worker: 'team', prompt_worker: 'team' };
   const icons = {
     file: 'M9 3H5v18h14V9L13 3H9m4 0v6h6M8 13h8M8 17h6',
     folder: 'M3 6h7l2 2h9v12H3V6Z',
@@ -30,9 +30,50 @@
   };
   const tr = (value, ...args) => window.UBOVMi18n?.t(value, ...args) ?? value;
   const isFlatToolCard = name => window.UBOVMTimeline?.isFlatToolCard?.(name) === true;
+  const toolDiff = part => window.UBOVMTimeline?.toolDiff?.(part) ?? null;
+  const diffSummary = diff => window.UBOVMTimeline?.diffSummary?.(diff) ?? '';
+  function setDiffStat(element, diff) {
+    element.hidden = !diff;
+    if (!diff) { if (element.textContent) element.replaceChildren(); return; }
+    const signature = `${diff.added}\0${diff.removed}`;
+    if (element.dataset.signature === signature) return;
+    element.dataset.signature = signature;
+    element.replaceChildren();
+    if (diff.added) { const value = node('span', 'tool-diff-added', `+${diff.added}`); element.append(value); }
+    if (diff.removed) { const value = node('span', 'tool-diff-removed', `−${diff.removed}`); element.append(value); }
+    if (!diff.added && !diff.removed) element.textContent = '内容变更';
+  }
   const node = (tag, className, text) => { const value = document.createElement(tag); if (className) value.className = className; if (text !== undefined) value.textContent = tr(text); return value; };
   const setText = (element, value) => { const text = tr(value); if (element.textContent !== text) element.textContent = text; };
   const setRaw = (element, value) => { if (element.textContent !== value) element.textContent = value; };
+  // Tool results may inline one image. The host rebuilds the projected payload
+  // for every snapshot, so compare its fields rather than object identity; a
+  // changed image must re-render, an identical one must not. A missing payload
+  // and an explicit null are the same absence.
+  const sameToolImage = (left, right) => {
+    if (left === right) return true;
+    const a = left && typeof left === 'object' ? left : null;
+    const b = right && typeof right === 'object' ? right : null;
+    if (!a || !b) return !a && !b;
+    return a.mimeType === b.mimeType && a.data === b.data
+      && a.width === b.width && a.height === b.height && a.bytes === b.bytes;
+  };
+  const hasInlineToolImage = image => Boolean(image && typeof image === 'object' && !Array.isArray(image)
+    && typeof image.mimeType === 'string' && image.mimeType
+    && typeof image.data === 'string' && image.data);
+  const imageFormatLabel = mimeType => {
+    const match = /^image\/([a-z0-9.+-]+)$/i.exec(String(mimeType ?? ''));
+    if (!match) return '';
+    const subtype = match[1].toLowerCase();
+    return ({ jpeg: 'JPEG', jpg: 'JPEG', png: 'PNG', gif: 'GIF', webp: 'WebP', avif: 'AVIF', bmp: 'BMP', 'svg+xml': 'SVG' })[subtype] || subtype.toUpperCase();
+  };
+  const imageSizeLabel = bytes => {
+    const value = Number(bytes);
+    if (!Number.isFinite(value) || value <= 0) return '';
+    if (value < 1024) return `${Math.round(value)} B`;
+    if (value < 1024 * 1024) return `${(value / 1024).toFixed(value < 10 * 1024 ? 1 : 0)} KB`;
+    return `${(value / (1024 * 1024)).toFixed(value < 10 * 1024 * 1024 ? 1 : 0)} MB`;
+  };
   function duration(view) {
     const start = Number(view.part.startedAt), end = Number(view.part.endedAt);
     if (!Number.isFinite(start) || start <= 0) { setText(view.time, ''); return; }
@@ -157,6 +198,30 @@
     if (Number.isSafeInteger(start) && start > 1) return `:${start}`;
     return '';
   }
+  // Inline Python has no path: name its first meaningful source line instead.
+  // Blank lines and comments carry no target information.
+  function codeHint(value) {
+    if (typeof value !== 'string') return '';
+    for (const line of value.split(/\r?\n/)) {
+      const text = line.replace(/\s+/g, ' ').trim();
+      if (!text || text.startsWith('#')) continue;
+      return text.slice(0, 100);
+    }
+    return '';
+  }
+  // Environment cards show the action plus the package set it operates on.
+  function pythonEnvironmentHint(input) {
+    const parts = [];
+    if (typeof input.action === 'string' && input.action.trim()) parts.push(input.action.trim().slice(0, 24));
+    if (Array.isArray(input.packages)) {
+      const packages = input.packages.filter(value => typeof value === 'string' && value.trim()).map(value => value.trim());
+      if (packages.length) {
+        parts.push(tr('{0} 个包', packages.length));
+        parts.push(packages.slice(0, 3).join(', ') + (packages.length > 3 ? '…' : ''));
+      }
+    }
+    return parts.join(' · ').slice(0, 160);
+  }
   function hint(part, input) {
     if (isTeamTool(part.name)) return teamHint(part, input);
     if (part.name === 'background_commands') {
@@ -176,6 +241,15 @@
       if (query && summary) return `${query.slice(0, 120)} · ${summary}`;
       if (query) return query.slice(0, 160);
       if (summary) return summary;
+    }
+    if (part.name === 'run_python') {
+      if (typeof input.script === 'string' && input.script.trim()) return input.script.replace(/\s+/g, ' ').trim().slice(0, 160);
+      const code = codeHint(input.code);
+      if (code) return code;
+    }
+    if (part.name === 'manage_python_environment') {
+      const environment = pythonEnvironmentHint(input);
+      if (environment) return environment;
     }
     let text = '';
     for (const key of ['path', 'url', 'query', 'symbol', 'glob', 'pattern', 'command', 'resource', 'skill', 'name', 'action']) {
@@ -218,6 +292,82 @@
     if (visible) output.scrollTop = follow ? output.scrollHeight : top;
   }
   function htmlSource(value) { return /^\s*(?:<!doctype\s+html|<(?:html|head|body|main|section|article|div|style|h[1-6]|p)(?:\s|>))/i.test(value); }
+  // Structured results for tools whose output is a JSON object the user should be
+  // able to inspect without reading a raw JSON dump.
+  const STRUCTURED_TOOLS = new Set(['fetch_web_content', 'browser_action', 'browser_connection_status',
+    'list_agents', 'team_task_list', 'team_task_get', 'wait_agent', 'list_workers', 'list_assist_evidence']);
+  function structuredJson(value) {
+    if (typeof value !== 'string' || !value || value.length > 512 * 1024) return null;
+    try {
+      const data = JSON.parse(value);
+      return data && typeof data === 'object' && !Array.isArray(data) ? data : null;
+    } catch { return null; }
+  }
+  function scalarText(value) {
+    if (typeof value === 'string') return value;
+    if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+    return '';
+  }
+  function renderStructuredResult(view, data, source) {
+    if (view.renderedStructuredOutput === source) return;
+    const root = view.structured;
+    root.replaceChildren();
+    const head = node('div', 'tool-structured-head');
+    const labels = [
+      ['status', data.status], ['verification_status', data.verification_status],
+      ['content_title', data.content_title], ['message', data.message]
+    ].map(([key, value]) => [key, scalarText(value)]).filter(([, value]) => value);
+    const title = node('strong', 'tool-structured-title', labels.find(([key]) => key === 'content_title')?.[1] || scalarText(data.status) || '结果');
+    head.append(title);
+    const meta = [scalarText(data.final_url) || scalarText(data.requested_url), scalarText(data.source_host) || scalarText(data.requested_host), scalarText(data.content_type), data.http_status]
+      .filter(value => value !== '' && value !== undefined && value !== null).join(' · ');
+    if (meta) head.append(node('span', 'tool-structured-meta', meta));
+    root.append(head);
+    if (data.content && typeof data.content === 'string') {
+      const body = node('pre', 'tool-structured-content', data.content.slice(0, 16000));
+      root.append(body);
+    }
+    if (Array.isArray(data.links) && data.links.length) {
+      const list = node('ul', 'tool-structured-links');
+      for (const item of data.links.slice(0, 20)) {
+        const url = scalarText(item?.url ?? item?.href ?? item);
+        const label = scalarText(item?.text ?? item?.title) || url;
+        if (!url) continue;
+        const row = node('li');
+        const link = node('a', 'tool-structured-link', label);
+        link.href = url; link.target = '_blank'; link.rel = 'noopener noreferrer';
+        row.append(link); list.append(row);
+      }
+      if (list.childElementCount) root.append(list);
+    }
+    const fields = node('dl', 'tool-structured-fields');
+    let count = 0;
+    for (const [key, value] of Object.entries(data)) {
+      if (count >= 24) break;
+      const text = scalarText(value);
+      if (!text || ['content', 'links', 'status', 'verification_status', 'content_title', 'message', 'final_url', 'requested_url', 'source_host', 'requested_host', 'content_type', 'http_status'].includes(key)) continue;
+      fields.append(node('dt', '', key), node('dd', '', text.length > 800 ? text.slice(0, 800) + '…' : text));
+      count++;
+    }
+    if (count) root.append(fields);
+    const lists = [['results', 'results'], ['tasks', 'tasks'], ['members', 'members'], ['warnings', 'warnings']];
+    for (const [key, label] of lists) {
+      const values = data[key];
+      if (!Array.isArray(values) || !values.length) continue;
+      const section = node('section', 'tool-structured-list');
+      section.append(node('h4', '', label + ' · ' + values.length));
+      const ul = node('ul');
+      for (const item of values.slice(0, 24)) {
+        const text = scalarText(item) || scalarText(item?.title || item?.subject || item?.name || item?.description || item?.content || item?.member || item?.url);
+        if (text) ul.append(node('li', '', text.slice(0, 600)));
+      }
+      section.append(ul); root.append(section);
+    }
+    const raw = node('details', 'tool-structured-raw');
+    raw.append(node('summary', '', '原始 JSON'), node('pre', '', source.length > 20000 ? source.slice(0, 20000) + '…' : source));
+    root.append(raw);
+    view.renderedStructuredOutput = source;
+  }
   function renderSearchResults(view, search, source) {
     if (view.renderedSearchOutput === source) return;
     const root = view.search;
@@ -274,6 +424,22 @@
     root.append(note);
     view.renderedSearchOutput = source;
   }
+  // A running tool can only stay expanded when it streams output. Other running
+  // cards collapse their disclosure so fast repeated clicks cannot reveal an
+  // incomplete body; their stop/aside actions remain available in the summary.
+  function toolExpandable(view) {
+    return view.flat !== true && (view.part?.status !== 'running' || view.streaming === true);
+  }
+  function syncToolDisclosure(view) {
+    const expandable = toolExpandable(view);
+    const expandableValue = String(expandable);
+    if (view.element.dataset.expandable !== expandableValue) view.element.dataset.expandable = expandableValue;
+    const disabled = String(!expandable && view.flat !== true);
+    if (view.summary.getAttribute('aria-disabled') !== disabled) view.summary.setAttribute('aria-disabled', disabled);
+    if (!expandable && view.element.open) view.element.open = false;
+    const tabIndex = expandable ? 0 : -1;
+    if (view.summary.tabIndex !== tabIndex) view.summary.tabIndex = tabIndex;
+  }
   function createTool() {
     const element = node('details', 'tool-card');
     const summary = node('summary', 'tool-card-summary');
@@ -284,7 +450,13 @@
     const indicator = node('span', 'tool-indicator'); indicator.setAttribute('aria-hidden', 'true');
     icon.append(indicator);
     const title = node('span', 'tool-title'), path = node('span', 'tool-path'), status = node('span', 'tool-status-label'), time = node('span', 'tool-time');
-    const main = node('span', 'tool-summary-main'); main.append(title, path);
+    const diffStat = node('span', 'tool-diff-stat'); diffStat.hidden = true;
+    // A tool result that inlined an image shows a compact thumbnail in the
+    // collapsed row too, so a screenshot is visible without expanding the card.
+    const summaryImage = node('img', 'tool-summary-image');
+    summaryImage.loading = 'lazy'; summaryImage.decoding = 'async'; summaryImage.alt = '';
+    summaryImage.hidden = true;
+    const main = node('span', 'tool-summary-main'); main.append(summaryImage, title, path, diffStat);
     const state = node('span', 'tool-status'); state.append(status);
     const details = node('span', 'tool-card-meta'); details.append(state, time);
     const stop = node('button', 'tool-action tool-stop', '中断命令'); stop.type = 'button'; stop.hidden = true;
@@ -296,7 +468,11 @@
     summary.append(icon, main, details, aside, stop, chevron, live);
     summary.setAttribute('aria-label', '工具调用');
     const body = node('div', 'tool-card-body'), meta = node('div', 'tool-detail-name');
+    const diff = node('section', 'tool-diff'); diff.hidden = true; diff.setAttribute('aria-label', '代码差异');
+    const diffFiles = node('div', 'tool-diff-files'), diffNote = node('p', 'tool-diff-note'); diffNote.hidden = true;
+    diff.append(diffFiles, diffNote);
     const search = node('div', 'tool-search'); search.hidden = true; search.setAttribute('aria-label', '搜索结果');
+    const structured = node('div', 'tool-structured'); structured.hidden = true; structured.setAttribute('aria-label', '结构化结果');
     const input = node('pre', 'tool-parameters'), output = node('pre', 'tool-output');
     output.tabIndex = input.tabIndex = 0; output.setAttribute('aria-label', '工具输出'); input.setAttribute('aria-label', '工具参数');
     const actions = node('div', 'tool-result-toolbar'), info = node('span', 'tool-result-info');
@@ -311,9 +487,26 @@
     // Read-only tools keep their card but never echo the returned content.
     const readNote = node('p', 'tool-read-note', '读取类操作不需要回显结果内容，可在「参数」中确认目标，或按需重新读取。');
     readNote.hidden = true;
-    body.append(search, output, readNote, actions, args, notice);
+    // One image per result is inlined. The figure is a single disclosure target:
+    // a compact thumbnail until activated, then a larger view. It is built once
+    // and only its image/caption are refreshed by renderToolBody.
+    const image = node('figure', 'tool-image');
+    image.hidden = true;
+    image.setAttribute('role', 'button');
+    image.setAttribute('aria-expanded', 'false');
+    image.setAttribute('aria-label', tr('放大图片'));
+    image.tabIndex = 0;
+    const imagePreview = node('img', 'tool-image-preview');
+    imagePreview.loading = 'lazy';
+    imagePreview.decoding = 'async';
+    imagePreview.alt = tr('工具返回的图片');
+    const imageCaption = node('figcaption', 'tool-image-caption');
+    image.append(imagePreview, imageCaption);
+    const imageNote = node('p', 'tool-image-note', '部分图片未内联显示。');
+    imageNote.hidden = true;
+    body.append(diff, search, structured, image, imageNote, output, readNote, actions, args, notice);
     element.append(summary, body);
-    const view = { element, summary, chevron, icon, iconPath, title, path, status, time, meta, input, output, search, info, label, copy, preview, stop, aside, notice, readNote, toolbar: actions, flat: false, live, latest, part: {}, options: {} };
+    const view = { element, summary, chevron, icon, iconPath, title, path, status, time, meta, input, output, search, structured, info, label, copy, preview, stop, aside, notice, readNote, toolbar: actions, flat: false, live, latest, part: {}, options: {}, diff, diffFiles, diffNote, diffStat, diffModel: null, diffKey: '', renderedStructuredOutput: undefined, image, imagePreview, imageCaption, imageNote, renderedImageMime: undefined, renderedImageData: undefined, summaryImage, renderedThumbKey: undefined };
     search.addEventListener('click', event => {
       const link = event.target?.closest?.('a.tool-search-link');
       if (!link || !search.contains(link) || view.released) return;
@@ -344,12 +537,13 @@
         }
       }
     });
-    // Flat cards are a single row: no disclosure and no body.
-    summary.addEventListener('click', event => { if (view.flat) event.preventDefault(); });
-    summary.addEventListener('keydown', event => { if (view.flat && (event.key === 'Enter' || event.key === ' ')) event.preventDefault(); });
+    // Flat cards are a single row: no disclosure and no body. Running
+    // non-streaming cards are temporarily locked until they finish.
+    summary.addEventListener('click', event => { if (!toolExpandable(view)) event.preventDefault(); });
+    summary.addEventListener('keydown', event => { if (!toolExpandable(view) && (event.key === 'Enter' || event.key === ' ')) event.preventDefault(); });
     element.addEventListener('toggle', () => {
       if (view.released) return;
-      if (view.flat) { if (element.open) element.open = false; return; }
+      if (!toolExpandable(view)) { if (element.open) element.open = false; return; }
       try { if (element.open) renderToolBody(view); else renderLivePreview(view); }
       catch {
         // A failed deferred render can be retried with the same state snapshot.
@@ -370,12 +564,33 @@
       finally { if (!view.released) { copy.disabled = false; view.copyReset = setTimeout(() => { copy.textContent = '复制输出'; }, 1400); } }
     });
     preview.addEventListener('click', () => { if (!view.released) view.options.onPreviewHtml?.(view.part.output || '', preview); });
+    // A figure with role="button" keeps the thumbnail keyboard-operable without
+    // nesting another interactive element inside the card body.
+    const toggleImage = () => {
+      if (view.released || image.hidden) return;
+      setImageExpanded(view, image.dataset.expanded !== 'true');
+    };
+    image.addEventListener('click', toggleImage);
+    image.addEventListener('keydown', event => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      toggleImage();
+    });
     return view;
   }
   function updateTool(view, part, options) {
     view.options = options;
-    view.flat = isFlatToolCard(part.name);
-    view.element.dataset.readonly = view.flat ? 'true' : 'false';
+    // A tool that inlines an image must be expandable even when its name is
+    // read-only (read_image is otherwise a flat row). An omission notice alone
+    // also needs a body to be readable.
+    view.flat = isFlatToolCard(part.name) && !part.image && part.imageOmitted !== true;
+    const readonly = view.flat ? 'true' : 'false';
+    if (view.element.dataset.readonly !== readonly) view.element.dataset.readonly = readonly;
+    // Read-only cards stay flat by design. Explain where the result went so the
+    // collapsed card does not look like a missing or failed output.
+    const flatHint = view.flat ? '读取类操作：结果不回显，完整记录见日志。' : '';
+    if (flatHint) { if (view.summary.getAttribute('title') !== flatHint) view.summary.setAttribute('title', flatHint); }
+    else if (view.summary.hasAttribute('title')) view.summary.removeAttribute('title');
     if (view.element.dataset.tool !== part.name) view.element.dataset.tool = part.name || '';
     const asideHidden = part.status !== 'running' || !part.commandId || part.background === true || !options.onBackgroundCommand;
     if (view.aside.hidden !== asideHidden) view.aside.hidden = asideHidden;
@@ -389,19 +604,29 @@
     // Outputs can be large. Compare the rendered fields without copying and
     // serializing every completed tool on each incoming text token.
     const keys = ['id', 'name', 'status', 'args', 'output', 'startedAt', 'endedAt', 'truncated', 'outputTail', 'commandId', 'interruptRequested', 'executionState', 'background'];
-    if (!view.dirty && keys.every(key => part[key] === view.part[key])) return renderToolBody(view);
+    const imageUnchanged = sameToolImage(part.image, view.part.image)
+      && (part.imageOmitted === true) === (view.part.imageOmitted === true);
+    if (!view.dirty && imageUnchanged && keys.every(key => part[key] === view.part[key])) return renderToolBody(view);
     const argumentsChanged = view.dirty || part.name !== view.part.name || part.args !== view.part.args;
     const outputChanged = view.dirty || part.output !== view.part.output || part.status !== view.part.status;
     const streaming = ['run_linux_ssh_command', 'run_local_skill_script', 'run_local_shell_command', 'run_python', 'manage_python_environment', 'upload_sftp', 'deploy_remote_service'].includes(part.name);
     view.dirty = true;
     view.part = { ...part };
     view.streaming = streaming;
+    renderToolSummaryImage(view, part);
+    syncToolDisclosure(view);
     view.bodyDirty = true;
+    const diffModel = toolDiff(part);
+    view.diffModel = diffModel;
+    const diffValue = diffModel ? 'true' : 'false';
+    if (view.element.dataset.diff !== diffValue) view.element.dataset.diff = diffValue;
+    view.diffStat.hidden = !diffModel;
+    if (diffModel) setDiffStat(view.diffStat, diffModel);
     const status = labels[part.status] ? part.status : 'completed';
     if (view.element.dataset.status !== status) view.element.dataset.status = status;
     const executionState = status === 'running' && executionLabels[part.executionState] ? part.executionState : '';
     if (view.element.dataset.executionState !== executionState) view.element.dataset.executionState = executionState;
-    const receiving = String(streaming && status === 'running' && !['queued', 'starting', 'stopping'].includes(executionState));
+    const receiving = String(streaming && status === 'running' && !['queued', 'starting', 'preflight', 'preparing', 'stopping', 'cleanup'].includes(executionState));
     if (view.element.dataset.streaming !== receiving) view.element.dataset.streaming = receiving;
     const title = tools[part.name] || (part.name?.startsWith('mcp_') ? 'MCP 工具' : part.name || '工具调用');
     setText(view.title, title);
@@ -412,24 +637,25 @@
         view.title.title = title;
       }
       const targetHint = hint(part, input);
-      setText(view.path, targetHint); view.path.title = view.path.textContent;
+      setText(view.path, targetHint);
+      if (view.path.title !== view.path.textContent) view.path.title = view.path.textContent;
     }
     // Flat cards still report what the operation touched, without echoing the
     // returned content. Read cards add the size; task cards name the action.
     if (view.flat) {
       setText(view.path, part.name === 'todo' ? todoSummary(parameters(part)) : readSummary(part, parameters(part)));
-      view.path.title = view.path.textContent;
+      // Only rewrite the tooltip when the text actually changed; otherwise every
+      // streamed token would mutate each completed card's attributes.
+      if (view.path.title !== view.path.textContent) view.path.title = view.path.textContent;
     }
     const statusText = status === 'running' && part.background ? '后台运行' : executionLabels[executionState] || labels[status];
     setText(view.status, statusText);
-    const summaryLabel = [title, view.path.textContent, statusText].filter(Boolean).join(' · ');
+    const summaryLabel = [title, view.path.textContent, diffModel ? diffSummary(diffModel) : '', statusText].filter(Boolean).join(' · ');
     if (view.element.firstElementChild.getAttribute('aria-label') !== summaryLabel) view.element.firstElementChild.setAttribute('aria-label', summaryLabel);
     // Flat cards are a single row: no disclosure and no body.
     if (view.flat) {
       if (view.element.open) view.element.open = false;
       if (view.summary.tabIndex !== -1) view.summary.tabIndex = -1;
-    } else if (view.summary.tabIndex === -1) {
-      view.summary.tabIndex = 0;
     }
     renderLivePreview(view);
     renderToolBody(view);
@@ -450,10 +676,11 @@
       return;
     }
     if (view.liveOutput === part.output && view.liveStatus === status && view.liveStreaming === streaming) return;
-    // A bounded tail provides live feedback without materializing the folded
-    // log. Failures and stops keep their final line visible so a folded card
-    // still explains what happened. Never scan an entire output per chunk.
-    const showLive = Boolean(part.output) && (streaming && status === 'running' || status === 'failed' || status === 'interrupted');
+    // A bounded tail provides live feedback for any running card with output,
+    // including tools that do not stream token-by-token (MCP progress, deploy
+    // steps). Failures and stops use the same folded row as successful calls;
+    // their error/output detail is shown only in the expanded body.
+    const showLive = Boolean(part.output) && status === 'running';
     if (showLive) {
       const tail = part.output.slice(-1200).replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').replace(/\r\n?/g, '\n');
       const lines = tail.trimEnd().split('\n').slice(-2).join('\n').slice(-400);
@@ -463,6 +690,112 @@
     if (view.live.hidden === showLive) view.live.hidden = !showLive;
     if (!showLive && view.live.textContent) view.live.textContent = '';
     view.liveOutput = part.output; view.liveStatus = status; view.liveStreaming = streaming;
+  }
+  function renderDiff(view, part) {
+    const model = toolDiff(part);
+    view.diffModel = model;
+    view.element.dataset.diff = model ? 'true' : 'false';
+    if (!model) {
+      view.diff.hidden = true; view.diffStat.hidden = true; view.diffKey = '';
+      return null;
+    }
+    setDiffStat(view.diffStat, model);
+    const key = `${part.name || ''}\0${part.output || ''}`;
+    if (view.diffKey === key) { view.diff.hidden = false; return model; }
+    view.diffKey = key;
+    view.diffFiles.replaceChildren();
+    let omitted = false;
+    for (const entry of model.entries) {
+      const file = document.createElement('article'); file.className = 'tool-diff-file';
+      const head = document.createElement('div'); head.className = 'tool-diff-file-head';
+      const path = document.createElement('code'); path.className = 'tool-diff-path';
+      path.textContent = entry.path || '（未知文件）'; path.title = entry.path || '';
+      const counts = document.createElement('span'); counts.className = 'tool-diff-counts';
+      if (entry.added) { const value = document.createElement('span'); value.className = 'tool-diff-added'; value.textContent = `+${entry.added}`; counts.append(value); }
+      if (entry.removed) { const value = document.createElement('span'); value.className = 'tool-diff-removed'; value.textContent = `−${entry.removed}`; counts.append(value); }
+      head.append(path, counts);
+      const body = document.createElement('div'); body.className = 'tool-diff-body';
+      body.setAttribute('role', 'region'); body.setAttribute('aria-label', `${entry.path || '文件'} 差异`);
+      const lines = String(entry.patch).replace(/\r\n?/g, '\n').split('\n');
+      const shown = lines.slice(0, 600);
+      for (const line of shown) {
+        const row = document.createElement('div');
+        row.className = 'tool-diff-line';
+        row.dataset.kind = line.startsWith('@@') ? 'hunk'
+          : line.startsWith('+++') || line.startsWith('---') ? 'meta'
+            : line.startsWith('+') ? 'add' : line.startsWith('-') ? 'remove' : 'context';
+        row.textContent = line || ' ';
+        body.append(row);
+      }
+      if (lines.length > shown.length) {
+        const more = document.createElement('p'); more.className = 'tool-diff-more';
+        more.textContent = `仅显示前 ${shown.length} 行，完整差异请打开「代码更改」。`;
+        body.append(more);
+      }
+      if (/^\(diff omitted/.test(String(entry.patch).trim())) omitted = true;
+      file.append(head, body); view.diffFiles.append(file);
+    }
+    view.diffNote.hidden = !omitted;
+    if (omitted) setRaw(view.diffNote, '差异过大，已显示可用的补丁片段。');
+    view.diff.hidden = false;
+    return model;
+  }
+  // Command tools report their real process exit code in the output. Surface it
+  // beside the line count once the call has finished.
+  const EXIT_CODE_TOOLS = new Set(['run_local_shell_command', 'run_linux_ssh_command', 'run_python', 'manage_python_environment', 'run_local_skill_script']);
+  function exitCodeInfo(name, output) {
+    if (!EXIT_CODE_TOOLS.has(name) || typeof output !== 'string' || !output) return '';
+    const match = /exit_code:\s*(-?\d+)/.exec(output);
+    return match ? tr('退出码 {0}', match[1]) : '';
+  }
+  function setImageExpanded(view, expanded) {
+    const figure = view.image, value = String(expanded === true);
+    if (figure.dataset.expanded !== value) figure.dataset.expanded = value;
+    if (figure.getAttribute('aria-expanded') !== value) figure.setAttribute('aria-expanded', value);
+    const label = tr(expanded ? '缩小图片' : '放大图片');
+    if (figure.getAttribute('aria-label') !== label) figure.setAttribute('aria-label', label);
+  }
+  // Only the inlined image is rendered. The data URL is assigned once per image
+  // payload so unchanged snapshots never restart the browser's decode work.
+  function renderToolImage(view, part) {
+    const image = part.image, inline = hasInlineToolImage(image);
+    const figure = view.image, note = view.imageNote;
+    if (!inline) {
+      if (!figure.hidden) figure.hidden = true;
+      if (figure.dataset.expanded === 'true') setImageExpanded(view, false);
+      view.renderedImageMime = undefined; view.renderedImageData = undefined;
+    } else {
+      const mimeType = image.mimeType.trim();
+      if (view.renderedImageMime !== mimeType || view.renderedImageData !== image.data) {
+        view.imagePreview.src = `data:${mimeType};base64,${image.data}`;
+        view.renderedImageMime = mimeType; view.renderedImageData = image.data;
+      }
+      const width = Number(image.width), height = Number(image.height);
+      const dimensions = Number.isSafeInteger(width) && width > 0 && Number.isSafeInteger(height) && height > 0 ? `${width}×${height}` : '';
+      setRaw(view.imageCaption, [imageFormatLabel(mimeType), dimensions, imageSizeLabel(image.bytes)].filter(Boolean).join(' · '));
+      if (view.imageCaption.hidden !== !view.imageCaption.textContent) view.imageCaption.hidden = !view.imageCaption.textContent;
+      if (figure.hidden) figure.hidden = false;
+    }
+    if (note.hidden !== (part.imageOmitted !== true)) note.hidden = part.imageOmitted !== true;
+  }
+  // Collapsed-row thumbnail: one small preview in the summary keeps a screenshot
+  // visible while the card is folded. The pixels are assigned once per payload so
+  // identical snapshots never restart the decode work.
+  function renderToolSummaryImage(view, part) {
+    const image = hasInlineToolImage(part.image) ? part.image : undefined;
+    const thumb = view.summaryImage;
+    if (!thumb) return;
+    if (!image) {
+      if (!thumb.hidden) thumb.hidden = true;
+      view.renderedThumbKey = undefined;
+      return;
+    }
+    const key = `${image.mimeType}|${image.data.length}|${image.data.slice(0, 24)}|${image.data.slice(-24)}`;
+    if (view.renderedThumbKey !== key) {
+      thumb.src = `data:${image.mimeType};base64,${image.data}`;
+      view.renderedThumbKey = key;
+    }
+    if (thumb.hidden) thumb.hidden = false;
   }
   function renderToolBody(view) {
     // Keep only the latest snapshot while folded; no hidden log DOM or scans.
@@ -480,10 +813,15 @@
     if (view.flat) {
       // Flat tools: keep the operation, target and parameters, but never render
       // the returned content that the agent already consumed.
+      if (!view.structured.hidden) view.structured.hidden = true;
       if (!view.search.hidden) { view.search.hidden = true; view.renderedSearchOutput = undefined; view.search.replaceChildren(); }
       if (!view.output.hidden) view.output.hidden = true;
       if (view.renderedOutput) { view.output.textContent = ''; view.renderedOutput = ''; view.lineOutput = ''; view.newlines = 0; }
       if (view.readNote.hidden) view.readNote.hidden = false;
+      // A flat card cannot carry an image, but a tool that lost its image may
+      // fall back to this branch after being expandable.
+      if (!view.image.hidden) view.image.hidden = true;
+      if (!view.imageNote.hidden) view.imageNote.hidden = true;
       setText(view.label, ''); setText(view.info, '');
       if (!view.label.hidden) view.label.hidden = true;
       if (!view.info.hidden) view.info.hidden = true;
@@ -491,20 +829,51 @@
       view.bodyDirty = false;
       return true;
     }
+    renderToolImage(view, part);
+    const diffModel = renderDiff(view, part);
+    if (diffModel) {
+      // The exact patch is more useful than the JSON result body for write/edit
+      // calls. Keep the raw output in the copy action, but show the diff card.
+      if (!view.readNote.hidden) view.readNote.hidden = true;
+      if (!view.structured.hidden) view.structured.hidden = true;
+      if (!view.search.hidden) { view.search.hidden = true; view.renderedSearchOutput = undefined; view.search.replaceChildren(); }
+      if (!view.output.hidden) view.output.hidden = true;
+      if (view.notice.hidden !== true) view.notice.hidden = true;
+      if (view.label.hidden) view.label.hidden = false;
+      if (view.info.hidden) view.info.hidden = false;
+      setText(view.label, '变更');
+      setRaw(view.info, diffSummary(diffModel));
+      setToolbarVisibility(view, part, { preview: true, latest: true });
+      view.bodyDirty = false;
+      return true;
+    }
+    if (!view.diff.hidden) view.diff.hidden = true;
+    // The truncation notice is owned by setToolbarVisibility(); don't toggle it
+    // here or a growing log rewrites the same attribute twice per update.
     if (!view.readNote.hidden) view.readNote.hidden = true;
     if (view.label.hidden) view.label.hidden = false;
     if (view.info.hidden) view.info.hidden = false;
     if (view.toolbar.hidden) view.toolbar.hidden = false;
-    const waiting = { queued: '正在等待同一会话的前一条命令结束，可单独中断此排队命令。', starting: '正在准备命令执行…', stopping: '正在停止命令并清理进程…' };
+    const waiting = { queued: '正在等待同一会话的前一条命令结束，可单独中断此排队命令。', starting: '正在准备命令执行…', preflight: '正在检查沙箱环境…', preparing: '正在准备运行环境…', stopping: '正在停止命令并清理进程…', cleanup: '正在清理沙箱环境…' };
     const search = part.name === 'web_search' && part.output ? parseSearchOutput(part.output) : null;
+    const structured = !search && STRUCTURED_TOOLS.has(part.name) && part.output ? structuredJson(part.output) : null;
     const placeholder = status === 'running' ? waiting[part.executionState] || (streaming ? '正在执行，等待输出…' : '等待工具返回…') : status === 'interrupted' ? '调用已停止，执行状态请以已有记录为准。' : '无文本输出。';
     if (search) {
+      if (!view.structured.hidden) view.structured.hidden = true;
       renderSearchResults(view, search, part.output);
       if (view.search.hidden) view.search.hidden = false;
       if (!view.output.hidden) view.output.hidden = true;
       setText(view.label, '结果');
       setText(view.info, [searchSummary(search), search.provider && search.provider !== 'none' ? search.provider : ''].filter(Boolean).join(' · '));
+    } else if (structured) {
+      if (!view.search.hidden) { view.search.hidden = true; view.renderedSearchOutput = undefined; view.search.replaceChildren(); }
+      renderStructuredResult(view, structured, part.output);
+      if (view.structured.hidden) view.structured.hidden = false;
+      if (!view.output.hidden) view.output.hidden = true;
+      setText(view.label, '结果');
+      setText(view.info, [structured.status, structured.verification_status, structured.message].filter(value => typeof value === 'string' && value).join(' · ').slice(0, 200));
     } else {
+      if (!view.structured.hidden) view.structured.hidden = true;
       if (!view.search.hidden) { view.search.hidden = true; view.renderedSearchOutput = undefined; view.search.replaceChildren(); }
       if (view.output.hidden) view.output.hidden = false;
       setText(view.label, '输出');
@@ -518,7 +887,10 @@
       view.newlines = newlines;
       view.lineOutput = output;
       const lines = output ? view.newlines + (output.endsWith('\n') ? 0 : 1) : 0;
-      setText(view.info, (status === 'running' ? executionLabels[part.executionState] || '接收中' : '') + (lines ? (status === 'running' ? ' · ' : '') + lines + ' 行' : ''));
+      const received = status === 'running' ? executionLabels[part.executionState] || '接收中' : '';
+      const lineInfo = lines ? lines + ' 行' : '';
+      const exitInfo = status === 'running' ? '' : exitCodeInfo(part.name, output);
+      setText(view.info, [received, lineInfo, exitInfo].filter(Boolean).join(' · '));
     }
     setToolbarVisibility(view, part, { preview: !part.output || !htmlSource(part.output) || Boolean(search), latest: !part.output || Boolean(search) });
     setText(view.notice, part.outputTail ? '仅显示最新输出，较早内容已截断。' : '显示内容已截断。');
@@ -538,21 +910,56 @@
     view.rendered = true;
     return changed;
   }
+  // DSH-style reasoning preview: the collapsed thinking row shows the newest
+  // meaningful line, stripped of Markdown/protocol payloads and clamped.
+  const THINKING_PREVIEW_LIMIT = 160;
+  const thinkingPlaceholder = () => '[' + tr('规划协议内容已折叠') + ']';
+  function foldThinkingProtocols(value) {
+    const placeholder = thinkingPlaceholder();
+    let text = String(value ?? '');
+    text = text.replace(/```[a-zA-Z0-9_-]*[ \t]*\r?\n?([\s\S]*?)```/g, (match, body) => {
+      if (/"intents"|"decision"|"plan"|"steps"|"actions"\s*:/i.test(body) || /^\s*[[{]/.test(body)) return placeholder;
+      return match;
+    });
+    text = text.replace(/(^|\n)[ \t]*\{(?:[^\n]*"(?:intents|decision|plan|steps|actions)"\s*:)[^\n]*(?=\n|$)/g, (match, lead) => lead + placeholder);
+    return text;
+  }
+  function thinkingPreview(value) {
+    const placeholder = thinkingPlaceholder();
+    const stripped = foldThinkingProtocols(value)
+      .replace(/```[\s\S]*?```/g, ' ')
+      .replace(/!\[[^\]]*\]\([^)]*\)/g, ' ')
+      .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+      .replace(/`([^`]*)`/g, '$1')
+      .replace(/^[ \t]*#{1,6}[ \t]+/gm, '')
+      .replace(/^[ \t]*[-*+][ \t]+/gm, '')
+      .replace(/^[ \t]*\d+\.[ \t]+/gm, '')
+      .replace(/^[ \t]*>[ \t]?/gm, '')
+      .replace(/[*_~|]/g, '');
+    const lines = stripped.split('\n')
+      .map(line => line.replace(/\s+/g, ' ').trim())
+      .filter(line => line && line !== placeholder && line !== '[内容已截断]');
+    let line = lines.length ? lines[lines.length - 1] : '';
+    if (line.length > THINKING_PREVIEW_LIMIT) line = line.slice(0, THINKING_PREVIEW_LIMIT - 1).trimEnd() + '…';
+    return line;
+  }
   function createThinking(kind = 'thinking') {
     const element = node('details', 'thinking-card' + (kind === 'summary' ? ' summary-card' : '')), summary = node('summary', 'thinking-summary');
-    element.open = kind === 'thinking';
+    // DSH-style: every thinking card starts collapsed; streaming never opens it.
+    element.open = false;
     const indicator = node('span', 'thinking-indicator'); indicator.setAttribute('aria-hidden', 'true');
     const title = node('span', 'thinking-title'), source = node('span', 'thinking-source'), time = node('span', 'thinking-time');
     const badge = kind === 'summary' ? node('span', 'summary-badge') : null;
+    const preview = kind === 'summary' ? null : node('span', 'thinking-preview');
     const chevron = node('span', 'thinking-chevron', '›'); chevron.setAttribute('aria-hidden', 'true');
-    summary.append(indicator, title, source, ...(badge ? [badge] : []), time, chevron);
+    summary.append(indicator, title, source, ...(preview ? [preview] : []), ...(badge ? [badge] : []), time, chevron);
     const body = node('div', 'thinking-body'), content = node('div', 'thinking-content');
     body.tabIndex = 0; body.setAttribute('aria-label', kind === 'summary' ? '上下文摘要' : '思考内容');
     const metrics = node('p', 'summary-metrics'); metrics.hidden = true;
     const notice = node('p', 'thinking-truncation', '思考内容较长，此处显示已保留的部分。');
     if (kind === 'summary') body.append(metrics);
     body.append(content, notice); element.append(summary, body);
-    const view = { element, title, source, badge, time, body, content, metrics, notice, part: {}, options: {}, rendered: false };
+    const view = { element, title, source, badge, preview, time, body, content, metrics, notice, part: {}, options: {}, rendered: false };
     summary.addEventListener('click', () => { view.userGesture = true; });
     summary.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') view.userGesture = true; });
     element.addEventListener('toggle', () => {
@@ -571,20 +978,6 @@
     });
     return view;
   }
-  function syncThinkingOpen(view, status) {
-    const live = status === 'running';
-    const previous = view.foldStatus;
-    view.foldStatus = status;
-    let want;
-    if (live) want = !view.collapsedByUser;
-    else if (status === 'completed' && previous === 'running' && !view.openedByUser) want = false;
-    else if (status === 'completed' && previous === undefined && !view.openedByUser) want = false;
-    else return;
-    if (view.element.open === want) return;
-    view.syncing = true;
-    view.element.open = want;
-    view.syncing = false;
-  }
   function updateThinking(view, part, options) {
     const actionsChanged = ['onCopy', 'onOpenLink', 'onPreviewHtml'].some(key => view.options[key] !== options[key]);
     view.options = options;
@@ -602,7 +995,9 @@
     const title = view.source.textContent;
     if (view.source.title !== title) view.source.title = title;
     if (view.notice.hidden !== !part.truncated) view.notice.hidden = !part.truncated;
-    syncThinkingOpen(view, status);
+    // The collapsed row's preview updates on every token; the Markdown body is
+    // only parsed while the reader has expanded the card.
+    if (view.preview) setRaw(view.preview, thinkingPreview(part.text));
     trackDuration(view);
     renderThinking(view);
     view.dirty = false;
@@ -734,6 +1129,10 @@
     element.classList.toggle('response-streaming', showCursor);
     if (mode === 'plain') { if (element.textContent === text) return false; element.textContent = text; return true; }
     if (mode === 'markdown') return markdown(view.content, text, options);
+    // Assist mode groups consecutive tool parts into foldable `.tool-group` rows.
+    // Readers that need a strictly chronological timeline (exploration log) can
+    // pass `toolGrouping: false` so every tool part keeps its own standalone card.
+    const toolGrouping = options.toolGrouping !== false;
     let changed = false, previous = null, group = null, previousTool = null;
     const toolBatches = new Map();
     const remaining = new Set(view.parts.keys());
@@ -756,6 +1155,15 @@
         item.type = part.type; view.parts.set(part.id, item); changed = true;
       }
       if (part.type === 'tool') {
+        if (!toolGrouping) {
+          // Standalone tool card: no `.tool-group` wrapper or batch summary.
+          group = null;
+          const standaloneNext = previous ? previous.nextSibling : element.firstChild;
+          if (item.element !== standaloneNext) { element.insertBefore(item.element, standaloneNext); changed = true; }
+          previous = item.element; previousTool = null;
+          changed = updateTool(item, part, options) || changed;
+          continue;
+        }
         if (!group) {
           group = view.groups.get(part.id);
           if (!group) {

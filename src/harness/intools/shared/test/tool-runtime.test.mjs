@@ -56,12 +56,12 @@ test('gate rejects an already-aborted acquisition', async () => {
 
 test('tool timeout rejects with a structured error and leaves other calls alone', async () => {
   const wrapped = withToolTimeout({
-    name: 'read_workspace_file',
+    name: 'read_workspace_code',
     execute: () => new Promise(() => {}),
   }, 20);
   await assert.rejects(wrapped.execute('call-1', {}), error => {
     assert.equal(error.code, 'TOOL_TIMEOUT');
-    assert.equal(error.details.tool, 'read_workspace_file');
+    assert.equal(error.details.tool, 'read_workspace_code');
     assert.equal(error.details.timeoutMs, 20);
     assert.match(error.message, /\[TOOL_TIMEOUT\]/);
     return true;
@@ -74,7 +74,7 @@ test('tool timeout rejects with a structured error and leaves other calls alone'
 test('a parent abort wins over the timeout and does not leave the timer behind', async () => {
   const controller = new AbortController();
   const wrapped = withToolTimeout({
-    name: 'read_workspace_file',
+    name: 'read_workspace_code',
     execute: (_id, _args, signal) => new Promise((_, reject) => {
       signal.addEventListener('abort', () => reject(signal.reason), { once: true });
     }),
@@ -86,7 +86,7 @@ test('a parent abort wins over the timeout and does not leave the timer behind',
 test('parallel gate wrapper releases the slot when the tool throws', async () => {
   const gate = createParallelGate(1);
   const wrapped = withParallelGate({
-    name: 'read_workspace_file',
+    name: 'read_workspace_code',
     execute: async () => { throw new Error('boom'); },
   }, gate);
   await assert.rejects(wrapped.execute('call-4', {}), /boom/);
@@ -96,9 +96,10 @@ test('parallel gate wrapper releases the slot when the tool throws', async () =>
 });
 
 test('timeout policy distinguishes process tools from read tools', () => {
-  assert.equal(timeoutMsFor('read_workspace_file'), 30_000);
+  assert.equal(timeoutMsFor('read_workspace_code'), 30_000);
   assert.equal(timeoutMsFor('search_workspace'), 60_000);
   assert.equal(timeoutMsFor('mcp_github_create_issue'), 60_000);
+  assert.equal(timeoutMsFor('plugin_acme_scan'), 5 * 60_000);
   assert.equal(timeoutMsFor('run_local_shell_command'), undefined);
   assert.equal(timeoutMsFor('run_python'), undefined);
   assert.equal(timeoutMsFor('ask_human'), undefined);
@@ -112,7 +113,7 @@ test('applyToolRuntime adds the gate only to parallel tools and preserves timeou
   const gate = createParallelGate(2);
   let active = 0, peak = 0;
   const read = {
-    name: 'read_workspace_file',
+    name: 'read_workspace_code',
     execute: async () => {
       active++;
       peak = Math.max(peak, active);
@@ -127,7 +128,7 @@ test('applyToolRuntime adds the gate only to parallel tools and preserves timeou
   };
   const tools = applyToolRuntime(applyExecutionModes([read, shell]), {
     gate,
-    timeouts: { read_workspace_file: 100, run_local_shell_command: 1 },
+    timeouts: { read_workspace_code: 100, run_local_shell_command: 1 },
   });
   assert.equal(tools[0].executionMode, 'parallel');
   assert.equal(tools[1].executionMode, 'sequential');

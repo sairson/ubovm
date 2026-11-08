@@ -11,7 +11,7 @@ test.after(async () => browser?.close());
 const text = (id, value) => ({ id, type: 'text', text: value, status: 'streaming' });
 const tool = { id: 'read-file', type: 'tool', name: 'read_workspace_file', status: 'running', args: '{"path":"src/index.mjs"}', output: 'export const ready = true;', startedAt: Date.now() };
 const initialWorkers = () => [
-  { id: 'alpha', name: '检查项目结构', description: '检查项目目录和入口，梳理模块依赖。', status: 'running', depth: 1, startedAt: Date.now(), parts: [text('alpha-text', '已找到项目入口，正在检查文件。'), tool] },
+  { id: 'alpha', name: '检查项目结构', description: '检查项目目录和入口，梳理模块依赖。', status: 'running', depth: 1, startedAt: Date.now(), usage: { input: 1200, output: 300, totalTokens: 1500 }, parts: [text('alpha-text', '已找到项目入口，正在检查文件。'), tool] },
   { id: 'beta', name: '验证测试入口', description: '检查现有测试和运行方式。', status: 'waiting', depth: 1, parts: [text('beta-text', '等待子任务检查测试配置。')] },
   { id: 'leaf', parentId: 'beta', name: '检查测试配置', description: '读取测试配置并报告实际命令。', status: 'queued', depth: 2, parts: [] }
 ];
@@ -157,6 +157,7 @@ test('workers open independent live views and keep tool expansion, root draft an
   await f.cards.nth(0).click();
   assert.equal(await f.panel.isVisible(), true);
   assert.match(await f.panel.textContent(), /已找到项目入口/);
+  assert.match(await f.panel.textContent(), /1\.5K tokens/);
   assert(!/已找到项目入口/.test(await f.page.locator('#messages').textContent()));
   await f.page.evaluate(() => { window.savedWorkerTool = document.querySelector('#worker-panel .tool-card'); });
   workers[0].parts[1] = { ...tool, output: tool.output + '\nexport const tested = true;', status: 'completed', endedAt: Date.now() };
@@ -171,13 +172,16 @@ test('workers open independent live views and keep tool expansion, root draft an
   // Opening the right editor/file tree reduces the conversation webview width.
   await f.page.setViewportSize({ width: 820, height: 850 });
   assert.equal(await f.page.locator('#worker-picker').inputValue(), 'alpha');
-  assert(await f.page.evaluate(() => savedWorkerTool === document.querySelector('#worker-panel .tool-card') && savedWorkerTool.open));
+  // Read-only cards are intentionally flat: they keep their DOM node but never
+  // expose an expanded body, including across width changes.
+  const workerToolState = await f.page.evaluate(() => ({ same: savedWorkerTool === document.querySelector('#worker-panel .tool-card'), open: savedWorkerTool.open, connected: savedWorkerTool.isConnected, panelHidden: document.getElementById('worker-panel').hidden, picker: document.getElementById('worker-picker').value }));
+  assert(workerToolState.same && !workerToolState.open, JSON.stringify(workerToolState));
   assert.equal(await f.page.locator('#prompt-input').inputValue(), '保留我的后续问题');
   await f.page.setViewportSize({ width: 1280, height: 850 });
   await f.page.locator('#worker-picker').selectOption('beta');
   assert.match(await f.panel.textContent(), /等待子任务检查/); assert(!/入口检查完成/.test(await f.panel.textContent()));
   await f.page.locator('#worker-picker').selectOption('alpha');
-  assert(await f.panel.locator('.tool-card').evaluate(element => element.open));
+  assert.equal(await f.panel.locator('.tool-card').evaluate(element => element.open), false, 'read cards stay flat when returning to a cached worker');
   await f.page.keyboard.press('Escape'); assert.equal(await f.panel.isVisible(), false);
   assert.equal(await f.page.locator('#prompt-input').inputValue(), '保留我的后续问题');
   assert.equal(await f.cards.nth(0).getAttribute('aria-expanded'), 'false');

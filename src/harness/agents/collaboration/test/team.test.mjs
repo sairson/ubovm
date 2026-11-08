@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -10,6 +11,8 @@ import { HarnessDatabase } from '../../../blackboard/database/database.mjs';
 import { runCollaboration } from '../index.mjs';
 import { createTeam } from '../team.mjs';
 import { TEAM_POLICY, teamPolicy, teammateSystemPrompt } from '../prompts.mjs';
+
+const teamSkill = readFileSync(new URL('../../skills/team/SKILL.md', import.meta.url), 'utf8');
 
 const SESSION = 'team-session';
 const ROOT = 'C:/tmp/ubovm-team-test';
@@ -709,18 +712,20 @@ test('createTeam validates its inputs and rejects another session state', async 
 });
 
 test('Team policy and teammate prompts carry the shared coordination contract', () => {
-  assert.match(TEAM_POLICY, /share the same working directory and filesystem/);
-  assert.match(TEAM_POLICY, /Split write work into disjoint scopes/);
-  assert.match(TEAM_POLICY, /write-scope overlap is advisory, not a lock/i);
-  assert.match(TEAM_POLICY, /send_message steers a running target at its nearest step boundary/);
-  assert.match(TEAM_POLICY, /A successful send does not mean the recipient has processed it/);
-  assert.match(TEAM_POLICY, /inactive means no turn is executing/);
-  assert.match(TEAM_POLICY, /wait_agent observes only changes after that call starts/);
-  assert.match(TEAM_POLICY, /The Lead must wait for required teammates before giving the final answer/);
-  assert.match(TEAM_POLICY, /list, get, claim with the current revision, perform the work, then complete/);
-  assert.match(TEAM_POLICY, /Only the Team Lead creates or interrupts teammates; there are no nested teams/);
-  assert.match(TEAM_POLICY, /send_message\(\{ target: "lead" \}\)/);
-  assert.match(TEAM_POLICY, /FS_STALE_VERSION/);
+  assert.match(TEAM_POLICY, /load_skill\(\{ name: "team" \}\)/);
+  assert.match(TEAM_POLICY, /Do not run a team from memory/);
+  assert.match(teamSkill, /share the same working directory and filesystem/);
+  assert.match(teamSkill, /Split write work into disjoint scopes/);
+  assert.match(teamSkill, /write-scope overlap is advisory, not a lock/i);
+  assert.match(teamSkill, /send_message steers a running target at its nearest step boundary/);
+  assert.match(teamSkill, /A successful send does not mean the recipient has processed it/);
+  assert.match(teamSkill, /inactive means no turn is executing/);
+  assert.match(teamSkill, /wait_agent observes only changes after that call starts/);
+  assert.match(teamSkill, /The Lead must wait for required teammates before giving the final answer/);
+  assert.match(teamSkill, /list, get, claim with the current revision, perform the work, then complete/);
+  assert.match(teamSkill, /Only the Team Lead creates or interrupts teammates; there are no nested teams/);
+  assert.match(teamSkill, /send_message\(\{ target: "lead" \}\)/);
+  assert.match(teamSkill, /FS_STALE_VERSION/);
 
   assert.match(teamPolicy('lead', 'lead'), /You are the Team Lead named "lead"/);
   assert.match(teamPolicy('teammate', 'reviewer'), /You are teammate "reviewer"/);

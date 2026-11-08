@@ -4,7 +4,6 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { createHash, randomUUID } = require('node:crypto');
 const { createCodeNavigation } = require('./code-navigation.cjs');
-const { createCallChain } = require('./call-chain.cjs');
 const { createRenamePreview } = require('./rename-preview.cjs');
 const { createProjectContext } = require('./project-context.cjs');
 const { lineChanges } = require('./line-changes.cjs');
@@ -15,7 +14,7 @@ const LIMIT = 1024 * 1024;
 const hash = text => text === null ? null : createHash('sha256').update(text).digest('hex');
 const output = value => ({ content: [{ type: 'text', text: JSON.stringify(value) }], details: value });
 const inside = (root, file) => { const p = path.relative(root, file); return !p || p !== '..' && !p.startsWith('..' + path.sep) && !path.isAbsolute(p); };
-const identity = file => process.platform === 'win32' ? file.toLowerCase() : file;
+const identity = file => process.platform === 'linux' ? file : file.toLowerCase();
 function page(text, input) {
   const offset = input.offset ?? 0, limit = input.limit ?? 16384;
   if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 65536) throw new Error('无效的内容分页参数。');
@@ -36,6 +35,92 @@ function withLines(fullText, start, slice) {
   const lines = slice.split(/\r?\n/);
   const contentWithLineNumbers = lines.map((line, index) => `${startLine + index}: ${line}`).join('\n');
   return { startLine, lines, contentWithLineNumbers };
+}
+
+// Line-paged reads (absorbed from the former read_workspace_file tool): 1-based
+// inclusive startLine, at most 400 lines, "N: line" prefixes and bounded output.
+const LINE_PAGE_LIMIT = 400, LINE_OUTPUT_LIMIT = 128 << 10, LINE_MAX_LINE = 30000;
+function linePage(text, startLine, lineCount) {
+  const lines = text ? text.split(/\r?\n/) : [];
+  if (text.endsWith('\n')) lines.pop();
+  if (startLine > lines.length) throw new Error(`startLine=${startLine} 超出文件行数 ${lines.length}。`);
+  const selected = lines.slice(startLine - 1, startLine - 1 + lineCount);
+  let content = '', count = 0, bytes = 0, lineTruncated = false;
+  for (const line of selected) {
+    const next = `${startLine + count}: ${line}\n`, size = Buffer.byteLength(next);
+    if (bytes + size > LINE_OUTPUT_LIMIT) break;
+    content += next; count++; bytes += size;
+  }
+  if (!count && selected.length) {
+    content = `${startLine}: ${Array.from(selected[0]).slice(0, LINE_MAX_LINE).join('')}\n[line truncated]\n`;
+    count = 1; lineTruncated = true;
+  }
+  const nextLine = count && startLine - 1 + count < lines.length ? startLine + count : null;
+  return { startLine, endLine: count ? startLine + count - 1 : null, content, truncated: lineTruncated || nextLine !== null,
+    fileTruncated: false, lineTruncated, accessibleLines: lines.length, nextLine };
+}
+// Streaming line page for files above LIMIT: constant memory, strict UTF-8, keeps
+// scanning to report the accessible line count and nextLine without a second read.
+async function readLineWindow(file, startLine, lineCount, signal) {
+  let handle;
+  try {
+    handle = await fs.open(file, 'r');
+    const info = await handle.stat();
+    if (!info.isFile()) throw new Error('编码工具仅支持读取普通文件。');
+    const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+    const buffer = Buffer.alloc(64 * 1024);
+    const invalid = () => Object.assign(new Error('文件不是有效的 UTF-8 文本。'), { code: 'INVALID_UTF8' });
+    let position = 0, content = '', count = 0, bytes = 0, lineTruncated = false;
+    let accessibleLines = 0, lineNo = 1, current = '', currentChars = 0, currentCapped = false, collecting = true;
+    const inRange = () => lineNo >= startLine && lineNo < startLine + lineCount;
+    const emit = () => {
+      if (!collecting || !inRange()) return;
+      let value = current.endsWith('\r') ? current.slice(0, -1) : current;
+      let huge = currentCapped;
+      if (value.length > LINE_MAX_LINE) { value = Array.from(value).slice(0, LINE_MAX_LINE).join(''); huge = true; }
+      const next = `${startLine + count}: ${value}\n`, size = Buffer.byteLength(next);
+      if (bytes + size > LINE_OUTPUT_LIMIT) { collecting = false; return; }
+      content += next; count++; bytes += size;
+      if (huge) { lineTruncated = true; collecting = false; }
+      else if (count >= lineCount) collecting = false;
+    };
+    const complete = () => { emit(); accessibleLines++; lineNo++; current = ''; currentChars = 0; currentCapped = false; };
+    const feed = value => {
+      let index = 0;
+      while (index < value.length) {
+        const nl = value.indexOf('\n', index), end = nl < 0 ? value.length : nl, piece = value.slice(index, end);
+        currentChars += piece.length;
+        if (piece && inRange() && collecting && !currentCapped) {
+          if (current.length + piece.length > LINE_MAX_LINE) { current += piece.slice(0, LINE_MAX_LINE - current.length); currentCapped = true; }
+          else current += piece;
+        }
+        if (nl < 0) break;
+        complete(); index = nl + 1;
+      }
+    };
+    for (;;) {
+      signal?.throwIfAborted();
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, position);
+      if (!bytesRead) break;
+      position += bytesRead;
+      let value;
+      try { value = decoder.decode(buffer.subarray(0, bytesRead), { stream: true }); } catch { throw invalid(); }
+      if (value.includes('\0')) throw Object.assign(new Error('编码工具仅支持不含 NUL 的 UTF-8 文本。'), { code: 'INVALID_TEXT' });
+      feed(value);
+    }
+    try { feed(decoder.decode()); } catch { throw invalid(); }
+    if (currentChars > 0) complete();
+    const nextLine = count && startLine - 1 + count < accessibleLines ? startLine + count : null;
+    return { startLine, endLine: count ? startLine + count - 1 : null, content,
+      truncated: lineTruncated || nextLine !== null, fileTruncated: true, lineTruncated, accessibleLines, nextLine };
+  } finally { await handle?.close(); }
+}
+
+// Stale reads and mixed versions must name the recovery path and the current hash.
+function versionMismatch(expected, current, path, bytes) {
+  return Object.assign(new Error(`文件版本不匹配（期望 ${String(expected).slice(0, 12)}…，当前 ${current.slice(0, 12)}…）。请从头重新读取。reason=hash_mismatch recovery=read_workspace_code`), {
+    details: { reason: 'hash_mismatch', recovery: 'read_workspace_code', path, currentHash: current, currentBytes: bytes }
+  });
 }
 
 // Line helpers for the line-oriented insert operation, so callers never hand-compute
@@ -615,12 +700,12 @@ function createCodingService(vscode, context, { beforeEdit, turnId = () => undef
         // include the current hash so the model can recover in one step instead
         // of guessing why an edit was refused.
         if (typeof input.expectedHash !== 'string' || !input.expectedHash) {
-          throw Object.assign(new Error(`缺少 expectedHash：请先用 read_workspace_code 读取本文件，或使用上一次 edit_workspace_file 返回的 hash。当前 hash=${currentHash}。reason=missing_hash recovery=read_workspace_code`), {
+          throw Object.assign(new Error(`缺少 expectedHash：请先用 read_workspace_code 读取本文件，或使用上一次 edit_workspace_files 返回的 hash。当前 hash=${currentHash}。reason=missing_hash recovery=read_workspace_code`), {
             details: { reason: 'missing_hash', recovery: 'read_workspace_code', path: target.path, currentHash, currentBytes: Buffer.byteLength(before) }
           });
         }
         if (input.expectedHash !== currentHash) {
-          throw Object.assign(new Error(`文件版本不匹配（期望 ${input.expectedHash.slice(0, 12)}…，当前 ${currentHash.slice(0, 12)}…）。若刚才是你自己改的，请改用那次 edit_workspace_file 返回的 nextExpectedHash=${currentHash}；否则重新调用 read_workspace_code 获取最新内容与 hash。reason=hash_mismatch recovery=read_workspace_code`), {
+          throw Object.assign(new Error(`文件版本不匹配（期望 ${input.expectedHash.slice(0, 12)}…，当前 ${currentHash.slice(0, 12)}…）。若刚才是你自己改的，请改用那次 edit_workspace_files 返回的 nextExpectedHash=${currentHash}；否则重新调用 read_workspace_code 获取最新内容与 hash。reason=hash_mismatch recovery=read_workspace_code`), {
             details: { reason: 'hash_mismatch', recovery: 'read_workspace_code', path: target.path, currentHash, currentBytes: Buffer.byteLength(before) }
           });
         }
@@ -809,7 +894,6 @@ function createCodingService(vscode, context, { beforeEdit, turnId = () => undef
     return items;
   }
   const navigation = createCodeNavigation(vscode, { locate, workspaceFolders, unbounded });
-  const callChain = createCallChain(vscode, { locate, workspaceFolders, unbounded });
   const renamePreview = createRenamePreview(vscode, { locate, read, assertClean, workspaceFolders, unbounded, hash });
   const projectContext = createProjectContext({ locate, read, stat: fs.stat, hash, assertClean });
   // Post-edit suggestions: point at the project's own check/test scripts so the
@@ -845,7 +929,6 @@ function createCodingService(vscode, context, { beforeEdit, turnId = () => undef
     const paging = { offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 65536 } };
     const list = [
       navigation(sessionId),
-      callChain(sessionId),
       renamePreview(sessionId),
       projectContext.tool(sessionId),
       { name: 'read_workspace_change', recovery: 'retry-read-only', label: '读取代码修改快照',
@@ -861,36 +944,64 @@ function createCodingService(vscode, context, { beforeEdit, turnId = () => undef
           signal?.throwIfAborted();
           return output({ ...describe([record])[0], side: input.side, hash: version, exists: text !== null, ...page(text, input) });
         }); } },
-      { name: 'read_workspace_code', recovery: 'retry-read-only', label: '读取待编辑代码', description: 'Read UTF-8 code up to 1 MiB with a whole-file hash and scoped project instructions; use it for code to edit and to align UTF-16 ranges for edit_workspace_file (same offsets/hash). Files larger than 1 MiB return a streamed paged window with large:true and editable:false: read them here or with read_workspace_file, but whole-file editing is refused (reason=file_too_large). Optional offset/limit paginate by UTF-16 character offsets (surrogate pairs never split); pass expectedHash on continuation. Follow nextOffset until null; truncated means this is not the whole file. Optional lineNumbers:true adds startLine/lines/contentWithLineNumbers (1-based startLine, lines split on /\r?\n/ so CRLF does not disturb offsets). Loop example: let offset=0,hash; do { r=await read_workspace_code({path,offset,limit:16384,expectedHash:hash}); hash=r.hash; use r.content or r.contentWithLineNumbers; offset=r.nextOffset; } while(offset!==null). For large files prefer small limit (2048-16384); on hash mismatch re-read from offset 0. Dirty buffers are rejected. Missing files return exists:false without a tool error.',
-        parameters: { type: 'object', properties: { ...base, ...paging, expectedHash: { type: 'string', description: 'Require this version when continuing paged reads.' }, lineNumbers: { type: 'boolean', description: 'When true add startLine/lines/contentWithLineNumbers; default false.' } }, required: ['path'], additionalProperties: false },
+      { name: 'read_workspace_code', recovery: 'retry-read-only', label: '读取待编辑代码', description: 'Read UTF-8 code from a workspace file with line or UTF-16 paging. Small files (≤1 MiB) return a whole-file hash for edits; pass expectedHash when continuing a paged read. Paging: startLine/lineCount read a 1-based inclusive line page (lineCount ≤400) for any readable file, including files larger than 1 MiB; offset/limit page the whole-file content or a >1 MiB window by UTF-16 character offsets (surrogate pairs never split) and are mutually exclusive with startLine/lineCount. Follow nextLine or nextOffset until null; truncated means this is not the whole file. Optional lineNumbers:true adds startLine/lines/contentWithLineNumbers on non-line reads. Files above 1 MiB return large:true/editable:false and cannot be edited whole; read line pages or extract the change into a smaller module. Loop example: let offset=0,hash; do { r=await read_workspace_code({path,offset,limit:16384,expectedHash:hash}); hash=r.hash; use r.content or r.contentWithLineNumbers; offset=r.nextOffset; } while(offset!==null). Dirty buffers are rejected. Missing files return exists:false without a tool error.',
+        parameters: { type: 'object', properties: { ...base, ...paging, startLine: { type: 'integer', minimum: 1, description: '1-based first line of a line page (inclusive); mutually exclusive with offset/limit.' }, lineCount: { type: 'integer', minimum: 1, maximum: 400, description: 'Number of lines in a line page (max 400, default 200); mutually exclusive with offset/limit.' }, expectedHash: { type: 'string', description: 'Require this version when continuing paged reads.' }, lineNumbers: { type: 'boolean', description: 'When true add startLine/lines/contentWithLineNumbers on non-line reads; default false.' } }, required: ['path'], additionalProperties: false },
         async execute(_id, input, signal) {
           signal?.throwIfAborted();
           if (input.lineNumbers !== undefined && typeof input.lineNumbers !== 'boolean') throw new Error('lineNumbers 须为 boolean。');
+          const lineMode = input.startLine !== undefined || input.lineCount !== undefined;
+          if (lineMode && (input.offset !== undefined || input.limit !== undefined)) {
+            throw new Error('startLine/lineCount 与 offset/limit 不能同时使用：按行分页只传 startLine/lineCount，按 UTF-16 字符分页只传 offset/limit。');
+          }
+          if (lineMode) {
+            if (input.startLine !== undefined && (!Number.isSafeInteger(input.startLine) || input.startLine < 1)) throw new Error('startLine 须为大于等于 1 的整数。');
+            if (input.lineCount !== undefined && (!Number.isSafeInteger(input.lineCount) || input.lineCount < 1 || input.lineCount > LINE_PAGE_LIMIT)) throw new Error('lineCount 须为 1 至 ' + LINE_PAGE_LIMIT + ' 的整数。');
+          }
+          const startLine = input.startLine ?? 1, requestedLines = input.lineCount ?? 200;
           const target = await locate(input, sessionId);
           let stats;
           try { stats = await fs.stat(target.file); } catch (error) { if (error.code === 'ENOENT') stats = null; else throw error; }
           await assertClean(target.file);
+          const missingLinePage = () => output({ path: target.path, root: target.rootIndex, exists: false, startLine, endLine: null, content: null,
+            truncated: false, fileTruncated: false, lineTruncated: false, accessibleLines: 0, nextLine: null,
+            guidance: 'This file does not exist. Create it if needed; a missing path is not a tool failure.' });
           // Files above the whole-file limit are still readable page by page; only
           // whole-file editing (and its before/after snapshots) is refused.
+          if (lineMode) {
+            if (!stats) return missingLinePage();
+            if (!stats.isFile()) throw new Error('编码工具仅支持读取普通文件。');
+            if (stats.size > LIMIT) {
+              const pageLines = await readLineWindow(target.file, startLine, requestedLines, signal);
+              if (startLine > pageLines.accessibleLines) throw new Error('startLine=' + startLine + ' 超出文件行数 ' + pageLines.accessibleLines + '。');
+              return output({ path: target.path, root: target.rootIndex, exists: true,
+                ...pageLines,
+                hash: hash(pageLines.content), hashKind: 'window', large: true, editable: false, totalBytes: stats.size,
+                guidance: 'This file is larger than 1 MiB. Use startLine/lineCount paging to read lines; whole-file editing is refused (reason=file_too_large). Edit a smaller file, or extract the change into a separate module.' });
+            }
+            const content = await read(target.file);
+            const version = hash(content);
+            if (content !== null && input.expectedHash !== undefined && input.expectedHash !== version) throw versionMismatch(input.expectedHash, version, target.path, Buffer.byteLength(content));
+            if (content === null) return missingLinePage();
+            const projectInstructions = await instructions(target, signal);
+            signal?.throwIfAborted();
+            return output({ path: target.path, root: target.rootIndex, exists: true,
+              ...linePage(content, startLine, requestedLines), hash: version, hashKind: 'sha256', projectInstructions });
+          }
           if (stats && stats.isFile() && stats.size > LIMIT) {
             const offset = input.offset ?? 0, limit = input.limit ?? 16384;
             if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 65536) throw new Error('无效的内容分页参数。');
             const windowed = await readWindow(target.file, offset, limit);
             const withLineNumbers = input.lineNumbers === true;
-            const lines = withLineNumbers ? windowed.content.split(/\r?\n/) : undefined;
+            const windowLines = withLineNumbers ? windowed.content.split(/\r?\n/) : undefined;
             return output({ path: target.path, root: target.rootIndex, exists: true,
               ...windowed,
-              ...(withLineNumbers ? { lines, contentWithLineNumbers: lines.map((line, index) => `${windowed.startLine + index}: ${line}`).join('\n') } : {}),
+              ...(withLineNumbers ? { lines: windowLines, contentWithLineNumbers: windowLines.map((line, index) => (windowed.startLine + index) + ': ' + line).join('\n') } : {}),
               hash: hash(windowed.content), hashKind: 'sha256-window', large: true, editable: false, totalBytes: stats.size,
-              guidance: 'This file is larger than 1 MiB. Paged reads work; whole-file editing is refused (reason=file_too_large recovery=read_workspace_file). Edit a smaller file, or extract the change into a separate module.' });
+              guidance: 'This file is larger than 1 MiB. Paged reads work via offset/limit or startLine/lineCount; whole-file editing is refused (reason=file_too_large recovery=read_workspace_code). Edit a smaller file, or extract the change into a separate module.' });
           }
           const content = await read(target.file);
           const version = hash(content);
-          if (content !== null && input.expectedHash !== undefined && input.expectedHash !== version) {
-            throw Object.assign(new Error(`文件版本不匹配（期望 ${String(input.expectedHash).slice(0, 12)}…，当前 ${version.slice(0, 12)}…）。请从头重新读取。reason=hash_mismatch recovery=read_workspace_code`), {
-              details: { reason: 'hash_mismatch', recovery: 'read_workspace_code', path: target.path, currentHash: version, currentBytes: Buffer.byteLength(content) }
-            });
-          }
+          if (content !== null && input.expectedHash !== undefined && input.expectedHash !== version) throw versionMismatch(input.expectedHash, version, target.path, Buffer.byteLength(content));
           const projectInstructions = await instructions(target, signal);
           signal?.throwIfAborted();
           const withLineNumbers = input.lineNumbers === true;
@@ -909,9 +1020,6 @@ function createCodingService(vscode, context, { beforeEdit, turnId = () => undef
             ...body,
             hash: version, projectInstructions });
         } },
-      { name: 'edit_workspace_file', label: '编辑工作区文件', description: 'Create, edit or delete one workspace UTF-8 file. Flow: read_workspace_code for the current hash, edit here, then validate_workspace_changes. Operations: create (new file; set createParents for missing directories; empty directories remain after undo or a failed save); replace (one unique oldText -> newText; an ambiguous match is rejected with the candidate line numbers, then add occurrence:N to target the Nth match); replaceAll (every oldText -> newText, optional expectedCount, up to 1000 places); replaceLines (replace lines startLine..endLine inclusive with newText; endLine = startLine-1 inserts before startLine); insert (afterLine: 0 = start of file, N = after line N, line count = end of file); patch (several unique oldText edits, prevalidated together as one saved edit); ranges (zero-based UTF-16 start/end, end exclusive; insertion uses equal offsets); applyPatch (unified diff text with @@ hunks, located by context lines); delete. Everything except create requires expectedHash from the read; patch/ranges/applyPatch edits must not overlap and target the same original hash. dryRun:true validates and returns before/after hashes plus the complete unified patch without writing. Changes save immediately and keep one undo record per file; preserve newline style and any BOM. Never claim tests ran. The result carries hash and nextExpectedHash: reuse nextExpectedHash as expectedHash for a follow-up edit on the same file instead of re-reading, and never reuse an older hash. oldText/context matching tolerates CRLF-vs-LF and trailing-whitespace differences and aligns newText to the file newline, so a CRLF file never rejects LF text (replaceAll counts with the same tolerance and, on a real mismatch, reports the exact and tolerant counts); a uniform indentation offset is also accepted and newText is re-indented to the file while non-uniform indentation is refused; applyPatch also accepts hunks with no context (pure insertion) and unmarked context lines, applies them at the stated line, and reports already_applied when a hunk is already present; the result diff carries a small unified patch for verification and omits it when oversized.',
-        parameters: { type: 'object', properties: { ...base, createParents: { type: 'boolean', description: 'Create missing parent directories for create.' }, operation: { type: 'string', enum: ['create', 'replace', 'replaceAll', 'replaceLines', 'insert', 'patch', 'ranges', 'applyPatch', 'delete'] }, expectedHash: { type: 'string' }, oldText: { type: 'string' }, newText: { type: 'string' }, occurrence: { type: 'integer', minimum: 1, description: 'replace: target the Nth occurrence instead of requiring uniqueness.' }, expectedCount: { type: 'integer', minimum: 1, description: 'replaceAll: require exactly this many occurrences.' }, startLine: { type: 'integer', minimum: 1, description: 'replaceLines: first line to replace (1-based, inclusive).' }, endLine: { type: 'integer', minimum: 0, description: 'replaceLines: last line to replace (inclusive); startLine-1 inserts.' }, afterLine: { type: 'integer', minimum: 0, description: 'insert: insert after this 1-based line; 0 = start of file, line count = end.' }, patch: { type: 'string', description: 'applyPatch: unified diff text with @@ -a,b +c,d @@ hunks; include context lines.' }, dryRun: { type: 'boolean', description: 'Validate and return before/after hashes and a diff without writing.' }, edits: { type: 'array', minItems: 1, maxItems: 100, items: { type: 'object', properties: { oldText: { type: 'string', minLength: 1 }, start: { type: 'integer', minimum: 0 }, end: { type: 'integer', minimum: 0 }, newText: { type: 'string' } }, required: ['newText'], additionalProperties: false }, description: 'For patch: unique oldText replacements. For ranges: zero-based UTF-16 start/end offsets (end exclusive); insertion uses equal offsets. All edits target the same original hash and must not overlap.' } }, required: ['path', 'operation'], additionalProperties: false },
-        execute: (_id, input, signal) => editFile(sessionId, input, signal) },
       { name: 'list_workspace_changes', label: '查看代码更改', description: 'List this conversation’s recorded code changes. Review opens from the IDE code changes button.',
         parameters: { type: 'object', properties: {}, additionalProperties: false },
         async execute(_id, _input, signal) { signal?.throwIfAborted(); return serial(async () => output(describe(await reconcile(sessionId)))); } },
@@ -919,33 +1027,19 @@ function createCodingService(vscode, context, { beforeEdit, turnId = () => undef
         parameters: { type: 'object', properties: {}, additionalProperties: false },
         async execute(_id, _input, signal) { signal?.throwIfAborted(); return serial(async () => output(describe(await reconcile(sessionId)))); } }
     ];
-    const editTool = list.find(tool => tool.name === 'edit_workspace_file');
-    list.push({ name: 'preview_workspace_edits', recovery: 'retry-read-only', label: '检查跨文件修改方案',
-      description: 'Validate up to 20 proposed file edits without writing files, creating directories or recording changes (the same preflight edit_workspace_files runs). Checks hashes, ranges, content, duplicate files and current edit conflicts, and returns before/after hashes and a complete unified patch per file. Each file must appear once; a successful preview is not a transaction or a guarantee against later changes. Use edit_workspace_files to apply after inspecting the affected files and instructions.',
-      parameters: { type: 'object', properties: { files: { type: 'array', minItems: 1, maxItems: 20, items: editTool.parameters } }, required: ['files'], additionalProperties: false },
-      async execute(_id, input, signal) {
-        if (!Array.isArray(input.files) || !input.files.length || input.files.length > 20) throw new Error('一次需要 1 至 20 个文件修改。');
-        const results = [], seen = new Set();
-        for (let index = 0; index < input.files.length; index++) {
-          signal?.throwIfAborted();
-          try {
-            const target = await locate(input.files[index], sessionId), key = identity(target.file);
-            if (seen.has(key)) throw new Error('预览中每个文件只能出现一次。');
-            seen.add(key);
-            results.push({ index, valid: true, ...(await editFile(sessionId, input.files[index], signal, true)).details });
-          } catch (error) { signal?.throwIfAborted(); results.push({ index, valid: false, error: error.message }); }
-        }
-        return output({ status: results.every(item => item.valid) ? 'ready' : 'invalid', results, saved: false, validation: 'edit preconditions only; tests/build not run' });
-      }
-    });
+    // One model-facing edit tool: a batch of file edits plus a top-level dryRun
+    // preflight. Single-file edits are files:[one]; dryRun writes and records nothing.
+    const editFileParameters = { type: 'object', properties: { ...base, createParents: { type: 'boolean', description: 'Create missing parent directories for create.' }, operation: { type: 'string', enum: ['create', 'replace', 'replaceAll', 'replaceLines', 'insert', 'patch', 'ranges', 'applyPatch', 'delete'] }, expectedHash: { type: 'string' }, oldText: { type: 'string' }, newText: { type: 'string' }, occurrence: { type: 'integer', minimum: 1, description: 'replace: target the Nth occurrence instead of requiring uniqueness.' }, expectedCount: { type: 'integer', minimum: 1, description: 'replaceAll: require exactly this many occurrences.' }, startLine: { type: 'integer', minimum: 1, description: 'replaceLines: first line to replace (1-based, inclusive).' }, endLine: { type: 'integer', minimum: 0, description: 'replaceLines: last line to replace (inclusive); startLine-1 inserts.' }, afterLine: { type: 'integer', minimum: 0, description: 'insert: insert after this 1-based line; 0 = start of file, line count = end.' }, patch: { type: 'string', description: 'applyPatch: unified diff text with @@ -a,b +c,d @@ hunks; include context lines.' }, edits: { type: 'array', minItems: 1, maxItems: 100, items: { type: 'object', properties: { oldText: { type: 'string', minLength: 1 }, start: { type: 'integer', minimum: 0 }, end: { type: 'integer', minimum: 0 }, newText: { type: 'string' } }, required: ['newText'], additionalProperties: false }, description: 'For patch: unique oldText replacements. For ranges: zero-based UTF-16 start/end offsets (end exclusive); insertion uses equal offsets. All edits target the same original hash and must not overlap.' } }, required: ['path', 'operation'], additionalProperties: false };
     list.push({ name: 'edit_workspace_files', label: '批量编辑工作区文件',
-      description: 'Apply up to 20 file edits using the same schema as edit_workspace_file. Every file is preflighted first, so a foreseeable failure (stale hash, bad range, duplicate file, missing parent) returns status=invalid with nothing written. A valid batch applies in order; a race after preflight stops at the failing index and returns completed plus failedIndex. Each file may appear once. Use fresh per-file hashes; inspect recover_workspace_changes after a cancellation.',
-      parameters: { type: 'object', properties: { files: { type: 'array', minItems: 1, maxItems: 20, items: editTool.parameters } }, required: ['files'], additionalProperties: false },
+      description: 'Create, edit or delete up to 20 workspace UTF-8 files in one preflighted batch; a single file is files:[one]. Flow: read_workspace_code for the current hash, edit here, then validate_workspace_changes. Operations: create (new file; set createParents for missing directories; empty directories remain after undo or a failed save); replace (one unique oldText -> newText; an ambiguous match is rejected with the candidate line numbers, then add occurrence:N to target the Nth match); replaceAll (every oldText -> newText, optional expectedCount, up to 1000 places); replaceLines (replace lines startLine..endLine inclusive with newText; endLine = startLine-1 inserts before startLine); insert (afterLine: 0 = start of file, N = after line N, line count = end of file); patch (several unique oldText edits, prevalidated together as one saved edit); ranges (zero-based UTF-16 start/end, end exclusive; insertion uses equal offsets); applyPatch (unified diff text with @@ hunks, located by context lines); delete. Everything except create requires expectedHash from the read; patch/ranges/applyPatch edits must not overlap and target the same original hash. dryRun:true runs the same preflight and returns status ready|invalid with before/after hashes and the complete unified patch per file, saved:false, without writing, creating directories or recording changes. A valid batch applies in order and saves immediately, keeping one undo record per file; a foreseeable failure returns status=invalid with nothing written, and a race after preflight stops at the failing index and returns completed plus failedIndex. Each file may appear once; use fresh per-file hashes and inspect recover_workspace_changes after a cancellation. Preserve newline style and any BOM; never claim tests ran. Results carry hash and nextExpectedHash: reuse nextExpectedHash as expectedHash for a follow-up edit on the same file instead of re-reading, and never reuse an older hash. oldText/context matching tolerates CRLF-vs-LF and trailing-whitespace differences and aligns newText to the file newline, so a CRLF file never rejects LF text (replaceAll counts with the same tolerance and, on a real mismatch, reports the exact and tolerant counts); a uniform indentation offset is also accepted and newText is re-indented to the file while non-uniform indentation is refused; applyPatch also accepts hunks with no context (pure insertion) and unmarked context lines, applies them at the stated line, and reports already_applied when a hunk is already present; the result diff carries a small unified patch for verification and omits it when oversized.',
+      parameters: { type: 'object', properties: { files: { type: 'array', minItems: 1, maxItems: 20, items: editFileParameters }, dryRun: { type: 'boolean', description: 'true runs the same preflight without writing files, creating directories or recording changes; returns status ready|invalid, results and saved:false.' } }, required: ['files'], additionalProperties: false },
       async execute(_id, input, signal) {
         signal?.throwIfAborted();
         if (!Array.isArray(input.files) || !input.files.length || input.files.length > 20) throw new Error('一次需要 1 至 20 个文件修改。');
+        if (input.dryRun !== undefined && typeof input.dryRun !== 'boolean') throw new Error('dryRun 须为 boolean。');
+        const dryRun = input.dryRun === true;
         // Preflight every file against current disk state before any write, so a
-        // foreseeable failure never leaves a half-applied batch.
+        // foreseeable failure never leaves a half-applied batch. dryRun stops here.
         const results = [], seen = new Set();
         for (let index = 0; index < input.files.length; index++) {
           signal?.throwIfAborted();
@@ -954,10 +1048,12 @@ function createCodingService(vscode, context, { beforeEdit, turnId = () => undef
             if (seen.has(key)) throw new Error('同一文件在批量修改中只能出现一次。');
             seen.add(key);
             results.push({ index, valid: true, ...(await editFile(sessionId, input.files[index], signal, true)).details });
-          } catch (error) { signal?.throwIfAborted(); results.push({ index, valid: false, error: error.message }); }
+          } catch (error) { signal?.throwIfAborted(); results.push({ index, valid: false, error: error.message, ...(error.details ? { details: error.details } : {}) }); }
         }
-        if (results.some(item => item.valid === false)) {
-          return { ...output({ status: 'invalid', results, applied: [], validation: 'edit preconditions only; nothing was written' }), isError: true };
+        const valid = results.every(item => item.valid);
+        if (dryRun) return output({ status: valid ? 'ready' : 'invalid', results, saved: false, validation: 'edit preconditions only; nothing was written' });
+        if (!valid) {
+          return { ...output({ status: 'invalid', results, applied: [], saved: false, validation: 'edit preconditions only; nothing was written' }), isError: true };
         }
         const completed = [];
         for (let index = 0; index < input.files.length; index++) {
@@ -966,7 +1062,7 @@ function createCodingService(vscode, context, { beforeEdit, turnId = () => undef
             signal?.throwIfAborted();
             // Preflight already passed, so this is a race: the file changed between
             // validation and application.
-            return { ...output({ status: completed.length ? 'partially_applied' : 'failed', completed, failedIndex: index, error: error.message, notAttempted: input.files.length - index - 1, recovery: 'The file changed after preflight; inspect recover_workspace_changes before retrying.' }), isError: true };
+            return { ...output({ status: completed.length ? 'partially_applied' : 'failed', completed, failedIndex: index, error: error.message, ...(error.details ? { details: error.details } : {}), notAttempted: input.files.length - index - 1, recovery: 'The file changed after preflight; inspect recover_workspace_changes before retrying.' }), isError: true };
           }
         }
         return output({ status: 'applied', completed, validation: 'not_run' });

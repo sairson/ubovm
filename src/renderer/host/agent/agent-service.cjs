@@ -29,14 +29,25 @@ function createHarnessService(options) {
     return response.result;
   };
   let runtime, restarting, closing, stopped = false;
+  let recoveryFailures = 0, recoveryRetryAt = 0, recoveryError;
+  const recoveryDelay = () => Math.min(120000, 5000 * 2 ** Math.max(0, recoveryFailures - 1));
+  function recordRecoveryFailure(error) {
+    recoveryFailures++;
+    recoveryError = error;
+    recoveryRetryAt = Date.now() + recoveryDelay();
+  }
+  function clearRecoveryFailure() { recoveryFailures = 0; recoveryRetryAt = 0; recoveryError = undefined; }
   const notify = id => { if (stopped || closing) return; try { Promise.resolve(options.onChange?.(id)).catch(() => {}); } catch {} };
   // Connection observers (webview probes) watch transport health separately from
   // per-session timeline updates.
   const notifyConnection = () => { if (stopped || closing) return; try { Promise.resolve(options.onConnectionChange?.()).catch(() => {}); } catch {} };
   function connectionStatus() {
     if (stopped || closing) return { status: 'closed', error: closedError().message };
-    if (!runtime) return { status: 'idle' };
-    if (runtime.failed) return { status: 'disconnected', error: runtime.failed.message };
+    if (!runtime) return recoveryFailures
+      ? { status: 'disconnected', error: recoveryError?.message || 'Agent 后端启动失败', recovering: true, attempts: recoveryFailures, retryAt: recoveryRetryAt }
+      : { status: 'idle' };
+    if (runtime.failed) return { status: 'disconnected', error: runtime.failed.message,
+      ...(recoveryFailures ? { recovering: true, attempts: recoveryFailures, retryAt: recoveryRetryAt, lastError: recoveryError?.message } : {}) };
     if (runtime.stalled) return { status: 'stalled', error: runtime.stallError?.message };
     return { status: 'connected' };
   }
@@ -48,16 +59,61 @@ function createHarnessService(options) {
     // successful restoration. No growing tombstone set is needed.
     if (!owner.requests.has(id) && !owner.restored.has(id)) return;
     if (!Number.isSafeInteger(revision) || revision <= (owner.revisions.get(id) ?? 0)) return;
-    const nextState = readonly(state), nextSummary = readonly(summary);
+    const previous = states.get(id);
+    const admitted = snapshot.boardUnchanged && previous
+      ? { ...state,
+          ...(previous.blackboard ? { blackboard: previous.blackboard } : {}),
+          ...(previous.logHistory ? { logHistory: previous.logHistory } : {}) }
+      : state;
+    const nextState = readonly(admitted), nextSummary = readonly(summary);
     owner.revisions.set(id, revision);
     states.set(id, nextState); summaries.set(id, nextSummary); notify(id);
+  }
+  // A dead transport is a real thread exit or an explicit restart, never a
+  // heartbeat miss. Sessions become explicitly resumable from their persisted
+  // checkpoint; no task is replayed.
+  function fail(owner, error) {
+    if (runtime !== owner || stopped || owner.failed) return;
+    owner.failed = error; owner.stalled = false; owner.stallError = undefined;
+    owner.rpc.close(error); owner.tools.clear();
+    owner.terminated = owner.worker.terminate();
+    // Keep diagnostics even when no conversation is active; observer failures
+    // must not become a second unhandled rejection in the IDE host.
+    try { Promise.resolve(options.onError?.({ ...serializeError(error), threadId: owner.worker.threadId })).catch(() => {}); } catch {}
+    void owner.terminated.catch(() => {});
+    const busyIds = [];
+    // Interrupt busy sessions before connection observers sample isBusy(), so a
+    // dead worker is never masked as connected while the busy flag still lingers.
+    for (const id of new Set([...states.keys(), ...owner.requests.keys()])) {
+      const state = states.get(id) ?? idle();
+      if (!state.busy && !owner.requests.has(id)) continue;
+      busyIds.push(id);
+      const code = error.code === 'AGENT_HEARTBEAT_TIMEOUT' || error.code === 'AGENT_MANUAL_RESTART' ? error.code : 'AGENT_THREAD_EXIT';
+      const failure = { message: error.message, code };
+      // Goal and assist both become explicitly resumable; never auto-replay work.
+      states.set(id, readonly({ ...interruptExecution(state, failure), canResume: true }));
+      summaries.set(id, readonly({ ...summaries.get(id), status: 'failed', busy: false, phase: null, activeWorkers: 0, error: failure }));
+      notify(id);
+    }
+    // Give the extension host a chance to schedule a supervised restart. Manual
+    // restarts and window reloads are intentional and must not auto-resume.
+    if (busyIds.length && error.code !== 'AGENT_MANUAL_RESTART') {
+      try { Promise.resolve(options.onCrash?.({ ...serializeError(error), busyIds, threadId: owner.worker.threadId })).catch(() => {}); } catch {}
+    }
+    notifyConnection();
   }
   function spawn() {
     const owner = { tools: new Map(), revisions: new Map(), requests: new Map(), restored: new Set(), stalled: false, stallError: undefined };
     const worker = owner.worker = new Worker(path.join(path.dirname(options.sdkPath), 'ide/runtime/harness-thread.cjs'), {
-      workerData: { sdkPath: options.sdkPath, storageDirectory: options.storageDirectory }
+      workerData: { sdkPath: options.sdkPath, storageDirectory: options.storageDirectory },
+      // Capture backend diagnostics (uncaught errors / OOM warnings) into the
+      // extension output channel instead of losing them to a detached stderr.
+      stderr: true
     });
     runtime = owner;
+    worker.stderr?.on('data', chunk => {
+      try { options.onBackendLog?.(String(chunk).replace(/\s+$/, '')); } catch { /* Diagnostics must not affect the backend. */ }
+    });
     notifyConnection();
     const rpc = owner.rpc = createRPC(worker, async (method, args, signal) => {
       const [id] = args;
@@ -74,7 +130,10 @@ function createHarnessService(options) {
           return;
         }
         case 'roots': return typeof options.workspaceRoots === 'function' ? options.workspaceRoots(id) : options.workspaceRoots ?? [];
-        case 'configuration': return options.readConfiguration();
+        case 'configuration': return options.readConfiguration(id);
+        case 'chatConfiguration':
+          if (!options.readChatConfiguration) throw new Error('模型配置不可用，探索对话未发送。');
+          return options.readChatConfiguration(id);
         case 'approval':
           if (!options.requestToolApproval) throw new Error('人工审核界面不可用，工具未执行。');
           return options.requestToolApproval({ ...id, signal });
@@ -100,7 +159,7 @@ function createHarnessService(options) {
         default: throw new Error('Unknown host method');
       }
     }, {
-      onClose: error => fail(error),
+      onClose: error => fail(owner, error),
       onStallChange: (stalled, error) => {
         if (runtime !== owner || stopped || owner.failed) return;
         owner.stalled = stalled === true;
@@ -110,33 +169,21 @@ function createHarnessService(options) {
         notifyConnection();
       },
       heartbeatInterval: options.heartbeatInterval ?? 5000,
-      heartbeatTimeout: options.heartbeatTimeout ?? 20000,
-      heartbeatKillTimeout: options.heartbeatKillTimeout ?? 120000
+      // Tool bursts and large snapshot serialization can briefly block the worker
+      // event loop. A miss only marks the transport stalled; it never terminates
+      // the worker, so a long model/tool step cannot be mistaken for a crash.
+      heartbeatTimeout: options.heartbeatTimeout ?? 30000,
+      // First input lazily spawns the SDK worker. Its synchronous initialization
+      // must not be mistaken for a dead connection and flash an offline banner.
+      heartbeatStartupGrace: options.heartbeatStartupGrace ?? 60000
     });
-    function fail(error) {
-      if (runtime !== owner || stopped || owner.failed) return;
-      owner.failed = error; owner.stalled = false; owner.stallError = undefined;
-      rpc.close(error); owner.tools.clear();
-      owner.terminated = worker.terminate();
-      // Keep diagnostics even when no conversation is active; observer failures
-      // must not become a second unhandled rejection in the IDE host.
-      try { Promise.resolve(options.onError?.({ ...serializeError(error), threadId: worker.threadId })).catch(() => {}); } catch {}
-      void owner.terminated.catch(() => {});
-      // Interrupt busy sessions before connection observers sample isBusy(), so a
-      // dead worker is never masked as connected while the busy flag still lingers.
-      for (const id of new Set([...states.keys(), ...owner.requests.keys()])) {
-        const state = states.get(id) ?? idle();
-        if (!state.busy && !owner.requests.has(id)) continue;
-        const failure = { message: error.message, code: error.code === 'AGENT_HEARTBEAT_TIMEOUT' ? error.code : 'AGENT_THREAD_EXIT' };
-        // Goal and assist both become explicitly resumable; never auto-replay work.
-        states.set(id, readonly({ ...interruptExecution(state, failure), canResume: true }));
-        summaries.set(id, readonly({ ...summaries.get(id), status: 'failed', busy: false, phase: null, activeWorkers: 0, error: failure }));
-        notify(id);
-      }
-      notifyConnection();
-    }
-    worker.on('error', fail);
-    worker.on('exit', code => fail(new Error('Agent thread exited (' + code + ')')));
+    worker.on('error', error => fail(owner, error));
+    worker.on('exit', code => {
+      const error = new Error('Agent thread exited (' + code + ')');
+      error.code = code === 0 ? 'AGENT_THREAD_EXIT' : 'AGENT_THREAD_CRASH';
+      error.exitCode = code;
+      fail(owner, error);
+    });
     return owner;
   }
   async function ensure(method) {
@@ -163,7 +210,7 @@ function createHarnessService(options) {
     const descriptor = { conversationId: input?.conversationId, mode, goal: input?.goal, executionBranch: input?.executionBranch };
     if (mode === 'assist') {
       descriptor.lastInput = {
-        text: input?.text, images: input?.images, messages: input?.messages, context: input?.context, approvalMode: input?.approvalMode
+        text: input?.text, images: input?.images, messages: input?.messages, context: input?.context, modelId: input?.modelId, approvalMode: input?.approvalMode
       };
     }
     return structuredClone(descriptor);
@@ -185,6 +232,7 @@ function createHarnessService(options) {
       const response = await owner.rpc.call(method, args);
       accept(owner, response.snapshot);
       const result = checkResponse(response);
+      clearRecoveryFailure();
       if (method === 'start' || method === 'restore') {
         // Keep the richest recovery descriptor; restore must not erase assist lastInput.
         const previous = descriptors.get(id);
@@ -250,26 +298,69 @@ function createHarnessService(options) {
     idleEnsure = (async () => {
       if (closing || stopped) return connectionStatus();
       if (!runtime) {
-        try { await spawn(); }
-        catch (error) { return { status: 'disconnected', error: error?.message || String(error) }; }
+        if (recoveryRetryAt > Date.now()) return connectionStatus();
+        try { await spawn(); clearRecoveryFailure(); }
+        catch (error) { recordRecoveryFailure(error); return connectionStatus(); }
         return connectionStatus();
       }
       // Soft stalls keep the live worker; only failed runtimes need respawn.
       if (!runtime.failed) return connectionStatus();
       const busy = launching.size > 0 || runtime.requests.size > 0 || [...states.values()].some(value => value.busy === true);
       if (busy) return { status: 'disconnected', error: runtime.failed?.message };
+      if (recoveryRetryAt > Date.now()) return connectionStatus();
       try {
         await ensure('restore');
+        clearRecoveryFailure();
         return connectionStatus();
       } catch (error) {
-        return { status: 'disconnected', error: error?.message || String(error) };
+        recordRecoveryFailure(error);
+        return { status: 'disconnected', error: error?.message || String(error), retryAt: recoveryRetryAt };
       }
     })().finally(() => { idleEnsure = undefined; });
     return idleEnsure;
   }
+  // Manual recovery for a stalled or misbehaving backend. Execution checkpoints
+  // stay on disk, running sessions become explicitly resumable, and the next
+  // session command recreates the worker. This is the only supported way to end
+  // a live backend: no timer is allowed to judge it dead.
+  async function restart() {
+    if (closing || stopped) throw closedError();
+    const owner = runtime;
+    if (!owner) return connectionStatus();
+    if (owner.failed) { await ensureIdle(); return connectionStatus(); }
+    const error = Object.assign(new Error('Agent 后端已按用户请求重新启动。'), { code: 'AGENT_MANUAL_RESTART' });
+    fail(owner, error);
+    await owner.terminated.catch(() => {});
+    // Give aborted tool cleanups a brief moment so the respawn does not trip the
+    // host-cleanup barrier; if they still run, the caller can retry and
+    // ensureIdle's existing backoff takes over.
+    await Promise.race([owner.rpc.drain().catch(() => {}), new Promise(resolve => setTimeout(resolve, 2000))]);
+    try { await ensure('restore'); }
+    catch (failure) { recordRecoveryFailure(failure); throw failure; }
+    clearRecoveryFailure();
+    return connectionStatus();
+  }
+  // Reconnection reads the current projection from the backend. The backend owns
+  // the execution and its checkpoint; the host never replays a task, it only
+  // adopts what the backend already has (or restores that checkpoint).
+  async function authoritative(id) {
+    if (closing || stopped || typeof id !== 'string' || !id) return null;
+    const owner = runtime;
+    if (!owner || owner.failed || owner.stalled) return null;
+    try {
+      const response = await owner.rpc.call('authoritative', [id]);
+      if (runtime !== owner || owner.failed || closing || stopped) return null;
+      if (response?.failure || !response?.result?.loaded || !response.snapshot) return null;
+      if (!owner.requests.has(id) && !owner.restored.has(id)) return null;
+      accept(owner, response.snapshot);
+      return state(id);
+    } catch { return null; }
+  }
   return Object.freeze({
     connectionState: connectionStatus,
     ensureIdle,
+    authoritative,
+    restart,
     state,
     runtimeSummary: id => {
       const value = summaries.get(id) ?? { status: 'idle', busy: false, workerCount: 0, activeWorkers: 0 };
@@ -284,6 +375,36 @@ function createHarnessService(options) {
     },
     restore: input => sessionRequest('restore', input),
     watchTeamMember: input => sessionRequest('watchTeamMember', input),
+    goalChatSend: (id, text, images) => {
+      if (typeof id !== 'string' || !id.trim()) return Promise.reject(new Error('会话标识无效。'));
+      if (images !== undefined && !Array.isArray(images)) return Promise.reject(new Error('图片数据无效。'));
+      // Images are saved attachment descriptors; the backend persists them on
+      // the user message and feeds them to the vision model.
+      return invoke('goalChatSend', images === undefined ? [id, text] : [id, text, images]);
+    },
+    goalChatCancel: id => {
+      if (typeof id !== 'string' || !id.trim()) return Promise.reject(new Error('会话标识无效。'));
+      return invoke('goalChatCancel', [id]);
+    },
+    goalChatRewind: (id, messageId) => {
+      if (typeof id !== 'string' || !id.trim()) return Promise.reject(new Error('会话标识无效。'));
+      if (typeof messageId !== 'string' || !messageId.trim()) return Promise.reject(new Error('消息标识无效。'));
+      return invoke('goalChatRewind', [id, messageId]);
+    },
+    goalChatNewThread: id => {
+      if (typeof id !== 'string' || !id.trim()) return Promise.reject(new Error('会话标识无效。'));
+      return invoke('goalChatNewThread', [id]);
+    },
+    goalChatSelectThread: (id, threadId) => {
+      if (typeof id !== 'string' || !id.trim()) return Promise.reject(new Error('会话标识无效。'));
+      if (typeof threadId !== 'string' || !threadId.trim()) return Promise.reject(new Error('对话标识无效。'));
+      return invoke('goalChatSelectThread', [id, threadId]);
+    },
+    goalChatDeleteThread: (id, threadId) => {
+      if (typeof id !== 'string' || !id.trim()) return Promise.reject(new Error('会话标识无效。'));
+      if (typeof threadId !== 'string' || !threadId.trim()) return Promise.reject(new Error('对话标识无效。'));
+      return invoke('goalChatDeleteThread', [id, threadId]);
+    },
     resume: id => launch('resume', [id], id),
     interruptCommand: (id, commandId) => {
       if (typeof commandId !== 'string' || !/^[a-f0-9-]{36}$/.test(commandId)) return Promise.reject(new Error('命令标识无效。'));

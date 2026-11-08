@@ -192,9 +192,18 @@ test('session end bypasses choice and missing tray keeps the window reachable', 
   await exit.close(exit.window()); assert.equal(exit.app.quitCalled, true);
 });
 
-test('non-Windows lifecycle remains unchanged', async () => {
-  const f = fixture({ platform: 'darwin' });
-  assert.equal(await f.close(f.window()), false); assert.equal(f.tray, undefined);
+test('macOS and Linux keep the background lifecycle with their own tray affordances', async () => {
+  for (const platform of ['darwin', 'linux']) {
+    const f = fixture({ platform });
+    const win = f.window();
+    assert.ok(f.tray, platform + ' should create a tray entry');
+    assert.equal(await f.close(win), true, platform + ' must intercept the close request');
+    assert.equal(win.visible, false);
+    assert.match(f.tray.tooltip, /后台运行中/);
+    // Balloons are a Windows API; the other platforms must not attempt one.
+    assert.equal(f.tray.balloons, undefined);
+    assert.equal(f.dialogs.length, 1);
+  }
 });
 
 test('first minimize disables throttling; foreground restores the original policy', async () => {

@@ -127,10 +127,19 @@ function outcome(value, label) {
 
 function stringList(value, label) {
   return [...new Set(list(value, label, 'INVALID_FACT').flatMap((item, index) => {
+    const itemLabel = `${label}[${index}]`;
+    // Models occasionally wrap handoff text as {"step":{"description":"..."}}
+    // or emit null placeholders. Normalize a single obvious text field and drop
+    // empty/null placeholders instead of failing an otherwise valid fact.
+    if (item === null || item === undefined) return [];
+    if (item && typeof item === 'object' && !Array.isArray(item)) {
+      const candidate = ['step', 'text', 'description', 'next'].map(key => item[key]).find(entry => typeof entry === 'string' && entry.trim());
+      return candidate ? [required(candidate, itemLabel, 'INVALID_FACT')] : [];
+    }
     // Empty model-generated placeholders carry no information. Keep validating
     // non-string entries and text limits rather than silently dropping data.
     if (typeof item === 'string' && item.length <= MAX_TEXT && !item.trim()) return [];
-    return [required(item, `${label}[${index}]`, 'INVALID_FACT')];
+    return [required(item, itemLabel, 'INVALID_FACT')];
   }))];
 }
 
@@ -210,6 +219,7 @@ export function parseWorkerFact(text, { keyPoints = [], ledger = [], context, ma
   if (!Array.isArray(ledger)) throw invalid(code, 'ledger must be an array.');
   const evidence = [];
   const droppedToolIds = [];
+  const droppedNodeRefs = [];
   for (const [index, item] of list(value.evidence, 'Fact.evidence', code).entries()) {
     const label = `evidence[${index}]`;
     fields(item, ['toolCallId', 'nodeRef', 'observation'], label, code);
@@ -230,19 +240,29 @@ export function parseWorkerFact(text, { keyPoints = [], ledger = [], context, ma
       continue;
     }
     const nodeRef = required(item.nodeRef, `${label}.nodeRef`, code);
-    validateNodeRef(nodeRef, context, `${label}.nodeRef`);
+    // Match the toolCallId policy: one stale root/intent alias must not discard
+    // an otherwise grounded conclusion. Drop the citation and surface it as a
+    // limitation instead of failing the whole fact.
+    try { validateNodeRef(nodeRef, context, `${label}.nodeRef`); }
+    catch { droppedNodeRefs.push(nodeRef); continue; }
     evidence.push({ nodeRef, observation });
   }
   if (['confirmed', 'negative'].includes(status) && evidence.length === 0) {
     const detail = droppedToolIds.length
       ? ` Dropped invalid toolCallId citation(s): ${droppedToolIds.join(', ')}.${evidenceSourceHint(ledger)}`
       : '';
-    throw invalid(code, `A confirmed or negative fact requires at least one valid evidence item.${detail}`);
+    const nodeDetail = droppedNodeRefs.length
+      ? ` Dropped nodeRef citation(s) that were root, missing, or had no recorded fact: ${droppedNodeRefs.join(', ')}. Use a non-root fact node alias from the shared evidence.`
+      : '';
+    throw invalid(code, `A confirmed or negative fact requires at least one valid evidence item.${detail}${nodeDetail}`);
   }
   const nextSteps = value.nextSteps === undefined ? undefined : stringList(value.nextSteps, 'Fact.nextSteps');
   const limitations = stringList(value.limitations, 'Fact.limitations');
   if (droppedToolIds.length) {
     limitations.push(`Dropped ${droppedToolIds.length} evidence citation(s) that were not successful host ledger tool calls.`);
+  }
+  if (droppedNodeRefs.length) {
+    limitations.push(`Dropped ${droppedNodeRefs.length} evidence citation(s) that did not reference a non-root node with a recorded fact.`);
   }
   if (droppedCoverage.length) {
     limitations.push(`Dropped ${droppedCoverage.length} coverage item(s) that did not match a required key point.`);

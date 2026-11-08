@@ -71,13 +71,13 @@ test('a read-only batch executes concurrently', async () => {
     return { content: [text(id)], details: { id } };
   });
   const tools = applyToolRuntime(applyExecutionModes([
-    read('read_workspace_file'), read('read_workspace_code'), read('search_workspace'),
+    read('read_workspace_code'), read('read_image'), read('search_workspace'),
   ]), { gate: createParallelGate(4) });
   const agent = agentWith(tools, (_model, context) => {
     calls++;
     if (calls === 1) return respondTools([
-      toolCall('r1', 'read_workspace_file'),
-      toolCall('r2', 'read_workspace_code'),
+      toolCall('r1', 'read_workspace_code'),
+      toolCall('r2', 'read_image'),
       toolCall('r3', 'search_workspace'),
     ]);
     assert.equal(context.messages.filter(entry => entry.role === 'toolResult').length, 3);
@@ -100,14 +100,14 @@ test('one sequential tool keeps the whole mixed batch in source order', async ()
     return { content: [text(id)], details: { id } };
   });
   const tools = applyToolRuntime(applyExecutionModes([
-    fake('read_workspace_file'), fake('read_workspace_code'), fake('edit_workspace_file'),
+    fake('read_workspace_code'), fake('read_image'), fake('edit_workspace_files'),
   ]), { gate: createParallelGate(4) });
   const agent = agentWith(tools, (_model, context) => {
     calls++;
     if (calls === 1) return respondTools([
-      toolCall('r1', 'read_workspace_file'),
-      toolCall('r2', 'read_workspace_code'),
-      toolCall('e1', 'edit_workspace_file'),
+      toolCall('r1', 'read_workspace_code'),
+      toolCall('r2', 'read_image'),
+      toolCall('e1', 'edit_workspace_files'),
     ]);
     assert.equal(context.messages.filter(entry => entry.role === 'toolResult').length, 3);
     return respondText('done');
@@ -120,7 +120,7 @@ test('one sequential tool keeps the whole mixed batch in source order', async ()
 
 test('the shared gate caps a large read-only batch', async () => {
   let active = 0, peak = 0, calls = 0;
-  const read = tool('read_workspace_file', async id => {
+  const read = tool('read_workspace_code', async id => {
     active++;
     peak = Math.max(peak, active);
     await delay(10);
@@ -130,7 +130,7 @@ test('the shared gate caps a large read-only batch', async () => {
   const tools = applyToolRuntime(applyExecutionModes([read]), { gate: createParallelGate(2) });
   const agent = agentWith(tools, (_model, context) => {
     calls++;
-    if (calls === 1) return respondTools(Array.from({ length: 5 }, (_, index) => toolCall(`r${index}`, 'read_workspace_file')));
+    if (calls === 1) return respondTools(Array.from({ length: 5 }, (_, index) => toolCall(`r${index}`, 'read_workspace_code')));
     assert.equal(context.messages.filter(entry => entry.role === 'toolResult').length, 5);
     return respondText('done');
   });
@@ -141,14 +141,14 @@ test('the shared gate caps a large read-only batch', async () => {
 
 test('a timed-out read reaches the model as an error result without ending the turn', async () => {
   let calls = 0;
-  const hanging = tool('read_workspace_file', () => new Promise(() => {}));
+  const hanging = tool('read_workspace_code', () => new Promise(() => {}));
   const tools = applyToolRuntime(applyExecutionModes([hanging]), {
     gate: createParallelGate(2),
-    timeouts: { read_workspace_file: 20 },
+    timeouts: { read_workspace_code: 20 },
   });
   const agent = agentWith(tools, (_model, context) => {
     calls++;
-    if (calls === 1) return respondTools([toolCall('slow', 'read_workspace_file')]);
+    if (calls === 1) return respondTools([toolCall('slow', 'read_workspace_code')]);
     const result = context.messages.find(entry => entry.role === 'toolResult');
     assert.equal(result.isError, true);
     assert.match(result.content.map(part => part.text).join(''), /\[TOOL_TIMEOUT\]/);

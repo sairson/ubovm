@@ -94,7 +94,7 @@ function createExecutionPublisher({ currentId, canPublish, readExecution, postMe
       // bridge promise. Bound both so sustained updates cannot leak sends.
       const delivered = Promise.resolve().then(() => {
         if (disposed || publicationRevision !== revision) return;
-        return postMessage(full ? { ...full, execution, busy: execution.busy }
+        return postMessage(full ? { ...full, execution: { ...(full.execution || {}), ...execution }, busy: execution.busy }
           : { type: 'executionState', conversationId, execution, busy: execution.busy });
       }).finally(() => {
         slots.delete(transport);

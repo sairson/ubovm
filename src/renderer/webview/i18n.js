@@ -37,6 +37,7 @@
     [/^(\d+) 轮$/, '$1 turns'],
     [/^展开 (\d+) 条历史$/, 'Show $1 earlier items'],
     [/^本轮修改 (\d+) 个文件$/, '$1 files changed this turn'],
+    [/^更多 (\d+) 个文件$/, 'Show $1 more files'],
     [/^查询：([\s\S]*)$/, 'Query: $1'],
     [/^保存将更新“([\s\S]*)”$/, 'Saving updates “$1”'],
     [/^下次启动将使用 (English|中文)。$/, (_, name) => `The next start will use ${name === '中文' ? 'Chinese' : 'English'}.`],
@@ -67,6 +68,9 @@
   let chosen = false;
   let locale = readLocale();
   let selected = locale;
+  let observer = null;
+  let scheduledApply = false;
+  let applying = false;
 
   function readLocale() {
     try {
@@ -106,7 +110,7 @@
     if (!match) return t(original);
     return match[1] + t(match[2]) + match[3];
   }
-  function apply(scope) {
+  function applyInternal(scope) {
     const rootNode = scope && scope.nodeType ? scope : root.document?.body;
     if (!rootNode || !root.document) return;
     const walker = root.document.createTreeWalker(rootNode, root.NodeFilter.SHOW_TEXT, {
@@ -157,6 +161,34 @@
       }
     }
   }
+  // A few views set text/attributes directly after their initial render. When
+  // English is active, translate those late nodes too without requiring every
+  // renderer to remember an explicit t() call. Chinese mode observes nothing.
+  function scheduleApply() {
+    if (scheduledApply || applying || locale !== 'en') return;
+    scheduledApply = true;
+    const run = () => {
+      scheduledApply = false;
+      if (locale === 'en') apply(root.document?.body);
+    };
+    if (typeof root.queueMicrotask === 'function') root.queueMicrotask(run);
+    else if (typeof root.setTimeout === 'function') root.setTimeout(run, 0);
+  }
+  function startObserver() {
+    if (observer || locale !== 'en' || typeof root.MutationObserver !== 'function' || !root.document?.body) return;
+    observer = new root.MutationObserver(scheduleApply);
+    observer.observe(root.document.body, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['title', 'aria-label', 'placeholder', 'alt'] });
+  }
+  function stopObserver() {
+    observer?.disconnect?.();
+    observer = null;
+  }
+  function apply(scope) {
+    if (applying) return;
+    applying = true;
+    try { applyInternal(scope); }
+    finally { applying = false; }
+  }
   function publishChoice(active) {
     try { root.UBOVMRuntime?.api?.postMessage({ action: 'setInterfaceLocale', locale: active ? locale : selected, active }); }
     catch { /* The next page load reports the saved language. */ }
@@ -192,6 +224,7 @@
     locale = resolved;
     if (root.document?.documentElement) root.document.documentElement.lang = resolved === 'en' ? 'en' : 'zh-CN';
     apply(root.document?.body);
+    if (resolved === 'en') startObserver(); else stopObserver();
     updateToggle();
     root.dispatchEvent?.(new root.CustomEvent('ubovm-locale', { detail: { locale: resolved } }));
     publishChoice(true);
@@ -218,7 +251,7 @@
       if (selected === locale) return;
       try { root.UBOVMRuntime?.api?.postMessage({ action: 'restartWindow' }); } catch { /* The notice still tells the user to restart. */ }
     });
-    if (locale === 'en') { if (root.document.documentElement) root.document.documentElement.lang = 'en'; apply(root.document.body); }
+    if (locale === 'en') { if (root.document.documentElement) root.document.documentElement.lang = 'en'; apply(root.document.body); startObserver(); }
     updateToggle();
     publishChoice(true);
   }

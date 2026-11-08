@@ -120,12 +120,19 @@ window.createConversationOutline = ({ scroller, beforeNavigate, onError = () => 
         }
         turn.text = entry.text;
         turn.steering = Boolean(entry.steeringStatus);
-        turn.button.dataset.steering = String(turn.steering);
         const prefix = turn.steering ? '引导 · ' : '';
-        turn.button.title = `${index + 1}. ${prefix}${label.slice(0, 500)}`;
-        turn.button.setAttribute('aria-label', `第 ${index + 1} 轮：${prefix}${label.slice(0, 160)}`);
-        turn.number.textContent = String(index + 1).padStart(2, '0');
-        turn.label.textContent = prefix + label.slice(0, 160);
+        const labelText = prefix + label.slice(0, 160);
+        const titleText = `${index + 1}. ${prefix}${label.slice(0, 500)}`;
+        const ariaLabel = `第 ${index + 1} 轮：${prefix}${label.slice(0, 160)}`;
+        // Appending new turns does not change existing labels; only rewrite the
+        // outline attributes that actually changed to avoid thousands of DOM
+        // mutations while a long history is filling.
+        if (turn.button.dataset.steering !== String(turn.steering)) turn.button.dataset.steering = String(turn.steering);
+        if (turn.titleText !== titleText) { turn.button.title = titleText; turn.titleText = titleText; }
+        if (turn.ariaLabel !== ariaLabel) { turn.button.setAttribute('aria-label', ariaLabel); turn.ariaLabel = ariaLabel; }
+        const numberText = String(index + 1).padStart(2, '0');
+        if (turn.numberText !== numberText) { turn.number.textContent = numberText; turn.numberText = numberText; }
+        if (turn.labelText !== labelText) { turn.label.textContent = labelText; turn.labelText = labelText; }
         return turn;
       });
       const keep = new Set(next.map(turn => turn.item));

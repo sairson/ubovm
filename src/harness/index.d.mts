@@ -332,14 +332,16 @@ export interface ReasonAdapterOptions {
   maxRepairs?: number;
   /** Worker management actions allowed per review; default 12. */
   maxWorkerActions?: number;
+  /** Abortable sleep used by wait_worker_sleep; injectable for hosts and tests. */
+  sleep?: (milliseconds: number, signal?: AbortSignal) => Promise<void>;
   onEvent?: (event: ReasonEvent) => unknown;
   beforeModel?: (request: ReasonModelRequest) => Awaitable<Context>;
 }
 export type ReasonEvent = { revision: number } & (
   | { type: 'reason_start' }
   | { type: 'reason_repair'; attempt: number; error: string }
-  | { type: 'reason_normalized'; fields: string[] }
-  | { type: 'reason_decision'; decision: ReasonDecision; modelCalls: number }
+  | { type: 'reason_normalized'; fields: string[]; aliasFallback?: boolean }
+  | { type: 'reason_decision'; decision: ReasonDecision; modelCalls: number; viaTool?: boolean }
   | { type: 'pi_event'; attempt: number; event: AgentEvent }
 );
 export interface PiReasonOptions extends ReasonAdapterOptions {
@@ -560,6 +562,19 @@ export interface CollaborationTurnOptions {
   context?: JsonValue;
   signal?: AbortSignal;
   onEvent?: (event: CollaborationEvent) => unknown;
+  /**
+   * Sidebar/embedded chats: build the turn from the supplied bounded `messages`
+   * and never read or write the durable collaboration transcript. Memory, MCP,
+   * skills and Swarm state keep their normal storage.
+   */
+  transient?: boolean;
+  /**
+   * Inspection-only turn: offer exactly `configuration.tools` and suppress the
+   * workspace, internal, MCP, skills, summary, Swarm and collaboration tools.
+   * Used by the exploration sidebar, which manages Workers/intents and reads
+   * exploration evidence without running execution tools.
+   */
+  inspectOnly?: boolean;
 }
 export function runCollaboration(options: CollaborationTurnOptions): Promise<string>;
 export interface SwarmOptions {
@@ -668,6 +683,9 @@ export interface ContextSummaryRequest {
   /** UTF-16 source range; segments are contiguous and never split a surrogate pair. */
   sourceOffset: number;
   sourceLength: number;
+  /** Zero-based segment position and total count when the source is split across bounded calls. */
+  segmentIndex?: number;
+  segmentCount?: number;
   /** True when this request contains only one segment of the source evidence. */
   partial: boolean;
 }
@@ -736,6 +754,12 @@ export interface ContextEvidencePage {
 }
 export interface ContextSummaryRuntime {
   transform(request: ModelRequestInput): Promise<Context>;
+  /**
+   * Rehydrate the host checkpoints that covered source messages a persisted
+   * transcript pruned. Returned messages are byte-identical to the projection
+   * checkpoint and are already protected from re-summarization.
+   */
+  carryover(scope: string, messages: Context['messages']): Promise<Context['messages']>;
   readEvidence(id: string, options?: ReadContextEvidenceOptions): Promise<ContextEvidencePage>;
   tools(binding: WorkerBinding): Promise<AgentTool[]>;
   close(): Promise<void>;
@@ -760,6 +784,8 @@ export interface McpStdioServer extends McpServerCommon {
   cwd?: string;
   url?: never;
   headers?: never;
+  insecureTls?: never;
+  tlsCa?: never;
 }
 export interface McpHttpServer extends McpServerCommon {
   transport: 'streamable_http' | 'streamable-http' | 'sse';
@@ -769,6 +795,10 @@ export interface McpHttpServer extends McpServerCommon {
   args?: never;
   env?: never;
   cwd?: never;
+  /** Accept a self-signed or otherwise untrusted certificate for this server only. */
+  insecureTls?: boolean;
+  /** Extra PEM certificate(s) trusted for this server instead of skipping verification. */
+  tlsCa?: string;
 }
 export interface McpDisabledServer extends McpServerCommon { enabled: false; transport?: McpTransport }
 export type McpServerOptions = McpStdioServer | McpHttpServer | McpDisabledServer;
@@ -777,6 +807,8 @@ export interface McpOptions {
   connectTimeoutMs?: number;
   callTimeoutMs?: number;
   maxResultBytes?: number;
+  /** Host-level switch: skip certificate validation for every HTTP server. */
+  insecureTls?: boolean;
   signal?: AbortSignal;
 }
 export interface McpDiagnostic {
@@ -926,24 +958,7 @@ export interface MemorySnapshot {
   audit: { type: string; note_id: string; note_type: string; source_worker: string; deleted_by: string; reason: string; created_at: string }[];
   agenda?: ExplorationAgendaDirection[];
   toolEvidence?: ToolEvidence[];
-  delivery?: DeliveryRecord;
   agentKnowledge?: { version: 1; lessons: KnowledgeLesson[]; reflectionKeys?: string[]; queue?: LearningQueueState };
-}
-export type DeliveryStage = 'develop' | 'audit' | 'security' | 'deploy' | 'operate';
-export interface DeliveryEvidence { workerId: string; toolCallId: string; toolName: string; digest: string }
-export interface DeliveryAcceptance {
-  artifact: string; summary: string; evidence: DeliveryEvidence[];
-  scope?: string; endpoint?: string; vantage?: string; rollback?: string; monitoring?: string; owner?: string;
-}
-export interface DeliveryRecord {
-  revision: number; projectType: 'new-development'; objective: string; artifact: string;
-  acceptance: Partial<Record<DeliveryStage, DeliveryAcceptance>>;
-  blocked?: Partial<Record<DeliveryStage, { summary: string; owner: string }>>;
-  findings: { id: string; severity: 'critical' | 'high' | 'medium' | 'low'; summary: string; evidence: DeliveryEvidence[];
-    status: 'open' | 'resolved'; assessment?: { summary: string; evidence: DeliveryEvidence[]; artifact: string } }[];
-  history: { revision: number; action: string; workerId: string; artifact: string; stage: string | null;
-    findingId: string | null; summary: string | null; evidence: { workerId: string; toolCallId: string }[]; acceptance?: DeliveryAcceptance | null; at: string }[];
-  evidenceFloor?: number; staleEvidence?: string[];
 }
 export interface LearningQueueState {
   version: 1;
@@ -1073,10 +1088,6 @@ export class MemoryStore {
   toolEvidence(workerId: string, toolCallId: string): ToolEvidence | undefined;
   toolCallIds(workerId: string): string[];
   knowledgeSnapshot(): { sessionId: string; agentKnowledge?: { version: 1; lessons: KnowledgeLesson[] } };
-  deliverySnapshot(): (Omit<DeliveryRecord, 'staleEvidence' | 'evidenceFloor'> & { historyCount: number }) | undefined;
-  deliveryHistory(options?: { offset?: number; limit?: number; expectedRevision?: number }): {
-    revision: number; total: number; items: DeliveryRecord['history']; nextOffset: number | null;
-  };
   subscribe(listener: (event: { revision: number }) => unknown): () => boolean;
   flush(): Promise<void>;
   commit<T>(mutate: (snapshot: MemorySnapshot) => T): Promise<T>;
@@ -1085,8 +1096,9 @@ export class MemoryStore {
 }
 export interface TodoTool extends AgentTool {
   syncPlan(owner: string, items: { id?: string; content: string; status?: TodoStatus }[]): Promise<void>;
-  summary(owner?: string): string;
-  promptSummary(owner?: string): string;
+  /** `ownPlan:false` hides the owner's host-managed plan- items (goal Workers get them in the phase assignment). */
+  summary(owner?: string, options?: { ownPlan?: boolean }): string;
+  promptSummary(owner?: string, options?: { ownPlan?: boolean }): string;
 }
 export interface NoteTool extends AgentTool { recoverPromotions(): Promise<string[]> }
 export interface NoteEvidence {
@@ -1099,7 +1111,6 @@ export interface NoteEvidence {
 export function createTodoTool(options: { store: MemoryStore; sessionId: string; workerId?: string }): TodoTool;
 export function createAskHumanTool(options: { askHuman?: (request: AskHumanRequest) => Awaitable<AskHumanAnswer>; sessionId?: string; workerId?: string }): AgentTool;
 export function normalizeAskHumanInput(input: unknown): { question: string; options: AskHumanOption[]; multiple: boolean; allowCustom: boolean };
-export function createDeliveryTool(options: { store: MemoryStore; sessionId: string; workerId?: string }): AgentTool & { summary(): string };
 export function createNoteTool(options: {
   store: MemoryStore; sessionId: string; workerId?: string; blackboard?: Blackboard; canPromote?: boolean;
   evidenceProvider?: (binding: { toolCallId: string; sessionId: string; workerId: string }) => Awaitable<NoteEvidence | undefined>;
@@ -1235,7 +1246,7 @@ export class BrowserManager implements BrowserBackend {
 }
 export function createBrowserTools(options: BrowserBinding & { manager?: Pick<BrowserBackend, 'status' | 'call'> }): AgentTool[];
 
-export type InternalToolName = 'delivery_workflow' | 'browser_action' | 'browser_connection_status' | 'fetch_web_content' | 'note' | 'todo' | 'web_search' | 'read_skills_resource' | 'run_local_skill_script' | 'run_linux_ssh_command' | 'run_local_shell_command' | 'run_python' | 'manage_python_environment' | 'upload_sftp' | 'deploy_remote_service' | 'background_commands' | 'learn_capability';
+export type InternalToolName = 'browser_action' | 'browser_connection_status' | 'fetch_web_content' | 'note' | 'todo' | 'web_search' | 'read_skills_resource' | 'run_local_skill_script' | 'run_linux_ssh_command' | 'run_local_shell_command' | 'run_python' | 'manage_python_environment' | 'upload_sftp' | 'deploy_remote_service' | 'background_commands' | 'learn_capability';
 /** Tools that exist only when the host supplies an interactive hook (a human is present); never in goal sessions. */
 export type HostInteractionToolName = 'ask_human';
 export const INTERNAL_TOOL_NAMES: readonly InternalToolName[];

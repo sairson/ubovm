@@ -83,7 +83,7 @@ test('assist tool groups and cards use page surfaces, neutral live states and no
       const style = getComputedStyle(node);
       return { radius: style.borderTopLeftRadius, border: style.borderTopWidth, color: style.color };
     });
-    assert.equal(failedStatus.radius, '2px');
+    assert.equal(failedStatus.radius, '4px');
     assert.equal(failedStatus.border, '1px');
     const failed = await colorOf(page, '.tool-group > .tool-card[data-status="failed"] .tool-status', 'color');
     assert(failed.r > failed.g, 'failed label stays red');

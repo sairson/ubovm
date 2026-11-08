@@ -72,7 +72,25 @@ function renderNode(node, index, detail, indexes) {
   const intent = node.intent ?? {};
   const bits = [`${ref} intent${parentText} status=${intent.status ?? 'unknown'}`];
   if (intent.priority) bits.push(`prio=${intent.priority}`);
-  if (detail === 'topology-only') { bits.push('detail=omitted'); return bits.join(' '); }
+  if (detail === 'topology-only') {
+    if (node.resultId) {
+      const resultIndex = indexes.get(node.resultId);
+      if (resultIndex !== undefined) bits.push(`result=${refOf(resultIndex)}`);
+    }
+    bits.push('detail=omitted');
+    return bits.join(' ');
+  }
+  // Completed Workers are archived to a single actionable line: their result
+  // fact carries the evidence details, so repeating description/keyPoints/attempts
+  // in every later review only bloats the context.
+  if (intent.status === 'completed') {
+    if (node.resultId) {
+      const resultIndex = indexes.get(node.resultId);
+      if (resultIndex !== undefined) bits.push(`result=${refOf(resultIndex)}`);
+    }
+    bits.push('detail=archived');
+    return bits.join(' ');
+  }
   if (Array.isArray(intent.keyPoints) && intent.keyPoints.length) bits.push(`kp=[${intent.keyPoints.slice(0, profile.list).map(item => clip(item, profile.point)).join('|')}]`);
   if (intent.description) bits.push(`desc="${clip(intent.description, profile.desc)}"`);
   if (node.attempts?.length) bits.push(`attempts=${node.attempts.length}`);
@@ -81,10 +99,6 @@ function renderNode(node, index, detail, indexes) {
     bits.push(`step="${clip(latest.checkpoint.plan[0].description, profile.desc)}"`);
   }
   if (['failed', 'interrupted'].includes(intent.status) && latest?.error) bits.push(`error="${clip(latest.error, profile.desc)}"`);
-  if (intent.status === 'completed' && node.resultId) {
-    const resultIndex = indexes.get(node.resultId);
-    if (resultIndex !== undefined) bits.push(`result=${refOf(resultIndex)}`);
-  }
   return bits.join(' ');
 }
 
@@ -115,24 +129,72 @@ function render(snapshot, detail) {
  * anyway with over_budget=true so the host can surface the condition instead of
  * silently truncating branches.
  */
-export function buildGraphView(snapshot, { maxChars = 80000 } = {}) {
+export function buildGraphView(snapshot, { maxChars = 80000, maxNodes = 0 } = {}) {
   if (!snapshot || snapshot.schemaVersion !== 1 || !Array.isArray(snapshot.nodes)) throw new TypeError('A blackboard snapshot is required');
   const limit = Number.isSafeInteger(maxChars) && maxChars > MIN_LINE_CHARS ? maxChars : 80000;
+  const nodeLimit = Number.isSafeInteger(maxNodes) && maxNodes > 0 ? maxNodes : 0;
   let rendered;
   for (const detail of GRAPH_DETAIL_LEVELS) {
     rendered = render(snapshot, detail);
-    if (rendered.text.length <= limit) {
+    if (rendered.text.length <= limit && (!nodeLimit || snapshot.nodes.length <= nodeLimit)) {
       return { ...graphResult(snapshot, rendered, detail, false), aliases: aliasMap(snapshot) };
     }
+  }
+  // A long campaign can grow the topology beyond any prompt budget. Keep the
+  // complete topology contract for small/medium boards, but under an explicit
+  // node budget render only the actionable frontier + recent tail. Decisions are
+  // still validated against the full board; omitted nodes stay reachable through
+  // exploration_graph search/node/read_fact.
+  if (nodeLimit && snapshot.nodes.length > nodeLimit) {
+    const bounded = renderBounded(snapshot, { nodeLimit });
+    return { ...graphResult(snapshot, bounded, 'topology-only', false, true), aliases: aliasMap(snapshot) };
   }
   return { ...graphResult(snapshot, rendered, 'topology-only', true), aliases: aliasMap(snapshot) };
 }
 
-function graphResult(snapshot, rendered, detail, overBudget) {
+function renderBounded(snapshot, { nodeLimit }) {
+  const index = indexOf(snapshot);
+  const selected = new Set();
+  const add = position => { if (position >= 0 && position < snapshot.nodes.length) selected.add(position); };
+  const root = index.get(snapshot.rootId);
+  add(root);
+  const openStatuses = new Set(['pending', 'running', 'failed', 'interrupted', 'blocked']);
+  for (const [position, node] of snapshot.nodes.entries()) {
+    if (node.kind === 'intent' && openStatuses.has(node.intent?.status)) {
+      add(position);
+      for (const parentId of node.parentIds ?? []) add(index.get(parentId));
+      if (node.resultId) add(index.get(node.resultId));
+    }
+  }
+  // Recent tail keeps newly created facts/aliases visible even when they are not
+  // attached to an open intent yet.
+  for (let position = Math.max(0, snapshot.nodes.length - nodeLimit); position < snapshot.nodes.length; position++) add(position);
+  // Keep direct parents for every selected node so parent edges never dangle.
+  for (const position of [...selected]) {
+    for (const parentId of snapshot.nodes[position].parentIds ?? []) add(index.get(parentId));
+  }
+  const positions = [...selected].sort((left, right) => left - right);
+  const lines = [];
+  let edges = 0;
+  let intents = 0, facts = 0;
+  for (const node of snapshot.nodes) {
+    edges += node.parentIds?.length ?? 0;
+    if (node.kind === 'intent') intents++;
+    if (node.kind === 'fact') facts++;
+  }
+  lines.push('# Exploration graph (bounded topology)');
+  lines.push(`revision=${snapshot.revision} nodes=${snapshot.nodes.length} intents=${intents} facts=${facts} edges=${edges} root=${refOf(root ?? 0)} detail=topology-only truncated=true listed_nodes=${positions.length} omitted_nodes=${snapshot.nodes.length - positions.length}`);
+  lines.push('This view lists the root, open/failed branches, their direct parents/results and the recent tail. Other nodes and edges exist but are omitted from the prompt; locate them with exploration_graph action=overview/search, then node/children/parents/read_fact. Never invent an alias that is not returned by the graph tool.');
+  for (const position of positions) lines.push(renderNode(snapshot.nodes[position], position, 'topology-only', index));
+  return { text: lines.join('\n'), index, intents, facts, edges, factsOmitted: facts, listedNodes: positions.length };
+}
+
+function graphResult(snapshot, rendered, detail, overBudget, truncated = false) {
   return {
     text: rendered.text,
     detail,
     overBudget,
+    truncated,
     stats: {
       revision: snapshot.revision,
       nodes: snapshot.nodes.length,
@@ -143,6 +205,8 @@ function graphResult(snapshot, rendered, detail, overBudget) {
       detail,
       omittedFacts: rendered.facts,
       overBudget,
+      truncated,
+      listedNodes: rendered.listedNodes ?? snapshot.nodes.length,
       chars: rendered.text.length
     }
   };

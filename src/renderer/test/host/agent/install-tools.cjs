@@ -73,3 +73,43 @@ test('install tools require a settings host and route skill installs to the dest
   assert.deepEqual(f.values.mcp.servers, [{ name: 'local', command: 'node', required: false }]);
   assert.deepEqual(JSON.parse(f.vault.get([...f.vault.keys()][0])).env, { A: '1' });
 });
+
+test('install_mcp_server verifies the connection and reports the real result', async t => {
+  const files = await fs.mkdtemp(path.join(os.tmpdir(), 'ubovm-verify-'));
+  t.after(() => fs.rm(files, { recursive: true, force: true }));
+  assert.throws(() => createInstallTools({ settings: {}, destination: files, verifyMcpServer: 1 }), /verifyMcpServer must be a function/);
+  const f = fixture(), events = [], probes = [];
+  const install = createInstallTools({
+    settings: f.settings, destination: path.join(files, 'skills'), onInstalled: event => events.push(event),
+    verifyMcpServer: async server => {
+      probes.push(server);
+      if (server.name === 'good') return { connected: true, tools: ['mcp__good__ping'] };
+      return { connected: false, tools: [], error: 'MCP server bad connection or discovery failed: fetch failed <- self-signed certificate (DEPTH_ZERO_SELF_SIGNED_CERT)' };
+    }
+  });
+  const [, mcp] = install.tools('session');
+  const good = await mcp.execute('call', { name: 'good', transport: 'streamable_http', url: 'https://mcp.example/mcp', headers: { Authorization: 'Bearer one' } }, undefined);
+  assert.deepEqual(good.details.connection, { connected: true, tools: ['mcp__good__ping'] });
+  assert.equal(events.at(-1).connection.connected, true);
+  // Credentials reach the verifier but never the settings file.
+  assert.equal(probes[0].headers.Authorization, 'Bearer one');
+  assert(!JSON.stringify(f.values).includes('Bearer one'));
+
+  const bad = await mcp.execute('call', { name: 'bad', command: 'node' }, undefined);
+  assert.equal(bad.details.connection.connected, false);
+  assert.match(bad.details.connection.error, /DEPTH_ZERO_SELF_SIGNED_CERT/);
+  assert.equal(events.at(-1).connection.connected, false);
+
+  const throwing = createInstallTools({ settings: f.settings, destination: path.join(files, 'skills'),
+    verifyMcpServer: async () => { throw new Error('probe exploded'); } });
+  const [, mcp2] = throwing.tools('session');
+  const broken = await mcp2.execute('call', { name: 'boom', command: 'node' }, undefined);
+  assert.equal(broken.details.connection.connected, false);
+  assert.match(broken.details.connection.error, /probe exploded/);
+
+  // A disabled server is saved without spending a connection attempt.
+  const before = probes.length;
+  const off = await mcp.execute('call', { name: 'off', command: 'node', enabled: false }, undefined);
+  assert.equal(off.details.connection, undefined);
+  assert.equal(probes.length, before);
+});

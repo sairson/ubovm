@@ -5,7 +5,7 @@ import { buildExplorationIndex } from './exploration-index.mjs';
  * Project persisted blackboard state into a compact, one-way graph for a model.
  * Storage IDs and execution bookkeeping stay in the host-side lookup closures.
  */
-export function buildBlackboardContext(snapshot, { focusId } = {}) {
+export function buildBlackboardContext(snapshot, { focusId, corrections, progressHistory, recordProgress = false } = {}) {
   if (!snapshot || snapshot.schemaVersion !== 1 || !Array.isArray(snapshot.nodes)) {
     throw new TypeError('A version 1 blackboard snapshot with nodes is required');
   }
@@ -123,6 +123,23 @@ export function buildBlackboardContext(snapshot, { focusId } = {}) {
         if (checkpoint.phase === 'execute' && typeof checkpoint.plan?.[0]?.description === 'string') {
           projected.progress.currentStep = summarizeError(checkpoint.plan[0].description);
         }
+        // Tool names/statuses only; args and results stay private in the checkpoint.
+        if (Array.isArray(checkpoint.ledger)) {
+          const recentTools = checkpoint.ledger.slice(-3).flatMap(entry =>
+            entry && typeof entry.toolName === 'string' && typeof entry.status === 'string'
+              ? [{ tool: entry.toolName, status: entry.status }] : []);
+          if (recentTools.length) projected.progress.recentTools = recentTools;
+        }
+        if (progressHistory) {
+          const key = JSON.stringify([node.attempts.length, projected.progress.phase, projected.progress.completedSteps,
+            projected.progress.remainingSteps, projected.progress.currentStep ?? '']);
+          const previous = progressHistory.get(node.id);
+          if (recordProgress) {
+            const unchanged = previous?.key === key ? previous.unchanged + 1 : 0;
+            progressHistory.set(node.id, { key, unchanged });
+            projected.progress.unchangedReviews = unchanged;
+          } else if (previous) projected.progress.unchangedReviews = previous.unchanged;
+        }
       }
     }
     if (node.provenance) {
@@ -131,6 +148,14 @@ export function buildBlackboardContext(snapshot, { focusId } = {}) {
         noteCount: new Set(node.provenance.noteIds ?? []).size,
         workerCount: new Set(node.provenance.workerIds ?? []).size,
         toolCallCount: new Set(node.provenance.toolCallIds ?? []).size,
+      };
+    }
+    const correction = corrections?.get(node.id);
+    if (correction && typeof correction.text === 'string') {
+      projected.lastCorrection = {
+        type: correction.type,
+        text: summarizeError(correction.text),
+        at: correction.at,
       };
     }
     nodes.push(projected);
@@ -147,7 +172,10 @@ export function buildBlackboardContext(snapshot, { focusId } = {}) {
   return {
     revision: snapshot.revision,
     data,
-    text: JSON.stringify(data, null, 2),
+    // Model-facing evidence is compact JSON: the same information without the
+    // pretty-printer's indentation, which costs roughly 15% of every Worker
+    // model call (context.text is re-sent at each model boundary).
+    text: JSON.stringify(data),
     resolveId(alias) {
       if (typeof alias !== 'string' || !/^n[1-9]\d*$/.test(alias) || !aliasToId.has(alias)) {
         throw new RangeError('Unknown blackboard node alias in this context');

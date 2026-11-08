@@ -13,7 +13,6 @@ import { createPythonTool } from './terminals/python/index.mjs';
 import { createPythonEnvironmentTool } from './terminals/python/environment.mjs';
 import { createTodoTool } from './todo/index.mjs';
 import { createAskHumanTool } from './ask-human/index.mjs';
-import { createDeliveryTool } from './delivery/index.mjs';
 import { createNoteTool } from './note/index.mjs';
 import { createDomainInventoryTool } from './domain-inventory/index.mjs';
 import { BrowserManager, createBrowserTools } from './network/browser/index.mjs';
@@ -26,7 +25,7 @@ import { createSFTPUploadTool, createRemoteDeployTool } from './terminals/ssh-te
 import { createBackgroundTaskRegistry } from './shared/process/background-tasks.mjs';
 import { createBackgroundCommandsTool } from './background/index.mjs';
 
-export const INTERNAL_TOOL_NAMES = Object.freeze(['delivery_workflow', 'browser_action', 'browser_connection_status', 'fetch_web_content', 'note', 'todo', 'domain_inventory', 'web_search', 'read_skills_resource', 'run_local_skill_script', 'run_linux_ssh_command', 'run_local_shell_command', 'run_python', 'manage_python_environment', 'upload_sftp', 'deploy_remote_service', 'background_commands', 'learn_capability']);
+export const INTERNAL_TOOL_NAMES = Object.freeze(['browser_action', 'browser_connection_status', 'fetch_web_content', 'note', 'todo', 'domain_inventory', 'web_search', 'read_skills_resource', 'run_local_skill_script', 'run_linux_ssh_command', 'run_local_shell_command', 'run_python', 'manage_python_environment', 'upload_sftp', 'deploy_remote_service', 'background_commands', 'learn_capability']);
 
 /**
  * Tools that only exist when a human is present: they require the host
@@ -48,10 +47,18 @@ export async function createInternalTools({
   sessionId = requireText(sessionId ?? blackboard?.snapshot().sessionId, 'sessionId');
   if (blackboard && blackboard.snapshot().sessionId !== sessionId) throw new Error('Blackboard belongs to another session');
   if (!Array.isArray(allowedTools) || allowedTools.some(name => !KNOWN_TOOL_NAMES.includes(name))) throw new Error('allowedTools must contain known internal tool names');
-  const allowed = new Set(allowedTools);
   if (store && memoryFile) throw new Error('Provide store or memoryFile, not both');
   store ??= memoryFile ? await MemoryStore.open({ filePath: memoryFile, sessionId }) : new MemoryStore({ sessionId });
   if (!(store instanceof MemoryStore) || store.sessionId !== sessionId) throw new Error('MemoryStore belongs to another session');
+  // SSH execution is only meaningful when at least one complete endpoint is
+  // configured. Keep unavailable SSH tools out of the agent's tool surface
+  // entirely instead of exposing callable tools that can only fail.
+  const SSH_TOOLS = new Set(['run_linux_ssh_command', 'upload_sftp', 'deploy_remote_service']);
+  const sshEndpoints = Array.isArray(ssh?.profiles) ? ssh.profiles : ssh?.host ? [ssh] : [];
+  const sshReady = Boolean(sshPool) || sshEndpoints.some(endpoint =>
+    typeof endpoint?.host === 'string' && endpoint.host.trim()
+    && typeof endpoint?.username === 'string' && endpoint.username.trim());
+  const allowed = new Set(allowedTools.filter(name => !SSH_TOOLS.has(name) || sshReady));
   let learning = knowledge === false ? undefined : createKnowledge({ ...knowledge, store, sessionId });
   const useBrowser = browser !== false && (allowed.has('browser_action') || allowed.has('browser_connection_status'));
   const ownedBrowser = !browserManager && useBrowser;
@@ -148,7 +155,6 @@ export async function createInternalTools({
     checkLifetime(signal);
     if (!workers.has(workerId)) {
       const todo = createTodoTool({ store, sessionId, workerId });
-      const delivery = createDeliveryTool({ store, sessionId, workerId });
       const note = createNoteTool({ store, sessionId, workerId, blackboard, canPromote, evidenceProvider });
       const domains = createDomainInventoryTool({ store, sessionId, workerId });
       const ask = typeof askHuman === 'function' ? createAskHumanTool({ askHuman, sessionId, workerId }) : undefined;
@@ -156,8 +162,8 @@ export async function createInternalTools({
         ...(localShell !== false && allowed.has('run_local_shell_command') ? [createLocalShellTool(localShell)] : []),
         ...(pool?.get() && allowed.has('run_linux_ssh_command') ? [pool.require().tool()] : [])
       ];
-      workers.set(workerId, { todo, note, delivery, domains, tools: [
-        ...shared, ...shells, todo, note, delivery, domains, ...(ask ? [ask] : []), ...(learning ? [learning.tool(workerId)] : []),
+      workers.set(workerId, { todo, note, domains, tools: [
+        ...shared, ...shells, todo, note, domains, ...(ask ? [ask] : []), ...(learning ? [learning.tool(workerId)] : []),
         ...(backgroundTool ? [backgroundTool] : []),
         ...(manager ? createBrowserTools({ manager, sessionId, workerId, target }) : [])
       ].filter(tool => allowed.has(tool.name)).map(tool => managed(controlledCommand(tool, workerId, registerCommand), workerId)) });
@@ -177,9 +183,11 @@ export async function createInternalTools({
       try { learned = await learning?.context({ query: (node.intent?.description ?? '').slice(0, 4096), signal }); }
       catch { checkLifetime(signal); reportLearningFailure(); }
       return [
-        worker.todo.summary(node.id),
-        allowed.has('delivery_workflow') ? worker.delivery.summary() : '',
+        // A goal Worker's phase assignment already carries its own plan, so
+        // its host-managed plan- items are omitted from the per-boundary board.
+        worker.todo.summary(node.id, { ownPlan: !node.intent }),
         allowed.has('domain_inventory') ? worker.domains.summary() : '',
+        allowed.has('note') ? worker.note.summary() : '',
         allowed.has('background_commands') ? backgroundTasks.summary() : '',
         learned
       ].filter(Boolean).join('\n\n');

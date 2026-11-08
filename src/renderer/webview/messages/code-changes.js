@@ -1,6 +1,6 @@
 (() => {
   const states = new WeakMap();
-  const tr = value => window.UBOVMi18n?.t(value) ?? value;
+  const tr = (value, ...args) => window.UBOVMi18n?.t(value, ...args) ?? value;
   const node = (tag, className, text) => { const item = document.createElement(tag); item.className = className; if (text !== undefined) item.textContent = text; return item; };
   const amount = value => Number(value || 0).toLocaleString('en-US');
   const counts = value => {
@@ -99,8 +99,7 @@
         }
       };
       if (!empty) {
-        const list = node('ul', 'code-change-files');
-        for (const file of files) {
+        const renderFile = file => {
           const row = node('li', 'code-change-file');
           const open = node('button', 'code-change-path', file.path); open.type = 'button';
           open.title = `${file.path} · 工作区 ${file.root + 1} · 点击查看本轮修改差异`; open.disabled = state.pending;
@@ -108,14 +107,59 @@
           const badge = file.undone ? '已撤销' : file.state === 'conflict' ? '存在冲突' : file.state !== 'applied' ? '待核对' : file.operation === 'create' ? '新增' : file.operation === 'delete' ? '删除' : '修改';
           const kind = node('span', 'code-change-kind', tr(badge));
           kind.dataset.kind = file.undone ? 'undone' : file.state === 'conflict' ? 'conflict' : file.state !== 'applied' ? 'pending' : file.operation || 'replace';
+          const openEditor = node('button', 'code-change-open');
+          openEditor.type = 'button'; openEditor.disabled = state.pending;
+          openEditor.title = tr('在编辑器中打开') + ' · ' + file.path;
+          openEditor.setAttribute('aria-label', tr('在编辑器中打开') + ' ' + file.path);
+          openEditor.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3h7v7m0-7-9 9"/><path d="M19 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h5"/></svg><span class="code-change-open-label">' + tr('打开') + '</span>';
+          openEditor.addEventListener('click', () => run('openTurnFile', file.id));
           if (file.reason) row.title = file.reason;
-          row.append(open, kind, counts(file));
-          list.append(row);
-        }
+          row.append(open, kind, counts(file), openEditor);
+          return row;
+        };
+        const visible = files.slice(0, 3);
+        const list = node('ul', 'code-change-files');
+        for (const file of visible) list.append(renderFile(file));
         children.push(list);
+        if (files.length > visible.length) {
+          // Keep the card compact: the first three changed files are visible,
+          // the rest stay one click away and preserve their expanded state
+          // while execution summaries stream in.
+          const more = node('details', 'code-change-more');
+          more.open = state.moreOpen === true;
+          const moreSummary = node('summary', 'code-change-more-toggle', tr('更多 {0} 个文件', files.length - visible.length));
+          const moreList = node('ul', 'code-change-files');
+          for (const file of files.slice(visible.length)) moreList.append(renderFile(file));
+          more.append(moreSummary, moreList);
+          more.addEventListener('toggle', () => { state.moreOpen = more.open; });
+          children.push(more);
+        }
+        const blocked = files.filter(file => !file.undone && file.state && file.state !== 'applied').length;
+        if (blocked) {
+          const warning = node('p', 'code-change-warning', tr('有 {0} 个文件存在冲突或尚未确认的写入，请先在编辑器中核对并保存，再撤销或继续修改。', blocked));
+          warning.setAttribute('role', 'status');
+          children.push(warning);
+        }
+        const actions = node('div', 'code-change-actions');
         const undo = node('button', 'code-change-undo', tr(state.pending ? '正在处理…' : summary.undone ? '本轮修改已撤销' : '一键撤销本轮全部修改'));
-        undo.type = 'button'; undo.disabled = state.pending || options.busy || summary.undone;
-        undo.addEventListener('click', () => run('undoCodeTurn')); children.push(undo);
+        undo.type = 'button'; undo.disabled = state.pending || options.busy || summary.undone || blocked > 0;
+        if (blocked) undo.title = tr('存在冲突或待核对文件，请先核对后再撤销。');
+        undo.addEventListener('click', () => run('undoCodeTurn')); actions.append(undo);
+        // Surface the two follow-up actions at the place where edits are read,
+        // instead of making the reader rediscover them in the topbar overflow.
+        const validate = node('button', 'code-change-validate', tr('验证修改'));
+        validate.type = 'button'; validate.disabled = state.pending || options.busy;
+        validate.title = tr('检查修改后的分支、诊断与项目建议检查');
+        validate.addEventListener('click', () => run('validateCodeChanges'));
+        const reviewAll = node('button', 'code-change-review', tr('查看全部更改'));
+        reviewAll.type = 'button'; reviewAll.disabled = state.pending;
+        reviewAll.title = tr('列出本轮及历史文件修改');
+        reviewAll.addEventListener('click', () => run('reviewCodeChanges'));
+        actions.append(validate);
+        // The native review quick-pick is assist-scoped; goal execution panels
+        // already expose their own review entry points.
+        if (document.body.dataset.mode !== 'goal') actions.append(reviewAll);
+        children.push(actions);
         children.push(node('p', 'code-change-scope', tr('仅包含工作区编码工具记录的文件修改；SSH、终端和外部工具的操作不在此撤销范围内。') + (summary?.approximate ? tr(' 大规模差异的行数显示上限估算。') : '')));
       }
       if (state.error) { const error = node('p', 'code-change-error', state.error); error.setAttribute('role', 'alert'); children.push(error); }

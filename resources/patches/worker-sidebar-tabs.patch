@@ -2,10 +2,10 @@ diff --git a/src/vs/workbench/browser/parts/paneCompositeBar.ts b/src/vs/workben
 --- a/src/vs/workbench/browser/parts/paneCompositeBar.ts
 +++ b/src/vs/workbench/browser/parts/paneCompositeBar.ts
 @@ -436,6 +436,9 @@ export class PaneCompositeBar extends Disposable {
- 		if (this.options.partContainerClass === 'panel' && viewContainerId !== 'terminal' && viewContainerId !== 'workbench.view.extension.ubovm-workers') {
+ 		if (this.options.partContainerClass === 'panel' && viewContainerId !== 'terminal' && viewContainerId !== 'workbench.view.extension.ubovm-workers' && !viewContainerId.startsWith('workbench.view.extension.')) {
  			return true;
  		}
-+		if (this.options.partContainerClass === 'sidebar' && viewContainerId !== 'workbench.view.explorer' && viewContainerId !== 'workbench.view.extension.ubovm-workers') {
++		if (this.options.partContainerClass === 'sidebar' && viewContainerId !== 'workbench.view.explorer' && viewContainerId !== 'workbench.view.extension.ubovm-workers' && !viewContainerId.startsWith('workbench.view.extension.')) {
 +			return true;
 +		}
  

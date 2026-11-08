@@ -26,7 +26,12 @@ export async function verifyPythonReadiness(backend, state, srtWin) {
   finally {
     const outcomes = backend.revokeWindowsAcl({ sandboxUserSid: state.user.sid, srtWin });
     try { assertPythonAclCleanup(outcomes, 'revoke'); }
-    catch (error) { if (failure) error.cause = failure; throw error; }
+    catch (cleanupError) {
+      // The grant/WFP failure is the actionable one; do not replace it with the
+      // follow-up cleanup bookkeeping error.
+      if (failure) { failure.cause = cleanupError; throw failure; }
+      throw cleanupError;
+    }
   }
   if (failure) throw failure;
 }

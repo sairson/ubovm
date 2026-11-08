@@ -22,7 +22,8 @@ async function ensureDefaultWorkspace(session, root) {
   if (!session.workspace) return;
   const expected = defaultWorkspacePath(session.id, root);
   const actual = path.resolve(session.workspace);
-  const same = process.platform === 'win32' ? actual.toLowerCase() === expected.toLowerCase() : actual === expected;
+  // Windows and macOS (default APFS) compare paths case-insensitively.
+  const same = process.platform === 'linux' ? actual === expected : actual.toLowerCase() === expected.toLowerCase();
   // Only recreate the directory owned by this session, never a selected project.
   if (same) await createDefaultWorkspace(session.id, root);
 }

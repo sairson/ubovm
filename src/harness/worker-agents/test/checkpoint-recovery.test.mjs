@@ -26,7 +26,7 @@ test('legacy interrupted read recovers as an explicit error without fabricating 
 });
 
 test('interrupted side-effecting calls resume with an explicit unknown-side-effects observation', () => {
-  for (const name of ['run_linux_ssh_command', 'edit_workspace_file', 'unknown', 'read_workspace_code']) {
+  for (const name of ['run_linux_ssh_command', 'edit_workspace_files', 'unknown', 'read_workspace_code']) {
     const input = interrupted(name); input.ledger[0].recovery = 'retry-read-only';
     const restored = restoreWorkerCheckpoint(input, options);
     assert.equal(input.ledger[0].status, 'running', 'input is not mutated');

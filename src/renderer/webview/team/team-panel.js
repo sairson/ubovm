@@ -57,6 +57,22 @@
   ]);
   const chevronIcon = () => icon([{ d: 'm6 9 6 6 6-6' }], 12);
 
+  function normalizeUsage(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+    const usage = {};
+    for (const key of ['input', 'output', 'cacheRead', 'cacheWrite', 'totalTokens']) {
+      if (Number.isFinite(value[key]) && value[key] >= 0) usage[key] = Math.floor(value[key]);
+    }
+    return Object.keys(usage).length ? usage : undefined;
+  }
+  function usageLabel(value) {
+    const total = !value ? 0 : Number.isFinite(value.totalTokens) ? value.totalTokens : (value.input || 0) + (value.output || 0);
+    if (!total) return '';
+    if (total < 1000) return total + ' tokens';
+    const label = total < 1000000 ? (total / 1000).toFixed(total >= 100000 ? 0 : 1).replace(/\.0$/, '') + 'K'
+      : (total / 1000000).toFixed(total >= 10000000 ? 0 : 1).replace(/\.0$/, '') + 'M';
+    return label + ' tokens';
+  }
   function normalizeRoster(value) {
     const rows = [];
     for (const item of (Array.isArray(value) ? value : []).slice(0, 32)) {
@@ -75,7 +91,8 @@
         description: clean(item.description, 400),
         context: item.context === 'fork' || item.context === 'fresh' ? item.context : '',
         error,
-        activity: activity && activity.label ? activity : undefined
+        activity: activity && activity.label ? activity : undefined,
+        usage: normalizeUsage(item.usage)
       });
     }
     return rows;
@@ -113,7 +130,7 @@
   function signature(roster, tasks) {
     const members = roster.map(member => [member.name, member.role, member.status, member.context,
       member.description, member.error, member.activity ? member.activity.label : '',
-      member.activity ? member.activity.status : ''].join('\u0001'));
+      member.activity ? member.activity.status : '', member.usage ? usageLabel(member.usage) : ''].join('\u0001'));
     const board = tasks.map(entry => [entry.id, entry.revision, entry.status, entry.ready ? 1 : 0,
       entry.ownerName, entry.subject, entry.blockedBy.join(','), entry.writeScopes.join(','),
       entry.warnings.join(',')].join('\u0001'));
@@ -124,7 +141,8 @@
     return task.status === 'in_progress' ? '进行中' : '已完成';
   }
   function memberState(member) {
-    if (member.status === 'running' || member.status === 'provisioning') return 'ongoing';
+    if (member.status === 'running') return 'ongoing';
+    if (member.status === 'provisioning') return 'waiting';
     return member.status === 'failed' ? 'error' : 'inactive';
   }
   function activityText(activity) {
@@ -200,12 +218,13 @@
       roleTag.hidden = true;
       nameRow.append(nameText, roleTag);
       const status = node('small', 'team-member-status');
+      const usage = node('small', 'team-member-usage');
       const description = node('p', 'team-member-description');
       const activity = node('p', 'team-member-activity');
       const error = node('p', 'team-member-error');
-      textBox.append(nameRow, status, description, activity, error);
+      textBox.append(nameRow, status, usage, description, activity, error);
       element.append(dot, textBox);
-      const item = { element, dot, nameText, roleTag, status, description, activity, error, member: undefined };
+      const item = { element, dot, nameText, roleTag, status, usage, description, activity, error, member: undefined };
       element.addEventListener('click', () => {
         if (!item.member) return;
         selectMember(item.member);
@@ -262,6 +281,9 @@
       setHidden(item.roleTag, !lead);
       if (lead) setText(item.roleTag, '主 Agent');
       setText(item.status, MEMBER_STATUS[member.status] || member.status);
+      const tokens = usageLabel(member.usage);
+      setText(item.usage, tokens);
+      setHidden(item.usage, !tokens);
       setHidden(item.description, !member.description);
       if (member.description) {
         setRaw(item.description, member.description);

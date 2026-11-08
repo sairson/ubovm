@@ -15,8 +15,8 @@ have a page. The tool schema preserves the reference implementation's snake_case
 | `action=help`, `topic=navigate` (any action name) | Single-action params/notes |
 | `action=help`, `topic=all` | Compact summaries of every action available on this backend |
 
-IDE mode omits Obscura-only tiers (`protocol`/`security` extras, `popup_policy`, identity/replay, …).
-`browser_connection_status` also returns a `help` pointer and `available_tiers`.
+IDE mode exposes 38 actions; help and tiers reflect that available set, so
+sitemap/identity/replay and other standalone-only actions remain Obscura-only. `browser_connection_status` also returns a `help` pointer and `available_tiers`.
 
 ```js
 import { BrowserManager, createBrowserTools } from './index.mjs';
@@ -46,27 +46,50 @@ bridge can also implement the same interface.
 
 ### IDE Integrated Browser backend
 
-When `createBrowserTools` receives an IDE bridge (`manager.source === 'ide-browser'`):
+IDE browser mode and the standalone headless browser (Obscura/Chromium) are two **separate modes** selected
+by settings, not two halves of one session:
 
-- Tool descriptions switch to the shared-tab IDE contract (no isolated Worker contexts).
-- Unsupported Obscura-only actions (`network_*`, `identity_*`, `sitemap_*`, `popup_policy`, …) soft-fail
-  immediately with guidance to disable「使用 IDE 内嵌浏览器」.
-- Snapshot/accessibility still mint opaque `data-intools-ref` refs and traverse open shadow roots, matching
-  the Obscura interaction model so `click` / `fill` / `check` / `wait` stay ref-based.
-- `console` installs a page-side ring buffer; `tab_activate` reuses an existing IDE tab via
-  `workbench.action.browser.open` + `reuseUrlFilter` when available.
-- `browser_connection_status` / action results report `source: "ide-browser"`.
+- `intools.browser.ideBrowser: true` (default) → `createIdeBrowserBridge` drives the IDE Integrated Browser
+  through the extension host. Snapshot/accessibility mint opaque `data-intools-ref` refs and traverse open
+  shadow roots, so `click` / `fill` / `check` / `wait` are ref-based. `console` installs a page-side ring
+  buffer; `tab_activate` reuses an existing IDE tab via `workbench.action.browser.open` +
+  `reuseUrlFilter` when available.
+- `intools.browser.ideBrowser: false` → the harness builds a normal `BrowserManager` (Playwright Chromium,
+  headless) with the full action catalog, including sitemap/identity/replay and hidden background browsing.
+  See the settings section above for choosing an executable or `channel`.
 
-Supported actions (42):
+The IDE bridge **never borrows Obscura silently**. The workbench cannot create a BrowserTab invisibly, so
+when no IDE page is open the host returns a structured `IDE_BROWSER_NOT_OPEN` result (with the requested
+URL) and the conversation shows a click-through prompt. The bridge waits ~10 s for the click and **retries
+the same action automatically**; if the user stays idle it asks the host to open the page itself and retries
+again (results carry `auto_opened: true`). One exception avoids needless prompting: if the user already has
+a Browser editor pane open (even with no tab), the agent fills that existing pane and continues without
+creating a new layout. If the host cannot open the page either, the tool result tells the agent the two
+supported ways forward: ask the user to click the prompt, or switch settings to the standalone Chromium mode
+for background browsing. Switching modes starts a new browser context (new page IDs/refs).
 
-- Runtime/pages: `status`, `tabs`, `tab_new`, `tab_close`, `tab_activate`, `popup_policy`.
-- Navigation: `navigate`, `back`, `forward`, `reload`.
-- Inspection: `snapshot`, `accessibility`, `screenshot`, `evaluate`, `script_scan`, `console`.
-- Interaction: `click`, `fill`, `select`, `check`, `press`, `hover`, `scroll`, `wait`.
-- Protocol/network: `cdp`, `cdp_events`, `cdp_detach`, `network_start`, `network`, `network_body`, `network_stop`.
-- Sitemap: `sitemap_start`, `sitemap`, `sitemap_entry`, `sitemap_clear`.
-- Captured identities/requests: `identity_capture`, `identity_list`, `identity_delete`, `request_save`,
-  `request_replay`, `object_catalog`, `authz_compare`.
+`browser_connection_status` reports `mode: "ide" | "closed"`, `page_open`,
+`agent_control` (`agent` | `user`), `yield_supported`, and
+`hidden_background_supported: false` in IDE mode; the standalone manager reports
+its own `source: "obscura"`. Call `browser_action` with `action: "yield_control"`
+to release the IDE tab for user login/MFA/consent; the next browser action
+reacquires the agent lock automatically.
+
+Supported IDE actions (38):
+
+- Runtime/pages: `status`, `tabs`, `tab_new`, `tab_close`, `tab_activate`.
+- Navigation: `navigate`, `back`, `forward`, `reload` (`ignore_cache`).
+- Inspection: `snapshot`, `accessibility`, `screenshot`, `evaluate`, `frames`, `frame_evaluate`, `console`,
+  `dialogs`, `dialog_policy`.
+- Interaction: `click` (`wait_for_navigation`), `fill`, `select`, `check`, `press`, `hover`, `scroll`, `wait`,
+  `upload`.
+- Protocol/network: `cdp`, `cdp_events`, `network_start`, `network`, `network_body`, `network_stop`.
+- Cookies/storage: `cookies`, `set_cookie`, `clear_cookies`, `storage` (values redacted unless
+  `include_credentials: true`).
+- Control handoff: `yield_control` releases the agent lock for user login/MFA/consent.
+- Standalone-only extras: `popup_policy`, `script_scan`, `sitemap_start`, `sitemap`, `sitemap_entry`,
+  `sitemap_clear`, `identity_capture`, `identity_list`, `identity_delete`, `request_save`, `request_replay`,
+  `object_catalog`, `authz_compare`, `cdp_detach`.
 
 Each session/Worker has a distinct browser context and up to four pages (including allowed popups). Calls serialize per
 Worker. Unknown/cross-Worker page IDs are rejected; omitted page IDs use that Worker's selected page.
@@ -84,10 +107,11 @@ roots and iframe documents are not traversed. Password input values are omitted.
 Use `check` with `ref` and a required boolean `checked` to set a checkbox/radio state idempotently.
 `select` accepts either a single `value` or a `values` array (empty array clears a multi-select).
 `wait` accepts one shared contract on both backends: with `ref`, `wait_for: visible | hidden | attached | detached`
-(defaults to `visible`); without `ref`, `query` waits for matching visible text, otherwise `wait_for` takes a load state
-(`load | domcontentloaded | networkidle`, default `load`) or literal text. The IDE backend polls inside the page, so a
-wait costs one round trip. `screenshot` accepts a `ref` for an element (including shadow controls), or
-`full_page: true` for the whole page; these options cannot be combined. Default screenshots capture
+(defaults to `visible`); without `ref`, `url` waits for a URL substring, `query` waits for matching visible text,
+otherwise `wait_for` takes a load state (`load | domcontentloaded | networkidle`, default `load`) or literal text.
+The IDE backend polls inside the page, so a wait costs one round trip. `screenshot` accepts a `ref` for an element
+(including shadow controls), or `full_page: true` for the whole page; these options cannot be combined, and
+`format: jpeg | png` plus `quality` (jpeg) are supported on both backends. Default screenshots capture
 the viewport; element clips use page coordinates including scroll offset. All operations retain Worker/page isolation
 and bounded timeouts.
 

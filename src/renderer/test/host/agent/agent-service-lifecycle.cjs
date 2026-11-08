@@ -6,9 +6,12 @@ const { readFileSync } = require('node:fs');
 const vm = require('node:vm');
 const path = require('node:path');
 
-function fixture({ terminationFailure = false } = {}) {
-  let receiver, revision = 0, onClose, methods = {};
-  class Worker extends EventEmitter { terminate() { return terminationFailure ? Promise.reject(new Error('termination failed')) : Promise.resolve(0); } }
+function fixture({ terminationFailure = false, bootFailure = false } = {}) {
+  let receiver, revision = 0, onClose, methods = {}, spawns = 0;
+  class Worker extends EventEmitter {
+    constructor() { super(); spawns++; if (bootFailure) throw Error('fixture boot failure'); }
+    terminate() { return terminationFailure ? Promise.reject(new Error('termination failed')) : Promise.resolve(0); }
+  }
   const source = readFileSync(path.join(__dirname, '../../../host/agent/agent-service.cjs'), 'utf8');
   const context = { module: { exports: {} }, structuredClone, AbortController, Promise, setTimeout, clearTimeout,
     require(name) {
@@ -41,20 +44,39 @@ function fixture({ terminationFailure = false } = {}) {
   const service = context.module.exports.createHarnessService({ sdkPath: __filename, storageDirectory: __dirname });
   const snapshot = async id => receiver('snapshot', [{ id, revision: ++revision, state: { status: 'completed', busy: false, parts: [{ text: 'late obsolete timeline' }] }, summary: { status: 'completed', busy: false } }], new AbortController().signal);
   const busySnapshot = async id => receiver('snapshot', [{ id, revision: ++revision, state: { status: 'running', busy: true, parts: [{ text: 'live' }] }, summary: { status: 'running', busy: true } }], new AbortController().signal);
-  const failRuntime = (error = Object.assign(new Error('Agent 后端未响应'), { code: 'AGENT_HEARTBEAT_TIMEOUT' })) => onClose?.(error);
-  return { service, snapshot, busySnapshot, failRuntime, methods };
+  const failRuntime = (error = Object.assign(new Error('Agent thread exited'), { code: 'AGENT_THREAD_EXIT' })) => onClose?.(error);
+  return { service, snapshot, busySnapshot, failRuntime, methods, spawns: () => spawns };
 }
 
+test('recovery boot failures back off instead of spawning on every probe', async () => {
+  const { service, spawns } = fixture({ bootFailure: true });
+  try {
+    const first = await service.ensureIdle();
+    assert.equal(first.status, 'disconnected');
+    assert.equal(spawns(), 1);
+    for (let index = 0; index < 8; index++) {
+      const result = await service.ensureIdle();
+      assert.equal(result.status, 'disconnected');
+      assert.ok(result.retryAt > Date.now() || result.retryAt === undefined, 'a retry deadline is surfaced');
+    }
+    assert.equal(spawns(), 1, 'consecutive probes stay inside the backoff window');
+    assert.equal(service.connectionState().recovering, true);
+  } finally { await service.close(); }
+});
+
 test('ensureIdle respawns a failed idle runtime without replaying work', async () => {
-  const { service } = fixture();
+  const { service, failRuntime, spawns } = fixture();
   try {
     await service.restore({ conversationId: 'idle', mode: 'assist' });
     assert.equal(service.connectionState().status, 'connected');
-    // Simulate heartbeat death: force the private failed flag through a closed call after kill is hard;
-    // ensureIdle on a healthy runtime is a no-op connected status.
-    const before = await service.ensureIdle();
-    assert.equal(before.status, 'connected');
-    assert.equal(service.state('idle').status, 'idle');
+    assert.equal((await service.ensureIdle()).status, 'connected');
+    assert.equal(spawns(), 1);
+    failRuntime();
+    assert.equal(service.connectionState().status, 'disconnected');
+    const recovered = await service.ensureIdle();
+    assert.equal(recovered.status, 'connected');
+    assert.equal(spawns(), 2, 'a dead idle runtime is respawned by the next recovery probe');
+    assert.equal(service.state('idle').status, 'idle', 'recovery does not replay the task');
   } finally { await service.close(); }
 });
 
@@ -107,7 +129,7 @@ for (const terminationFailure of [false, true]) test(`shutdown releases cached t
   await assert.rejects(service.restore({ conversationId: 'after-close', mode: 'assist' }), /closed/);
 });
 
-test('heartbeat stall keeps sessions running while hard timeout still resumes', async () => {
+test('heartbeat stall keeps sessions running until the thread really exits', async () => {
   const { service, busySnapshot, failRuntime, methods } = fixture();
   try {
     await service.start({ conversationId: 'assist', mode: 'assist', text: 'continue me' });
@@ -118,14 +140,53 @@ test('heartbeat stall keeps sessions running while hard timeout still resumes', 
     assert.equal(service.connectionState().status, 'stalled');
     assert.equal(service.state('assist').busy, true, 'soft stall must not interrupt work');
     assert.equal(service.state('goal').busy, true);
+    assert.equal(await service.authoritative('assist'), null, 'a stalled worker keeps its own projection');
     methods.__rpc.stall(false);
     assert.equal(service.connectionState().status, 'connected');
     failRuntime();
     assert.equal(service.connectionState().status, 'disconnected');
     assert.equal(service.state('assist').canResume, true);
-    assert.equal(service.state('assist').error.code, 'AGENT_HEARTBEAT_TIMEOUT');
+    assert.equal(service.state('assist').error.code, 'AGENT_THREAD_EXIT');
     assert.equal(service.state('goal').canResume, true);
-    assert.equal(service.state('goal').error.code, 'AGENT_HEARTBEAT_TIMEOUT');
+    assert.equal(service.state('goal').error.code, 'AGENT_THREAD_EXIT');
+  } finally { await service.close().catch(() => {}); }
+});
+
+test('manual restart ends the live runtime and keeps the checkpoint resumable', async () => {
+  const { service, busySnapshot, spawns } = fixture();
+  try {
+    await service.start({ conversationId: 'restart-me', mode: 'assist', text: 'long task' });
+    await busySnapshot('restart-me');
+    assert.equal(service.connectionState().status, 'connected');
+    assert.equal(spawns(), 1);
+    const result = await service.restart();
+    assert.equal(result.status, 'connected');
+    assert.equal(spawns(), 2, 'the old worker is terminated and a fresh one starts');
+    const state = service.state('restart-me');
+    assert.equal(state.busy, false);
+    assert.equal(state.canResume, true, 'the checkpoint stays explicitly resumable');
+    assert.equal(state.error.code, 'AGENT_MANUAL_RESTART');
+    assert.equal(service.connectionState().status, 'connected');
+  } finally { await service.close().catch(() => {}); }
+});
+
+test('reconnection reads the backend projection instead of replaying a task', async () => {
+  const { service, methods } = fixture();
+  try {
+    await service.restore({ conversationId: 'resume-me', mode: 'assist' });
+    const calls = [];
+    methods.authoritative = (args, revision) => {
+      calls.push(args[0]);
+      return { result: { loaded: true }, snapshot: { id: 'resume-me', revision, state: { status: 'interrupted', busy: false, canResume: true, parts: [{ text: 'checkpoint state' }] }, summary: { status: 'interrupted', busy: false } } };
+    };
+    const state = await service.authoritative('resume-me');
+    assert.deepEqual(calls, ['resume-me']);
+    assert.equal(state.status, 'interrupted');
+    assert.equal(state.canResume, true);
+    assert.equal(state.parts[0].text, 'checkpoint state');
+    assert.equal(service.state('resume-me').parts[0].text, 'checkpoint state', 'the host adopts the backend projection');
+    methods.authoritative = () => ({ result: { loaded: false }, snapshot: { id: 'resume-me', revision: 1, state: { status: 'idle' }, summary: { status: 'idle' } } });
+    assert.equal(await service.authoritative('resume-me'), null, 'an unloaded session is restored from disk by the host');
   } finally { await service.close().catch(() => {}); }
 });
 

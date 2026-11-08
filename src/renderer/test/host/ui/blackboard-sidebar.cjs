@@ -109,7 +109,7 @@ test('identical detail publications retain DOM and a new session resets reading 
     remove() { if (this.parent) { const siblings = this.parent.children; siblings.splice(siblings.indexOf(this), 1); this.parent = null; } },
     replaceChildren(...items) { replacements++; this.children = []; this.append(...items); }
   });
-  const elements = { files: node(), detail: node(), empty: node() };
+  const elements = { files: node(), refresh: node(), detail: node(), empty: node() };
   const script = renderSidebar().match(/<script nonce="[^"]+">([\s\S]*?)<\/script>/)[1];
   vm.runInNewContext(script, {
     acquireVsCodeApi: () => ({ postMessage() {} }),
@@ -236,4 +236,76 @@ test('hidden blackboard tabs pause delivery and cancel late reveals, then restor
   view.visible = true; visibility();
   assert.equal(messages.length, count + 1);
   assert.equal(messages.at(-1).detail.title, '更新 99');
+});
+
+test('renders a refresh control in the blackboard detail header', () => {
+  const { renderSidebar } = require('../../../host/ui/blackboard-sidebar.cjs');
+  const html = renderSidebar();
+  assert.match(html, /id="refresh"/);
+  assert.match(html, /id="refresh"[^>]*title="重新读取节点详情"/);
+});
+
+test('refresh republishes the current detail without reopening the sidebar', async () => {
+  const messages = []; let receive;
+  const sidebar = createBlackboardSidebar({ commands: { async executeCommand() {} } }, { onSelect() {}, onClose() {} });
+  const view = { visible: true, webview: {
+    onDidReceiveMessage(fn) { receive = fn; return { dispose() {} }; },
+    postMessage(value) { messages.push(structuredClone(value)); return true; }
+  }, onDidChangeVisibility() { return { dispose() {} }; }, onDidDispose() {}, show() {} };
+  sidebar.resolveWebviewView(view);
+  sidebar.setSession('one');
+  const detail = { sessionId: 'one', id: 'a', title: 'A', sections: [], links: [] };
+  await sidebar.update(detail);
+  const before = messages.length;
+  await receive({ action: 'refresh' });
+  assert.equal(messages.length, before + 1);
+  assert.deepEqual(messages.at(-1).detail, detail);
+  sidebar.dispose();
+});
+
+test('revealing a hidden detail panel republishes only after show', async () => {
+  let finish;
+  const messages = [];
+  const sidebar = createBlackboardSidebar({ commands: { executeCommand: () => new Promise(resolve => { finish = resolve; }) } }, { onSelect() {}, onClose() {} });
+  const view = { visible: false, show() { this.visible = true; }, webview: {
+    onDidReceiveMessage() { return { dispose() {} }; },
+    postMessage(value) { messages.push(structuredClone(value)); return true; }
+  }, onDidChangeVisibility() { return { dispose() {} }; }, onDidDispose() {} };
+  sidebar.resolveWebviewView(view);
+  sidebar.setSession('one');
+  const detail = { sessionId: 'one', id: 'a', title: 'A', sections: [], links: [] };
+  const opening = sidebar.update(detail, true);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(messages.length, 0, 'a hidden view must not receive the detail before reveal');
+  finish(); await opening;
+  assert.equal(view.visible, true);
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].detail.title, 'A');
+  sidebar.dispose();
+});
+
+test('refresh rebuilds the panel DOM and asks the host to republish', () => {
+  const vm = require('node:vm');
+  const { renderSidebar } = require('../../../host/ui/blackboard-sidebar.cjs');
+  let listener; let replacements = 0;
+  const posts = [];
+  const node = () => ({
+    children: [], append(...items) { for (const item of items) this.insertBefore(item, null); },
+    insertBefore(item, before) { item.remove(); item.parent = this; this.children.splice(before ? this.children.indexOf(before) : this.children.length, 0, item); },
+    remove() { if (this.parent) { const siblings = this.parent.children; siblings.splice(siblings.indexOf(this), 1); this.parent = null; } },
+    replaceChildren(...items) { replacements++; this.children = []; this.append(...items); }
+  });
+  const elements = { files: node(), refresh: node(), detail: node(), empty: node() };
+  const script = renderSidebar().match(/<script nonce="[^"]+">([\s\S]*?)<\/script>/)[1];
+  vm.runInNewContext(script, {
+    acquireVsCodeApi: () => ({ postMessage(value) { posts.push(value); return true; } }),
+    document: { getElementById: id => elements[id], createElement: node },
+    window: { addEventListener(type, fn) { if (type === 'message') listener = fn; }, scrollTo() {} }
+  });
+  const detail = { sessionId: 'one', id: 'a', title: 'A', meta: '', sections: [{ label: '记录', text: '内容' }], links: [] };
+  listener({ data: { type: 'detail', detail } });
+  const afterFirst = replacements;
+  elements.refresh.onclick();
+  assert.equal(replacements, afterFirst + 1, 'refresh must rebuild the article instead of reusing a broken subtree');
+  assert.ok(posts.some(message => message?.action === 'refresh'));
 });

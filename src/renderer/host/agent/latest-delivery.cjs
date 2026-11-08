@@ -97,7 +97,12 @@ function createLatestDelivery(onError = () => {}, { timeoutMs = 5000, maxInFligh
       if (active) {
         active.next = job;
         active.retries = 0;
-        clearTimeout(active.retryTimer); active.retryTimer = undefined;
+        // A job replacing one that is waiting out a retry delay must resume the
+        // queue. Leaving `waiting` set after clearing the retry timer would
+        // strand the latest state forever (no timer is left to drain it).
+        const retrying = Boolean(active.retryTimer);
+        if (retrying) { clearTimeout(active.retryTimer); active.retryTimer = undefined; }
+        if (retrying && active.waiting) { active.waiting = false; drain(active); }
         return active.done;
       }
       const cycle = { next: job, retries: 0, checkpoint: createLoopCheckpoint() };

@@ -16,6 +16,12 @@ exports.checkCodingDesktop = async (vscode, workspace) => {
   const context = { workspaceState: { get: (key, fallback) => state.get(key) ?? fallback, async update(key, value) { state.set(key, structuredClone(value)); } } };
   const service = createCodingService(api, context);
   const call = async (name, input) => (await service.tools('desktop-coding').find(tool => tool.name === name).execute('desktop', input)).details;
+  // Canonical edit tool: batch with a single file; throw the per-file preflight error.
+  const edit = async input => {
+    const details = await call('edit_workspace_files', { files: [input] });
+    if (details.status !== 'applied') throw Object.assign(new Error(details.results?.find(item => item.valid === false)?.error ?? details.error ?? 'edit failed'), { details });
+    return { ...details.completed[0], status: 'applied' };
+  };
   const selector = { scheme: 'file', pattern: `**/${filename}` }, range = new vscode.Range(0, 6, 0, 13);
   const providers = [
     vscode.languages.registerDocumentSymbolProvider(selector, { provideDocumentSymbols: () => [new vscode.DocumentSymbol('message', '', vscode.SymbolKind.Constant, range, range)] }),
@@ -36,20 +42,20 @@ exports.checkCodingDesktop = async (vscode, workspace) => {
     const project = await call('inspect_workspace_project', { path: path.relative(workspace, path.join(projectDirectory, 'package.json')) });
     assert.equal(project.executed, false);
     assert.deepEqual(project.projects[0].tasks[0].argv, ['npm', 'run', 'test']);
-    await call('edit_workspace_file', { path: filename, operation: 'create', newText: 'const message = "你好";\n' });
+    await edit({ path: filename, operation: 'create', newText: 'const message = "你好";\n' });
     const read = await call('read_workspace_code', { path: filename });
-    await call('edit_workspace_file', { path: filename, operation: 'replace', expectedHash: read.hash, oldText: '你好', newText: 'world' });
+    await edit({ path: filename, operation: 'replace', expectedHash: read.hash, oldText: '你好', newText: 'world' });
     assert.equal(await fs.readFile(file, 'utf8'), 'const message = "world";\n');
     for (const action of ['symbols', 'definition', 'references', 'implementation', 'typeDefinition']) {
       const navigation = await call('navigate_workspace_code', { path: filename, action, line: 1, column: 7 });
       assert(navigation.results.some(item => item.path === filename && item.column === 7), JSON.stringify(navigation));
     }
     const rename = await call('preview_workspace_rename', { path: filename, line: 1, column: 7, newName: 'greeting' });
-    assert.equal((await call('preview_workspace_edits', { files: rename.files })).status, 'ready');
+    assert.equal((await call('edit_workspace_files', { files: rename.files, dryRun: true })).status, 'ready');
     assert.equal(await fs.readFile(file, 'utf8'), 'const message = "world";\n');
     assert.equal((await call('edit_workspace_files', { files: rename.files })).status, 'applied');
     const beforePatch = await call('read_workspace_code', { path: filename });
-    await call('edit_workspace_file', { path: filename, operation: 'patch', expectedHash: beforePatch.hash, edits: [{ oldText: 'world', newText: 'agent' }] });
+    await edit({ path: filename, operation: 'patch', expectedHash: beforePatch.hash, edits: [{ oldText: 'world', newText: 'agent' }] });
     assert.equal(await fs.readFile(file, 'utf8'), 'const greeting = "agent";\n');
     const list = await call('list_workspace_changes', {});
     const snapshot = await call('read_workspace_change', { changeId: list[0].id, side: 'after', limit: 6 });
@@ -68,11 +74,11 @@ exports.checkCodingDesktop = async (vscode, workspace) => {
     const bom = await call('read_workspace_code', { path: filename });
     const bomRename = await call('preview_workspace_rename', { path: filename, line: 1, column: 7, newName: 'renamed' });
     assert.equal(bomRename.files[0].edits[0].start, 7);
-    assert.equal((await call('preview_workspace_edits', { files: bomRename.files })).status, 'ready');
-    await call('edit_workspace_file', { path: filename, operation: 'replace', expectedHash: bom.hash, oldText: '中文', newText: 'updated' });
+    assert.equal((await call('edit_workspace_files', { files: bomRename.files, dryRun: true })).status, 'ready');
+    await edit({ path: filename, operation: 'replace', expectedHash: bom.hash, oldText: '中文', newText: 'updated' });
     assert.equal(await fs.readFile(file, 'utf8'), original.replace('中文', 'updated'));
     const changed = await call('read_workspace_code', { path: filename });
-    await call('edit_workspace_file', { path: filename, operation: 'delete', expectedHash: changed.hash });
+    await edit({ path: filename, operation: 'delete', expectedHash: changed.hash });
     choices.push(items => items[0], () => '撤销此文件修改');
     await service.review('desktop-coding');
     assert.equal(await fs.readFile(file, 'utf8'), original);

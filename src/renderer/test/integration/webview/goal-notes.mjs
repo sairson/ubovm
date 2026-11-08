@@ -11,7 +11,7 @@ const initialState = () => ({
   goal: { objective: '让探索工作台中的记录更容易查找与继续', criteria: [], notes: [
     { id: 'n1', text: '已确认：笔记和 Agent 记录需要区分来源。', createdAt: '2026-09-22T08:30:00Z' },
     { id: 'n2', text: '下一步\n检查窄屏下的输入体验，保留正在编辑的草稿。', createdAt: '2026-09-22T09:00:00Z' }
-  ] }, execution: { status: 'idle', memory: { notes: [{ content: '检查结果：笔记页面可以独立浏览，无需滚动到页面底部再记录。', created_at: '2026-09-22T09:05:00Z' }] } }
+  ] }, execution: { status: 'idle', memory: { notes: [{ id: 'agent-note-1', content: '检查结果：笔记页面可以独立浏览，无需滚动到页面底部再记录。', created_at: '2026-09-22T09:05:00Z' }] } }
 });
 async function send(page, data) {
   await page.evaluate(data => window.dispatchEvent(new MessageEvent('message', { data })), data);
@@ -124,15 +124,16 @@ test('goal setup requires the current session workspace before entering the run 
     await page.locator('#goal-editor').evaluate(form => form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })));
     assert.equal(await page.evaluate(() => window.sent.some(message => message.action === 'saveGoal')), false);
     assert.equal(await page.locator('#goal-workspace').isVisible(), false);
-    assert.equal(await page.locator('#reveal-workspace').isVisible(), false, 'no workspace means no reveal action');
+    assert.equal(await page.locator('#goal-more-reveal').evaluate(node => node.hidden), true, 'no workspace means no reveal action');
     state.context = { workspace: 'C:/project', workspaceConfigured: true };
     state.viewRevision = 2;
     await send(page, state);
     assert.equal(await page.locator('#goal-objective-input').inputValue(), '保留未保存的探索目标');
     assert.equal(await page.locator('#goal-save').isEnabled(), true);
-    assert.equal(await page.locator('#reveal-workspace').isVisible(), true);
-    assert.equal(await page.locator('#reveal-workspace').getAttribute('title'), '用文件资源管理器打开当前工作空间');
-    await page.locator('#reveal-workspace').click();
+    await page.locator('#goal-header-more > summary').click();
+    assert.equal(await page.locator('#goal-more-reveal').isVisible(), true);
+    assert.equal(await page.locator('#goal-more-reveal').getAttribute('title'), '用文件资源管理器打开当前工作空间');
+    await page.locator('#goal-more-reveal').click();
     assert.equal(await page.evaluate(() => window.sent.some(message => message.action === 'revealWorkspace' && message.sessionId === 'goal-notes-1')), true);
     await page.locator('#goal-save').click();
     assert.equal(await page.evaluate(() => window.sent.some(message => message.action === 'saveGoal')), true);
@@ -159,34 +160,72 @@ test('assist notebook reads live and restored agent notes without losing the con
     for (const width of [390, 1100]) {
       const page = await browser.newPage({ viewport: { width, height: 900 }, reducedMotion: 'reduce' });
       const errors = []; page.on('pageerror', error => errors.push(error.message));
-      await page.addInitScript(() => { window.acquireVsCodeApi = () => ({ getState() {}, setState() {}, postMessage() {} }); });
+      await page.addInitScript(() => { window.acquireVsCodeApi = () => ({ getState() {}, setState() {}, postMessage(value) { (window.sent ??= []).push(value); } }); });
       await page.route('**/*', route => route.fulfill({ contentType: 'text/html', body: renderWebview({ nonce: 'assist-notes-test' }) }));
       await page.goto('http://notes.test/');
-      const state = { ...initialState(), mode: 'assist', goal: undefined };
+      const state = { ...initialState(), mode: 'assist', goal: undefined, notes: [{ id: 'assist-user-note', text: '协助会话手写笔记', createdAt: Date.now() }] };
       await send(page, state);
+      // The notes action must be offered once per header: the toolbar owns it
+      // on wide layouts, the overflow row only in the narrow fallback.
+      await page.evaluate(() => { document.getElementById('assist-more').open = true; });
+      assert.equal(await page.locator('#menu-assist-notes').isVisible(), width < 700, 'notes action appears exactly once');
+      await page.evaluate(() => { document.getElementById('assist-more').open = false; });
+      const toggleNotes = async () => {
+        const direct = page.locator('#assist-notes-toggle');
+        if (await direct.isVisible()) await direct.click();
+        else {
+          // Narrow topbars move the notes action into the overflow menu.
+          if (!(await page.locator('#assist-more').evaluate(node => node.open))) await page.locator('#assist-more > summary').click();
+          await page.locator('#menu-assist-notes').click();
+        }
+        await paint(page);
+      };
       const composer = page.locator('#prompt-input');
       await composer.fill('保留对话草稿');
-      await page.locator('#assist-notes-toggle').click(); await paint(page);
+      await toggleNotes();
       assert.equal(await page.locator('#goal-notes').isVisible(), true);
       assert.equal(await page.locator('#assist-mode').isVisible(), false);
-      assert.equal(await page.locator('#note-new').isVisible(), false);
-      assert.equal(await page.locator('#notes-total').textContent(), '1 条记录');
+      assert.equal(await page.locator('#note-new').isVisible(), true);
+      assert.equal(await page.locator('#notes-total').textContent(), '2 条记录');
+      assert.equal(await page.locator('#goal-notes-list article:visible').count(), 1, 'user notes persist per assist conversation');
+      // A stale goal-mode source filter must not hide Agent notes in assist,
+      // where the source filter controls are not shown.
+      await page.evaluate(() => document.querySelector('[data-note-source="user"]')?.click());
+      assert.equal(await page.locator('#agent-notes-list article:visible').count(), 1);
       await page.locator('#agent-notes-list .note-select').click();
       assert.match(await page.locator('#note-reader-body').textContent(), /检查结果/);
       assert.equal(await page.locator('#note-copy').isEnabled(), true);
+      assert.equal(await page.locator('#note-edit').isVisible(), true);
+      await page.locator('#note-edit').click();
+      await page.locator('#goal-note-input').fill('Agent 笔记修改后的内容');
+      await page.locator('#goal-add-note').click();
+      assert.equal(await page.evaluate(() => window.sent.some(message => message.action === 'editAgentNote')), true);
+      const agentRequest = await page.evaluate(() => window.sent.filter(message => message.action === 'editAgentNote').at(-1).requestId);
+      await send(page, { type: 'uiResult', requestId: agentRequest, ok: true });
+      await paint(page);
+      if (width < 700) await page.locator('#note-back').click();
+      await page.locator('#goal-notes-list .note-select').click();
+      assert.equal(await page.locator('#note-edit').isVisible(), true);
+      await page.locator('#note-edit').click();
+      await page.locator('#goal-note-input').fill('用户笔记修改后的内容');
+      await page.locator('#goal-add-note').click();
+      assert.equal(await page.evaluate(() => window.sent.some(message => message.action === 'editNote')), true);
+      const userRequest = await page.evaluate(() => window.sent.filter(message => message.action === 'editNote').at(-1).requestId);
+      await send(page, { type: 'uiResult', requestId: userRequest, ok: true });
+      await paint(page);
+      if (width < 700) await page.locator('#note-back').click();
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
       assert.equal(await page.locator('#goal-panels').evaluate(node => node.scrollWidth <= node.clientWidth), true);
-      if (width < 700) await page.locator('#note-back').click();
       await send(page, { type: 'executionState', conversationId: state.conversation.id, busy: true,
         execution: { status: 'running', memory: { notes: { one: state.execution.memory.notes[0], two: { content: '新增的协助笔记' } } } } });
-      assert.equal(await page.locator('#notes-total').textContent(), '2 条记录');
+      assert.equal(await page.locator('#notes-total').textContent(), '3 条记录');
       await page.locator('#notes-search').fill('新增');
       assert.equal(await page.locator('#agent-notes-list article:visible').count(), 1);
-      await page.locator('#assist-notes-toggle').click(); await paint(page);
+      await toggleNotes();
       assert.equal(await composer.inputValue(), '保留对话草稿');
       assert.equal(await page.locator('#assist-mode').isVisible(), true);
-      await send(page, { ...state, conversation: { id: 'assist-empty', title: '空白会话' }, execution: { status: 'idle' } });
-      await page.locator('#assist-notes-toggle').click(); await paint(page);
+      await send(page, { ...state, conversation: { id: 'assist-empty', title: '空白会话' }, notes: [], execution: { status: 'idle' } });
+      await toggleNotes();
       assert.equal(await page.locator('#notes-search').inputValue(), '');
       assert.equal(await page.locator('#notes-total').textContent(), '0 条记录');
       assert.equal(await page.locator('#notes-empty-title').textContent(), 'Agent 暂无记录');
@@ -309,5 +348,42 @@ test('goal notebook filters sources, retains drafts and only clears an acknowled
       assert.deepEqual(errors, []);
       await page.close();
     }
+  } finally { await browser.close(); }
+});
+
+test('agent notes stay visible while execution ticks omit unchanged memory', async () => {
+  const browser = await chromium.launch({ headless: true, executablePath: process.env.UBOVM_STYLE_EDGE || 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe' });
+  try {
+    const page = await browser.newPage({ viewport: { width: 1180, height: 900 }, reducedMotion: 'reduce' });
+    const errors = []; page.on('pageerror', error => errors.push(error.message));
+    await page.addInitScript(() => {
+      window.acquireVsCodeApi = () => ({ getState: () => ({ drafts: { 'goal-notes-1': { view: 'notes' } } }), setState() {}, postMessage() {} });
+    });
+    await page.route('**/*', route => route.fulfill({ contentType: 'text/html', body: renderWebview({ nonce: 'notes-live' }) }));
+    await page.goto('http://notes-live.test/');
+    const state = initialState();
+    state.viewRevision = 1;
+    state.busy = true;
+    state.execution = { status: 'running', busy: true, memory: { revision: 2, notes: [
+      { id: 'agent-note-1', content: '执行中的 Agent 笔记。', created_at: '2026-11-05T10:01:00Z' },
+      { id: 'agent-note-2', content: '第二条 Agent 笔记。', created_at: '2026-11-05T10:02:00Z' }
+    ] } };
+    await send(page, state);
+    assert.equal(await page.locator('#notes-total').textContent(), '4 条记录');
+    const before = await page.locator('#agent-notes-list article').count();
+    assert.equal(before, 2);
+    // A live tick that changes only the board omits unchanged memory. The
+    // notebook must keep its agent notes instead of blanking for one frame.
+    await send(page, { type: 'executionState', conversationId: state.conversation.id, viewRevision: 2, busy: true,
+      execution: { status: 'running', busy: true, blackboard: { revision: 5, nodes: [{ id: 'root', kind: 'root' }] } } });
+    assert.equal(await page.locator('#agent-notes-list article').count(), before, 'omitted unchanged memory must not blank the notebook');
+    assert.equal(await page.locator('#notes-total').textContent(), '4 条记录');
+    assert.equal(await page.locator('#notes-empty').isVisible(), false);
+    // A tick that carries changed memory still refreshes the list (no stale cache).
+    await send(page, { type: 'executionState', conversationId: state.conversation.id, viewRevision: 3, busy: true,
+      execution: { status: 'running', busy: true, memory: { revision: 3, notes: [{ id: 'agent-note-1', content: '执行中的 Agent 笔记。', created_at: '2026-11-05T10:01:00Z' }] } } });
+    assert.equal(await page.locator('#notes-total').textContent(), '3 条记录');
+    assert.deepEqual(errors, []);
+    await page.close();
   } finally { await browser.close(); }
 });

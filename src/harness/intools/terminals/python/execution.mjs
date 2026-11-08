@@ -1,4 +1,6 @@
 import { fork } from 'node:child_process';
+import { opendirSync, statSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { textResult, abortError } from '../../shared/common.mjs';
 import { pythonEnvironment } from './policy.mjs';
@@ -11,18 +13,26 @@ import { diagnosePythonFailure } from './diagnostics.mjs';
 
 const failure = (code, message) => Object.assign(new Error(message), { code });
 const phases = new Set(['queued', 'preflight', 'preparing', 'running', 'cleanup']);
+// Ordered lifecycle for the UI card. Only forward transitions are published so
+// a late child phase can never roll an already-admitted call backwards.
+const executionStates = ['queued', 'preflight', 'preparing', 'running', 'cleanup', 'stopping'];
+const summaryLimits = { depth: 3, directories: 40, entries: 500, files: 20, bytes: 2048 };
 
 export async function runPythonSandbox(request, signal, onUpdate, runner = new URL('./runner.mjs', import.meta.url), timings = {}) {
+  const report = progressReporter(onUpdate);
+  report('queued');
   // Provision once before admission. Queue wait uses the caller signal only so
   // timeout_seconds covers script execution, matching local/SSH shell behavior.
   if (!signal?.aborted && process.platform === 'win32' && runner.href === new URL('./runner.mjs', import.meta.url).href) {
+    report('preflight');
     const preparing = performance.now();
     try { await waitForPythonSetup(setupPythonSandbox, signal); }
     catch (caught) {
       const source = signal?.aborted ? abortError(signal) : caught instanceof Error ? caught : new Error(String(caught));
-      const error = new Error(source.message, { cause: source }); error.name = source.name;
+      const diagnostic = diagnosePythonFailure(`${source.code ?? ''}\n${source.message}`);
+      const error = new Error(`${source.message}${diagnostic ? `\n诊断：${diagnostic.summary}\n建议：${diagnostic.recovery}` : ''}`, { cause: source }); error.name = source.name;
       error.code = source.code ?? (signal?.aborted ? 'PYTHON_CANCELLED' : 'PYTHON_SANDBOX_UNAVAILABLE');
-      error.details = { error_code: error.code, phase: 'preflight', output_directory: null, exit_code: null, duration_ms: Math.round(performance.now() - preparing) };
+      error.details = { error_code: error.code, phase: 'preflight', output_directory: null, exit_code: null, duration_ms: Math.round(performance.now() - preparing), ...(diagnostic ? { diagnostic } : {}) };
       throw error;
     }
   }
@@ -32,25 +42,27 @@ export async function runPythonSandbox(request, signal, onUpdate, runner = new U
     if (signal?.aborted) throw abortError(signal);
     release = await pythonQueue.acquire(signal);
     signal?.throwIfAborted();
+    report('preflight');
     started = performance.now();
     const timeout = new AbortController();
     combined = signal ? AbortSignal.any([signal, timeout.signal]) : timeout.signal;
     const deadline = setTimeout(() => timeout.abort(failure('PYTHON_TIMEOUT', `Python execution timed out after ${request.timeout} seconds`)), request.timeout * 1000);
     try {
-      return await execute(request, combined, onUpdate, runner, started, timings);
+      return await execute(request, combined, onUpdate, report, runner, started, timings);
     } finally { clearTimeout(deadline); }
   } catch (caught) {
     const error = caught instanceof Error ? caught : new Error(String(caught));
     if (error.details) throw error;
     const wrapped = new Error(error.message, { cause: error }); wrapped.name = error.name;
     const cancelled = Boolean(signal?.aborted || combined?.aborted);
+    if (cancelled) report('stopping');
     wrapped.code = error.code ?? (cancelled ? 'PYTHON_CANCELLED' : 'PYTHON_RUNNER_ERROR');
     wrapped.details = { error_code: wrapped.code, phase: started === undefined ? 'queued' : 'running', output_directory: null, exit_code: null, duration_ms: Math.round(performance.now() - (started ?? queuedAt)) };
     throw wrapped;
   } finally { release?.(); }
 }
 
-function execute(request, signal, onUpdate, runner, started, { stopGraceMs = 10000, closeGraceMs = 3000 } = {}) {
+function execute(request, signal, onUpdate, report, runner, started, { stopGraceMs = 10000, closeGraceMs = 3000 } = {}) {
   return new Promise((resolve, reject) => {
     const child = fork(fileURLToPath(runner), [], { cwd: request.cwd, env: pythonEnvironment(), execArgv: [], windowsHide: true,
       detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe', 'ipc'], serialization: 'json' });
@@ -70,12 +82,13 @@ function execute(request, signal, onUpdate, runner, started, { stopGraceMs = 100
         exit_code: status?.exitCode ?? null, phase: status?.phase ?? phase, duration_ms: Math.round(performance.now() - started),
         output_bytes: output.bytes, output_truncated: output.truncated, forced_termination: forced, cleanup_confirmed: cleanupConfirmed && !forced && Boolean(status?.cleanupConfirmed),
         ...(diagnostic ? { diagnostic } : {}) };
+      const outputs = outputSummary(details.output_directory);
       if (error) {
         const errorCode = error.code ?? (signal.aborted ? 'PYTHON_CANCELLED' : 'PYTHON_RUNNER_ERROR');
-        const message = `[${errorCode}] ${error.message}${text ? `\n${text}` : ''}${diagnostic ? `\n诊断：${diagnostic.summary}\n建议：${diagnostic.recovery}` : ''}${details.output_directory ? `\noutput_directory: ${details.output_directory}` : ''}`;
+        const message = `[${errorCode}] ${error.message}${text ? `\n${text}` : ''}${diagnostic ? `\n诊断：${diagnostic.summary}\n建议：${diagnostic.recovery}` : ''}${details.output_directory ? `\noutput_directory: ${details.output_directory}` : ''}${outputs ? `\n${outputs}` : ''}`;
         const wrapped = new Error(message, { cause: error }); wrapped.name = error.name; wrapped.code = errorCode;
         wrapped.details = { ...details, error_code: errorCode }; reject(wrapped);
-      } else resolve(textResult(`${text}\nexit_code: 0${details.output_directory ? `\noutput_directory: ${details.output_directory}` : ''}`, details));
+      } else resolve(textResult(`${text}\nexit_code: 0${details.output_directory ? `\noutput_directory: ${details.output_directory}` : ''}${outputs ? `\n${outputs}` : ''}`, details));
     }
     function forceStop() {
       if (finished || forced) return; forced = true;
@@ -97,6 +110,7 @@ function execute(request, signal, onUpdate, runner, started, { stopGraceMs = 100
         return;
       }
       stopping = true;
+      report('stopping');
       if (child.connected) {
         try { child.send({ type: 'cancel' }, () => {}); } catch { /* IPC is already gone */ }
       }
@@ -118,7 +132,7 @@ function execute(request, signal, onUpdate, runner, started, { stopGraceMs = 100
     }
     child.on('message', message => {
       if (finished) return;
-      if (message?.type === 'phase' && phases.has(message.phase)) { phase = message.phase; return; }
+      if (message?.type === 'phase' && phases.has(message.phase)) { phase = message.phase; report(message.phase); return; }
       if (message?.type === 'prepared' && message.outputDirectory === request.outputDirectory) { outputDirectory = message.outputDirectory; return; }
       if (message?.type !== 'result' || status || !(message.exitCode === null || Number.isSafeInteger(message.exitCode))
         || typeof message.cleanupConfirmed !== 'boolean'
@@ -145,3 +159,70 @@ function execute(request, signal, onUpdate, runner, started, { stopGraceMs = 100
     signal.addEventListener('abort', cancel, { once: true }); if (signal.aborted) cancel();
   });
 }
+
+// Progress is advisory for the UI card: an empty text delta keeps the stdout
+// accumulation intact, and a failing observer must never fail the run.
+function progressReporter(onUpdate) {
+  let rank = -1;
+  return state => {
+    const next = executionStates.indexOf(state);
+    if (next <= rank) return;
+    rank = next;
+    try { Promise.resolve(onUpdate?.(textResult('', { execution_state: state }))).catch(() => {}); } catch { /* 进度回调不参与执行结果 */ }
+  };
+}
+
+// Bounded, best-effort artifact hint for the model. The output directory is
+// script-writable, so listing is capped by depth, directory and entry counts
+// and never throws: losing the hint must not turn a successful run into a
+// failure.
+function readOutputEntries(directory, limit) {
+  let handle;
+  try { handle = opendirSync(directory); } catch { return undefined; }
+  const entries = [];
+  try { for (let entry; entries.length < limit && (entry = handle.readSync());) entries.push(entry); }
+  catch { /* keep the partial listing */ }
+  finally { try { handle.closeSync(); } catch { /* already closed */ } }
+  return entries;
+}
+
+function outputSummary(directory) {
+  if (typeof directory !== 'string' || !directory) return undefined;
+  const files = [];
+  let more = false, directories = 0, entries = 0;
+  try {
+    if (!statSync(directory).isDirectory()) return undefined;
+    const pending = [[directory, '', 0]];
+    while (pending.length && !more) {
+      if (++directories > summaryLimits.directories) { more = true; break; }
+      const [current, prefix, depth] = pending.shift();
+      const remaining = summaryLimits.entries - entries;
+      const children = readOutputEntries(current, remaining + 1);
+      if (!children) continue;
+      if (children.length > remaining) { more = true; children.length = remaining; }
+      children.sort((left, right) => left.name.localeCompare(right.name));
+      for (const child of children) {
+        entries++;
+        const name = prefix ? `${prefix}/${child.name}` : child.name;
+        if (child.isDirectory()) {
+          if (depth + 1 <= summaryLimits.depth) pending.push([join(current, child.name), name, depth + 1]); else more = true;
+          continue;
+        }
+        if (!child.isFile()) continue;
+        let size; try { size = statSync(join(current, child.name)).size; } catch { continue; }
+        files.push({ name: name.replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, 160), size });
+        if (files.length >= summaryLimits.files) { more = true; break; }
+      }
+    }
+  } catch { return undefined; }
+  const listed = [];
+  let bytes = Buffer.byteLength('outputs:');
+  for (const file of files) {
+    const entry = ` ${file.name} (${file.size} bytes)`;
+    if (bytes + Buffer.byteLength(entry) > summaryLimits.bytes) { more = true; break; }
+    listed.push(entry); bytes += Buffer.byteLength(entry);
+  }
+  if (!listed.length) return undefined;
+  return `outputs:${listed.join(',')}${more ? ', ...' : ''}`;
+}
+

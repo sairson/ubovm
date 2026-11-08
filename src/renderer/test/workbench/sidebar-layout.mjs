@@ -6,14 +6,14 @@ const patch = await readFile(new URL('../../../../resources/patches/sidebar-size
 const repair = new Function('width', 'LayoutStateKeys', patch.split('\n')
   .filter(line => line.startsWith('+') && !line.startsWith('+++')).map(line => line.slice(1)).join('\n'));
 for (const [width, saved, expected] of [
-  [1933, [1177, 283], [300, 283]],
+  [1933, [1177, 283], [420, 283]],
   [1933, [320, 280], [320, 280]],
-  [900, [700, 600], [225, 225]],
-  [1933, [NaN, -1], [300, 300]],
+  [900, [700, 600], [288, 288]],
+  [1933, [NaN, -1], [420, 420]],
   [1933, [360, 500], [360, 420]],
 ]) {
   const values = [...saved];
-  repair.call({ stateModel: {
+  repair.call({ _mainContainerDimension: { width, height: 1033 }, stateModel: {
     getInitializationValue: key => values[key],
     setInitializationValue: (key, value) => { values[key] = value; },
   } }, width, { SIDEBAR_SIZE: 0, AUXILIARYBAR_SIZE: 1 });

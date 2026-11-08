@@ -86,11 +86,14 @@ function createHumanQuestions({ onChange = () => {}, maxPending = 64 } = {}) {
     request,
     snapshot(conversationId) {
       return [...entries.values()].filter(entry => entry.record.conversationId === conversationId)
-        .map(entry => ({
-          ...entry.record,
-          options: entry.record.options.map(option => ({ ...option })),
-          ...(entry.record.answer ? { answer: { ...entry.record.answer, selected: [...entry.record.answer.selected] } } : {})
-        }));
+        .map(entry => {
+          if (entry.record.status !== 'pending') return { id: entry.record.id, status: entry.record.status };
+          return {
+            ...entry.record,
+            options: entry.record.options.map(option => ({ ...option })),
+            ...(entry.record.answer ? { answer: { ...entry.record.answer, selected: [...entry.record.answer.selected] } } : {})
+          };
+        });
     },
     respond({ id, conversationId, selected, custom, cancelled } = {}) {
       const entry = entries.get(id);
@@ -103,6 +106,15 @@ function createHumanQuestions({ onChange = () => {}, maxPending = 64 } = {}) {
       if (!picked.length && !note) return false;
       entry.finish('answered', { selected: picked, custom: note, cancelled: false });
       return true;
+    },
+    cancelConversation(conversationId) {
+      let cancelled = 0;
+      for (const entry of [...entries.values()]) {
+        if (entry.record.conversationId !== conversationId || !entry.finish) continue;
+        entry.finish('cancelled', cancelledAnswer());
+        cancelled++;
+      }
+      return cancelled;
     },
     dispose() { disposed = true; for (const entry of [...entries.values()]) entry.finish?.('cancelled', cancelledAnswer()); entries.clear(); }
   };

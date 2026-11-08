@@ -2,27 +2,30 @@
 const { serializeError } = require('./errors.cjs');
 
 // Bidirectional requests. Cancellation belongs to the request, not the transport.
-// Heartbeat soft-stalls before killing: a busy peer that still exchanges RPC
-// traffic must not tear down the worker, matching durable Host reconnect semantics.
+// Silence is evidence of slowness, never of death: a heartbeat miss only marks
+// the transport stalled. The transport closes on a real port close/error, a
+// protocol fault, or an explicit close(), so a busy peer that is still working
+// (large structured clone, tool burst, long model call) is never torn down.
 function createRPC(port, handle, {
   maxPending = 256, maxActive = 256, maxControl = 8,
   onClose = () => {}, onStallChange = () => {},
-  heartbeatInterval = 0, heartbeatTimeout = 20000, heartbeatKillTimeout = 120000
+  heartbeatInterval = 0, heartbeatTimeout = 20000,
+  heartbeatStartupGrace = 0
 } = {}) {
   // Invalid timer values are clamped by Node to 1 ms; reject them before
   // installing listeners instead of creating a hot loop or disabling bounds.
   for (const [name, value] of Object.entries({ maxPending, maxActive, maxControl })) {
     if (!Number.isSafeInteger(value) || value < 1) throw new TypeError(`${name} must be a positive safe integer`);
   }
-  for (const [name, value] of Object.entries({ heartbeatInterval, heartbeatTimeout, heartbeatKillTimeout })) {
-    if (!Number.isSafeInteger(value) || value < (name === 'heartbeatInterval' ? 0 : 1) || value > 2147483647) {
+  for (const [name, value] of Object.entries({ heartbeatInterval, heartbeatTimeout, heartbeatStartupGrace })) {
+    if (!Number.isSafeInteger(value) || value < (name === 'heartbeatInterval' || name === 'heartbeatStartupGrace' ? 0 : 1) || value > 2147483647) {
       throw new TypeError(`Invalid ${name}`);
     }
   }
   if (heartbeatInterval && heartbeatTimeout <= heartbeatInterval) throw new TypeError('heartbeatTimeout must exceed heartbeatInterval');
-  if (heartbeatInterval && heartbeatKillTimeout < heartbeatTimeout) throw new TypeError('heartbeatKillTimeout must be >= heartbeatTimeout');
   let sequence = 0, lastRequest = 0, closed;
   let heartbeat, probe, lastTick = Date.now(), lastActivity = Date.now(), stalled = false;
+  const startedAt = Date.now();
   const pending = new Map(), active = new Map();
   const handlers = new Set();
   const controlPending = new Set(), controlActive = new Set();
@@ -34,7 +37,6 @@ function createRPC(port, handle, {
   const protocolError = () => Object.assign(new Error('Invalid agent RPC message'), { code: 'RPC_PROTOCOL_ERROR' });
   const busy = () => Object.assign(new Error('Agent message queue is full; retry after pending requests finish'), { code: 'RPC_BUSY' });
   const stallError = () => Object.assign(new Error('Agent 后端响应变慢，仍在保持连接。任务未中断，请稍候。'), { code: 'AGENT_HEARTBEAT_STALLED' });
-  const killError = () => Object.assign(new Error('Agent 后端未响应，连接已中断。请检查后重新发起或恢复任务。'), { code: 'AGENT_HEARTBEAT_TIMEOUT' });
   function setStalled(next) {
     if (stalled === next) return;
     stalled = next;
@@ -171,19 +173,25 @@ function createRPC(port, handle, {
       lastTick = now;
       if (probe) {
         const probeAge = now - probe.sent;
-        const silentFor = now - lastActivity;
         // Peer traffic after the probe was sent proves the worker is alive even
         // when that traffic was not the matching pong (snapshots, tool RPC).
         if (lastActivity >= probe.sent) {
           probe = undefined;
           setStalled(false);
         } else if (probeAge >= heartbeatTimeout) {
-          // Kill uses silence since lastActivity so renewing the probe during a
-          // soft stall cannot reset the hard deadline.
-          if (silentFor >= heartbeatKillTimeout) {
-            close(killError());
+          // A freshly spawned worker may be synchronously loading the SDK before
+          // its event loop can answer the first ping. Do not label that startup
+          // work as a stalled connection; keep the probe renewable until the
+          // grace window ends.
+          if (now - startedAt < heartbeatStartupGrace) {
+            probe.sent = now;
+            lastTick = now;
             return;
           }
+          // Sustained silence is a soft stall only. The worker may still be
+          // inside a long synchronous tool/model step, so the transport stays
+          // open and the next peer activity clears the stall. Death is decided
+          // exclusively by an actual port close/error below.
           setStalled(true);
           probe = undefined;
         }

@@ -3,7 +3,7 @@
   const active = new Set(['pending', 'queued', 'running', 'waiting']);
   const labels = { pending: '待执行', queued: '排队中', running: '执行中', waiting: '等待子任务', completed: '已完成', failed: '失败', interrupted: '已停止' };
   const shortLabels = { ...labels, running: '执行', queued: '排队', pending: '排队', waiting: '等待', completed: '完成', interrupted: '停止' };
-  const toolLabels = { delivery_workflow: '交付闭环', read_workspace_file: '读取文件', list_workspace_files: '查看目录', run_local_shell_command: '运行本地命令', run_python: '运行 Python 沙箱', manage_python_environment: '管理 Python 依赖', run_linux_ssh_command: '运行命令', upload_sftp: 'SFTP 上传', deploy_remote_service: '部署远程服务', web_search: '搜索网页', fetch_web_content: '读取网页', load_skill: '加载技能', spawn_worker: '分派并行任务', wait_workers: '等待并行任务', list_workers: '检查协作进展', cancel_workers: '中断并行任务', manage_workers: '调度并行任务', install_skill: '安装技能', install_mcp_server: '安装 MCP 服务', ask_human: '询问用户' };
+  const toolLabels = { read_workspace_file: '读取文件', list_workspace_files: '查看目录', run_local_shell_command: '运行本地命令', run_python: '运行 Python 沙箱', manage_python_environment: '管理 Python 依赖', run_linux_ssh_command: '运行命令', upload_sftp: 'SFTP 上传', deploy_remote_service: '部署远程服务', web_search: '搜索网页', fetch_web_content: '读取网页', load_skill: '加载技能', spawn_worker: '分派并行任务', wait_workers: '等待并行任务', list_workers: '检查协作进展', cancel_workers: '中断并行任务', manage_workers: '调度并行任务', install_skill: '安装技能', install_mcp_server: '安装 MCP 服务', ask_human: '询问用户' };
   const t = value => window.UBOVMi18n?.t(value) ?? value;
   const node = (tag, className, text) => { const element = document.createElement(tag); if (className) element.className = className; if (text) element.textContent = t(text); return element; };
   const setText = (element, value) => { const text = t(value); if (element.textContent !== text) element.textContent = text; };
@@ -21,6 +21,16 @@
       if (text.length >= 150) break;
     }
     return text;
+  }
+  const usageTotal = usage => !usage ? 0 : Number.isFinite(usage.totalTokens) ? usage.totalTokens
+    : (usage.input || 0) + (usage.output || 0);
+  function usageLabel(usage) {
+    const total = usageTotal(usage);
+    if (!total) return '';
+    if (total < 1000) return total + ' tokens';
+    const value = total < 1000000 ? (total / 1000).toFixed(total >= 100000 ? 0 : 1).replace(/\.0$/, '') + 'K'
+      : (total / 1000000).toFixed(total >= 10000000 ? 0 : 1).replace(/\.0$/, '') + 'M';
+    return value + ' tokens';
   }
   const visible = element => !element.closest('[hidden]');
   window.createWorkerPanel = function createWorkerPanel(actions, { initialWidth = 440, onWidthChange, openNative, onClose, standalone = false } = {}) {
@@ -45,8 +55,8 @@
     const follow = node('button', 'worker-follow', '跟随最新'); follow.type = 'button';
     follow.setAttribute('aria-pressed', 'true'); follow.title = '自动滚动到最新日志；向上阅读会暂停跟随';
     if (standalone) header.append(follow);
-    const heading = node('div', 'worker-detail-heading'), name = node('h3'), status = node('span', 'worker-status'), timer = node('span', 'worker-duration');
-    heading.append(name, status, timer);
+    const heading = node('div', 'worker-detail-heading'), name = node('h3'), status = node('span', 'worker-status'), tokens = node('span', 'worker-tokens'), timer = node('span', 'worker-duration');
+    heading.append(name, status, tokens, timer);
     const task = node('p', 'worker-task'), parent = node('button', 'worker-parent'); parent.type = 'button';
     const error = node('p', 'worker-detail-error'); error.setAttribute('role', 'status');
     const scroller = node('div', 'worker-detail-scroll'); scroller.tabIndex = 0; scroller.setAttribute('aria-label', '任务执行记录');
@@ -260,6 +270,8 @@
       setText(name, displayName(worker));
       const rank = Number.isSafeInteger(worker.priority) && worker.priority > 0 ? ` · P${worker.priority}` : '';
       setText(status, (labels[worker.status] || worker.status || '待执行') + rank); status.dataset.status = worker.status;
+      const workerTokens = usageLabel(worker.usage);
+      setText(tokens, workerTokens); tokens.hidden = !workerTokens;
       setText(task, worker.description || '');
       const ancestor = workersById.get(worker.parentId);
       parent.hidden = !ancestor; if (ancestor) setText(parent, '来自 ' + displayName(ancestor) + ' ↗');
@@ -292,11 +304,11 @@
         if (!view) {
           const button = node('button', 'worker-card'); button.type = 'button'; button.dataset.workerId = worker.id; button.setAttribute('aria-controls', panel.id);
           const row = node('span', 'worker-card-heading'), label = node('strong'), rank = node('span', 'worker-priority'), state = node('span', 'worker-status'), description = node('span', 'worker-card-task'), preview = node('span', 'worker-card-preview');
-          const footer = node('span', 'worker-card-footer'), elapsed = node('span', 'worker-duration'), created = node('span', 'worker-card-created');
+          const footer = node('span', 'worker-card-footer'), elapsed = node('span', 'worker-duration'), tokens = node('span', 'worker-tokens'), created = node('span', 'worker-card-created');
           row.append(label, rank, state);
-          footer.append(preview, elapsed); button.append(row, description, footer, created);
+          footer.append(preview, tokens, elapsed); button.append(row, description, footer, created);
           button.addEventListener('click', () => show(worker.id, button));
-          view = { button, label, rank, state, description, preview, elapsed, created }; cache.set(worker.id, view);
+          view = { button, label, rank, state, description, preview, tokens, elapsed, created }; cache.set(worker.id, view);
         }
         view.worker = worker;
         setText(view.label, displayName(worker)); setText(view.state, (container === cards ? shortLabels : labels)[worker.status] || worker.status || '待执行'); setAttribute(view.state, 'data-status', worker.status);
@@ -310,6 +322,8 @@
         const previewSource = errorText(worker) || finalResult(worker) || latest || worker.streamText || worker.result || fallback;
         if (view.previewSource !== previewSource) { setText(view.preview, previewText(previewSource)); view.previewSource = previewSource; }
         setText(view.elapsed, elapsedText(worker));
+        const tokens = usageLabel(worker.usage);
+        setText(view.tokens, tokens); setHidden(view.tokens, !tokens);
         setHidden(view.created, true);
         if (!view.createdText || view.createdAt !== worker.createdAt) {
           const createdAt = typeof worker.createdAt === 'number' ? worker.createdAt : Date.parse(worker.createdAt);

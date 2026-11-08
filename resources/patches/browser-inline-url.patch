@@ -1,0 +1,75 @@
+diff --git a/src/vs/workbench/contrib/browserView/electron-browser/widgets/browserUrlBarWidget.ts b/src/vs/workbench/contrib/browserView/electron-browser/widgets/browserUrlBarWidget.ts
+index 780eed2..92eae12 100644
+--- a/src/vs/workbench/contrib/browserView/electron-browser/widgets/browserUrlBarWidget.ts
++++ b/src/vs/workbench/contrib/browserView/electron-browser/widgets/browserUrlBarWidget.ts
+@@ -185,7 +185,8 @@ export class BrowserUrlBarWidget extends Disposable {
+ 			this.focusUrlInput();
+ 			return;
+ 		}
+-		this._openPicker();
++		// UBOVM: edit the address inline in the navbar; no quick-pick overlay.
++		this.focusUrlInput();
+ 	}
+ 
+ 	clear(): void {
+@@ -244,7 +245,7 @@ export class BrowserUrlBarWidget extends Disposable {
+ 				pendingMouseFocus = true;
+ 			}
+ 		}));
+-		this._register(addDisposableListener(this._urlDisplay, EventType.FOCUS, (event: FocusEvent) => {
++		this._register(addDisposableListener(this._urlDisplay, EventType.FOCUS, () => {
+ 			if (this._suppressFocusOpen) {
+ 				this._suppressFocusOpen = false;
+ 				pendingMouseFocus = false;
+@@ -253,14 +254,11 @@ export class BrowserUrlBarWidget extends Disposable {
+ 			if (this._host.isReadonly) {
+ 				return;
+ 			}
+-			// Only open the picker if focus is already within the workbench, and not being transferred from a quick input.
+-			if (!(event.relatedTarget instanceof Element) || event.relatedTarget.closest('.quick-input-widget')) {
+-				return;
+-			}
+-			if (pendingMouseFocus) {
+-				return;
++			// UBOVM: keep editing inline in the address display. Keyboard focus
++			// selects the current URL so typing replaces it; no quick-pick overlay.
++			if (!pendingMouseFocus) {
++				this._selectAll();
+ 			}
+-			this._openPicker();
+ 		}));
+ 		this._register(addDisposableListener(this._urlDisplay, EventType.BLUR, () => {
+ 			pendingMouseFocus = false;
+@@ -301,11 +299,9 @@ export class BrowserUrlBarWidget extends Disposable {
+ 			if (selection && !selection.isCollapsed && selection.anchorNode && this._urlDisplay.contains(selection.anchorNode)) {
+ 				return;
+ 			}
+-			// First click after mouse-focus (without a drag) opens the picker with the URL fully
+-			// selected (matches browser URL-bar convention: click → ready to
+-			// retype the whole thing).
+-			const value = this._urlDisplay.textContent ?? '';
+-			this._openPicker({ value, selection: [0, value.length], edited: false });
++			// UBOVM: first click after mouse-focus selects the current URL in
++			// place so the reader can retype it directly in the navbar.
++			this._selectAll();
+ 		}));
+ 
+ 		this._register(addDisposableListener(this._urlDisplay, EventType.KEY_DOWN, (e: KeyboardEvent) => {
+@@ -343,15 +339,8 @@ export class BrowserUrlBarWidget extends Disposable {
+ 			}
+ 		}));
+ 
+-		// Any direct edit promotes to the picker, carrying the value and caret.
+-		this._register(addDisposableListener(this._urlDisplay, 'input', () => {
+-			if (this._picker.value) {
+-				return;
+-			}
+-			const value = this._urlDisplay.textContent ?? '';
+-			const caret = this._getCaretOffset();
+-			this._openPicker({ value, selection: [caret, caret], edited: true });
+-		}));
++		// UBOVM: direct contenteditable editing is the only input path; typing
++		// must never promote the display into a quick-pick suggestions overlay.
+ 	}
+ 
+ 	private _selectAll(): void {

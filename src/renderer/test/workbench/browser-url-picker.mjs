@@ -1,35 +1,45 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
 
-test('browser URL quick pick stays inside the browser column', async t => {
+const root = fileURLToPath(new URL('../../../../', import.meta.url));
+
+test('browser address bar edits inline instead of opening a URL quick pick', async t => {
   const browser = await chromium.launch({ channel: 'msedge', headless: true });
   t.after(() => browser.close());
   const page = await browser.newPage({ viewport: { width: 1000, height: 700 } });
   await page.setContent(`
     <div class="monaco-workbench vs-dark">
-      <div class="quick-input-widget" style="position:absolute;top:60px;left:40px;width:700px">
-        <div class="quick-input-filter"><div class="monaco-inputbox"><input placeholder="Search or enter URL"></div></div>
-        <div class="quick-input-list"><div class="monaco-list-row">Suggestion</div></div>
+      <div class="browser-root">
+        <div class="browser-navbar"><div class="browser-url-container">
+          <div class="browser-url-display" contenteditable="plaintext-only" tabindex="0" data-placeholder="Search or enter URL"></div>
+        </div></div>
       </div>
     </div>
   `);
-  await page.addStyleTag({ path: 'src/renderer/workbench/workbench.css' });
+  await page.addStyleTag({ path: path.join(root, 'src/renderer/workbench/workbench.css') });
 
-  const wide = await page.locator('.quick-input-widget').evaluate(el => {
-    const style = getComputedStyle(el);
-    const box = el.getBoundingClientRect();
-    return { width: Math.round(box.width), right: style.right, left: Math.round(box.left), radius: style.borderRadius };
-  });
-  assert.equal(wide.width, 380);
-  assert.equal(wide.right, '18px');
-  assert.equal(wide.radius, '12px');
+  const field = await page.locator('.browser-url-display').evaluate(el => ({
+    cursor: getComputedStyle(el).cursor,
+    editable: el.getAttribute('contenteditable'),
+    role: el.getAttribute('role') || 'textbox'
+  }));
+  assert.equal(field.cursor, 'text', 'address field advertises inline editing');
+  assert.equal(field.editable, 'plaintext-only');
 
-  await page.setViewportSize({ width: 600, height: 700 });
-  const narrow = await page.locator('.quick-input-widget').evaluate(el => {
-    const style = getComputedStyle(el);
-    return { width: Math.round(el.getBoundingClientRect().width), right: style.right };
-  });
-  assert.equal(narrow.width, 320);
-  assert.equal(narrow.right, '12px');
+  const css = fs.readFileSync(path.join(root, 'src/renderer/workbench/workbench.css'), 'utf8');
+  assert.doesNotMatch(css, /quick-input-widget:has\(\.quick-input-filter input\[placeholder\*="URL"/i,
+    'the removed URL quick-pick overlay must not be styled back in');
+
+  const series = JSON.parse(fs.readFileSync(path.join(root, 'resources/patches/series.json'), 'utf8'));
+  assert.ok(series.patches.includes('browser-inline-url.patch'), 'inline URL patch is registered in the source series');
+  const patch = fs.readFileSync(path.join(root, 'resources/patches/browser-inline-url.patch'), 'utf8');
+  const added = patch.split('\n').filter(line => line.startsWith('+') && !line.startsWith('+++')).map(line => line.slice(1));
+  assert.ok(added.some(line => line.includes('this.focusUrlInput();')), 'openUrlPicker focuses the inline field');
+  assert.ok(!added.some(line => line.includes('_openPicker(')), 'no new picker promotion path is introduced');
+  assert.ok(patch.includes('-		this._openPicker();'), 'the explicit picker open path is removed');
+  assert.ok(patch.includes('-			const value = this._urlDisplay.textContent'), 'the click handler no longer promotes to the picker');
 });

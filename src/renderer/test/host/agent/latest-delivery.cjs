@@ -147,6 +147,18 @@ test('a job that replaces its own view cannot occupy the replacement capacity', 
   old.reject(Error('old view')); await nextTurn();
 });
 
+test('a publication queued during a retry wait resumes instead of stranding the queue', async () => {
+  const errors = [], sent = [];
+  const delivery = createLatestDelivery(error => errors.push(error.message), { maxRetries: 2 });
+  const failed = delivery.publish(() => { throw Error('sync send'); });
+  await new Promise(resolve => setTimeout(resolve, 10));
+  const latest = delivery.publish(() => { sent.push('latest'); return true; });
+  await latest;
+  assert.deepEqual(sent, ['latest']);
+  assert.deepEqual(errors, ['sync send']);
+  await failed;
+});
+
 test('invalid delivery configuration and jobs fail before allocating work', () => {
   for (const options of [{ timeoutMs: 0 }, { timeoutMs: Infinity }, { timeoutMs: 2147483648 }, { maxInFlight: 0 }, { maxInFlight: 1.5 }, { maxRetries: -1 }, { maxRetries: 11 }]) {
     assert.throws(() => createLatestDelivery(undefined, options), /Invalid delivery/);

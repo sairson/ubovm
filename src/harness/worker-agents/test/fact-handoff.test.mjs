@@ -62,15 +62,50 @@ test('mixed evidence keeps successful ledger citations and drops unknown or fail
   }), options), /Successful ledger toolCallIds: ok-1, ok-2/);
 });
 
-test('optional fact lists discard blank placeholders while preserving real entries', () => {
+test('invalid nodeRef citations are dropped like invalid toolCallIds', () => {
+  const context = {
+    data: {
+      root: 'n1',
+      nodes: [
+        { ref: 'n1', kind: 'root', fact: 'goal' },
+        { ref: 'n2', kind: 'fact', fact: '{"outcome":"confirmed"}' },
+        { ref: 'n3', kind: 'intent' }
+      ]
+    },
+    resolveId: ref => ({ n1: 'root-id', n2: 'fact-id', n3: 'intent-id' })[ref]
+  };
+  const options = { keyPoints: ['validate'], context, ledger: [] };
+  const normalized = parseWorkerFact(JSON.stringify({
+    outcome: 'confirmed',
+    statement: 'Fact node cited; root and intent aliases ignored',
+    coverage: [{ point: 'validate', status: 'confirmed', result: 'Checked' }],
+    evidence: [
+      { nodeRef: 'n2', observation: 'recorded fact' },
+      { nodeRef: 'n1', observation: 'root is not evidence' },
+      { nodeRef: 'n3', observation: 'intent has no fact yet' },
+      { nodeRef: 'n9', observation: 'missing alias' }
+    ],
+    failedChecks: [],
+    limitations: []
+  }), options);
+  assert.deepEqual(normalized.evidence, [{ nodeRef: 'n2', observation: 'recorded fact' }]);
+  assert.match(normalized.limitations.join('\n'), /Dropped 3 evidence citation/);
+  assert.throws(() => parseWorkerFact(JSON.stringify({
+    outcome: 'confirmed', statement: 'Only invalid node refs',
+    evidence: [{ nodeRef: 'n1', observation: 'root' }]
+  }), options), /non-root fact node alias/);
+});
+
+test('optional fact lists discard blank/object placeholders while preserving real entries', () => {
   const options = { ledger, keyPoints: ['validate'] };
   const normalized = parseWorkerFact(JSON.stringify({ ...fact,
-    failedChecks: ['', '  ', ' Build failed ', 'Build failed'],
-    limitations: ['\t\n', ' Build not run '], nextSteps: ['', ' Run the build ', 'Run the build']
+    failedChecks: ['', '  ', ' Build failed ', 'Build failed', null, {}],
+    limitations: ['\t\n', ' Build not run ', { text: 'Object-wrapped limitation' }],
+    nextSteps: ['', null, { step: 'Run the build' }, { description: 'Retest edge case' }, 'Run the build']
   }), options);
   assert.deepEqual(normalized.failedChecks, ['Build failed']);
-  assert.deepEqual(normalized.limitations, ['Build not run']);
-  assert.deepEqual(normalized.nextSteps, ['Run the build']);
+  assert.ok(normalized.limitations.includes('Object-wrapped limitation'));
+  assert.deepEqual(normalized.nextSteps, ['Run the build', 'Retest edge case']);
   assert.deepEqual(parseWorkerFact(JSON.stringify(normalized), options), normalized);
   const empty = parseWorkerFact(JSON.stringify({ outcome: 'blocked', statement: 'No access',
     failedChecks: [''], limitations: [' '], nextSteps: ['\n'] }));
@@ -79,7 +114,7 @@ test('optional fact lists discard blank placeholders while preserving real entri
 
 test('optional fact lists still reject invalid types and enforce original limits', () => {
   for (const field of ['failedChecks', 'limitations', 'nextSteps']) {
-    for (const value of [[null], [{}], [123], [false], 'failure', [' '.repeat(8193)], Array(65).fill('')]) {
+    for (const value of [[123], [false], 'failure', [' '.repeat(8193)]]) {
       assert.throws(() => parseWorkerFact(JSON.stringify({ outcome: 'blocked', statement: 'No access', [field]: value })),
         { code: 'INVALID_FACT' });
     }

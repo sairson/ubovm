@@ -70,6 +70,10 @@ export class SSHCommands {
     const c = this.#config;
     return { id: c.id ?? 'default', name: c.name || `${c.username}@${c.host}`, host: c.host, port: c.port, username: c.username, default: isDefault };
   }
+  /** Human label of the host every command in this tool instance runs on. */
+  get hostLabel() { const c = this.#config; return c.name || `${c.username}@${c.host}`; }
+  /** Evidence fields that tell later readers which server produced a result. */
+  get hostEvidence() { const c = this.#config; return { profile_id: c.id ?? 'default', host: c.host, port: c.port, host_label: this.hostLabel }; }
   get maxCommandTimeoutSeconds() { return this.#config.max_command_timeout_seconds; }
   async connect() {
     if (this.#closed) throw new Error('SSH connection is closed');
@@ -137,7 +141,7 @@ export class SSHCommands {
       if (this.#closed) throw new Error('SSH connection is closed');
       const session = namedShell(sessions, input.session, () => new PersistentShell(signal => this.#openPersistent(signal)));
       return session.execute(command, { timeout, maxOutputBytes: c.max_output_bytes, reset: input.reset_session, lifecycle,
-        details: { session: input.session, profile_id: c.id ?? 'default' } }, signal, onUpdate);
+        details: { session: input.session, ...this.hostEvidence } }, signal, onUpdate);
     }
     return this.#execOneShot(command, timeout, signal, onUpdate, false, lifecycle, input);
   }
@@ -175,10 +179,10 @@ export class SSHCommands {
             const failure = new Error(`${fields.message}${warning}${text ? `\n${text}` : ''}`, { cause: error });
             failure.name = fields.name;
             if (fields.code !== undefined) failure.code = fields.code;
-            failure.details = { exit_code: exitCode ?? null, profile_id: c.id ?? 'default', ...(terminationUnconfirmed ? { remote_termination_confirmed: false } : extras) };
+            failure.details = { exit_code: exitCode ?? null, ...this.hostEvidence, ...(terminationUnconfirmed ? { remote_termination_confirmed: false } : extras) };
             reject(failure);
           }
-          else resolve(textResult(text, { exit_code: exitCode, profile_id: c.id ?? 'default' }));
+          else resolve(textResult(text, { exit_code: exitCode, ...this.hostEvidence }));
         };
         const closeChannel = channel => {
           // Late channels and errors can arrive after timeout or cancellation.
@@ -298,12 +302,16 @@ export class SSHCommands {
   }
   tool() {
     const sessions = new Map();
+    const hostLabel = this.hostLabel, hostEvidence = this.hostEvidence;
     this.#sessionGroups.add(sessions);
     this.#toolRefs++;
     const lifetime = new AbortController(), active = new Set();
     let closed = false, closing;
     const tool = {
-      name: 'run_linux_ssh_command', label: 'Run SSH command', description: SSH_CATALOG.description,
+      name: 'run_linux_ssh_command', label: 'Run SSH command',
+      // The model must know where a command lands: with several configured
+      // servers it otherwise tends to assume a target from earlier context.
+      description: `${SSH_CATALOG.description}\n当前远程主机：${hostLabel}（${hostEvidence.host}:${hostEvidence.port}，profile ${hostEvidence.profile_id}）。本会话的全部命令都在该主机执行；任务目标是另一台服务器时，请让用户在界面切换远程主机，不要自行改用其他地址。`,
       parameters: Type.Object({
         command: Type.Optional(Type.String({ minLength: 1, maxLength: 32768 })),
         session: Type.Optional(Type.String({ minLength: 1, maxLength: 64, description: 'Reuse a named bash shell, retaining cwd and environment. Requires Linux setsid and /proc for process-group cancellation. Calls serialize. A retained command frees the session for a fresh shell. Omit for isolated execution. No stdin reads, shell-native background jobs, or shell-wide output redirection.' })),
@@ -335,7 +343,9 @@ export class SSHCommands {
         return closing;
       }
     };
-    const disclosed = withProgressiveDisclosure(tool, { ...SSH_CATALOG, mode: 'flag' });
+    // Keep the host-aware description: the catalog description alone would hide
+    // which server this tool instance actually runs on.
+    const disclosed = withProgressiveDisclosure(tool, { ...SSH_CATALOG, description: tool.description, mode: 'flag' });
     disclosed.close = (...args) => tool.close(...args);
     return disclosed;
   }

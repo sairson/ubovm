@@ -119,6 +119,19 @@ test('abort and disposal deny outstanding calls and reject late approvals', asyn
   assert.equal(await service.request(details), false);
 });
 
+test('cancelling a conversation settles only its pending approvals', async () => {
+  const service = createToolApprovals();
+  const first = service.request({ ...details, conversationId: 'first' });
+  const second = service.request({ ...details, conversationId: 'second' });
+  assert.equal(service.cancelConversation('first'), 1);
+  assert.equal(await first, false);
+  assert.equal(service.snapshot('first')[0].status, 'cancelled');
+  assert.equal(service.snapshot('second')[0].status, 'pending');
+  assert.equal(service.respond({ id: service.snapshot('second')[0].id, conversationId: 'second', decision: 'approve' }), true);
+  assert.equal(await second, true);
+  service.dispose();
+});
+
 test('state snapshots survive reloads, retain full arguments and cannot mutate authorization', async () => {
   const service = createToolApprovals();
   const args = { command: '</pre><script>alert(1)</script>' + 'x'.repeat(20000) };

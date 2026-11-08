@@ -4,6 +4,7 @@ import { mkdtemp, mkdir, rm, realpath, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createLocalShellTool } from '../index.mjs';
+import { resolveLocalShell } from '../windows-shell.mjs';
 import { createInternalTools } from '../../../index.mjs';
 import { createSkillScriptTool } from '../../../skills/scripts.mjs';
 
@@ -42,7 +43,7 @@ test('rejects unsupported purposes and missing reasons before execution', async 
   assert.equal(result.details.purpose, 'environment_setup');
 });
 
-test('cmd-style syntax on Windows is retried through cmd.exe with UTF-8 output', { skip: !win }, async () => {
+test('cmd-style syntax on Windows is retried through cmd.exe with UTF-8 output', { skip: !win || resolveLocalShell().kind === 'pwsh' }, async () => {
   const cwd = await realpath(await mkdtemp(join(tmpdir(), 'ubovm-shell-cmd-')));
   try {
     await mkdir(join(cwd, 'server'));
@@ -58,7 +59,14 @@ test('cmd-style syntax on Windows is retried through cmd.exe with UTF-8 output',
 
 test('reports nonzero exit and PowerShell errors with retained output', async () => {
   await assert.rejects(createLocalShellTool().execute('fail', input(win ? "Write-Output 'before'; exit 7" : "echo before; exit 7")), error => error.details.exit_code === 7 && /before/.test(error.message));
-  if (win) await assert.rejects(createLocalShellTool().execute('fail', input("Write-Error 'failed-operation'")), /failed-operation/);
+  if (win) {
+    let failure;
+    try { await createLocalShellTool().execute('fail', input("Write-Error 'failed-operation'")); }
+    catch (error) { failure = error; }
+    assert.ok(failure, 'Write-Error must reject the tool call');
+    assert.match(failure.message, /failed-operation/);
+    assert.doesNotMatch(failure.message, /#< CLIXML|<\/?Objs/, 'PowerShell stderr must be readable, not serialized XML');
+  }
 });
 
 test('timeout, output limit, and cancellation terminate pending calls', async () => {

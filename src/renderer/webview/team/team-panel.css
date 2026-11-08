@@ -54,6 +54,12 @@
   color: var(--dsw-alias-label-primary);
   font-size: 13px;
   line-height: 1.55;
+  /* Neutral active accent: the team surfaces live in the assist chrome, so
+     running/current states use ink mixes instead of the blue business token. */
+  --team-active: color-mix(in srgb, var(--ink) 64%, var(--dsw-alias-bg-layer-2));
+  --team-active-strong: var(--ink);
+  --team-active-line: color-mix(in srgb, var(--ink) 30%, transparent);
+  --team-active-line-strong: color-mix(in srgb, var(--ink) 46%, transparent);
 }
 @supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
   .team-panel {
@@ -103,25 +109,25 @@
   border-radius: 8px;
   background: var(--dsw-alias-bg-layer-2);
   color: var(--dsw-alias-label-primary);
-  box-shadow: var(--dsw-elevation-stroke);
+  box-shadow: var(--dsw-elevation-soft);
   --dsw-elevation-stroke-color: var(--dsw-alias-border-l2);
 }
 .team-member[data-current="true"] {
-  --dsw-elevation-stroke-color: color-mix(in srgb, var(--dsw-alias-state-business-primary) 40%, transparent);
-  box-shadow: var(--dsw-elevation-stroke), inset 0 0 0 1px color-mix(in srgb, var(--dsw-alias-state-business-primary) 40%, transparent);
+  --dsw-elevation-stroke-color: var(--team-active-line-strong);
+  box-shadow: var(--dsw-elevation-soft), inset 0 0 0 1px var(--team-active-line-strong);
 }
 /* Teammate rows are selectable (they open that member's conversation). The
  * Lead row is the current conversation and stays a plain, non-focusable card. */
 .team-member-selectable { cursor: pointer; transition: background 120ms var(--dsw-ease), box-shadow 120ms var(--dsw-ease); }
 .team-member-selectable:hover {
-  background: color-mix(in srgb, var(--ink) 5%, var(--dsw-alias-bg-layer-2));
-  box-shadow: var(--dsw-elevation-stroke), inset 0 0 0 1px color-mix(in srgb, var(--dsw-alias-state-business-primary) 26%, transparent);
+  background: var(--surface-hover);
+  box-shadow: var(--dsw-elevation-soft), inset 0 0 0 1px var(--team-active-line);
 }
-.team-member-selectable:active { transform: none; background: color-mix(in srgb, var(--ink) 8%, var(--dsw-alias-bg-layer-2)); }
+.team-member-selectable:active { transform: none; background: var(--surface-raised); }
 .team-member-selectable:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 1px;
-  box-shadow: var(--dsw-elevation-stroke), inset 0 0 0 1px color-mix(in srgb, var(--dsw-alias-state-business-primary) 34%, transparent);
+  box-shadow: var(--dsw-elevation-soft), inset 0 0 0 1px var(--team-active-line-strong);
 }
 .team-member-selectable .team-member-name::after {
   content: '›';
@@ -148,14 +154,19 @@
 .team-member-dot svg { width: 14px; height: 14px; max-width: none; }
 .team-member-dot[data-state="ongoing"] {
   position: relative;
-  background: var(--dsw-alias-state-business-primary);
+  background: var(--team-active);
+}
+/* Waiting to start: a distinct amber state, intentionally static (no running spin). */
+.team-member-dot[data-state="waiting"] {
+  background: var(--dsw-alias-state-warn-primary);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--dsw-alias-state-warn-primary) 24%, transparent);
 }
 .team-member-dot[data-state="ongoing"]::after {
   content: '';
   position: absolute;
   inset: -3px;
-  border: 1.5px solid color-mix(in srgb, var(--dsw-alias-state-business-primary) 30%, transparent);
-  border-top-color: var(--dsw-alias-state-business-primary);
+  border: 1.5px solid color-mix(in srgb, var(--team-active) 32%, transparent);
+  border-top-color: var(--team-active);
   border-radius: 50%;
   animation: team-member-spin 1s linear infinite;
 }
@@ -176,9 +187,9 @@
 .team-current-tag {
   flex: 0 0 auto;
   padding: 0 4px;
-  border: 1px solid color-mix(in srgb, var(--dsw-alias-state-business-primary) 34%, transparent);
+  border: 1px solid var(--team-active-line-strong);
   border-radius: 4px;
-  color: var(--dsw-alias-state-business-primary);
+  color: var(--team-active-strong);
   font-size: 10px;
   line-height: 15px;
   white-space: nowrap;
@@ -225,6 +236,7 @@
   border: 0.5px solid var(--dsw-alias-border-l2);
   border-radius: 9px;
   background: var(--dsw-alias-bg-layer-2);
+  box-shadow: var(--dsw-elevation-soft);
 }
 .team-task-title { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .team-task-subject {
@@ -240,12 +252,12 @@
 }
 .team-task-state { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; color: var(--dsw-alias-label-tertiary); font-size: 11px; white-space: nowrap; }
 .team-task-state[data-state="warning"] { color: var(--dsw-alias-state-warn-label); }
-.team-task-state[data-state="ongoing"] { color: var(--dsw-alias-state-business-primary); }
+.team-task-state[data-state="ongoing"] { color: var(--dsw-alias-label-primary); }
 .team-task-state[data-state="done"] { color: var(--dsw-alias-state-success-primary); }
 .team-task-dot { flex: 0 0 7px; width: 7px; height: 7px; border-radius: 50%; background: var(--dsw-alias-state-idle-primary); }
 .team-task-dot[data-state="idle"] { background: var(--dsw-alias-state-idle-primary); }
 .team-task-dot[data-state="warning"] { background: var(--dsw-alias-state-warn-primary); }
-.team-task-dot[data-state="ongoing"] { background: var(--dsw-alias-state-business-primary); animation: team-task-pulse 1.6s ease-in-out infinite; }
+.team-task-dot[data-state="ongoing"] { background: var(--team-active); animation: team-task-pulse 1.6s ease-in-out infinite; }
 .team-task-dot[data-state="done"] { background: var(--dsw-alias-state-success-primary); }
 .team-task-description {
   margin: 5px 0;
@@ -308,8 +320,11 @@
 @keyframes team-task-pulse { 0%, 100% { opacity: .45; } 50% { opacity: 1; } }
 
 @media (prefers-reduced-motion: reduce) {
-  .team-member-dot[data-state="ongoing"]::after { animation: none; border-color: color-mix(in srgb, var(--dsw-alias-state-business-primary) 45%, transparent); }
+  .team-member-dot[data-state="ongoing"]::after { animation: none; border-color: color-mix(in srgb, var(--team-active) 45%, transparent); }
   .team-task-dot[data-state="ongoing"] { animation: none; }
   .team-task-expand svg { transition: none; }
   .team-member-selectable, .team-member-selectable .team-member-name::after { transition: none; }
 }
+
+.team-member-usage { color: var(--dsw-alias-label-tertiary); font-size: 11px; line-height: 15px; font-variant-numeric: tabular-nums; }
+

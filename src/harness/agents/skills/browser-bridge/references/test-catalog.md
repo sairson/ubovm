@@ -2,6 +2,8 @@
 
 Load only the family relevant to the current hypothesis. Use the evidence loop and scope rules in `SKILL.md`; this catalog supplies browser-specific test matrices, not automatic findings.
 
+Backend gating: check `browser_connection_status.supported_actions` first. IDE mode supports UI, network, cookies, storage, CDP and screenshots but not `sitemap_*`, `script_scan`, `identity_*`, `request_*`, `object_catalog` or `authz_compare`; use standalone Obscura mode for those, or adapt the matrix to `network` + normal navigation. In IDE mode a user login/MFA step may require `yield_control` before continuing.
+
 ## Contents
 
 - Authentication and session lifecycle

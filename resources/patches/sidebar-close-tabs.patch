@@ -1,45 +1,43 @@
 diff --git a/src/vs/workbench/browser/parts/compositeBarActions.ts b/src/vs/workbench/browser/parts/compositeBarActions.ts
 --- a/src/vs/workbench/browser/parts/compositeBarActions.ts
 +++ b/src/vs/workbench/browser/parts/compositeBarActions.ts
-@@ -548,6 +548,43 @@ export class CompositeActionViewItem extends CompositeBarActionViewItem {
+@@ -548,6 +548,41 @@ export class CompositeActionViewItem extends CompositeBarActionViewItem {
  		this.updateChecked();
  		this.updateEnabled();
  
 +		const compositeId = this.compositeBarActionItem.id;
-+		if (['workbench.view.explorer', 'workbench.view.search', 'workbench.view.extension.ubovm-workers', 'workbench.view.extension.ubovm-blackboard'].includes(compositeId)) {
-+			// The file tree is the sidebar's anchor view. Keep its identity on the tab
-+			// so the chrome can collapse the redundant tab bar when it is the only view.
++		if (compositeId) {
++			// Keep the tab identity on its chrome so the sidebar can restore the
++			// active view and close the last tab like any other tab.
 +			container.dataset.ubovmCompositeId = compositeId;
-+			if (compositeId !== 'workbench.view.explorer') {
-+				const close = container.ownerDocument.createElement('button');
-+				close.className = 'ubovm-sidebar-tab-close';
-+				close.type = 'button';
-+				close.textContent = '×';
-+				close.title = localize('ubovm.closeSidebarTab', "关闭 {0}", this.compositeBarActionItem.name);
-+				close.setAttribute('aria-label', close.title);
-+				const closeTab = () => {
-+					if (!container.closest('.part.sidebar')) { return; }
-+					const tabBar = container.parentElement;
-+					const restoreFocus = container.contains(container.ownerDocument.activeElement);
-+					this.compositeBar.unpin(this.compositeBarActionItem.id);
-+					if (!this.compositeBar.getPinnedCompositeIds().some(id => ['workbench.view.explorer', 'workbench.view.search', 'workbench.view.extension.ubovm-workers', 'workbench.view.extension.ubovm-blackboard'].includes(id))) {
-+						void this.commandService.executeCommand('workbench.action.closeSidebar');
-+					} else if (restoreFocus) {
-+						queueMicrotask(() => {
-+							const next = tabBar?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]') ?? tabBar?.querySelector<HTMLElement>('[role="tab"]');
-+							next?.focus();
-+						});
-+					}
-+				};
-+				this._register(addDisposableListener(close, 'mousedown', event => { event.preventDefault(); event.stopPropagation(); }));
-+				this._register(addDisposableListener(close, 'click', event => { event.preventDefault(); event.stopPropagation(); closeTab(); }));
-+				this._register(addDisposableListener(close, 'keydown', event => { event.stopPropagation(); if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); } }));
-+				this._register(addDisposableListener(close, 'keyup', event => { event.stopPropagation(); if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); closeTab(); } }));
-+				this._register(addDisposableListener(container, 'mousedown', event => { if (event.button === 1 && container.closest('.part.sidebar')) { event.preventDefault(); event.stopPropagation(); } }, true));
-+				this._register(addDisposableListener(container, 'auxclick', event => { if (event.button === 1) { event.preventDefault(); event.stopPropagation(); closeTab(); } }));
-+				this._register(addDisposableListener(container, 'keydown', event => { if (event.key === 'Delete') { event.preventDefault(); event.stopPropagation(); if (!event.repeat) { closeTab(); } } }));
-+				container.appendChild(close);
-+			}
++			const close = container.ownerDocument.createElement('button');
++			close.className = 'ubovm-sidebar-tab-close';
++			close.type = 'button';
++			close.textContent = '×';
++			close.title = '关闭 ' + this.compositeBarActionItem.name;
++			close.setAttribute('aria-label', close.title);
++			const closeTab = () => {
++				const sidebar = container.closest('.part.sidebar, .part.auxiliarybar'); if (!sidebar) { return; }
++				const tabBar = container.parentElement;
++				const restoreFocus = container.contains(container.ownerDocument.activeElement);
++				this.compositeBar.unpin(this.compositeBarActionItem.id);
++				if (this.compositeBar.getPinnedCompositeIds().length === 0) {
++					void this.commandService.executeCommand(sidebar.classList.contains('auxiliarybar') ? 'workbench.action.closeAuxiliaryBar' : 'workbench.action.closeSidebar');
++				} else if (restoreFocus) {
++					queueMicrotask(() => {
++						const next = tabBar?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]') ?? tabBar?.querySelector<HTMLElement>('[role="tab"]');
++						next?.focus();
++					});
++				}
++			};
++			this._register(addDisposableListener(close, 'mousedown', event => { event.preventDefault(); event.stopPropagation(); }));
++			this._register(addDisposableListener(close, 'click', event => { event.preventDefault(); event.stopPropagation(); closeTab(); }));
++			this._register(addDisposableListener(close, 'keydown', event => { event.stopPropagation(); if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); } }));
++			this._register(addDisposableListener(close, 'keyup', event => { event.stopPropagation(); if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); closeTab(); } }));
++			this._register(addDisposableListener(container, 'mousedown', event => { if (event.button === 1 && container.closest('.part.sidebar, .part.auxiliarybar')) { event.preventDefault(); event.stopPropagation(); } }, true));
++			this._register(addDisposableListener(container, 'auxclick', event => { if (event.button === 1) { event.preventDefault(); event.stopPropagation(); closeTab(); } }));
++			this._register(addDisposableListener(container, 'keydown', event => { if (event.key === 'Delete') { event.preventDefault(); event.stopPropagation(); if (!event.repeat) { closeTab(); } } }));
++			container.appendChild(close);
 +		}
 ++
  		this._register(addDisposableListener(this.container, EventType.CONTEXT_MENU, e => {
@@ -52,18 +50,18 @@ diff --git a/src/vs/workbench/browser/parts/paneCompositeBar.ts b/src/vs/workben
  
  			// Update the composite bar by adding
  			this.addComposite(viewContainer);
-+			if (this.options.partContainerClass === 'sidebar') {
++			if (this.options.partContainerClass === 'sidebar' || this.options.partContainerClass === 'auxiliarybar' || this.options.partContainerClass === 'activitybar') {
 +				void this.compositeBar.pin(id);
 +			}
  			this.compositeBar.activateComposite(viewContainer.id);
  
  			if (this.shouldBeHidden(viewContainer)) {
 @@ -436,7 +439,7 @@ export class PaneCompositeBar extends Disposable {
- 		if (this.options.partContainerClass === 'panel' && viewContainerId !== 'terminal' && viewContainerId !== 'workbench.view.extension.ubovm-workers') {
+ 		if (this.options.partContainerClass === 'panel' && viewContainerId !== 'terminal' && viewContainerId !== 'workbench.view.extension.ubovm-workers' && !viewContainerId.startsWith('workbench.view.extension.')) {
  			return true;
  		}
--		if (this.options.partContainerClass === 'sidebar' && viewContainerId !== 'workbench.view.explorer' && viewContainerId !== 'workbench.view.extension.ubovm-workers') {
-+		if (this.options.partContainerClass === 'sidebar' && viewContainerId !== 'workbench.view.explorer' && viewContainerId !== 'workbench.view.search' && viewContainerId !== 'workbench.view.extension.ubovm-workers' && viewContainerId !== 'workbench.view.extension.ubovm-blackboard') {
+-		if (this.options.partContainerClass === 'sidebar' && viewContainerId !== 'workbench.view.explorer' && viewContainerId !== 'workbench.view.extension.ubovm-workers' && !viewContainerId.startsWith('workbench.view.extension.')) {
++		if (this.options.partContainerClass === 'sidebar' && viewContainerId !== 'workbench.view.explorer' && viewContainerId !== 'workbench.view.search' && viewContainerId !== 'workbench.view.extension.ubovm-workers' && viewContainerId !== 'workbench.view.extension.ubovm-blackboard' && viewContainerId !== 'workbench.view.extension.ubovm-goal-chat' && !viewContainerId.startsWith('workbench.view.extension.')) {
  			return true;
  		}
  

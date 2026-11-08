@@ -22,11 +22,11 @@ export function createPythonTool({ cwd = process.cwd(), workspaceRoots = [], exe
     name: 'run_python', label: 'Run Python in local sandbox',
     description: RUN_PYTHON_CATALOG.description,
     parameters: Type.Object({
-      code: Type.Optional(Type.String({ minLength: 1, maxLength: 262144 })),
-       script: Type.Optional(Type.String({ minLength: 1, maxLength: 4096, description: 'Existing .py file inside any open workspace; relative to cwd or absolute.' })),
-      arguments: Type.Optional(Type.Array(Type.String({ maxLength: 4096 }), { maxItems: 64 })),
+      code: Type.Optional(Type.String({ minLength: 1, maxLength: 262144, description: 'Inline Python source. Provide exactly one of code or script.' })),
+       script: Type.Optional(Type.String({ minLength: 1, maxLength: 4096, description: 'Existing .py file inside any open workspace; relative to cwd or absolute. Provide exactly one of code or script.' })),
+      arguments: Type.Optional(Type.Array(Type.String({ maxLength: 4096 }), { maxItems: 64, description: 'Command-line arguments passed to the script (not used with inline code).' })),
        cwd: Type.Optional(Type.String({ maxLength: 4096, description: 'Directory inside any open workspace; absolute paths may target another open workspace.' })),
-      reason: Type.Optional(Type.String({ minLength: 1, maxLength: 2048 })),
+      reason: Type.Optional(Type.String({ minLength: 1, maxLength: 2048, description: 'Required at runtime: one concrete sentence explaining why this Python run is needed.' })),
       timeout_seconds: Type.Optional(Type.Integer({ minimum: 1, maximum: maxTimeoutSeconds })),
       ...flagHelpProperties()
     }, { additionalProperties: false }),
@@ -49,12 +49,12 @@ export function createPythonTool({ cwd = process.cwd(), workspaceRoots = [], exe
        const directory = await realpath(cwdInput === undefined ? root : resolve(root, requireText(cwdInput, 'cwd')));
        if (!(await stat(directory)).isDirectory()) throw new Error('Python cwd must be a directory');
        // 完全模式 accepts any cwd; the confined modes keep it inside an open workspace.
-       if (!unbounded && !roots.some(candidate => contained(candidate, directory))) throw new Error('Python cwd must be inside an open workspace');
+       if (!unbounded && !roots.some(candidate => contained(candidate, directory))) throw new Error('Python cwd must be inside this workspace');
       let script;
       if (scriptInput !== undefined) {
         script = await realpath(resolve(directory, requireText(scriptInput, 'script')));
          if (!/\.py$/i.test(script) || !(await stat(script)).isFile()) throw new Error('Python script must be a .py file');
-         if (!unbounded && !roots.some(candidate => contained(candidate, script))) throw new Error('Python script must be a .py file inside an open workspace');
+         if (!unbounded && !roots.some(candidate => contained(candidate, script))) throw new Error('Python script must be a .py file inside this workspace');
       }
       let python = await resolvePython(executable, process.env, signal), environmentIdentity;
       if (useManagedEnvironment) {

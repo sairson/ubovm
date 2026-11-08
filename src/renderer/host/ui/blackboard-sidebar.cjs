@@ -30,6 +30,8 @@ function renderSidebar() {
     timeout: interfaceText('操作超时，请重试。'),
     send: interfaceText('操作发送失败，请重试。'),
     failed: interfaceText('操作失败，请重试。'),
+    refresh: interfaceText('刷新'),
+    refreshTitle: interfaceText('重新读取节点详情'),
     format: interfaceText('部分格式加载失败，已显示原文；重新选择节点可重试。')
   };
   const copy = JSON.stringify(text).replace(/</g, '\\u003c');
@@ -47,8 +49,8 @@ function renderSidebar() {
   p{margin:0;white-space:pre-wrap}.meta{font-size:.85em;line-height:1.5;color:var(--vscode-descriptionForeground,#666);padding-bottom:14px;border-bottom:1px solid var(--vscode-widget-border,#ddd)}.section{font-weight:400;line-height:1.75;tab-size:2}
   .links{display:grid;gap:7px}.links button{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden;width:100%;min-width:0;text-align:left;white-space:normal;overflow-wrap:anywhere;font-size:.92em;line-height:1.6;padding:8px 10px}#empty{color:var(--vscode-descriptionForeground);padding:28px 0}#empty strong{display:block;color:var(--vscode-foreground);font-weight:500;margin-bottom:8px}[hidden]{display:none!important}
   body{--ink:var(--vscode-foreground,#292a2d);--muted:var(--vscode-descriptionForeground,#666);--border:var(--vscode-widget-border,#ddd);--wash:var(--vscode-textCodeBlock-background,#f1f1f1);--hover:var(--vscode-list-hoverBackground,#eee)}
-  .section.md-content{--prose-size:13px;white-space:normal}.section.md-content p{white-space:pre-wrap}section{min-width:0}.md-content .md-code-toolbar{position:static;padding:6px 8px;background:transparent}header>span{min-width:0}header>button{flex-shrink:0}
-  </style></head><body><header><span>${html(text.title)}</span><button id="files" type="button">${html(text.files)}</button></header>
+  .section.md-content{--prose-size:13px;white-space:normal}.section.md-content p{white-space:pre-wrap}section{min-width:0}.md-content .md-code-toolbar{position:static;padding:6px 8px;background:transparent}header>span{min-width:0}.header-actions{display:flex;align-items:center;gap:6px;flex-shrink:0}
+  </style></head><body><header><span>${html(text.title)}</span><div class="header-actions"><button id="refresh" type="button" title="${html(text.refreshTitle)}">${html(text.refresh)}</button><button id="files" type="button">${html(text.files)}</button></div></header>
   <main><div id="empty"><strong>${html(text.emptyTitle)}</strong>${html(text.emptyBody)}</div><article id="detail" hidden></article></main>
   <script nonce="${nonce}">
   const L=${copy};
@@ -82,10 +84,8 @@ function renderSidebar() {
     for(const [key,record] of records)if(!keep.has(key)){record.node.remove();records.delete(key);}
   }
   document.getElementById('files').onclick=()=>vscode.postMessage({action:'files'});
-  window.addEventListener('message',event=>{
-    if(event.data?.type==='uiResult'){const response=event.data,entry=pending.get(response.requestId);if(entry){clearTimeout(entry.timer);pending.delete(response.requestId);response.ok?entry.resolve():entry.reject(new Error(typeof response.error==='string'?response.error:response.error?.message||L.failed));}return;}
-    if(event.data?.type!=='detail')return;
-    const next=event.data.detail, key=JSON.stringify(next);
+  function render(detail){
+    const next=detail, key=JSON.stringify(next);
     if(key===rendered)return;
     const changed=current?.id!==next?.id||current?.sessionId!==next?.sessionId;current=next;
     if(changed)cancelRequests();
@@ -111,6 +111,19 @@ function renderSidebar() {
     if(changed)window.scrollTo(0,0);
     if(formatFailed)put(meta,(current.meta?current.meta+' · ':'')+L.format);
     rendered=formatFailed?undefined:key;
+  }
+  document.getElementById('refresh').onclick=()=>{
+    // Rebuild the panel from the last detail even when the previous paint was
+    // partial, then ask the host to republish the authoritative projection. A
+    // lost detail message otherwise leaves the panel blank with no recovery.
+    const detail=current;current=null;rendered=undefined;
+    try{render(detail);}catch{}
+    try{vscode.postMessage({action:'refresh'});}catch{}
+  };
+  window.addEventListener('message',event=>{
+    if(event.data?.type==='uiResult'){const response=event.data,entry=pending.get(response.requestId);if(entry){clearTimeout(entry.timer);pending.delete(response.requestId);response.ok?entry.resolve():entry.reject(new Error(typeof response.error==='string'?response.error:response.error?.message||L.failed));}return;}
+    if(event.data?.type!=='detail')return;
+    render(event.data.detail);
   });vscode.postMessage({action:'ready'});
   </script><script nonce="${nonce}">${scripts}</script></body></html>`;
 }
@@ -165,6 +178,7 @@ function createBlackboardSidebar(vscode, { onSelect, onClose, onAction, onError 
         try {
         if (view !== next) return;
         if (message?.action === 'ready') void publish();
+        else if (message?.action === 'refresh') void publish();
         else if (message?.action === 'files') await showFiles();
         else if (message?.action === 'select' && detail && message.sessionId === sessionId && detail.links.some(link => link.id === message.id)) await onSelect(message.id, sessionId);
         else if (['copyText', 'openMessageLink'].includes(message?.action) && detail && message.sessionId === sessionId && onAction) await onAction(message, next);
@@ -198,7 +212,13 @@ function createBlackboardSidebar(vscode, { onSelect, onClose, onAction, onError 
       detail = value; void publish();
       if (!value) ++navigationRevision;
       if (value && reveal) {
-        await navigate('workbench.view.extension.ubovm-blackboard', ++navigationRevision, true);
+        const revision = ++navigationRevision;
+        await navigate('workbench.view.extension.ubovm-blackboard', revision, true);
+        // publish() above was skipped while the view was hidden; repeat the
+        // latest detail after the reveal so a missed visibility event cannot
+        // leave the panel showing an older node. Await it so callers only
+        // observe the revealed panel once the detail has been handed over.
+        if (view && revision === navigationRevision) await publish();
       }
     },
     showFiles,

@@ -216,11 +216,15 @@ test('long Chinese text and paths stay inside readable cards with aligned connec
   try {
     for (const dark of [false, true]) {
       const page = await browser.newPage({ viewport: { width: 1000, height: 1000 } });
-      await page.setContent('<div id="board"></div>');
+      await page.setContent('<div id="goal-board"><div id="board"></div></div>');
       for (const path of ['styles.css', 'theme.css', 'goal/blackboard-graph.css']) await page.addStyleTag({ path: 'src/renderer/webview/' + path });
+      // Give the standalone canvas a real viewport height: the page-level
+      // flex rules that size it in the IDE need ancestors this harness omits.
+      await page.addStyleTag({ content: '.graph-viewport { flex: 0 0 auto !important; width: 100% !important; height: 700px !important; }' });
       for (const name of ['exploration-model', 'blackboard-graph']) await page.addScriptTag({ path: `src/renderer/webview/goal/${name}.js` });
       await page.evaluate(dark => {
         document.body.classList.toggle('vscode-dark', dark);
+        document.body.dataset.mode = 'goal';
         window.graph = window.createBlackboardGraph(document.querySelector('#board'), { factText: value => value || '', statusText: value => value });
         window.graph.update({ sessionId: 'text', rootId: 'root', goal: '优化探索过程中的信息展示，让重要结论更容易阅读和追溯', nodes: [
           { id: 'root', kind: 'root', parentIds: [] },
@@ -231,22 +235,21 @@ test('long Chinese text and paths stay inside readable cards with aligned connec
       }, dark);
       const cards = await page.locator('.graph-node[data-kind="fact"]').evaluateAll(nodes => nodes.map(node => {
         const title = node.querySelector('.graph-node-title'), info = node.querySelector('.graph-node-info');
-        const box = node.getBoundingClientRect(), text = title.getBoundingClientRect(), footer = info.getBoundingClientRect();
-        return { width: box.width, titleHeight: text.height, fontSize: getComputedStyle(title).fontSize,
-          inside: text.left >= box.left && text.right <= box.right && footer.bottom <= box.bottom,
-          separate: text.bottom <= footer.top, overflow: node.scrollWidth > node.clientWidth };
+        return { width: node.getBoundingClientRect().width, titleDisplay: getComputedStyle(title).display,
+          infoDisplay: getComputedStyle(info).display, overflow: node.scrollWidth > node.clientWidth };
       }));
       for (const card of cards) {
-        assert.equal(card.width, 240); assert.equal(card.fontSize, '13px');
-        assert.ok(card.titleHeight <= 60 && card.titleHeight > 20);
-        assert.ok(card.inside && card.separate); assert.equal(card.overflow, false);
+        assert.equal(card.width, 128);
+        assert.equal(card.titleDisplay, 'none', 'fact content is tooltip/detail only');
+        assert.equal(card.infoDisplay, 'none');
+        assert.equal(card.overflow, false);
       }
       const endpoint = await page.locator('.graph-edges path[data-source="root"][data-target="chinese"]:not(.graph-edge-hit)').evaluate(line => {
         const root = document.querySelector('[data-node-id="root"]').getBoundingClientRect(), canvas = document.querySelector('.graph-canvas').getBoundingClientRect();
         const start = line.getPointAtLength(0);
         const x = start.x - (root.left - canvas.left), y = start.y - (root.top - canvas.top);
-        return { inside: x >= -1 && x <= root.width + 1 && y >= -1 && y <= root.height + 1,
-          boundary: Math.min(Math.abs(x), Math.abs(y), Math.abs(x - root.width), Math.abs(y - root.height)) < 1 };
+        const radius = root.width / 2, distance = Math.hypot(x - radius, y - radius);
+        return { inside: x >= -1 && x <= root.width + 1 && y >= -1 && y <= root.height + 1, boundary: Math.abs(distance - radius) < 1.5 };
       });
       assert.equal(endpoint.inside, true); assert.equal(endpoint.boundary, true);
       await page.locator('[data-node-id="chinese"]').click();
@@ -320,7 +323,7 @@ test('completed evidence points to the final goal node', async () => {
   const browser = await chromium.launch({ headless: true, executablePath: process.env.UBOVM_STYLE_EDGE || 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe' });
   try {
     const page = await browser.newPage({ viewport: { width: 1000, height: 900 } });
-    await page.setContent('<div id="board"></div>');
+    await page.setContent('<div id="goal-board"><div id="board"></div></div>');
     for (const file of ['styles.css', 'theme.css', 'goal/blackboard-graph.css']) await page.addStyleTag({ path: 'src/renderer/webview/' + file });
     for (const name of ['exploration-model', 'blackboard-graph']) await page.addScriptTag({ path: `src/renderer/webview/goal/${name}.js` });
     const board = {
@@ -332,6 +335,7 @@ test('completed evidence points to the final goal node', async () => {
       ]
     };
     await page.evaluate(snapshot => {
+      document.body.dataset.mode = 'goal';
       window.graph = window.createBlackboardGraph(document.querySelector('#board'), { factText: value => value || '', statusText: value => value });
       window.graph.update(snapshot);
     }, board);
@@ -349,9 +353,11 @@ test('completed evidence points to the final goal node', async () => {
       return paths.map(path => {
         const source = box(document.querySelector('[data-node-id="' + path.dataset.source + '"]'));
         const start = path.getPointAtLength(0), end = path.getPointAtLength(path.getTotalLength());
-        const onBox = (p, r) => p.x >= r.x - 1 && p.x <= r.x + r.width + 1 && p.y >= r.y - 1 && p.y <= r.y + r.height + 1
-          && Math.min(Math.abs(p.x - r.x), Math.abs(p.y - r.y), Math.abs(p.x - r.x - r.width), Math.abs(p.y - r.y - r.height)) < 1.5;
-        return onBox(start, source) && onBox(end, goal);
+        const onBall = (p, r) => {
+          const radius = r.width / 2, distance = Math.hypot(p.x - (r.x + radius), p.y - (r.y + radius));
+          return p.x >= r.x - 1 && p.x <= r.x + r.width + 1 && p.y >= r.y - 1 && p.y <= r.y + r.height + 1 && Math.abs(distance - radius) < 1.5;
+        };
+        return onBall(start, source) && onBall(end, goal);
       });
     });
     assert.deepEqual(attached, [true, true]);
@@ -443,10 +449,11 @@ test('all graph edges stay straight and attach to node boundaries across ranks a
   const browser = await chromium.launch({ headless: true, executablePath: process.env.UBOVM_STYLE_EDGE || 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe' });
   t.after(() => browser.close());
   const page = await browser.newPage({ viewport: { width: 1200, height: 1100 } });
-  await page.setContent('<div id="board"></div>');
+  await page.setContent('<div id="goal-board"><div id="board"></div></div>');
   for (const file of ['styles.css', 'theme.css', 'goal/blackboard-graph.css']) await page.addStyleTag({ path: 'src/renderer/webview/' + file });
   for (const name of ['exploration-model', 'blackboard-graph']) await page.addScriptTag({ path: `src/renderer/webview/goal/${name}.js` });
   await page.evaluate(() => {
+    document.body.dataset.mode = 'goal';
     window.graph = window.createBlackboardGraph(document.querySelector('#board'), { factText: value => value || '', statusText: value => value });
     graph.update(window.straightSnapshot = { sessionId: 'straight', rootId: 'r', nodes: [
       { id: 'r', kind: 'root', parentIds: [] },
@@ -461,7 +468,10 @@ test('all graph edges stay straight and attach to node boundaries across ranks a
       const rect = id => { const r = document.querySelector('[data-node-id="' + id + '"]').getBoundingClientRect(); return { x: r.x - canvas.x, y: r.y - canvas.y, width: r.width, height: r.height }; };
       const a = rect(path.dataset.source), b = rect(path.dataset.target);
       const start = path.getPointAtLength(0), end = path.getPointAtLength(path.getTotalLength());
-      const boundary = (p, r) => p.x >= r.x - 1 && p.x <= r.x + r.width + 1 && p.y >= r.y - 1 && p.y <= r.y + r.height + 1 && Math.min(Math.abs(p.x - r.x), Math.abs(p.y - r.y), Math.abs(p.x - r.x - r.width), Math.abs(p.y - r.y - r.height)) < 1;
+      const boundary = (p, r) => {
+        const radius = r.width / 2, distance = Math.hypot(p.x - (r.x + radius), p.y - (r.y + radius));
+        return p.x >= r.x - 1 && p.x <= r.x + r.width + 1 && p.y >= r.y - 1 && p.y <= r.y + r.height + 1 && Math.abs(distance - radius) < 1.5;
+      };
       const dx = b.x + b.width / 2 - a.x - a.width / 2, dy = b.y + b.height / 2 - a.y - a.height / 2;
       return { straight: /^M[-\d.,e+]+ L[-\d.,e+]+$/.test(path.getAttribute('d')), boundaries: boundary(start, a) && boundary(end, b), aligned: Math.abs((end.x - start.x) * dy - (end.y - start.y) * dx) < .1 };
     }));

@@ -351,20 +351,34 @@ test('undelivered interruption survives restart and restores without a model cal
   assert.equal(delivered.length, 1);
 });
 
-test('rewind branches isolate stored assist memory while preserving the previous execution', async t => {
+test('rewind branches isolate execution state but recover the conversation notebook', async t => {
   const f = await fixture(t);
   const { HarnessDatabase } = await import('../../../../harness/blackboard/database/database.mjs');
   const database = await HarnessDatabase.open({ filePath: path.join(f.running.directory, 'assist.sqlite') });
   database.ensureSession({ sessionId: f.running.sessionId, goal: 'old input' });
-  database.close();
+  const lease = database.acquireSession(f.running.sessionId);
+  try {
+    database.saveMemory(f.running.sessionId, { schemaVersion: 1, sessionId: f.running.sessionId, revision: 1, todos: [], workers: [], promotions: [], audit: [], notes: [{ id: 'pre-rewind-note', content: '回退前记录的笔记' }] });
+  } finally { lease.release(); database.close(); }
   f.complete('old answer'); await f.completion;
   await f.service.restore({ conversationId: 'current', mode: 'assist', executionBranch: 'rewound-branch' });
   assert.equal(f.service.state('current').status, 'idle');
   assert.equal(f.service.state('current').parts.length, 0);
+  assert.equal(f.service.state('current').memory.notes[0].content, '回退前记录的笔记', 'notes survive a branch change');
   const { access } = require('node:fs/promises');
   await access(path.join(f.running.directory, 'assist.sqlite'));
   await f.service.restore({ conversationId: 'current', mode: 'assist', executionBranch: 'rewound-branch' });
   assert.equal(f.service.state('current').parts.length, 0);
+});
+
+test('agent notebook notes can be deleted from the panel', async t => {
+  const f = await fixture(t);
+  const memory = { schemaVersion: 1, sessionId: f.running.sessionId, revision: 1, todos: [], workers: [], promotions: [], audit: [], notes: [{ id: 'agent-note', content: 'Agent 现场记录' }] };
+  f.event({ type: 'memory.status', memory });
+  assert.equal(f.service.state('current').memory.notes[0].content, 'Agent 现场记录');
+  f.complete('done'); await f.completion;
+  await f.service.deleteMemoryNote('current', 'agent-note');
+  assert.deepEqual(f.service.state('current').memory.notes, []);
 });
 
 test('goal notes refresh before the running worker returns', async t => {
@@ -568,6 +582,32 @@ test('long process output keeps advancing within the UI budget and retains the f
   f.complete('Done'); await f.completion;
 });
 
+test('python sandbox phases surface on the tool part without a command registration', async t => {
+  const f = await fixture(t);
+  const base = { toolName: 'run_python', toolCallId: 'python-phase' };
+  const part = () => f.service.state('current').parts.find(item => item.type === 'tool' && item.name === 'run_python');
+  const phase = value => f.event({ ...base, type: 'tool_execution_update', partialResult: { content: [{ type: 'text', text: '' }], details: { execution_state: value } } });
+  f.event({ ...base, type: 'tool_execution_start', args: { code: 'print(1)', reason: 'test' } });
+  phase('queued');
+  assert.equal(part().executionState, 'queued');
+  phase('preparing');
+  assert.equal(part().executionState, 'preparing');
+  // Unknown phases never reach the card.
+  phase('not-a-phase');
+  assert.equal(part().executionState, 'preparing');
+  // A phase that names a foreign command belongs to that command, not this card.
+  f.event({ ...base, type: 'tool_execution_update', partialResult: { content: [], details: { command_id: '11111111-1111-4111-8111-111111111111', execution_state: 'stopping' } } });
+  assert.equal(part().executionState, 'preparing');
+  phase('running');
+  f.event({ ...base, type: 'tool_execution_update', partialResult: { content: [{ type: 'text', text: 'hello\n' }], details: { execution_state: 'running' } } });
+  assert.equal(part().executionState, 'running');
+  assert.equal(part().output, 'hello\n');
+  f.event({ ...base, type: 'tool_execution_end', result: { content: [{ type: 'text', text: 'hello\nexit_code: 0' }] } });
+  assert.equal(part().status, 'completed');
+  assert.equal(part().executionState, undefined);
+  f.complete('Done'); await f.completion;
+});
+
 test('process bursts preserve completed history, bounded output and snapshot isolation', async t => {
   const f = await fixture(t);
   for (let i = 0; i < 80; i++) {
@@ -658,24 +698,54 @@ test('collaboration worker events expose status and tools without replacing the 
   workerEvent({ type: 'message_update', message: { role: 'assistant', content: 'private worker response' } });
   workerEvent({ type: 'tool_execution_start', toolName: 'read_file', toolCallId: 'tool-1', args: { path: 'fixture.txt' } });
   workerEvent({ type: 'tool_execution_end', toolName: 'read_file', toolCallId: 'tool-1', result: 'worker evidence' });
-  workerEvent({ type: 'message_end', message: { role: 'assistant', content: 'private worker response' } });
+  workerEvent({ type: 'message_end', message: { role: 'assistant', content: 'private worker response', usage: { input: 10, output: 5, totalTokens: 15 } } });
   const working = f.service.state('current');
   assert.equal(working.streamText, 'root progress');
   assert.equal(working.workers[0].description, 'Inspect a file');
   assert.equal(working.workers[0].status, 'running');
+  assert.deepEqual(working.workers[0].usage, { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, totalTokens: 15 });
+  assert.deepEqual(working.usage, { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, totalTokens: 15 });
   const workerTool = working.workers[0].parts.find(part => part.type === 'tool');
   assert.equal(workerTool.workerId, 'worker-1');
   assert.equal(workerTool.output, 'worker evidence');
   assert(!JSON.stringify(working.parts).includes('private worker response'));
   f.event({ type: 'swarm.status', workers: [{ id: 'worker-1', parentId: 'root', task: 'Inspect a file', depth: 1, status: 'completed' }] });
   f.event({ type: 'message_start', message: { role: 'assistant' } });
-  f.event({ type: 'message_end', message: { role: 'assistant', content: 'root final answer' } });
+  f.event({ type: 'message_end', message: { role: 'assistant', content: 'root final answer', usage: { input: 20, output: 10, totalTokens: 30 } } });
   f.complete('root final answer');
   await f.completion;
   assert.equal(f.service.state('current').workers[0].status, 'completed');
+  assert.deepEqual(f.service.state('current').usage, { input: 30, output: 15, cacheRead: 0, cacheWrite: 0, totalTokens: 45 });
   assert.equal(f.delivered[0].text, 'root final answer');
   assert.deepEqual(f.delivered[0].parts.map(part => part.type), ['text', 'text']);
   assert(!JSON.stringify(f.delivered).includes('private worker response'));
+});
+
+test('background learning events stay out of the task timeline', async t => {
+  const f = await fixture(t);
+  f.event({ type: 'knowledge.learned' });
+  f.event({ type: 'knowledge.reflection_start' });
+  f.event({ type: 'knowledge.failed', message: 'fixture failure' });
+  const state = f.service.state('current');
+  assert.equal(state.activities.some(item => String(item.label).includes('学习') || String(item.label).includes('经验')), false);
+  assert.equal(JSON.stringify(state.parts).includes('fixture failure'), false);
+  f.complete('done'); await f.completion;
+});
+
+test('team member usage is counted per member and in the conversation total', async t => {
+  const f = await fixture(t);
+  f.event({ type: 'team.status', team: { roster: [
+    { name: 'lead', role: 'lead', status: 'running' },
+    { name: 'helper', role: 'teammate', status: 'running' }
+  ], tasks: [] } });
+  f.event({ type: 'team.member.event', member: 'helper', event: { type: 'message_start', message: { role: 'assistant' } } });
+  f.event({ type: 'team.member.event', member: 'helper', event: { type: 'message_end', message: { role: 'assistant', content: 'helper done', usage: { input: 7, output: 3, totalTokens: 10 } } } });
+  const state = f.service.state('current');
+  assert.equal(state.team.roster.find(member => member.name === 'helper').usage.totalTokens, 10);
+  assert.equal(state.usage.totalTokens, 10);
+  await f.service.watchTeamMember({ conversationId: 'current', name: 'helper' });
+  assert.equal(f.service.state('current').teamWatch.usage.totalTokens, 10);
+  f.complete('done'); await f.completion;
 });
 
 test('goal mode continues to use the Reason/Worker harness instead of collaboration Chat', async t => {
@@ -830,6 +900,22 @@ test('Reason and goal Worker thinking retain sources while protocol JSON stays h
   assert(!JSON.stringify(saved).includes('provider-signature'));
 });
 
+test('finished goal rounds archive thinking and results before the next run starts', async t => {
+  const f = await fixture(t, 'goal');
+  const reason = event => f.event({ type: 'reason.event', event: { type: 'pi_event', event } });
+  reason({ type: 'message_start', message: assistant([]) });
+  reason(thinkingEvent('thinking_delta', [thought('Round one thinking')]));
+  reason({ type: 'message_end', message: assistant([thought('Round one thinking'), { type: 'text', text: 'Round one conclusion' }]) });
+  f.complete({ complete: true, revision: 1, summary: 'Round one done' });
+  await f.completion;
+  await f.service.start({ conversationId: 'current', mode: 'goal', goal: { objective: 'Verify the goal route' } });
+  const state = f.service.state('current');
+  assert.equal(state.logHistory?.length, 1, 'the finished round is archived');
+  assert.ok(state.logHistory[0].parts.some(part => part.type === 'thinking' && /Round one thinking/.test(part.text)), 'thinking survives');
+  assert.ok(state.logHistory[0].parts.some(part => part.type === 'text' && /Round one conclusion/.test(part.text)), 'conclusion survives');
+  assert.equal(state.logHistory[0].parts.some(part => part.type === 'tool'), false, 'tool payloads are not duplicated into log history');
+});
+
 test('Reason decisions project thinking process and human-readable conclusions into the goal log', async t => {
   const f = await fixture(t, 'goal');
   const reason = event => f.event({ type: 'reason.event', event: { type: 'pi_event', event } });
@@ -923,11 +1009,11 @@ test('long timelines keep all earlier fragments without an omission placeholder'
 test('thinking cleaners whitelist plaintext, redact credentials and retain every earlier fragment', () => {
   const thinking = { id: 'thinking', type: 'thinking', source: 'assistant', status: 'completed', text: 'api_key=private-secret\n' + 'analysis '.repeat(5000), startedAt: 100, endedAt: 150, signature: 'signature-secret', thinkingSignature: 'secret-signature', encrypted: 'opaque-secret' };
   const parts = cleanTimelineParts([thinking, { ...thinking, id: 'redacted', redacted: true }, ...Array.from({ length: 10 }, (_, index) => ({ ...thinking, id: `thinking-${index}` })), { id: 'final', type: 'text', text: 'Final '.repeat(12000), status: 'completed' }]);
-  assert(parts.every(part => part.type !== 'thinking' || part.text.length <= 12000));
+  assert(parts.every(part => part.type !== 'thinking' || part.text.length > 12000), 'thinking is not clipped');
   assert.equal(parts.at(-1).text.length, 64000);
   assert.equal(parts.filter(part => part.type === 'thinking').length, 11);
-  assert(parts.filter(part => part.type === 'thinking').every(part => part.text.length === 12000));
-  assert(parts.some(part => part.truncated));
+  assert(parts.filter(part => part.type === 'thinking').every(part => part.text.length > 12000 && part.truncated !== true));
+  assert(!parts.some(part => part.type === 'thinking' && part.truncated));
   assert(!parts.some(part => part.id === 'redacted'));
   assert(!/private-secret|signature-secret|secret-signature|opaque-secret/.test(JSON.stringify(parts)));
   assert.deepEqual(cleanTimelineParts(parts), parts);

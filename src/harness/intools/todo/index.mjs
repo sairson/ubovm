@@ -98,8 +98,16 @@ export function createTodoTool({ store, sessionId, workerId = 'worker' } = {}) {
         state.todos = [...state.todos.filter(item => item.worker_id !== owner || !item.id.startsWith('plan-')), ...projected];
       });
     },
-    summary(owner = workerId) {
-      const items = store.snapshot(['todos']).todos;
+    /**
+     * `ownPlan: false` hides this owner's host-managed `plan-` items: a goal
+     * Worker already receives the same plan in its phase assignment, and the
+     * summary is re-injected at every model boundary. Other owners' items and
+     * the worker's own written todos are always kept.
+     */
+    summary(owner = workerId, { ownPlan = true } = {}) {
+      const all = store.snapshot(['todos']).todos;
+      const items = ownPlan ? all
+        : all.filter(item => !(item.worker_id === owner && item.id.startsWith('plan-')));
       if (!items.length) return '';
       const line = item => `- [${item.status}] (${item.worker_id === owner ? 'you' : item.worker_id}) ${item.content} #${item.id}`;
       const active = items.filter(item => item.status !== 'completed').slice(0, 40).map(line);

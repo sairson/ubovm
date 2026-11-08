@@ -554,6 +554,47 @@ test('the live assistant entry streams and the chip reports a running member', a
 });
 
 // ---------------------------------------------------------------------------
+// 9b. Live dot colours: running accent, waiting amber, failed red.
+// ---------------------------------------------------------------------------
+test('the live dot uses distinct running, waiting and failed colours while the chip keeps the text signal', async t => {
+  const f = await fixture(t);
+  await f.openWith(runningWatch());
+  const liveFacts = () => f.page.evaluate(() => {
+    const node = document.getElementById('team-member-view-live');
+    const chip = document.getElementById('team-member-view-status');
+    return {
+      hidden: node?.hidden ?? null,
+      background: node ? getComputedStyle(node).backgroundColor : '',
+      animation: node ? getComputedStyle(node).animationName : '',
+      chipStatus: chip?.dataset.status || '',
+      chipText: document.getElementById('team-member-view-status-text')?.textContent || ''
+    };
+  });
+  const running = await liveFacts();
+  assert.equal(running.hidden, false, 'a running member shows the live dot');
+  assert.notEqual(running.background, 'rgba(0, 0, 0, 0)', 'the running dot is a real colour');
+  assert.equal(running.chipStatus, 'running');
+  assert.equal(running.chipText, '运行中');
+  await f.emit(buildState({ teamWatch: runningWatch({ status: 'provisioning', running: false, activity: undefined, live: { parts: [], streamText: '' } }) }));
+  const waiting = await liveFacts();
+  assert.equal(waiting.hidden, true, 'the live dot stays hidden when the run is not live');
+  assert.equal(waiting.chipStatus, 'provisioning');
+  assert.equal(waiting.chipText, '准备中', 'the chip text stays the non-colour-only signal');
+  assert.notEqual(waiting.background, 'rgba(0, 0, 0, 0)');
+  assert.notEqual(waiting.background, running.background, 'waiting uses a different colour from running');
+  assert.equal(waiting.animation, 'none', 'waiting must not reuse the running pulse');
+  await f.emit(buildState({ teamWatch: runningWatch({ status: 'failed', running: false, activity: undefined, live: { parts: [], streamText: '' }, error: REVIEWER_ERROR }) }));
+  const failed = await liveFacts();
+  assert.equal(failed.hidden, true);
+  assert.equal(failed.chipStatus, 'failed');
+  assert.equal(failed.chipText, '失败');
+  assert.notEqual(failed.background, 'rgba(0, 0, 0, 0)');
+  assert.notEqual(failed.background, running.background, 'failed uses a different colour from running');
+  assert.notEqual(failed.background, waiting.background, 'failed uses a different colour from waiting');
+  assert.equal(failed.animation, 'none');
+});
+
+// ---------------------------------------------------------------------------
 // 10. Second state: same live element grows; status chip/live dot settle.
 // ---------------------------------------------------------------------------
 test('a second state grows the live text in place and updates the status chip', async t => {

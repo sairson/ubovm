@@ -12,7 +12,7 @@ index 2cecfdc..8626779 100644
  	// continue their background work without instantiating a visible panel.
  	override async openPaneComposite(id?: string, focus?: boolean) {
 -		if (id !== undefined && id !== 'terminal') {
-+		if (id !== undefined && id !== 'terminal' && id !== 'workbench.view.extension.ubovm-workers') {
++		if (id !== undefined && id !== 'terminal' && id !== 'workbench.view.extension.ubovm-workers' && !id.startsWith('workbench.view.extension.')) {
  			return undefined;
  		}
 -		return super.openPaneComposite('terminal', focus);
@@ -21,19 +21,19 @@ index 2cecfdc..8626779 100644
  
  	override getPaneComposite(id: string) {
 -		return id === 'terminal' ? super.getPaneComposite(id) : undefined;
-+		return id === 'terminal' || id === 'workbench.view.extension.ubovm-workers' ? super.getPaneComposite(id) : undefined;
++		return id === 'terminal' || id === 'workbench.view.extension.ubovm-workers' || id.startsWith('workbench.view.extension.') ? super.getPaneComposite(id) : undefined;
  	}
  
  	override getPaneComposites() {
 -		return super.getPaneComposites().filter(composite => composite.id === 'terminal');
-+		return super.getPaneComposites().filter(composite => composite.id === 'terminal' || composite.id === 'workbench.view.extension.ubovm-workers');
++		return super.getPaneComposites().filter(composite => composite.id === 'terminal' || composite.id === 'workbench.view.extension.ubovm-workers' || composite.id.startsWith('workbench.view.extension.'));
  	}
  
  	override getLastActivePaneCompositeId(): string {
  		// Ignore a persisted Problems/Output/Debug Console/Ports selection.
 -		return 'terminal';
 +		const id = super.getLastActivePaneCompositeId();
-+		return id === 'workbench.view.extension.ubovm-workers' ? id : 'terminal';
++		return id === 'workbench.view.extension.ubovm-workers' || id.startsWith('workbench.view.extension.') ? id : 'terminal';
  	}
  
  	constructor(
@@ -54,7 +54,7 @@ index 048de8a..2ccb0aa 100644
  	private shouldBeHidden(viewContainerOrId: string | ViewContainer, cachedViewContainer?: ICachedViewContainer): boolean {
  		const viewContainer = isString(viewContainerOrId) ? this.getViewContainer(viewContainerOrId) : viewContainerOrId;
  		const viewContainerId = isString(viewContainerOrId) ? viewContainerOrId : viewContainerOrId.id;
-+		if (this.options.partContainerClass === 'panel' && viewContainerId !== 'terminal' && viewContainerId !== 'workbench.view.extension.ubovm-workers') {
++		if (this.options.partContainerClass === 'panel' && viewContainerId !== 'terminal' && viewContainerId !== 'workbench.view.extension.ubovm-workers' && !viewContainerId.startsWith('workbench.view.extension.')) {
 +			return true;
 +		}
  

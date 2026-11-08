@@ -63,11 +63,33 @@ test('an agent-installed stdio MCP server connects and exposes prefixed tools on
   const mcp = await createMcpMiddleware(config.mcp);
   t.after(() => mcp.close());
   const names = mcp.tools.map(tool => tool.name);
-  assert.ok(names.includes('mcp_echo_echo'), `expected mcp_echo_echo in ${names.join(', ') || '(none)'}`);
-  const result = await mcp.tools.find(tool => tool.name === 'mcp_echo_echo').execute('call', { text: 'hello' }, undefined);
+  assert.ok(names.includes('mcp__echo__echo'), `expected mcp__echo__echo in ${names.join(', ') || '(none)'}`);
+  const result = await mcp.tools.find(tool => tool.name === 'mcp__echo__echo').execute('call', { text: 'hello' }, undefined);
   assert.match(JSON.stringify(result), /hello/);
   assert.ok(mcp.diagnostics().every(item => item.connected === true), JSON.stringify(mcp.diagnostics()));
   // The agent now sees this line each turn, so it can confirm the mount itself.
-  assert.match(mcp.instructionProvider(), /echo \(stdio\): connected; tools: mcp_echo_echo/);
+  assert.match(mcp.instructionProvider(), /echo \(stdio\): connected; tools: mcp__echo__echo/);
+});
+
+test('install_mcp_server reports the connection it verified with the real middleware', async t => {
+  const f = fixture();
+  const { createMcpMiddleware } = await import(pathToFileURL(path.resolve(__dirname, '../../../../harness/middleware/mcp.mjs')).href);
+  const verifyMcpServer = async server => {
+    const mcp = await createMcpMiddleware({ servers: [server], connectTimeoutMs: 15000 });
+    try {
+      const [diagnostic] = mcp.diagnostics();
+      return { connected: diagnostic.connected === true, tools: diagnostic.tools ?? [], error: diagnostic.error };
+    } finally { await mcp.close().catch(() => {}); }
+  };
+  const install = createInstallTools({ settings: f.settings, verifyMcpServer });
+  const [, tool] = install.tools('session');
+  const echo = await tool.execute('call', { name: 'echo', command: process.execPath, args: [path.resolve(__dirname, 'fixtures/mcp-echo-server.mjs')] }, undefined);
+  assert.equal(echo.details.connection.connected, true);
+  assert.deepEqual(echo.details.connection.tools, ['mcp__echo__echo']);
+  // A server that cannot start is saved but reported as unusable, with the cause.
+  const dead = await tool.execute('call', { name: 'dead', command: path.join(home, 'missing-mcp-executable') }, undefined);
+  assert.equal(dead.details.name, 'dead');
+  assert.equal(dead.details.connection.connected, false);
+  assert.match(dead.details.connection.error, /ENOENT|failed/);
 });
 

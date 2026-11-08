@@ -1,7 +1,7 @@
 (() => {
   'use strict';
   const vscode = window.UBOVMRuntime?.api ?? acquireVsCodeApi();
-  const t = value => window.UBOVMi18n?.t(value) ?? value;
+  const t = (value, ...args) => window.UBOVMi18n?.t(value, ...args) ?? (args.length ? String(value).replace(/\{(\d+)\}/g, (match, index) => args[index] == null ? match : String(args[index])) : value);
   // Compact token counts for the composer's context meter (12.3K / 128K).
   const tokenCount = value => value >= 1000000 ? (value / 1000000).toFixed(value >= 10000000 ? 0 : 1).replace(/\.0$/, '') + 'M'
     : value >= 1000 ? (value / 1000).toFixed(value >= 10000 ? 0 : 1).replace(/\.0$/, '') + 'K' : String(value);
@@ -14,6 +14,7 @@
   const userTextIds = new Set(['conversation-title', 'goal-objective', 'workspace-name', 'context-label', 'goal-selection-label']);
   const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
   const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
+  const QUEUE_LIMIT = 20;
   const IMAGE_NAME = /\.(png|jpe?g|webp|gif)$/i;
   const isImageFile = file => Boolean(file && (IMAGE_TYPES.has(file.type) || (!file.type && IMAGE_NAME.test(file.name || ''))));
   const isImageUri = value => {
@@ -30,22 +31,17 @@
       try { vscode.postMessage({ action: 'ready' }); } catch { /* Bridge may be unavailable during teardown. */ }
     }, 48);
   }
-  const connection = window.createConnectionMonitor({ send: value => vscode.postMessage(value), onChange: (status, previous) => {
+  const connection = window.createConnectionMonitor({ interval: 5000, timeout: 30000, send: value => vscode.postMessage(value), onChange: (status, previous) => {
     connectionStatus = status;
-    if (status === 'disconnected') {
-      const failure = new Error('连接已中断，已发送操作的结果尚未确认，请恢复连接后检查状态。');
-      const interrupted = [...pending.values()];
-      pending.clear();
-      for (const item of interrupted) { clearTimeout(item.timer); completeCallback(item.onError, failure, item.sessionId); }
-      // Hard disconnect must disable submit controls via a full paint.
-      scheduleRender();
-    } else if (status === 'backend-disconnected' || status === 'backend-stalled') {
-      scheduleRender();
-    } else {
+    // Transport conditions are advisory. No probe deadline discards an in-flight
+    // operation, clears the draft or freezes the composer: each operation keeps
+    // its own deadline and result, and a recovery re-syncs authoritative state.
+    if (status === 'unresponsive' || status === 'backend-disconnected' || status === 'backend-stalled') scheduleRender();
+    else {
       // Soft reconnect ticks only need the connection strip; avoid relayout storms.
       scheduleRender(true);
     }
-    if (status === 'connected' && ['disconnected', 'backend-disconnected', 'backend-stalled', 'reconnecting'].includes(previous)) requestReadyResync();
+    if (status === 'connected' && ['unresponsive', 'backend-disconnected', 'backend-stalled', 'reconnecting'].includes(previous)) requestReadyResync();
   } });
   createSettingsPanel(vscode);
   const elements = new Map();
@@ -60,25 +56,40 @@
   const input = byId('prompt-input');
   const deliveryView = window.createDeliveryView(byId('delivery-workspace'));
   byId('connection-check').addEventListener('click', () => connection.probe());
+  byId('connection-restart').addEventListener('click', () => { void restartBackend(); });
   function renderConnectionStatus() {
-    const offline = ['disconnected', 'backend-disconnected', 'backend-stalled'].includes(connectionStatus);
+    // Backend flaps and a slow IDE bridge are advisory states: they never clear
+    // pending operations or freeze stop/resume. Only a silent bridge pauses new
+    // sends, because they cannot be delivered until the host answers again.
+    const offline = ['unresponsive', 'backend-disconnected', 'backend-stalled'].includes(connectionStatus);
     byId('connection-warning').hidden = !offline;
+    // Manual backend recovery stays available whenever the banner is visible; it
+    // is the supported exit from a backend that is stalled rather than crashed.
+    const restart = byId('connection-restart');
+    if (restart) {
+      const restarting = hasPending('restartBackend');
+      setProperty(restart, 'hidden', !offline);
+      setProperty(restart, 'disabled', restarting);
+      setText(restart, restarting ? '正在重启…' : '重启 Agent');
+    }
     const canResume = executionState().canResume === true;
-    setText(byId('connection-warning-text'), connectionStatus === 'disconnected'
-      ? '与 IDE 后端的连接已中断，任务状态未知。草稿已保留，请勿重复提交；连接恢复后将同步状态。'
+    setText(byId('connection-warning-text'), connectionStatus === 'unresponsive'
+      ? 'IDE 响应变慢，正在等待恢复。已发送操作的结果尚未确认，草稿已保留；恢复后会自动同步状态。'
       : connectionStatus === 'backend-stalled'
         ? 'Agent 后端响应变慢，连接仍保持中，任务未中断。请稍候；若长时间无进展再检查后继续。'
       : canResume
         ? 'Agent 后端已断开，运行中的任务可能已中断。连接恢复后请点击“继续执行”从检查点恢复，请勿重复提交。'
         : 'Agent 后端已断开，运行中的任务可能已中断。请检查执行错误，再手动重新发起或恢复任务。');
     if (!offline) return;
-    if (busy && connectionStatus !== 'backend-stalled') {
-      for (const id of ['busy-status', 'header-execution-status', 'goal-run-status', 'execution-phase']) setText(byId(id), '连接中断 · 任务状态待确认');
-    } else if (busy && connectionStatus === 'backend-stalled') {
+    if (busy && connectionStatus === 'backend-stalled') {
       for (const id of ['busy-status', 'header-execution-status', 'goal-run-status', 'execution-phase']) setText(byId(id), '响应变慢 · 任务仍在进行');
+    } else if (busy) {
+      const label = connectionStatus === 'unresponsive' ? '响应变慢 · 状态待确认' : '连接中断 · 任务状态待确认';
+      for (const id of ['busy-status', 'header-execution-status', 'goal-run-status', 'execution-phase']) setText(byId(id), label);
     }
-    // Hard IDE disconnect freezes actions; stalls and backend flaps still allow explicit resume.
-    if (connectionStatus === 'disconnected') for (const id of ['submit-prompt', 'goal-run', 'goal-resume', 'assist-resume', 'goal-stop']) byId(id).disabled = true;
+    // A backend flap never freezes actions. A silent bridge cannot deliver a new
+    // send, so only sending is paused until the next probe answer.
+    if (connectionStatus === 'unresponsive') for (const id of ['submit-prompt', 'goal-run', 'goal-resume', 'assist-resume', 'goal-stop']) byId(id).disabled = true;
   }
   const form = byId('prompt-form');
   const submit = byId('submit-prompt');
@@ -90,15 +101,25 @@
   const criteriaInput = byId('goal-criteria-input');
   const noteInput = byId('goal-note-input');
   const drafts = new Map();
+  // Recent sends are page-local history (never host state or model context);
+  // long pastes are folded into the draft until the user expands or removes them.
+  let promptHistory = [];
+  let historyCursor = -1;
+  let historyScratch = '';
+  let pasteSequence = 0;
+  const PASTE_CHIP_MIN = 3000;
   const pending = new Map();
   const errors = new Map();
   const goalViews = ['overview', 'agenda', 'board', 'workers', 'notes'];
   let currentSessionId = '';
   let hostState = null;
+  let approvalModeConfirming = false;
   const stateOrder = window.createStateOrder();
   let renderedPageKey = '';
   let pageAnimation, pendingViewRestore;
   let routePending = false, routePaintReady = false;
+  let routeCoverTimer = 0;
+  const ROUTE_COVER_DELAY_MS = 140;
   const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
   function cancelPageAnimation() { pageAnimation?.cancel(); pageAnimation = undefined; }
   function beginPageTransition(label = '正在切换页面…', kind = 'route') {
@@ -120,19 +141,38 @@
     setText(byId('route-loading-label'), label);
     const loader = byId('route-loading');
     loader.dataset.kind = kind;
-    loader.hidden = !firstContentPaint;
+    clearTimeout(routeCoverTimer);
+    routeCoverTimer = 0;
+    if (kind === 'view' && firstContentPaint) {
+      // Most exploration page switches finish in well under one frame budget.
+      // Do not flash a full-surface spinner for those; only reveal the cover
+      // when the paint is genuinely slow. The content fade/slide still runs
+      // after commit via animateCurrentPage().
+      loader.hidden = true;
+      routeCoverTimer = setTimeout(() => {
+        routeCoverTimer = 0;
+        if (!routePending || !hostState) return;
+        loader.hidden = false;
+        renderNavigationFeedback();
+      }, ROUTE_COVER_DELAY_MS);
+    } else {
+      loader.hidden = !firstContentPaint;
+    }
     document.body.dataset.switching = 'true';
     renderNavigationFeedback();
     armRouteWatchdog();
   }
   function finishPageTransition() {
     clearRouteWatchdog();
+    clearTimeout(routeCoverTimer);
+    routeCoverTimer = 0;
     routePending = false; routePaintReady = false;
     const loader = byId('route-loading');
     loader.hidden = true;
     delete loader.dataset.kind;
     document.body.dataset.switching = 'false';
     renderNavigationFeedback();
+    try { repairPrimarySurface(); } catch { /* The next paint still repairs it. */ }
   }
   // The transition cover is the only full-surface mask. A dropped paint must not
   // leave it (a blank canvas) on screen until the user resizes the window.
@@ -142,18 +182,33 @@
     clearRouteWatchdog();
     routeWatchdog = setTimeout(() => {
       routeWatchdog = 0;
-      if (!routePending || pageHidden() || !hostState) return;
+      if (!routePending || !hostState) return;
+      // Hidden/occluded windows legitimately cannot paint. Keep watching instead
+      // of leaving the transition armed forever when the window returns.
+      if (pageHidden()) { armRouteWatchdog(); return; }
       // A route paint never committed: re-arm a full paint before surfacing recovery.
+      fullRenderPending = true;
+      renderPending = true;
       scheduleRender();
       routeWatchdog = setTimeout(() => {
         routeWatchdog = 0;
-        if (routePending && !pageHidden() && hostState) window.UBOVMRuntime?.fail('页面切换未完成。请同步最新状态或重新加载页面。');
-      }, 8000);
+        if (!routePending || !hostState) return;
+        if (pageHidden()) { armRouteWatchdog(); return; }
+        // A failed or dropped paint must not leave the full-surface loader (or a
+        // blank canvas) in place indefinitely.
+        finishPageTransition();
+        scheduleRender();
+        window.UBOVMRuntime?.fail('页面切换未完成。请同步最新状态或重新加载页面。');
+      }, 4000);
     }, 8000);
+  }
+  function resumeRouteTransition() {
+    if (!routePending) return;
+    armRouteWatchdog();
+    scheduleRender();
   }
   function renderNavigationFeedback() {
     const navigating = navigationPending() || routePending;
-    byId('navigation-loading').hidden = !navigating;
     document.body.dataset.navigating = String(navigating);
     byId('main-content').setAttribute('aria-busy', String(!hostState || navigating));
   }
@@ -167,9 +222,15 @@
   let composingPrompt = false;
   let lastCriteria = '';
   let lastNotes = '';
+  // The Agent notebook lives in the execution memory projection, which the host
+  // may omit on a tick whose memory revision did not change ("unchanged", not
+  // "empty"). Remember the last non-empty list so a light tick cannot blank the
+  // notebook for one frame while an exploration is running.
+  let lastAgentNotes = { session: '', notes: [] };
   let lastCriteriaSource, lastNotesSource;
   let noteSource = 'all';
   let selectedNoteKey = '', renderedNoteKey = '', renderedNoteIdentity = '';
+let editingNote = null;
   let savedNoteToReveal;
   const noteEntries = new WeakMap();
   let forceScroll = false;
@@ -179,7 +240,6 @@
   const inputSizes = new WeakMap();
   const scrollPositions = new WeakMap();
   const goalViewScroll = new Map();
-  let pendingScroll;
   // Long histories paint only the newest turns synchronously so the page skeleton
   // can clear in one frame; the rest of the published history streams in above on
   // later frames under a small synchronous time budget. Short conversations keep
@@ -187,19 +247,27 @@
   const HISTORY_PROGRESSIVE_MIN = 24;     // histories longer than this paint progressively
   const HISTORY_SYNC_COUNT = 3;           // newest messages painted on the first frame
   const HISTORY_FRAME_BUDGET_MS = 6;      // synchronous DOM work allowed per backfill frame
-  const HISTORY_OUTLINE_INTERVAL_MS = 100; // coalesced outline rebuild interval during fill
-  const HISTORY_HEAVY_COUNT = 24;         // long histories skip offscreen layout from the first paint
+  const HISTORY_MAX_MOUNTED = 600;        // cap live DOM; older pages load on demand
+  const HISTORY_PAGE_SIZE = 600;
+  const HISTORY_OUTLINE_INTERVAL_MS = 250; // coalesced outline rebuild interval during fill
   let historyFillFrame = 0;
   let historyOutlineAt = 0;
+  let historyInteractionTimer = 0;
+  // Progressive backfill grows the scroll range above/below the reader. While the
+  // reader is dragging the scrollbar or wheeling, that growth lands mid-gesture and
+  // makes the thumb jump, so defer the fill until the interaction settles.
+  let interactingUntil = 0;
+  const noteInteraction = () => { interactingUntil = performance.now() + 200; };
   let historyLoadingEl = null;
   let pendingThreadTeardown;
   function cancelHistoryFill() {
     if (historyFillFrame) { cancelAnimationFrame(historyFillFrame); historyFillFrame = 0; }
+    if (historyInteractionTimer) { clearTimeout(historyInteractionTimer); historyInteractionTimer = 0; }
   }
   // The indicator explains the top gap while older history is still streaming in.
   // It lives inside #messages (role=log) so the announcement is polite; removing it
   // when the fill completes is compensated by the caller's scroll anchoring.
-  function setHistoryLoading(active) {
+  function setHistoryLoading(active, more = false, count = 0) {
     if (!active) {
       if (historyLoadingEl) { historyLoadingEl.remove(); historyLoadingEl = null; }
       return;
@@ -210,18 +278,27 @@
       historyLoadingEl.setAttribute('role', 'status');
       historyLoadingEl.setAttribute('aria-live', 'polite');
       historyLoadingEl.setAttribute('aria-atomic', 'true');
+    }
+    historyLoadingEl.replaceChildren();
+    if (more) {
+      const text = document.createElement('span');
+      text.textContent = t('已加载最近 {0} 条记录，更早的记录仍保留在会话中。', String(count));
+      const button = document.createElement('button');
+      button.type = 'button'; button.className = 'text-button'; button.textContent = t('载入更早的记录');
+      button.addEventListener('click', () => {
+        button.disabled = true;
+        const view = messageViews.get(messages);
+        if (!view) return;
+        view.capped = false;
+        view.historyLimit = (view.historyLimit ?? HISTORY_MAX_MOUNTED) + HISTORY_PAGE_SIZE;
+        setHistoryLoading(true); scheduleHistoryFill();
+      }, { once: true });
+      historyLoadingEl.append(text, button);
+    } else {
       historyLoadingEl.textContent = t('正在载入较早的记录…');
     }
     if (messages.firstChild !== historyLoadingEl) messages.insertBefore(historyLoadingEl, messages.firstChild);
     historyLoadingEl.hidden = false;
-  }
-  // Offscreen rendering is scoped to long conversations: content-visibility lets the
-  // browser skip layout/paint for messages far outside the viewport while scrolling.
-  // The marker follows the published length so it never flips mid-fill (a late flip
-  // would re-estimate already-laid-out history and shift the reader's anchor).
-  function syncHistoryDensity(count) {
-    const heavy = count > HISTORY_HEAVY_COUNT;
-    if (messages.classList.contains('history-heavy') !== heavy) messages.classList.toggle('history-heavy', heavy);
   }
   // The first progressive paint mounts cheap shells: the first visible part only.
   // Remaining parts are appended one at a time on later frames so one frame never has
@@ -298,12 +375,19 @@
     if (!firstContentPaint || !routePending) flushThreadTeardown();
   }
   let latestFrame = 0;
+  // Hysteresis: show only once the reader is clearly away from the bottom, hide
+  // only when essentially there. Streamed height changes otherwise flap the
+  // "back to latest" button around the threshold while the reader follows.
+  let latestVisible = false;
   function refreshLatest() {
     if (latestFrame || visualSuspended()) return;
     latestFrame = requestAnimationFrame(() => {
       latestFrame = 0;
       if (visualSuspended()) return;
-      byId('conversation-latest').hidden = hostState?.mode === 'goal' || !showingConversation || conversation.scrollHeight - conversation.scrollTop - conversation.clientHeight <= 120;
+      const enabled = hostState?.mode !== 'goal' && showingConversation;
+      const delta = conversation.scrollHeight - conversation.scrollTop - conversation.clientHeight;
+      latestVisible = enabled && delta > (latestVisible ? 120 : 200);
+      byId('conversation-latest').hidden = !latestVisible;
     });
   }
   byId('conversation-latest').addEventListener('click', () => {
@@ -350,23 +434,23 @@
     render();
     sectionViews.set(key, serialized);
   }
-  function cancelScroll() {
-    if (pendingScroll) cancelAnimationFrame(pendingScroll.frame);
-    pendingScroll = undefined;
-  }
+  function cancelScroll() { /* Bottom pinning is synchronous; no queued frames to clear. */ }
   for (const scroller of [conversation, byId('goal-panels')]) {
     scrollPositions.set(scroller, { top: 0, following: true });
     scroller.addEventListener('scroll', () => {
       const position = scrollPositions.get(scroller);
-      if (scroller.scrollTop < position.top - 1) {
-        position.following = false;
-        if (pendingScroll?.scroller === scroller) cancelScroll();
-      }
+      if (scroller.scrollTop < position.top - 1) position.following = false;
       if (scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 2) position.following = true;
       position.top = scroller.scrollTop;
       if (scroller === conversation) refreshLatest();
     }, { passive: true });
   }
+  // A wheel or scrollbar drag must finish before older history is inserted above
+  // the reader; otherwise the thumb jumps and every fill batch forces another
+  // full layout mid-gesture. Programmatic pin scroll events are intentionally not
+  // treated as interaction.
+  conversation.addEventListener('wheel', noteInteraction, { passive: true });
+  conversation.addEventListener('pointerdown', noteInteraction, { passive: true });
 
   let conversationOutline;
   function renderConversationOutline() {
@@ -390,34 +474,56 @@
     if (document.body.dataset.freshSession === '1') vscode.setState({});
     const saved = document.body.dataset.freshSession === '1' ? undefined : vscode.getState();
     if (Number.isFinite(saved?.workerPanelWidth) && saved.workerPanelWidth >= 280 && saved.workerPanelWidth <= 800) workerPanelWidth = saved.workerPanelWidth;
+    if (Array.isArray(saved?.promptHistory)) {
+      promptHistory = saved.promptHistory.filter(item => typeof item === 'string' && item.trim()).map(item => item.slice(0, 8000)).slice(0, 20);
+    }
     if (saved && saved.drafts && typeof saved.drafts === 'object') {
       for (const [id, value] of Object.entries(saved.drafts).slice(-100)) {
         if (!value || typeof value !== 'object') continue;
         drafts.set(id, {
           assist: typeof value.assist === 'string' ? value.assist.slice(0, 8000) : '',
-          approvalMode: ['auto', 'manual', 'full'].includes(value.approvalMode) ? value.approvalMode : undefined,
+          // Full approval is never restored from a previous page load: it must be
+          // re-confirmed through the composer dialog.
+          approvalMode: ['auto', 'manual'].includes(value.approvalMode) ? value.approvalMode : undefined,
           goalPrompt: typeof value.goalPrompt === 'string' ? value.goalPrompt.slice(0, 8000) : '',
           note: typeof value.note === 'string' ? value.note.slice(0, 2000) : '',
           goalDraft: value.goalDraft && typeof value.goalDraft.objective === 'string' && typeof value.goalDraft.criteria === 'string'
             ? { objective: value.goalDraft.objective.slice(0, 4000), initialFacts: typeof value.goalDraft.initialFacts === 'string' ? value.goalDraft.initialFacts.slice(0, 8000) : '', criteria: value.goalDraft.criteria.slice(0, 6020) } : null,
           goalEditing: value.goalEditing === true,
           view: goalViews.includes(value.view) ? value.view : 'overview',
+          pastes: normalizePastes(value.pastes),
           touchedAt: Number(value.touchedAt) || 0
         });
       }
     }
   } catch { /* An unavailable draft cache must not prevent the UI opening. */ }
   function draftFor(id = currentSessionId) {
-    if (!drafts.has(id)) drafts.set(id, { assist: '', goalPrompt: '', note: '', goalDraft: null, goalEditing: false, view: 'overview', touchedAt: Date.now() });
-    return drafts.get(id);
+    if (!drafts.has(id)) drafts.set(id, { assist: '', goalPrompt: '', note: '', goalDraft: null, goalEditing: false, view: 'overview', pastes: [], touchedAt: Date.now() });
+    const draft = drafts.get(id);
+    if (!Array.isArray(draft.pastes)) draft.pastes = [];
+    return draft;
+  }
+  // Long pastes are independent strings: restore them defensively and enforce the
+  // same 8,000-character composer budget so a stale page state cannot overflow it.
+  function normalizePastes(value) {
+    if (!Array.isArray(value)) return [];
+    const chips = [];
+    let used = 0;
+    for (const entry of value.slice(0, 12)) {
+      if (!entry || typeof entry.text !== 'string' || !entry.text) continue;
+      const text = entry.text.slice(0, 8000 - used);
+      if (!text) break;
+      chips.push({ id: typeof entry.id === 'string' && entry.id ? entry.id : 'paste-restored-' + chips.length, text });
+      used += text.length;
+    }
+    return chips;
   }
   function persistDrafts() {
     clearTimeout(draftTimer);
     draftTimer = 0;
-    if (!currentSessionId) return true;
-    draftFor().touchedAt = Date.now();
+    if (currentSessionId) draftFor().touchedAt = Date.now();
     const entries = [...drafts.entries()].filter(([id]) => id).sort((a, b) => a[1].touchedAt - b[1].touchedAt).slice(-100);
-    try { vscode.setState({ drafts: Object.fromEntries(entries), workerPanelWidth }); return true; }
+    try { vscode.setState({ drafts: Object.fromEntries(entries), workerPanelWidth, promptHistory }); return true; }
     catch { return false; /* Keep the live draft if persistence is temporarily unavailable. */ }
   }
   function scheduleDraftPersistence() {
@@ -428,6 +534,121 @@
   function scheduleInput() {
     if (!inputFrame && !visualSuspended()) inputFrame = requestAnimationFrame(() => { inputFrame = 0; if (!visualSuspended()) updateInput(); });
   }
+  function rememberPrompt(text) {
+    const value = String(text || '').slice(0, 8000).trim();
+    if (!value) return;
+    promptHistory = [value, ...promptHistory.filter(item => item !== value)].slice(0, 20);
+  }
+  function applyHistoryValue(value) {
+    input.value = value;
+    draftFor().assist = value;
+    scheduleDraftPersistence();
+    scheduleInput();
+    try { input.setSelectionRange(value.length, value.length); } catch { /* selection is best effort */ }
+  }
+  // ↑/↓ recall like a shell: recall starts only in an empty composer, and any real
+  // edit exits it. The draft typed before recall is restored on the way back.
+  function navigateHistory(direction) {
+    if (!promptHistory.length) return false;
+    if (direction < 0) {
+      if (input.value !== '' && historyCursor < 0) return false;
+      if (historyCursor < 0) historyScratch = input.value;
+      if (historyCursor >= promptHistory.length - 1) return true;
+      historyCursor += 1;
+      applyHistoryValue(promptHistory[historyCursor]);
+      return true;
+    }
+    if (historyCursor < 0) return false;
+    historyCursor -= 1;
+    applyHistoryValue(historyCursor >= 0 ? promptHistory[historyCursor] : historyScratch);
+    return true;
+  }
+  function resetHistoryRecall() { historyCursor = -1; historyScratch = ''; }
+  // The composer sends folded long pastes before the typed text, matching the
+  // order in which they were added. Both count against the 8,000-character limit.
+  function composerPromptText() {
+    const chips = draftFor().pastes || [];
+    return [chips.map(chip => chip.text).join('\n\n'), input.value].filter(part => part.trim()).join('\n\n');
+  }
+  function composerLength() {
+    return (draftFor().pastes || []).reduce((total, chip) => total + chip.text.length, 0) + input.value.length;
+  }
+  function hasComposerText() { return Boolean(input.value.trim()) || (draftFor().pastes || []).length > 0; }
+  function renderPastes() {
+    const container = byId('composer-pastes');
+    if (!container) return;
+    const chips = draftFor().pastes || [];
+    const key = chips.map(chip => chip.id + ':' + chip.text.length).join('|');
+    if (container.dataset.key === key) return;
+    container.dataset.key = key;
+    container.replaceChildren();
+    container.hidden = !chips.length;
+    for (const chip of chips) {
+      const wrap = document.createElement('span'); wrap.className = 'composer-paste';
+      const open = document.createElement('button'); open.type = 'button'; open.className = 'composer-paste-open';
+      open.dataset.pasteExpand = chip.id; open.title = t('展开到输入框');
+      const preview = document.createElement('span');
+      const flattened = chip.text.replace(/\s+/g, ' ').trim();
+      preview.textContent = (flattened.slice(0, 26) || t('已粘贴文本')) + (flattened.length > 26 ? '…' : '');
+      const count = document.createElement('small'); count.textContent = chip.text.length.toLocaleString() + ' ' + t('字');
+      open.append(preview, count);
+      const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'composer-paste-remove';
+      remove.dataset.pasteRemove = chip.id; remove.title = t('删除这段粘贴'); remove.setAttribute('aria-label', t('删除粘贴的文本'));
+      remove.textContent = '×';
+      wrap.append(open, remove);
+      container.append(wrap);
+    }
+  }
+  function addPasteChip(text) {
+    const draft = draftFor();
+    const room = 8000 - draft.pastes.reduce((total, chip) => total + chip.text.length, 0) - input.value.length;
+    if (room <= 0) { showError('内容已达到 8,000 字符上限。'); return; }
+    const bounded = text.length > room ? text.slice(0, room) : text;
+    draft.pastes.push({ id: 'paste-' + Date.now().toString(36) + '-' + (++pasteSequence), text: bounded });
+    if (bounded.length < text.length) showError('粘贴内容超过 8,000 字符上限，已截断到剩余空间。');
+    renderPastes(); scheduleDraftPersistence(); updateInput();
+  }
+  function removePasteChip(id) {
+    const draft = draftFor();
+    const index = draft.pastes.findIndex(chip => chip.id === id);
+    if (index < 0) return;
+    draft.pastes.splice(index, 1);
+    renderPastes(); scheduleDraftPersistence(); updateInput();
+    input.focus({ preventScroll: true });
+  }
+  function expandPasteChip(id) {
+    const draft = draftFor();
+    const index = draft.pastes.findIndex(chip => chip.id === id);
+    if (index < 0) return;
+    const chip = draft.pastes[index];
+    const room = 8000 - input.value.length;
+    if (room <= 0) { showError('输入框已达到 8,000 字符上限。'); return; }
+    const joined = input.value && !input.value.endsWith('\n') ? input.value + '\n' : input.value;
+    const text = (joined + chip.text).slice(0, 8000);
+    input.value = text;
+    draft.assist = text;
+    draft.pastes.splice(index, 1);
+    renderPastes(); scheduleDraftPersistence(); updateInput(); input.focus();
+    if (chip.text.length > room) showError('部分内容超过 8,000 字符上限，未展开的部分请重新粘贴。');
+  }
+  let turnStartedAt = 0, elapsedTicker = 0;
+  function startElapsedTicker() {
+    if (elapsedTicker) return;
+    elapsedTicker = setInterval(() => {
+      if (!busy || suspended || document.hidden) return;
+      updateComposer();
+    }, 1000);
+  }
+  function stopElapsedTicker() {
+    if (!elapsedTicker) return;
+    clearInterval(elapsedTicker); elapsedTicker = 0;
+  }
+  // Background tabs do not need a once-per-second repaint. Resume from the
+  // wall-clock start when the page becomes visible again.
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) stopElapsedTicker();
+    else if (busy) startElapsedTicker();
+  });
   function hasPending(action, criterionId) {
     return [...pending.values()].some(item => item.sessionId === currentSessionId && (!action || item.action === action) && (!criterionId || item.criterionId === criterionId));
   }
@@ -447,6 +668,7 @@
     });
     persistDrafts();
   }
+  let lastErrorDetail = '';
   function showError(message, sessionId = currentSessionId) {
     if (message) errors.set(sessionId, message); else errors.delete(sessionId);
     const value = errors.get(currentSessionId);
@@ -455,13 +677,25 @@
     byId('ui-error').dataset.cancelled = String(failure.cancelled);
     byId('ui-error').setAttribute('role', failure.cancelled ? 'status' : 'alert');
     byId('ui-error').setAttribute('aria-live', failure.cancelled ? 'polite' : 'assertive');
-    byId('ui-error-message').textContent = value ? window.UBOVMErrors.text(value) : '';
+    byId('ui-error-message').textContent = value ? failure.message : '';
+    const hint = value ? failure.hint : '';
+    byId('ui-error-hint').textContent = hint || '';
+    byId('ui-error-hint').hidden = !hint;
+    lastErrorDetail = value ? [failure.message, hint, failure.code ? '错误代码：' + failure.code : '', failure.detail].filter(Boolean).join('\n') : '';
     byId('ui-error-detail').textContent = '错误代码：' + failure.code + (failure.detail ? '\n' + failure.detail : '');
     byId('ui-error-details').hidden = !failure.detail && failure.code === 'OPERATION_FAILED';
+    byId('ui-error-copy').hidden = !lastErrorDetail;
     byId('ui-error-details').open = false;
     byId('ui-error').hidden = !value;
   }
   byId('ui-error-dismiss').addEventListener('click', () => showError(''));
+  byId('ui-error-copy').addEventListener('click', () => {
+    if (!lastErrorDetail) return;
+    messageActions.onCopy(lastErrorDetail).then(() => {
+      byId('ui-error-copy').textContent = '已复制';
+      setTimeout(() => { byId('ui-error-copy').textContent = '复制详情'; }, 1500);
+    }).catch(error => showError(error.message));
+  });
   function completeCallback(callback, value, sessionId) {
     if (typeof callback !== 'function') return;
     const report = error => {
@@ -478,8 +712,11 @@
       completeCallback(onError, new Error('页面已暂停，操作未发送。请恢复页面后重试。'), currentSessionId);
       return;
     }
-    if (connectionStatus === 'disconnected') {
-      completeCallback(onError, new Error('连接尚未恢复，操作未发送。'), currentSessionId);
+    // A restart is exactly what a silent page may still be able to deliver: the
+    // probe may fail while the extension host is alive and only the backend is
+    // stuck, so this action bypasses the "cannot deliver" guard.
+    if (connectionStatus === 'unresponsive' && action !== 'restartBackend') {
+      completeCallback(onError, new Error('IDE 暂未响应，操作未发送。恢复后会自动同步状态，请稍后重试。'), currentSessionId);
       return;
     }
     if (!currentSessionId && action !== 'setTheme') return;
@@ -515,6 +752,7 @@
     getWorkspace: () => hostState?.context?.workspace || '',
     modal: modalDialog
   });
+  byId('open-projects')?.addEventListener('click', () => projectSwitcher.open());
   const renderRequests = new Map();
   function renderRequest(action, payload) {
     const key = JSON.stringify([currentSessionId, action, payload]);
@@ -541,6 +779,24 @@
   };
   const backgroundTasks = window.createBackgroundTasks(messageActions);
   document.querySelector('.shell')?.append(backgroundTasks.element);
+  // Keep the fixed background-task dock above the composer. The composer grows
+  // with the textarea, image chips and queued prompts, so a static offset would
+  // let the dock cover the input area.
+  const composeDock = byId('compose-dock');
+  const syncComposeDockOffset = () => {
+    if (!composeDock) return;
+    const box = composeDock.getBoundingClientRect();
+    if (!box.height) return;
+    const offset = Math.max(0, Math.round(window.innerHeight - box.top));
+    document.documentElement.style.setProperty('--compose-dock-offset', offset + 'px');
+  };
+  if (composeDock && typeof ResizeObserver === 'function') {
+    const observer = new ResizeObserver(syncComposeDockOffset);
+    observer.observe(composeDock);
+    observer.observe(byId('composer-stack'));
+    window.addEventListener('resize', syncComposeDockOffset);
+    syncComposeDockOffset();
+  }
   const workerPanel = window.createWorkerPanel(messageActions, { openNative: id => { if (!hostState?.nativeWorkerPanel) return false; if (!hasPending('openWorker')) void renderRequest('openWorker', { workerId: id }).catch(() => {}); return true; }, initialWidth: workerPanelWidth, onWidthChange: width => { workerPanelWidth = width; persistDrafts(); } });
   const teamPanel = window.createTeamPanel({
     onSelectMember: name => {
@@ -600,17 +856,66 @@
       log.lastElementChild?.scrollIntoView({ block: 'end', behavior });
     }
   });
+  // Exploration chat is a native right-sidebar view (Copilot-style tab). This
+  // header button toggles it: the first click reveals the chat tab, a second
+  // click collapses the right sidebar. The pressed state mirrors the host's live
+  // sidebar visibility so manual tab switches stay in sync. The visible label
+  // stays "对话" so the header never reflows between states.
+  function renderGoalChatToggle() {
+    const toggle = byId('goal-chat-toggle');
+    const open = hostState?.goalChatOpen === true;
+    setProperty(toggle.dataset, 'open', String(open));
+    setAttribute(toggle, 'aria-pressed', String(open));
+    setAttribute(toggle, 'aria-label', open ? '收起探索对话' : '打开探索对话');
+    setAttribute(toggle, 'title', open ? '收起探索对话' : '打开探索对话');
+  }
+  byId('goal-chat-toggle').addEventListener('click', () => {
+    request('openGoalChat', {}, () => {}, failure => showError(failure?.message || '打开探索对话失败，请重试。'));
+  });
   function updateInput() {
     if (hostState?.mode !== 'goal') resizeInput(input, Math.max(64, Math.min(220, Math.floor(window.innerHeight * .28))));
     updateSubmit(submit, input);
     updateComposer();
   }
+  function approvalModeValue() {
+    return draftFor().approvalMode ?? (hostState?.requireToolApproval === false ? 'auto' : 'manual');
+  }
+  function reflectApprovalMode() {
+    const selected = approvalModeValue();
+    for (const option of approvalMode.elements) setProperty(option, 'checked', option.value === selected);
+  }
+  // Full mode drops the workspace boundary and the per-call approval gate. Keep
+  // the previous choice applied until the user confirms what that means; a
+  // cancelled dialog must leave both the draft and the radio group untouched.
+  async function confirmFullApprovalMode() {
+    if (approvalModeConfirming) return;
+    approvalModeConfirming = true;
+    let confirmed = false;
+    try {
+      confirmed = await modalDialog.confirm({
+        title: '进入完全模式？',
+        message: '完全模式会取消工作区边界与工具审批：工具可以直接读写任意路径（含凭据目录），并立即执行，不再逐条询问。',
+        detail: '只应在确认目标、范围和后果后使用。进入后可在输入框工具栏切回「人工」或「自动」。',
+        confirmLabel: '进入完全模式',
+        cancelLabel: '保持当前模式',
+        danger: true
+      }) === true;
+    } catch { confirmed = false; }
+    finally {
+      approvalModeConfirming = false;
+      if (confirmed) { draftFor().approvalMode = 'full'; persistDrafts(); }
+      reflectApprovalMode();
+      renderInputQueue();
+    }
+  }
   function updateComposer() {
     const sending = hasPending('prompt');
     const queued = hostState?.inputQueue?.length > 0;
     const liveSteer = busy && executionState().canSteer === true && !queued && !hostState?.queuePaused;
-    const selectedMode = draftFor().approvalMode ?? (hostState?.requireToolApproval === false ? 'auto' : 'manual');
-    for (const option of approvalMode.elements) setProperty(option, 'checked', option.value === selectedMode);
+    if (busy) { if (!turnStartedAt) turnStartedAt = Date.now(); startElapsedTicker(); }
+    else if (turnStartedAt) { turnStartedAt = 0; stopElapsedTicker(); }
+    const elapsed = busy && turnStartedAt ? Math.max(0, Math.floor((Date.now() - turnStartedAt) / 1000)) : 0;
+    reflectApprovalMode();
     setProperty(approvalMode, 'disabled', busy || sending || navigationPending());
     setProperty(form.dataset, 'state', busy ? 'running' : sending ? 'sending' : 'idle');
     setProperty(form.dataset, 'steer', String(liveSteer));
@@ -619,20 +924,41 @@
       : '提问、规划，或描述你想完成的改动…');
     const status = byId('composer-status');
     if (status) setText(status, hostState?.recovering ? '正在恢复执行记录 · 可以先写草稿' : hasPending('cancelRun') ? '正在停止…' : busy ? (liveSteer ? '执行中 · Enter 立刻引导' : '执行中 · Enter 排队') : sending ? '正在发送…' : '');
+    // Running time lives in its own element: the composer state label stays the
+    // stable, exact text other controls and tests rely on.
+    const elapsedEl = byId('composer-elapsed');
+    if (elapsedEl) {
+      setProperty(elapsedEl, 'hidden', !busy);
+      if (busy) {
+        const elapsedText = elapsed >= 3600
+          ? t('已用 {0} 时 {1} 分', Math.floor(elapsed / 3600), Math.floor((elapsed % 3600) / 60))
+          : elapsed >= 60 ? t('已用 {0} 分 {1} 秒', Math.floor(elapsed / 60), elapsed % 60)
+            : t('已用 {0} 秒', elapsed);
+        setText(elapsedEl, elapsedText);
+      }
+    }
+    const historyEl = byId('composer-history');
+    if (historyEl) {
+      const recalling = historyCursor >= 0;
+      setProperty(historyEl, 'hidden', !recalling);
+      if (recalling) setText(historyEl, t('历史 {0}/{1}', historyCursor + 1, promptHistory.length) + ' · ' + t('Esc 还原草稿'));
+    }
     const meter = byId('context-usage');
     if (meter) {
       const { used, limit } = executionState().contextUsage ?? {};
       const usedTokens = Number.isSafeInteger(used) && used >= 0 ? used : 0;
       const hasLimit = Number.isSafeInteger(limit) && limit > 0;
       const usedLabel = usedTokens === 0 ? '0K' : tokenCount(usedTokens);
-      // The meter is always visible, defaulting to 0K before the first model call.
+      const totalTokens = conversationTotal(hostState?.conversationUsage);
+      const totalLabel = totalTokens === 0 ? '0K' : tokenCount(totalTokens);
+      // Nothing measured yet (new session or first turn before usage arrives):
+      // a "0K / Σ 0K" chip is noise, not information.
+      const noUsage = usedTokens === 0 && totalTokens === 0;
       const percent = hasLimit ? Math.min(100, Math.max(0, Math.round((usedTokens / limit) * 100))) : 0;
-      setProperty(meter, 'hidden', false);
+      setProperty(meter, 'hidden', noUsage);
       const fill = byId('context-usage-fill');
       if (fill) { fill.style.width = percent + '%'; setProperty(fill.dataset, 'level', percent >= 90 ? 'high' : percent >= 70 ? 'warn' : 'ok'); }
       setText(byId('context-usage-value'), usedLabel);
-      const totalTokens = conversationTotal(hostState?.conversationUsage);
-      const totalLabel = totalTokens === 0 ? '0K' : tokenCount(totalTokens);
       setText(byId('context-usage-total'), 'Σ ' + totalLabel);
       const detail = t('上下文用量估算') + '：' + (hasLimit ? usedLabel + ' / ' + tokenCount(limit) + ' tokens · ' + percent + '%' : usedLabel + ' tokens')
         + ' · ' + t('本会话累计') + '：' + totalLabel + ' tokens';
@@ -643,17 +969,19 @@
     if (shortcut) setProperty(shortcut, 'hidden', busy || sending);
     const count = byId('prompt-count');
     if (count) {
-      setProperty(count, 'hidden', input.value.length < 7200);
-      setText(count, input.value.length.toLocaleString() + ' / 8,000');
-      setProperty(count.dataset, 'limit', String(input.value.length >= 8000));
+      const length = composerLength();
+      setProperty(count, 'hidden', length < 7200);
+      setText(count, length.toLocaleString() + ' / 8,000');
+      setProperty(count.dataset, 'limit', String(length >= 8000));
     }
   }
   let readingDrop = false, dropReadTask;
   function invalidateDropRead() { dropReadTask = undefined; readingDrop = false; clearDrop(); }
   function contextPending() { return readingDrop || hasPending('attachFile') || hasPending('attachImage') || hasPending('attachImagePath') || hasPending('removeImage') || hasPending('clearFileContext'); }
   const fileDrag = transfer => [...(transfer?.types || [])].some(type => ['files', 'text/uri-list', 'resourceurls'].includes(type.toLowerCase()));
-  let dragDepth = 0;
-  const clearDrop = () => { dragDepth = 0; form.classList.remove('file-drag-over'); };
+  let dragDepth = 0, pageDragDepth = 0;
+  const clearPageDrop = () => { pageDragDepth = 0; document.body.classList.remove('file-drag-over'); };
+  const clearDrop = () => { dragDepth = 0; form.classList.remove('file-drag-over'); clearPageDrop(); };
   form.addEventListener('dragenter', event => {
     if (!fileDrag(event.dataTransfer)) return;
     event.preventDefault(); event.stopPropagation(); dragDepth++; form.classList.add('file-drag-over');
@@ -691,23 +1019,30 @@
     const imageDrag = [...(event.dataTransfer.items ?? [])].some(item => item.type?.startsWith('image/'));
     event.dataTransfer.dropEffect = imageDrag || !byId('attach-file').disabled ? 'copy' : 'none';
   });
-  form.addEventListener('drop', async event => {
+  async function dropFiles(event) {
     if (!fileDrag(event.dataTransfer)) return;
     event.preventDefault(); event.stopPropagation(); clearDrop();
     const sessionId = currentSessionId;
     if (visualSuspended() || readingDrop) return;
+    // Capture availability before readingDrop marks the composer as pending;
+    // that pending state itself disables the attach button.
+    const attachEnabled = !byId('attach-file').disabled;
     const task = dropReadTask = {}, epoch = viewEpoch;
     readingDrop = true; updateControls();
     try {
       const files = [...event.dataTransfer.files];
-      if ([...event.dataTransfer.items].some(item => item.webkitGetAsEntry?.()?.isDirectory)) throw new Error('请拖入文件，暂不支持文件夹。');
+      // webkitGetAsEntry() throws for synthetic/unsupported items instead of
+      // returning null; fall back to a regular file drop in that case.
+      let directory = false;
+      try { directory = [...event.dataTransfer.items].some(item => item.webkitGetAsEntry?.()?.isDirectory); } catch { /* Not inspectable here. */ }
+      if (directory) throw new Error('请拖入文件，暂不支持文件夹。');
       const imageFiles = files.filter(isImageFile);
       if (imageFiles.length) {
         readingDrop = false;
         await attachImageFiles(imageFiles, sessionId);
         return;
       }
-      if (byId('attach-file').disabled) return;
+      if (!attachEnabled) return;
       let attachment;
       if (files.length) {
         if (files.length !== 1) throw new Error('当前一次支持一个文件，请分别拖入；新文件将替换已有附件。');
@@ -732,9 +1067,40 @@
       request('attachFile', { attachment }, () => { if (epoch === viewEpoch && sessionId === currentSessionId && !visualSuspended()) input.focus({ preventScroll: true }); });
     } catch (error) { if (dropReadTask === task) showError(error instanceof TypeError ? '无法读取文件，请使用 UTF-8 文本文件。' : error.message, sessionId); }
     finally { if (dropReadTask === task) { dropReadTask = undefined; readingDrop = false; updateControls(); } }
+  }
+  form.addEventListener('drop', event => { void dropFiles(event); });
+  // A file can be dropped anywhere in the page. The composer handlers stop
+  // propagation, so this fallback only sees drags that started outside it; the
+  // full-surface overlay confirms the drop without stealing pointer events.
+  window.addEventListener('dragenter', event => {
+    if (event.defaultPrevented || !fileDrag(event.dataTransfer)) return;
+    event.preventDefault(); pageDragDepth++; document.body.classList.add('file-drag-over');
+  });
+  window.addEventListener('dragover', event => {
+    if (event.defaultPrevented || !fileDrag(event.dataTransfer)) return;
+    event.preventDefault();
+    const imageDrag = [...(event.dataTransfer.items ?? [])].some(item => item.type?.startsWith('image/'));
+    event.dataTransfer.dropEffect = imageDrag || !byId('attach-file').disabled ? 'copy' : 'none';
+  });
+  window.addEventListener('dragleave', event => {
+    if (event.defaultPrevented || !fileDrag(event.dataTransfer)) return;
+    if (!event.relatedTarget) { clearPageDrop(); return; }
+    if (--pageDragDepth <= 0) clearPageDrop();
+  });
+  window.addEventListener('drop', event => {
+    if (event.defaultPrevented || !fileDrag(event.dataTransfer)) { clearPageDrop(); return; }
+    void dropFiles(event).finally(clearPageDrop);
   });
   window.addEventListener('dragend', clearDrop);
   function resizeInput(field, maximum) {
+    // Chromium's field-sizing gives the textarea native content sizing, which
+    // avoids a forced style/layout read on every keystroke. Keep the measured
+    // fallback for engines without support.
+    if (CSS.supports?.('field-sizing', 'content')) {
+      if (field.style.height) field.style.removeProperty('height');
+      inputSizes.delete(field);
+      return;
+    }
     const width = field.clientWidth;
     if (!width) return;
     const previous = inputSizes.get(field);
@@ -746,16 +1112,21 @@
     inputSizes.set(field, { value: field.value, width, maximum });
   }
   function workspaceMissing() { return hostState?.context?.workspaceConfigured === false; }
-  function configurationMissing() { return hostState?.ssh?.configured === false || hostState?.provider?.configured === false; }
+  // Only the model blocks conversation. SSH is optional and only gates remote
+  // tools (the harness filters those out when no host is configured).
+  function configurationMissing() { return hostState?.provider?.configured === false; }
   function updateSubmit(button, field) {
     setProperty(button.dataset, 'running', String(busy));
-    const stop = busy && !field.value.trim();
+    const stop = busy && !hasComposerText();
     const liveSteer = busy && executionState().canSteer === true && !(hostState?.inputQueue?.length) && !hostState?.queuePaused;
+    // A full queue keeps the send control enabled so the click explains why the
+    // draft stays put; the host request itself is never sent by sendPrompt().
+    const queueFull = queueAtLimit();
     setProperty(button.dataset, 'actionMode', stop ? 'stop' : busy ? (liveSteer ? 'steer' : 'queue') : 'send');
-    setAttribute(button, 'aria-label', stop ? '停止执行' : busy ? (liveSteer ? '引导当前任务' : '加入队列') : '发送任务');
-    setProperty(button, 'title', stop ? '停止当前执行' : busy ? (liveSteer ? '立刻引导当前任务（Enter）' : '加入队列（Enter）') : '发送（Enter）');
+    setAttribute(button, 'aria-label', stop ? '停止执行' : queueFull ? '队列已满' : busy ? (liveSteer ? '引导当前任务' : '加入队列') : '发送任务');
+    setProperty(button, 'title', stop ? '停止当前执行' : queueFull ? '队列已满，先继续发送或移除一条' : busy ? (liveSteer ? '立刻引导当前任务（Enter）' : '加入队列（Enter）') : '发送（Enter）');
     setAttribute(button.querySelector('path'), 'd', stop ? 'M6 6h12v12H6Z' : 'M12 19V5m-6 6 6-6 6 6');
-    setProperty(button, 'disabled', connectionStatus === 'disconnected' || !currentSessionId || hostState?.recovering || navigationPending() || hasPending('rewindInput') || hasPending('cancelRun') || (stop ? hasPending('prompt') : configurationMissing() || hasPending('prompt') || hasPending('runGoal') || hasPending('resumeRun') || contextPending() || (!field.value.trim() && !(hostState?.pendingImages?.length)) || field.value.length > field.maxLength));
+    setProperty(button, 'disabled', connectionStatus === 'unresponsive' || !currentSessionId || hostState?.recovering || navigationPending() || hasPending('rewindInput') || hasPending('cancelRun') || (stop ? hasPending('prompt') : configurationMissing() || hasPending('runGoal') || hasPending('resumeRun') || contextPending() || (!hasComposerText() && !(hostState?.pendingImages?.length)) || composerLength() > field.maxLength));
   }
   // The composer model picker keeps native <select> semantics (keyboard,
   // type-ahead, form value) while presenting the DSH chip look. Chromium's
@@ -888,14 +1259,14 @@
     setProperty(byId('assist-resume'), 'disabled', unavailable || configurationMissing() || runPending);
     setText(byId('assist-resume'), resumeLabel);
     syncAssistResume();
-    const savingNote = hasPending('addGoalNote');
+    const savingNote = hasPending('addGoalNote') || hasPending('editNote') || hasPending('editAgentNote');
     setProperty(noteInput, 'disabled', unavailable || savingNote);
-    setProperty(byId('goal-add-note'), 'disabled', unavailable || !hostState?.goal || savingNote || !noteInput.value.trim());
-    setProperty(byId('goal-add-note'), 'textContent', savingNote ? '正在保存…' : '保存笔记');
-    setProperty(byId('note-new'), 'disabled', unavailable || !hostState?.goal);
-    setText(byId('note-new'), noteInput.value ? '继续草稿' : '＋ 新建笔记');
+    setProperty(byId('goal-add-note'), 'disabled', unavailable || !(hostState?.goal || hostState?.mode === 'assist') || savingNote || !noteInput.value.trim());
+    setProperty(byId('goal-add-note'), 'textContent', savingNote ? '正在保存…' : editingNote ? '保存修改' : '保存笔记');
+    setProperty(byId('note-new'), 'disabled', unavailable || !(hostState?.goal || hostState?.mode === 'assist'));
+    setText(byId('note-new'), noteInput.value && !editingNote ? '继续草稿' : '＋ 新建笔记');
     setText(byId('note-length'), noteInput.value.length.toLocaleString() + ' / 2,000');
-    setText(byId('note-draft-status'), savingNote ? '正在保存到当前目标…' : busy ? '任务执行中也可保存笔记，关闭后保留草稿。' : '关闭后保留草稿');
+    setText(byId('note-draft-status'), savingNote ? (hostState?.mode === 'assist' ? '正在保存到当前会话…' : '正在保存到当前目标…') : editingNote ? '修改会立即保存到这条笔记。' : busy ? '任务执行中也可保存笔记，关闭后保留草稿。' : '关闭后保留草稿');
     byId('criteria-list').querySelectorAll('input').forEach(checkbox => {
       checkbox.disabled = unavailable || busy || saving || hasPending('toggleGoalCriterion', checkbox.dataset.criterionId);
     });
@@ -925,17 +1296,32 @@
     if (hadFocus) input.focus({ preventScroll: true });
     updateInput();
   }
+  // The host projection rebuilds the image payload for every snapshot, so an
+  // identity check would treat an unchanged image as a change and re-render the
+  // whole card. Compare only the fields the figure renders.
+  function sameToolImage(left, right) {
+    if (left === right) return true;
+    const a = left && typeof left === 'object' ? left : null;
+    const b = right && typeof right === 'object' ? right : null;
+    if (!a || !b) return !a && !b;
+    return a.mimeType === b.mimeType && a.data === b.data
+      && a.width === b.width && a.height === b.height && a.bytes === b.bytes;
+  }
   function sameParts(left, right) {
     if (left === right) return true;
     if (!Array.isArray(left) || !Array.isArray(right)) return !left?.length && !right?.length;
     return left.length === right.length && left.every((part, index) => {
       const other = right[index];
       if (!other) return false;
-      return ['id', 'type', 'text', 'name', 'status', 'args', 'output', 'startedAt', 'endedAt', 'truncated', 'source', 'workerId', 'fallback', 'beforeTokens', 'afterTokens']
+      return ['id', 'type', 'text', 'name', 'status', 'executionState', 'commandId', 'interruptRequested', 'background', 'args', 'output', 'startedAt', 'endedAt', 'truncated', 'source', 'workerId', 'fallback', 'beforeTokens', 'afterTokens']
         .every(key => part[key] === other[key])
         // Summary telemetry is an object, so a body/tool kind change must not be
         // treated as an unchanged part.
-        && JSON.stringify(part.kinds) === JSON.stringify(other.kinds);
+        && JSON.stringify(part.kinds) === JSON.stringify(other.kinds)
+        // Inlined tool images and the omission notice are projected objects; an
+        // unchanged payload must not force a re-render, a changed one must.
+        && sameToolImage(part.image, other.image)
+        && (part.imageOmitted === true) === (other.imageOmitted === true);
     });
   }
   function visibleTimelineParts(parts) {
@@ -1206,6 +1592,33 @@
       return figure;
     }));
   }
+  // Completed assistant replies get a quiet copy action; it stays hidden until
+  // the message is hovered or focused, so the reading surface stays calm.
+  function addMessageCopy(entry) {
+    if (entry?.copy && !entry.copy.isConnected) entry.copy = undefined;
+    if (!entry || entry.copy || entry.role !== 'assistant' || typeof entry.text !== 'string' || !entry.text.trim()) return;
+    const copy = document.createElement('button');
+    copy.type = 'button'; copy.className = 'message-copy';
+    copy.title = t('复制回复'); copy.setAttribute('aria-label', t('复制回复'));
+    copy.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h8"/></svg>';
+    copy.addEventListener('click', () => {
+      const text = entry.text;
+      if (typeof text !== 'string' || !text.trim()) return;
+      try {
+        Promise.resolve(messageActions.onCopy(text)).then(() => {
+          copy.classList.add('is-copied');
+          copy.title = t('已复制'); copy.setAttribute('aria-label', t('已复制'));
+          clearTimeout(copy.feedbackTimer);
+          copy.feedbackTimer = setTimeout(() => {
+            copy.classList.remove('is-copied');
+            copy.title = t('复制回复'); copy.setAttribute('aria-label', t('复制回复'));
+          }, 1400);
+        }).catch(() => {});
+      } catch { /* callback failure is surfaced by the view */ }
+    });
+    entry.copy = copy;
+    entry.heading.append(copy);
+  }
   function createMessageEntry(role, text, parts, streaming = false, images = []) {
     const article = document.createElement('article');
     article.className = 'message ' + role + (streaming ? ' streaming-message' : '');
@@ -1218,6 +1631,7 @@
     window.UBOVMMessage.update(body, text, { ...messageActions, role, parts, streaming, preserveBody: !streaming });
     const entry = { article, heading, body, role, text, parts, images: [] };
     article.append(heading, body);
+    if (!streaming) addMessageCopy(entry);
     setMessageImages(entry, images);
     return entry;
   }
@@ -1293,11 +1707,11 @@
     return entry;
   }
   function flashHistoryBatch(entries) {
+    if (reducedMotion.matches) return;
     for (const entry of entries) {
       entry.article.classList.add('history-enter');
       // The class is one-shot: drop it after the fade so it can never revive on a
-      // later retained-node reconcile. Reduced motion disables the animation, in
-      // which case it stays inert on the (kept) node.
+      // later retained-node reconcile.
       entry.article.addEventListener('animationend', () => {
         entry.article.classList.remove('history-enter');
       }, { once: true });
@@ -1305,6 +1719,14 @@
   }
   function scheduleHistoryFill() {
     if (historyFillFrame || pageHidden()) return;
+    const wait = interactingUntil - performance.now();
+    if (wait > 0) {
+      if (!historyInteractionTimer) historyInteractionTimer = setTimeout(() => {
+        historyInteractionTimer = 0;
+        scheduleHistoryFill();
+      }, Math.min(250, wait + 20));
+      return;
+    }
     historyFillFrame = requestAnimationFrame(runHistoryFillFrame);
   }
   // Advance exactly one visible shell by one part per frame. The expensive part of
@@ -1339,6 +1761,7 @@
     if (pageHidden() || hostState?.mode === 'goal') return;
     const view = messageViews.get(messages);
     if (!view || view.sessionId !== currentSessionId) return;
+    if (view.capped && !view.hydration?.length) return;
     const fillPending = view.historyStart > 0 && Array.isArray(view.history);
     if (!fillPending && !view.hydration?.length) return;
     const started = performance.now();
@@ -1354,19 +1777,27 @@
     }
     let complete = false;
     if (fillPending) {
-      // Measure the anchor after hydration: hydration grows visible messages below the
-      // reader's anchor, so only the inserted history height may be compensated.
-      const previousHeight = scroller.scrollHeight;
-      const previousTop = scroller.scrollTop;
-      const following = position.following && scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 32;
+      // Use the scroll tracker's following bit instead of probing scrollHeight
+      // twice before every insertion. At large DOM sizes each read forces a full
+      // list layout; the tracker already detects the <2px bottom state.
+      let following = position.following;
+      const previousHeight = following ? 0 : scroller.scrollHeight;
+      const previousTop = following ? 0 : scroller.scrollTop;
       const fillStarted = performance.now();
       const fillBudget = Math.max(1, HISTORY_FRAME_BUDGET_MS - (fillStarted - started));
       const added = [];
       let cursor = view.historyStart;
-      while (cursor > 0) {
-        added.push(mountHistoryEntry(view.history[cursor - 1], view));
+      const limit = view.historyLimit ?? HISTORY_MAX_MOUNTED;
+      while (cursor > 0 && view.entries.length + added.length < limit) {
+        // The budget only bounds JS work if it is checked before the next mount;
+        // always mounting one more entry can turn a 6 ms budget into a long task.
+        if (added.length && performance.now() - fillStarted >= fillBudget) break;
+        const item = view.history[cursor - 1];
+        const heavy = (typeof item.text === 'string' && item.text.length > 40000)
+          || (item.parts || []).some(part => (typeof part.output === 'string' && part.output.length > 40000)
+            || (typeof part.text === 'string' && part.text.length > 40000));
+        added.push(mountHistoryEntry(item, view, heavy));
         cursor--;
-        if (performance.now() - fillStarted >= fillBudget) break;
       }
       const anchor = view.entries[0]?.article || view.stream?.article || null;
       const fragment = document.createDocumentFragment();
@@ -1377,10 +1808,15 @@
       view.entries = added.concat(view.entries);
       view.historyStart = cursor;
       complete = cursor === 0;
+      view.capped = !complete && view.entries.length >= limit;
       // The indicator sits above every entry, so its removal is part of the inserted
       // height delta that keeps a reader who scrolled up visually anchored.
       if (complete) setHistoryLoading(false);
+      else if (view.capped) setHistoryLoading(true, true, view.entries.length);
+      else setHistoryLoading(true);
       if (!following) {
+        // Probe only after the insertion; this is the single geometry read the
+        // anchor correction genuinely needs.
         scroller.scrollTop = previousTop + (scroller.scrollHeight - previousHeight);
         position.top = scroller.scrollTop;
       } else {
@@ -1400,8 +1836,10 @@
       scroller.scrollTop = scroller.scrollHeight;
       position.top = scroller.scrollTop;
     }
-    refreshLatest();
-    if (view.historyStart > 0 || view.hydration?.length) scheduleHistoryFill();
+    // While older history is still filling the latest button cannot be visible
+    // for a following reader; defer its layout read until the fill settles.
+    if (!view.historyStart && !view.hydration?.length) refreshLatest();
+    if ((view.historyStart > 0 && !view.capped) || view.hydration?.length) scheduleHistoryFill();
   }
   let pendingImageKey = '';
   function renderPendingImages() {
@@ -1426,6 +1864,22 @@
       container.append(figure);
     }
   }
+  // Full state resends the whole history array even when only execution metadata
+  // changed. A cheap structural fingerprint lets a long conversation keep its
+  // already-mounted DOM instead of reconciling every message on each state tick.
+  function historySignature(items) {
+    const rows = [];
+    for (const item of items) {
+      const parts = item.parts || [];
+      rows.push([item.role, item.id || '', typeof item.text === 'string' ? item.text.length : 0, item.steeringStatus || '',
+        item.images?.length || 0, parts.length,
+        parts.map(part => [part.id, part.type, part.status, typeof part.text === 'string' ? part.text.length : 0,
+          typeof part.output === 'string' ? part.output.length : 0,
+          part.image ? 1 : 0, typeof part.image?.data === 'string' ? part.image.data.length : 0,
+          part.imageOmitted === true ? 1 : 0].join(':')).join('|')].join('\u0001'));
+    }
+    return rows.join('\u0002');
+  }
   function renderMessages(items) {
     parkResumeNote();
     let view = messageViews.get(messages);
@@ -1445,16 +1899,14 @@
     const scroller = conversation;
     const position = scrollPositions.get(scroller);
     if (scroller.scrollTop < position.top - 1) position.following = false;
-    const followingPending = pendingScroll?.scroller === scroller && pendingScroll.sessionId === currentSessionId;
-    const shouldScroll = forceScroll || !showingConversation ||
-      (position.following && (followingPending || scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 32));
+    const shouldScroll = forceScroll || !showingConversation || position.following;
     forceScroll = false;
     if (view?.sessionId !== currentSessionId) {
       cancelHistoryFill();
       historyOutlineAt = 0;
       setHistoryLoading(false);
       container.replaceChildren();
-      view = { sessionId: currentSessionId, entries: [], stream: null, busy: undefined, historyStart: 0, hydration: [] };
+      view = { sessionId: currentSessionId, entries: [], stream: null, busy: undefined, historyStart: 0, hydration: [], historyLimit: HISTORY_MAX_MOUNTED, capped: false };
       messageViews.set(container, view);
     }
     // Long histories mount only the newest messages on the first frame so the page
@@ -1463,10 +1915,13 @@
     // keep the full reconcile.
     const progressive = historyChanged && view.entries.length === 0 && safeMessages.length > HISTORY_PROGRESSIVE_MIN;
     const paintStart = progressive ? safeMessages.length - HISTORY_SYNC_COUNT : 0;
+    const signature = historyChanged ? historySignature(safeMessages) : view.signature;
+    const historyStable = historyChanged && view.signature === signature
+      && view.entries.length + view.historyStart === safeMessages.length;
     let changed = view.busy !== busy || view.entries.length !== safeMessages.length - paintStart;
     // Keep published history in place while only the transient reply grows.
     // Reading selections, focus, and scroll anchors survive token updates.
-    if (historyChanged) {
+    if (historyChanged && !historyStable) {
       cancelHistoryFill();
       // A full reconcile renders every part synchronously, so queued incremental
       // hydration would re-render an already-complete body: drop it first.
@@ -1486,6 +1941,7 @@
           entry.article.classList.remove('streaming-message'); entry.article.removeAttribute('data-streaming');
           window.UBOVMMessage.update(entry.body, item.text, { ...messageActions, role: item.role, parts, streaming: false, preserveBody: true });
           entry.text = item.text; entry.parts = parts;
+          addMessageCopy(entry);
           changed = true;
         } else if (!entry) {
           // Progressive first paint mounts cheap shells (first visible part) and
@@ -1500,6 +1956,7 @@
           window.UBOVMMessage.update(entry.body, item.text, { ...messageActions, role: item.role, parts, streaming: false, preserveBody: true });
           setMessageImages(entry, item.images);
           entry.role = item.role; entry.text = item.text; entry.parts = parts;
+          addMessageCopy(entry);
           changed = true;
         }
         if (decorateHistoryEntry(entry, item)) changed = true;
@@ -1516,9 +1973,15 @@
       }
       view.entries = entries;
       view.historyStart = paintStart;
+      view.signature = signature;
       if (paintStart > 0) setHistoryLoading(true);
       else setHistoryLoading(false);
       if (paintStart > 0 || view.hydration.length) scheduleHistoryFill();
+    } else if (historyStable) {
+      // Same messages, only execution metadata changed: do not rescan or
+      // re-serialize parts. Keep the published array for the next identity check.
+      view.source = items;
+      if ((view.historyStart > 0 || view.hydration?.length) && !pageHidden() && hostState?.mode !== 'goal') scheduleHistoryFill();
     } else if ((view.historyStart > 0 || view.hydration?.length) && !pageHidden() && hostState?.mode !== 'goal') {
       // A hidden/aborted paint cancels the pending fill frame; resume it on the next
       // committed render instead of leaving older history permanently missing.
@@ -1537,6 +2000,7 @@
       }
       if (busy) view.stream.article.dataset.streaming = 'true'; else view.stream.article.removeAttribute('data-streaming');
       view.stream.article.classList.toggle('streaming-message', busy);
+      if (!busy) addMessageCopy(view.stream);
     } else if (view.stream) {
       window.UBOVMMessage.release(view.stream.body);
       view.stream.article.remove(); view.stream = null;
@@ -1591,20 +2055,17 @@
     changed = renderQuestions(view) || changed;
     view.busy = busy;
     view.source = items; view.history = safeMessages; view.firstPartId = firstPartId; view.represented = represented;
-    syncHistoryDensity(safeMessages.length);
     showConversation(safeMessages.length > 0 || hasLive || busy || Boolean(execution.error) || execution.canResume === true || execution.workers?.length > 0 || view.approvals.size > 0 || view.questions.size > 0);
     refreshLatest();
     if (!changed) return;
     cancelScroll();
     if (shouldScroll) {
-      const sessionId = currentSessionId;
-      const expectedTop = scroller.scrollTop;
-      pendingScroll = { scroller, sessionId, frame: requestAnimationFrame(() => {
-        pendingScroll = undefined;
-        if (visualSuspended() || sessionId !== currentSessionId || hostState?.mode === 'goal' || scroller.scrollTop < expectedTop - 1) return;
-        scroller.scrollTop = scroller.scrollHeight;
-        position.top = scroller.scrollTop; position.following = true;
-      }) };
+      // Pin in the same task that mutated the DOM. Deferring to requestAnimationFrame
+      // left one painted frame at the previous scrollHeight, so streamed growth made
+      // the scrollbar thumb bounce up and back down on every update.
+      scroller.scrollTop = scroller.scrollHeight;
+      position.top = scroller.scrollTop;
+      position.following = true;
     }
   }
   function renderMode() {
@@ -1617,17 +2078,42 @@
     byId('goal-header-actions').hidden = !goalMode;
     byId('goal-view-switcher').hidden = !goalMode;
     byId('goal-header-more').hidden = !goalMode;
+    // The "对话" button reveals the native right-sidebar view; it is only
+    // meaningful in goal mode with a saved goal (renderGoal hides it otherwise).
+    byId('goal-chat-toggle').hidden = !goalMode;
+    renderGoalChatToggle();
     if (!goalMode) { byId('goal-view-switcher').open = false; byId('goal-header-more').open = false; }
     byId('open-browser').hidden = goalMode;
     byId('validate-code-changes').hidden = goalMode;
     byId('review-code-changes').hidden = goalMode;
     byId('assist-notes-toggle').hidden = goalMode;
+    // Secondary assist actions share one overflow menu; the goal header keeps its
+    // own menu, so the assist one must not linger over the exploration workspace.
+    byId('assist-more').hidden = goalMode;
+    if (goalMode) byId('assist-more').open = false;
     // The Team panel belongs to the assist Lead conversation; a mode switch must
     // not leave a stale popover or a watched teammate floating over the goal
     // workspace.
     if (goalMode) { teamPanel.close(); closeTeamMember({ restoreFocus: false }); }
     renderModuleActions();
     updateInput();
+  }
+  // Route/session transitions can leave the primary surface hidden in two ways:
+  // a stale expanded worker-panel class after the panel closed, or a render that
+  // committed before the mode sections were revealed. Repair only the invariant;
+  // never force a specific page the user did not choose.
+  function repairPrimarySurface({ repaint = false } = {}) {
+    let repaired = false;
+    const shell = document.querySelector('.shell');
+    if (shell?.classList.contains('worker-panel-expanded')) {
+      const panel = byId('worker-panel');
+      const panelVisible = panel && !panel.hidden && getComputedStyle(panel).display !== 'none';
+      if (!panelVisible) { shell.classList.remove('worker-panel-expanded'); repaired = true; }
+    }
+    if (!hostState) return repaired;
+    if (byId('assist-mode').hidden && byId('goal-mode').hidden) { renderMode(); repaired = true; }
+    if (repaired && repaint) scheduleRender();
+    return repaired;
   }
   function renderModuleActions() {
     const goalMode = hostState?.mode === 'goal';
@@ -1636,7 +2122,7 @@
     setProperty(byId('goal-edit'), 'hidden', view !== 'overview');
     setProperty(byId('goal-board-actions'), 'hidden', view !== 'board');
     setProperty(byId('goal-notes-actions'), 'hidden', goalMode ? view !== 'notes' : draftFor().view !== 'notes');
-    setProperty(byId('note-new'), 'hidden', !goalMode);
+    setProperty(byId('note-new'), 'hidden', false);
   }
   function renderGoalView() {
     renderModuleActions();
@@ -1670,6 +2156,12 @@
     // Close it before the route paint so the newly selected page is actually shown.
     try { workerPanel.dismiss(false); } catch { /* Panel teardown must not block navigation. */ }
     draftFor().view = view;
+    if (view === 'workers') {
+      // The operator has now seen the failed/interrupted intents in Tasks; do not
+      // keep repeating the same overview warning for this exact failure set.
+      acknowledgedFailedWarnings.set(currentSessionId, failedWarningSignature(goalSignalData()));
+      goalSignalsKey = '';
+    }
     persistDrafts();
     // A route change must synchronize the outer mode and workspace as well as
     // the tab. Partial execution renders can otherwise retain a hidden ancestor.
@@ -1680,12 +2172,15 @@
     // intent. Starting another transition per click would re-arm the mask and
     // cancellation path and can leave the page on an older intent.
     if (routePending) { scheduleRender(); return; }
-    beginPageTransition('正在打开' + ({ overview: '思考日志', agenda: '议程', board: '黑板', workers: '任务', notes: '笔记' }[view]) + '…');
+    beginPageTransition('正在打开' + ({ overview: '思考日志', agenda: '议程', board: '黑板', workers: '任务', notes: '笔记' }[view]) + '…',
+      view === 'board' ? 'route' : 'view');
     scheduleRender();
   }
   function restoreFields() {
     const draft = draftFor();
     input.value = draft.assist;
+    renderPastes();
+    resetHistoryRecall();
     noteInput.value = draft.note;
     objectiveInput.value = draft.goalDraft ? draft.goalDraft.objective : hostState?.goal?.objective || '';
     factsInput.value = draft.goalDraft ? draft.goalDraft.initialFacts || '' : hostState?.goal?.initialFacts || '';
@@ -1726,11 +2221,12 @@
   }
   function renderNotes(notes) {
     if (lastNotesSource === notes) return;
-    const serialized = JSON.stringify(notes);
+    const visible = Array.isArray(notes) ? notes : [];
+    const serialized = JSON.stringify(visible);
     if (serialized === lastNotes) { lastNotesSource = notes; return; }
     lastNotesSource = undefined;
     lastNotes = '';
-    renderNoteList(byId('goal-notes-list'), [...notes].reverse(), 'user');
+    renderNoteList(byId('goal-notes-list'), [...visible].reverse(), 'user');
     filterNotes();
     lastNotes = serialized;
     lastNotesSource = notes;
@@ -1755,7 +2251,7 @@
   function noteDescription(note, source) {
     const text = typeof note.content === 'string' ? note.content : typeof note.text === 'string' ? note.text : '';
     const createdAt = note.created_at ?? note.createdAt;
-    return { text, createdAt, key: source + ':' + (note.id ?? JSON.stringify([createdAt, text])) };
+    return { id: typeof note.id === 'string' ? note.id : '', text, createdAt, key: source + ':' + (note.id ?? JSON.stringify([createdAt, text])) };
   }
   function noteRow(note, source, entry = noteDescription(note, source)) {
     const { text, key, createdAt } = entry;
@@ -1768,7 +2264,7 @@
     }
     const preview = document.createElement('p'); preview.textContent = text.length > 240 ? text.slice(0, 240) + '…' : text;
     button.append(preview, time); article.append(button);
-    noteEntries.set(article, { key, text, createdAt, searchText: text.toLocaleLowerCase(), source, date: time.textContent });
+    noteEntries.set(article, { key, id: entry.id, text, createdAt, searchText: text.toLocaleLowerCase(), source, date: time.textContent });
     button.addEventListener('click', () => {
       selectedNoteKey = key; renderNoteReader(article);
       byId('goal-notes').dataset.reading = 'true';
@@ -1780,6 +2276,8 @@
     const entry = article && noteEntries.get(article);
     for (const row of document.querySelectorAll('.note-select')) setAttribute(row, 'aria-pressed', String(noteEntries.get(row.parentElement)?.key === entry?.key));
     byId('note-copy').disabled = !entry;
+    byId('note-edit').hidden = !entry?.id;
+    byId('note-edit').disabled = !entry?.id;
     byId('note-reader-placeholder').hidden = Boolean(entry);
     byId('note-reader-body').hidden = !entry;
     const key = entry ? JSON.stringify([entry.key, entry.text]) : '';
@@ -1806,16 +2304,20 @@
   }
   function closeNoteEditor() {
     if (byId('note-editor').open) byId('note-editor').close();
+    editingNote = null;
     persistDrafts();
   }
   function filterNotes() {
     const query = byId('notes-search').value.trim().toLocaleLowerCase();
+    // Assist mode has no source filter controls; always show both user and
+    // Agent notes there instead of inheriting a stale goal-mode filter.
+    const effectiveSource = hostState?.mode === 'goal' ? noteSource : 'all';
     let total = 0, shown = 0;
     for (const [source, listId, sectionId] of [['user', 'goal-notes-list', 'user-notes-section'], ['agent', 'agent-notes-list', 'agent-notes-section']]) {
       const entries = [...byId(listId).children];
       let visible = 0;
       for (const entry of entries) {
-        entry.hidden = (noteSource !== 'all' && noteSource !== source) || !noteEntries.get(entry).searchText.includes(query);
+        entry.hidden = (effectiveSource !== 'all' && effectiveSource !== source) || !noteEntries.get(entry).searchText.includes(query);
         if (!entry.hidden) visible++;
       }
       total += entries.length; shown += visible;
@@ -1931,8 +2433,9 @@
           const meta = document.createElement('div');
           meta.className = 'goal-agenda-meta';
           const kind = ({ intent: '意图', direction: '方向', suggestion: '建议' })[item.kind] || '条目';
+          // The node/evidence alias is already shown on the right edge; do not
+          // repeat it in the subtitle.
           const bits = [kind];
-          if (item.ref) bits.push(item.ref);
           if (item.method) bits.push('方法：' + item.method);
           if (item.acceptance) bits.push('验收：' + item.acceptance);
           bits.forEach((bit, index) => {
@@ -1964,6 +2467,11 @@
           const key = document.createElement('span');
           key.className = 'goal-agenda-key';
           key.textContent = item.evidenceRef || item.ref || '';
+          key.hidden = !key.textContent;
+          if (key.textContent) {
+            key.title = '关联证据：' + key.textContent;
+            key.setAttribute('aria-label', '关联证据：' + key.textContent);
+          }
           row.append(chip, main, key);
           return row;
         }));
@@ -1974,10 +2482,12 @@
   function renderGraphStatus(graph) {
     const badge = byId('goal-graph-status');
     if (!graph || !Number.isInteger(graph.nodes) || graph.nodes <= 0) { badge.hidden = true; badge.textContent = ''; return; }
-    const detail = graph.detail === 'full' ? '完整' : graph.detail === 'summary' ? '摘要' : '仅拓扑';
+    const detail = graph.truncated ? '截断' : graph.detail === 'full' ? '完整' : graph.detail === 'summary' ? '摘要' : '仅拓扑';
     badge.hidden = false;
     setText(badge, `图${detail} · ${graph.nodes} 节点`);
-    setAttribute(badge, 'title', `图完整度：${detail}；${graph.nodes} 个节点、${graph.edges} 条边、${graph.omittedFacts || 0} 个事实正文按需读取`);
+    setAttribute(badge, 'title', graph.truncated
+      ? `图已按长程预算截断：仅展示可行动分支与最近节点（列出 ${graph.listedNodes ?? '?'} / ${graph.nodes}）；完整图仍可用 exploration_graph 查询`
+      : `图完整度：${detail}；${graph.nodes} 个节点、${graph.edges} 条边、${graph.omittedFacts || 0} 个事实正文按需读取`);
     if (badge.dataset.detail !== graph.detail) badge.dataset.detail = graph.detail;
   }
   function factText(content) {
@@ -1998,22 +2508,84 @@
     } catch { /* Plain facts remain readable without a structured Worker envelope. */ }
     return content;
   }
-  let blackboardGraph, goalExecutionLog;
+  let blackboardGraph, goalExecutionLog, lastBoardSnapshot, lastBoardConversation;
+  // A restored or older exploration can be opened before the backend has loaded
+  // its checkpoint; the host then publishes an execution snapshot without a
+  // board. Ask for one authoritative read per session instead of leaving a
+  // silently empty blackboard where manual refresh may race the restore again.
+  let missingBoardRequest = { session: '', at: 0, pending: false };
+  function boardExecutionFailure() {
+    const error = hostState?.execution?.error;
+    if (!error) return '';
+    const message = typeof error === 'string' ? error : error.message;
+    return typeof message === 'string' ? message : '';
+  }
+  function requestMissingBoard(snapshot, nodes) {
+    if (nodes.length) { missingBoardRequest.pending = false; return; }
+    // A published board (even an empty one) is authoritative; only a completely
+    // absent projection means the host has nothing to paint yet.
+    if (snapshot) { missingBoardRequest.pending = false; return; }
+    // A previous board for the same conversation is authoritative until the next
+    // publication; do not turn a transient light projection into a request loop.
+    if (lastBoardSnapshot && lastBoardConversation === hostState?.conversation?.id) return;
+    if (!hostState?.goal || workspaceMissing()) return;
+    const execution = hostState?.execution || {};
+    // Only a session that already produced work can have a blackboard. A fresh
+    // run that has not emitted a single part/worker yet is not a missed board.
+    const hasRun = Boolean(boardExecutionFailure())
+      || ['completed', 'failed', 'interrupted'].includes(execution.status)
+      || (execution.status === 'running' && Boolean(execution.parts?.length || execution.activities?.length || execution.workers?.length));
+    if (!hasRun) return;
+    const now = Date.now();
+    if (missingBoardRequest.session === currentSessionId && now - missingBoardRequest.at < 3000) return;
+    missingBoardRequest = { session: currentSessionId, at: now, pending: true };
+    vscode.postMessage({ action: 'refreshBlackboard', sessionId: currentSessionId });
+  }
   function renderBlackboard(snapshot, completion) {
+    // A light/partial state may omit the board for one publication. Keep the
+    // last complete board for the same conversation instead of clearing the
+    // graph and making nodes blink.
+    if (snapshot) { lastBoardSnapshot = snapshot; lastBoardConversation = hostState?.conversation?.id; }
+    else if (lastBoardConversation === hostState?.conversation?.id) snapshot = lastBoardSnapshot;
     const nodes = Array.isArray(snapshot?.nodes) ? snapshot.nodes : [];
     const evidenceIds = completion?.complete === true && Array.isArray(completion.evidenceIds) ? completion.evidenceIds : [];
+    requestMissingBoard(snapshot, nodes);
+    const failure = boardExecutionFailure();
+    const hint = byId('blackboard-empty-hint');
+    if (hint) {
+      const next = failure
+        ? t('黑板读取失败：{0} 点击刷新重试；若仍无内容，请重新打开会话。', failure.slice(0, 240))
+        : missingBoardRequest.pending && nodes.length === 0
+          ? t('正在重新读取黑板记录…')
+          : t('如果长时间没有内容，点击刷新重新读取。');
+      if (hint.textContent !== next) hint.textContent = next;
+    }
     renderSection('blackboard', [snapshot?.sessionId, snapshot?.revision, snapshot?.rootId, snapshot?.goal, nodes, evidenceIds], () => {
       byId('blackboard-empty').hidden = nodes.length > 0;
       byId('blackboard-nodes').hidden = nodes.length === 0;
-      blackboardGraph ??= window.createBlackboardGraph(byId('blackboard-nodes'), { factText, statusText, actionsContainer: byId('goal-board-actions'),
+      blackboardGraph ??= window.createBlackboardGraph(byId('blackboard-nodes'), { factText, statusText, actionsContainer: byId('goal-board-actions'), onRefresh: refreshBlackboardUi,
         onDetail: hostState?.nativeBlackboardSidebar ? (detail, reveal) => vscode.postMessage({ action: 'blackboardDetail', sessionId: currentSessionId, detail, reveal }) : undefined });
       blackboardGraph.update(evidenceIds.length && snapshot ? { ...snapshot, completionEvidenceIds: evidenceIds } : snapshot);
       byId('blackboard-revision').textContent = Number.isInteger(snapshot?.revision) ? '修订 ' + snapshot.revision : '等待执行';
     });
   }
   function renderAgentNotes(memory) {
+    const session = String(hostState?.conversation?.id ?? '');
+    if (lastAgentNotes.session !== session) lastAgentNotes = { session, notes: [] };
+    // An omitted memory projection means the host had nothing new to send; keep
+    // the last rendered notebook instead of treating absence as an empty list.
+    if (!memory && lastAgentNotes.notes.length) return;
     const source = memory?.notes;
-    const notes = (Array.isArray(source) ? source : source && typeof source === 'object' ? Object.values(source) : []).filter(note => note && (typeof note.content === 'string' || typeof note.text === 'string'));
+    const hidden = new Set(Array.isArray(hostState?.deletedAgentNotes) ? hostState.deletedAgentNotes : []);
+    const edits = new Map((Array.isArray(hostState?.editedAgentNotes) ? hostState.editedAgentNotes : []).map(item => [item.id, item.text]));
+    const notes = (Array.isArray(source) ? source : source && typeof source === 'object' ? Object.values(source) : [])
+      .filter(note => note && (typeof note.content === 'string' || typeof note.text === 'string') && !(typeof note.id === 'string' && hidden.has(note.id)))
+      .map(note => {
+        const edited = typeof note.id === 'string' ? edits.get(note.id) : undefined;
+        if (edited === undefined) return note;
+        return typeof note.content === 'string' ? { ...note, content: edited } : { ...note, text: edited };
+      });
+    lastAgentNotes.notes = memory ? notes : lastAgentNotes.notes;
     renderSection('agent-notes', notes, () => {
       renderNoteList(byId('agent-notes-list'), [...notes].reverse(), 'agent');
       filterNotes();
@@ -2023,7 +2595,7 @@
     const execution = executionState();
     const shell = document.querySelector('.shell');
     if (shell && backgroundTasks.element.parentElement !== shell) shell.append(backgroundTasks.element);
-    backgroundTasks.update(hostState, ['disconnected', 'backend-disconnected'].includes(connectionStatus));
+    backgroundTasks.update(hostState, ['unresponsive', 'backend-disconnected'].includes(connectionStatus));
     const explorationRuns = Array.isArray(execution.explorationRuns) ? execution.explorationRuns.filter(run => run.busy === true) : [];
     setProperty(byId('exploration-runs'), 'hidden', explorationRuns.length === 0);
     if (!explorationRuns.length) byId('exploration-runs').open = false;
@@ -2095,14 +2667,19 @@
     workerPanel.update({ sessionId: currentSessionId, workers, goalMode, error: execution.workerViewError?.message });
     if (goalMode && selected === 'overview' && !byId('goal-output-content').parentElement.closest('[hidden]')) {
       goalExecutionLog ??= window.createGoalExecutionLog(byId('goal-output-content'), { actions: messageActions, statusText, openWorker: (id, button) => workerPanel.show(id, button) });
-      const count = goalExecutionLog.update(currentSessionId, execution);
+      let count = 0;
+      // The log is one panel of the overview: a render bug there must never blank
+      // the whole goal workspace or prevent the rest of the page from painting.
+      try { count = goalExecutionLog.update(currentSessionId, execution); }
+      catch (error) { console.warn('[UBOVM] Goal execution log update failed', error); }
       setProperty(byId('goal-output-content'), 'hidden', !count);
       setProperty(byId('goal-log-bottom'), 'disabled', !count);
       setProperty(byId('goal-output-empty'), 'hidden', count > 0);
       setText(byId('goal-output-empty'), busy ? '正在启动，执行日志将在事件产生后显示。' : '执行后，规划、任务派发和工具调用会按顺序显示在这里。');
       setText(byId('goal-output-title'), '思考与调度日志');
-      setText(byId('goal-output-status'), label + ' · ' + count + ' 条记录');
+      setText(byId('goal-output-status'), label);
       setAttribute(byId('goal-output-status'), 'data-phase', status);
+      setText(byId('goal-output-count'), count ? count + ' 条记录' : '');
       // Empty-state / flex height changes after update; re-align follow once layout settles.
       if (count) goalExecutionLog.alignFollow?.();
     }
@@ -2125,6 +2702,301 @@
   function renderTeamMember() {
     teamMemberView.update(hostState?.mode === 'assist' ? executionState().teamWatch : undefined, currentSessionId);
   }
+  function relativeAge(timestamp) {
+    const ms = Math.max(0, Date.now() - timestamp);
+    if (ms < 60_000) return t('{0} 秒前', Math.max(1, Math.floor(ms / 1000)));
+    if (ms < 3_600_000) return t('{0} 分钟前', Math.floor(ms / 60_000));
+    return t('{0} 小时前', Math.floor(ms / 3_600_000));
+  }
+  function goalSignalData() {
+    const execution = hostState?.execution ?? {};
+    const executionBoard = execution.blackboard;
+    const board = executionBoard ?? (lastBoardConversation === hostState?.conversation?.id ? lastBoardSnapshot : undefined);
+    const nodes = Array.isArray(board?.nodes) ? board.nodes.filter(Boolean) : [];
+    const byId = new Map(nodes.map(node => [node.id, node]));
+    const intentStatus = node => node?.intent?.status ?? node?.status ?? 'pending';
+    const missingParent = node => (Array.isArray(node.parentIds) ? node.parentIds : []).some(id => !byId.has(id));
+    const intents = nodes.filter(node => node.kind === 'intent');
+    const facts = nodes.filter(node => node.kind === 'fact');
+    const runningIntents = intents.filter(node => ['running', 'dispatched', 'claimed'].includes(intentStatus(node)));
+    const pendingIntents = intents.filter(node => ['pending', 'ready', 'blocked'].includes(intentStatus(node)));
+    const ready = pendingIntents.filter(node => intentStatus(node) === 'ready' || (intentStatus(node) === 'pending' && !missingParent(node)));
+    const blocked = pendingIntents.filter(node => intentStatus(node) === 'blocked' || missingParent(node));
+    const failed = intents.filter(node => ['failed', 'interrupted'].includes(intentStatus(node)));
+    const issues = [];
+    const seen = new Set();
+    for (const node of nodes) {
+      if (!node.id || seen.has(node.id)) issues.push('存在重复或缺失的节点 ID');
+      seen.add(node.id);
+      if (missingParent(node)) issues.push(`节点 ${node.id} 引用了不存在的父节点`);
+      if (node.kind === 'intent' && intentStatus(node) === 'completed' && (!node.resultId || !byId.has(node.resultId))) issues.push(`已完成意图 ${node.id} 缺少结果事实`);
+      if (node.kind === 'fact' && node.producerId && !byId.has(node.producerId)) issues.push(`事实 ${node.id} 的来源意图不存在`);
+    }
+    const times = [];
+    const collect = value => { if (Number.isFinite(value)) times.push(value); };
+    for (const part of Array.isArray(execution.parts) ? execution.parts : []) { collect(part?.startedAt); collect(part?.endedAt); }
+    for (const worker of Array.isArray(execution.workers) ? execution.workers : []) { collect(worker?.createdAt); collect(worker?.startedAt); collect(worker?.finishedAt); }
+    const activeWorkers = (Array.isArray(execution.workers) ? execution.workers : []).filter(worker => ['running', 'starting', 'provisioning'].includes(worker?.status)).length;
+    return {
+      nodes, facts, intents, failed,
+      running: runningIntents.length + activeWorkers,
+      ready: ready.length,
+      blocked: blocked.length,
+      issues: [...new Set(issues)],
+      last: times.length ? Math.max(...times) : 0,
+      busy: Boolean(execution.busy || hostState?.busy)
+    };
+  }
+  function goalSummaryText(data) {
+    const goal = hostState?.goal ?? {};
+    const criteria = Array.isArray(goal.criteria) ? goal.criteria : [];
+    const lines = [
+      '探索摘要',
+      '目标：' + (goal.objective || '未命名目标'),
+      `事实 ${data.facts.length} · 意图 ${data.intents.length} · 运行 ${data.running} · 可开始 ${data.ready} · 阻塞 ${data.blocked} · 图异常 ${data.issues.length}`,
+      '验收：' + criteria.filter(item => item.done).length + ' / ' + criteria.length,
+      '最近活动：' + (data.last ? relativeAge(data.last) : '无')
+    ];
+    const interval = hostState?.execution?.autonomy?.reviewIntervalMs;
+    if (Number.isFinite(interval)) lines.push('自动巡视：' + (interval > 0 ? Math.round(interval / 1000) + ' 秒/次' : '关闭'));
+    const lastReview = hostState?.execution?.autonomy?.lastReviewAt;
+    if (Number.isFinite(lastReview)) lines.push('上次自动巡视：' + relativeAge(lastReview));
+    if (data.issues.length) lines.push('图校验：' + data.issues.slice(0, 8).join('；'));
+    const recent = data.facts.slice(-5).map(node => {
+      const content = String(node.fact?.content || node.fact?.statement || '').replace(/\s+/g, ' ').slice(0, 160);
+      return '- ' + (content || node.id);
+    });
+    if (recent.length) lines.push('最近事实：', ...recent);
+    return lines.join('\n');
+  }
+  let goalSignalsKey = '';
+  let goalSignalTicker = 0;
+  // Viewing the Tasks page acknowledges the current set of failed/interrupted
+  // intents. A new failure produces a new signature and raises the warning again.
+  const acknowledgedFailedWarnings = new Map();
+  const failedWarningSignature = data => (Array.isArray(data?.failed) ? data.failed : [])
+    .map(node => `${node?.id ?? ''}:${node?.intent?.status ?? node?.status ?? ''}:${node?.attempts?.at(-1)?.id ?? node?.attempts?.at(-1)?.startedAt ?? ''}`).sort().join('|');
+  function syncGoalSignalTicker() {
+    const active = hostState?.mode === 'goal' && Boolean(hostState?.execution?.busy || hostState?.busy);
+    if (active && !goalSignalTicker) {
+      goalSignalTicker = setInterval(() => {
+        if (!pageHidden() && hostState?.mode === 'goal' && Boolean(hostState?.execution?.busy || hostState?.busy)) {
+          goalSignalsKey = '';
+          renderGoalSignals();
+        }
+      }, 30_000);
+    } else if (!active && goalSignalTicker) {
+      clearInterval(goalSignalTicker);
+      goalSignalTicker = 0;
+    }
+  }
+  function renderGoalSignals() {
+    const strip = byId('goal-signals');
+    if (!strip) return;
+    const execution = hostState?.execution ?? {};
+    const key = [
+      hostState?.execution?.autonomy?.reviewIntervalMs,
+      hostState?.execution?.autonomy?.lastReviewAt,
+      hostState?.conversation?.id,
+      hostState?.goal?.objective,
+      execution.blackboard?.revision ?? (lastBoardConversation === hostState?.conversation?.id ? lastBoardSnapshot?.revision : undefined),
+      Array.isArray(execution.blackboard?.nodes) ? execution.blackboard.nodes.length : (lastBoardConversation === hostState?.conversation?.id && Array.isArray(lastBoardSnapshot?.nodes) ? lastBoardSnapshot.nodes.length : 0),
+      Array.isArray(execution.parts) ? execution.parts.length : 0,
+      (Array.isArray(execution.workers) ? execution.workers : []).map(worker => [worker?.id, worker?.status, worker?.finishedAt].join(':')).join(','),
+      Boolean(execution.busy || hostState?.busy)
+    ].join('|');
+    if (key === goalSignalsKey) return;
+    goalSignalsKey = key;
+    const data = goalSignalData();
+    const board = execution.blackboard ?? (lastBoardConversation === hostState?.conversation?.id ? lastBoardSnapshot : undefined);
+    const visible = Boolean(hostState?.goal) && (data.nodes.length > 0 || Boolean(board));
+    setProperty(strip, 'hidden', !visible);
+    const warning = byId('goal-signal-warning');
+    if (!visible) { setProperty(warning, 'hidden', true); return; }
+    setText(byId('goal-signal-facts'), String(data.facts.length));
+    setText(byId('goal-signal-intents'), String(data.intents.length));
+    setText(byId('goal-signal-running'), String(data.running));
+    setText(byId('goal-signal-ready'), String(data.ready));
+    setText(byId('goal-signal-blocked'), String(data.blocked));
+    setText(byId('goal-signal-issues'), String(data.issues.length));
+    setProperty(byId('goal-signal-blocked-wrap'), 'hidden', data.blocked === 0);
+    setProperty(byId('goal-signal-issues-wrap'), 'hidden', data.issues.length === 0);
+    const autonomy = hostState?.execution?.autonomy?.reviewIntervalMs;
+    const autonomyEl = byId('goal-signal-autonomy');
+    setProperty(autonomyEl, 'hidden', !Number.isFinite(autonomy));
+    if (Number.isFinite(autonomy)) {
+      setText(autonomyEl, autonomy > 0 ? t('自动巡视 {0}', autonomy >= 60000 ? Math.round(autonomy / 60000) + 'm' : Math.round(autonomy / 1000) + 's') : t('自动巡视关闭'));
+      const lastReview = hostState?.execution?.autonomy?.lastReviewAt;
+      setProperty(autonomyEl, 'title', autonomy > 0
+        ? t('运行中每 {0} 秒自动唤醒 Reason 复盘；可在 系统配置 → 规划设置 调整，修改在下一次执行生效。', Math.round(autonomy / 1000)) + (Number.isFinite(lastReview) ? ' ' + t('上次自动巡视：{0}', relativeAge(lastReview)) : '')
+        : t('自动巡视已关闭；仅完成/失败等执行事件会触发 Reason。'));
+      setProperty(autonomyEl, 'aria-label', t('打开自动巡视设置'));
+    }
+    const last = byId('goal-signal-last');
+    setText(last, data.last ? t('最近活动 {0}', relativeAge(data.last)) : '尚无活动');
+    setProperty(last, 'title', data.last ? new Date(data.last).toLocaleString() : '');
+    const warnings = [];
+    if (data.busy && data.last && Date.now() - data.last > 10 * 60_000) warnings.push(t('已超过 {0} 分钟没有新活动，可能卡在长时间工具或等待确认。', Math.floor((Date.now() - data.last) / 60_000)));
+    if (data.busy && autonomy === 0 && data.last && Date.now() - data.last > 5 * 60_000) warnings.push(t('自动巡视已关闭；长时间无进展时建议暂停后继续，或在规划设置中开启周期复盘。'));
+    if (data.busy && data.failed.length) {
+      const signature = failedWarningSignature(data);
+      if (acknowledgedFailedWarnings.get(currentSessionId) !== signature) warnings.push(t('有 {0} 个失败/中断的意图，可在任务页查看。', data.failed.length));
+    } else if (!data.failed.length) acknowledgedFailedWarnings.delete(currentSessionId);
+    if (data.issues.length) warnings.push(t('图谱校验发现 {0} 项异常：{1}', data.issues.length, data.issues.slice(0, 2).join('；')));
+    setProperty(warning, 'hidden', warnings.length === 0);
+    setText(warning, warnings.join(' '));
+  }
+  /* Domain inventory ledger. `domain_inventory` is the exploration pipeline's
+     coverage authority and is shipped inside execution.memory; the overview
+     surfaces it so the operator can read the seed scope, every discovered host
+     and how far testing has progressed without opening a tool card. */
+  const DOMAIN_STATUS_LABELS = { pending: '待测', in_progress: '进行中', tested: '已测', skipped: '跳过', out_of_scope: '范围外' };
+  const DOMAIN_STATUS_ORDER = ['in_progress', 'pending', 'tested', 'skipped', 'out_of_scope'];
+  const DOMAIN_KIND_LABELS = { apex: '主域', subdomain: '子域', alias: '别名', ip_host: 'IP 主机' };
+  const DOMAIN_DISCOVERY_LABELS = { seed: '种子', enum: '枚举', cert: '证书', dns: 'DNS', redirect: '跳转', manual: '手工' };
+  const DOMAIN_ROW_LIMIT = 200;
+  const DOMAIN_SEED_LIMIT = 6;
+  let domainInventoryKey = '';
+  let domainPanelSession = '';
+  let domainPanelInitialized = false;
+  function domainCoverageCounts(domains) {
+    const counts = { pending: 0, in_progress: 0, tested: 0, skipped: 0, out_of_scope: 0 };
+    for (const item of domains) if (counts[item?.test_status] !== undefined) counts[item.test_status] += 1;
+    return counts;
+  }
+  function domainChip(label, count, status) {
+    const chip = document.createElement('span');
+    chip.className = 'goal-domain-chip';
+    if (status) chip.dataset.status = status;
+    chip.textContent = t(label) + ' ' + count;
+    return chip;
+  }
+  function domainSeedChip(host) {
+    const chip = document.createElement('span');
+    chip.className = 'goal-domain-seed';
+    chip.textContent = host;
+    chip.title = host;
+    return chip;
+  }
+  function renderDomainInventory() {
+    const panel = byId('goal-domain-panel');
+    if (!panel) return;
+    const sessionKey = String(hostState?.conversation?.id ?? '');
+    if (panel.dataset.session !== sessionKey) {
+      panel.dataset.session = sessionKey;
+      domainPanelSession = sessionKey;
+      domainPanelInitialized = false;
+      domainInventoryKey = '';
+    }
+    const inventory = hostState?.execution?.memory?.domainInventory;
+    const seedRoots = Array.isArray(inventory?.seedRoots) ? inventory.seedRoots.filter(root => typeof root === 'string' && root) : [];
+    const domains = Array.isArray(inventory?.domains)
+      ? inventory.domains.filter(item => item && typeof item.hostname === 'string' && item.hostname)
+      : [];
+    const visible = seedRoots.length > 0 || domains.length > 0;
+    setProperty(panel, 'hidden', !visible);
+    if (!visible) {
+      domainInventoryKey = '';
+      panel.open = false;
+      const list = byId('goal-domain-list');
+      if (list?.childNodes.length) list.replaceChildren();
+      return;
+    }
+    const key = [sessionKey, inventory?.revision ?? '', seedRoots.length, domains.length].join('|');
+    if (key === domainInventoryKey) return;
+    domainInventoryKey = key;
+    const counts = domainCoverageCounts(domains);
+    const closed = counts.tested + counts.skipped + counts.out_of_scope;
+    const incomplete = counts.pending + counts.in_progress;
+    const rate = domains.length ? closed / domains.length : 0;
+    const percent = Math.round(rate * 100);
+    setText(byId('goal-domain-scope'), seedRoots.length
+      ? t('{0} 个种子域 · {1} 个主机', seedRoots.length, domains.length)
+      : t('尚未登记种子域'));
+    const coverage = byId('goal-domain-coverage');
+    setProperty(coverage, 'hidden', domains.length === 0);
+    setProperty(coverage.dataset, 'complete', String(domains.length > 0 && incomplete === 0));
+    setText(coverage, t('已覆盖 {0}/{1}', closed, domains.length));
+    setAttribute(coverage, 'title', t('覆盖率 {0}%', percent));
+    const countsEl = byId('goal-domain-counts');
+    countsEl.replaceChildren(...DOMAIN_STATUS_ORDER
+      .filter(status => counts[status] > 0 && status !== 'skipped')
+      .map(status => domainChip(DOMAIN_STATUS_LABELS[status], counts[status], status)));
+    const seeds = byId('goal-domain-seeds');
+    const seedItems = seedRoots.slice(0, DOMAIN_SEED_LIMIT).map(domainSeedChip);
+    if (seedRoots.length > DOMAIN_SEED_LIMIT) {
+      const more = domainSeedChip('+' + (seedRoots.length - DOMAIN_SEED_LIMIT));
+      more.dataset.more = 'true';
+      more.title = seedRoots.slice(DOMAIN_SEED_LIMIT).join(', ');
+      seedItems.push(more);
+    }
+    seeds.replaceChildren(...seedItems);
+    setProperty(byId('goal-domain-progress'), 'value', rate);
+    setText(byId('goal-domain-meter-label'), t('覆盖率 {0}%', percent) + (incomplete ? ' · ' + t('未完成 {0} 个', incomplete) : ''));
+    const table = byId('goal-domain-table');
+    const empty = byId('goal-domain-empty');
+    setProperty(table, 'hidden', domains.length === 0);
+    setProperty(empty, 'hidden', domains.length !== 0);
+    setText(empty, t('种子范围已登记，等待发现更多主机。'));
+    const fragment = document.createDocumentFragment();
+    const sorted = [...domains].sort((left, right) => {
+      const order = DOMAIN_STATUS_ORDER.indexOf(left.test_status) - DOMAIN_STATUS_ORDER.indexOf(right.test_status);
+      return order !== 0 ? order : String(left.hostname).localeCompare(String(right.hostname));
+    });
+    for (const item of sorted.slice(0, DOMAIN_ROW_LIMIT)) {
+      const row = document.createElement('tr');
+      row.dataset.host = item.hostname;
+      const hostCell = document.createElement('td');
+      const host = document.createElement('span');
+      host.className = 'goal-domain-host';
+      host.textContent = item.hostname;
+      hostCell.append(host);
+      if (item.parent && item.parent !== item.hostname) {
+        const parent = document.createElement('small');
+        parent.className = 'goal-domain-parent';
+        parent.textContent = '← ' + item.parent;
+        hostCell.append(parent);
+      }
+      const kindCell = document.createElement('td');
+      kindCell.className = 'goal-domain-kind';
+      kindCell.textContent = t(DOMAIN_KIND_LABELS[item.kind] ?? item.kind ?? '');
+      const discoveryCell = document.createElement('td');
+      discoveryCell.className = 'goal-domain-discovery';
+      discoveryCell.textContent = t(DOMAIN_DISCOVERY_LABELS[item.discovery] ?? item.discovery ?? '');
+      const statusCell = document.createElement('td');
+      const status = document.createElement('span');
+      status.className = 'goal-domain-state';
+      status.dataset.status = item.test_status ?? '';
+      status.textContent = t(DOMAIN_STATUS_LABELS[item.test_status] ?? item.test_status ?? '');
+      if (item.skip_reason) status.title = item.skip_reason;
+      statusCell.append(status);
+      const evidenceCell = document.createElement('td');
+      evidenceCell.className = 'goal-domain-evidence';
+      const evidence = [];
+      if (Array.isArray(item.relations) && item.relations.length) evidence.push(t('关系 {0}', item.relations.length));
+      if (Array.isArray(item.evidence) && item.evidence.length) evidence.push(t('证据 {0}', item.evidence.length));
+      if (Array.isArray(item.finding_ids) && item.finding_ids.length) evidence.push(t('发现 {0}', item.finding_ids.length));
+      if (Array.isArray(item.linked_note_ids) && item.linked_note_ids.length) evidence.push(t('笔记 {0}', item.linked_note_ids.length));
+      evidenceCell.textContent = evidence.join(' · ') || '—';
+      row.append(hostCell, kindCell, discoveryCell, statusCell, evidenceCell);
+      fragment.append(row);
+    }
+    byId('goal-domain-list').replaceChildren(fragment);
+    const incompleteHosts = sorted.filter(item => item.test_status === 'pending' || item.test_status === 'in_progress').map(item => item.hostname);
+    const parts = [t('种子域及其子域自动计入范围；别名/IP 主机按登记状态计入覆盖。')];
+    if (incompleteHosts.length) {
+      const shown = incompleteHosts.slice(0, 8).join('、');
+      parts.push(t('待测 {0} 个：{1}', incompleteHosts.length, shown + (incompleteHosts.length > 8 ? ' ' + t('等') : '')));
+    } else if (domains.length) {
+      parts.push(t('所有主机已完成或已关闭测试。'));
+    }
+    if (domains.length > DOMAIN_ROW_LIMIT) parts.push(t('仅显示前 {0} 个主机（共 {1}）。', DOMAIN_ROW_LIMIT, domains.length));
+    setText(byId('goal-domain-caption'), parts.join(' '));
+    if (!domainPanelInitialized) {
+      domainPanelInitialized = true;
+      panel.open = domains.length <= 12;
+    }
+  }
   function renderGoal() {
     const goalMode = hostState?.mode === 'goal';
     setAttribute(byId('goal-notes'), 'aria-labelledby', goalMode ? 'goal-tab-notes' : 'assist-notes-toggle');
@@ -2139,13 +3011,20 @@
       setProperty(byId('goal-workspace'), 'hidden', !showingNotes);
       setText(byId('assist-notes-toggle'), showingNotes ? '返回对话' : '笔记');
       setAttribute(byId('assist-notes-toggle'), 'aria-expanded', String(showingNotes));
+      const menuNotes = byId('menu-assist-notes-label');
+      if (menuNotes) setText(menuNotes, showingNotes ? '返回对话' : '笔记');
+      setAttribute(byId('menu-assist-notes'), 'aria-label', showingNotes ? '返回对话' : '打开笔记');
       renderGoalView();
-      if (showingNotes) renderNotes([]);
+      if (showingNotes) renderNotes(hostState?.notes ?? []);
+      if (goalSignalTicker) { clearInterval(goalSignalTicker); goalSignalTicker = 0; }
       return;
     }
     setAttribute(byId('goal-mode'), 'aria-label', '探索模式');
     const goal = hostState?.goal;
     const editing = workspaceMissing() || !goal || (draftFor().goalEditing && !busy);
+    // The sidebar tab only makes sense once this conversation has a goal.
+    setProperty(byId('goal-chat-toggle'), 'hidden', !goal);
+    renderGoalChatToggle();
     renderModuleActions();
     setProperty(byId('goal-header-actions'), 'hidden', editing);
     setProperty(byId('goal-view-switcher'), 'hidden', editing);
@@ -2194,6 +3073,9 @@
         }));
       }
       setText(byId('goal-provider-label'), hostState.provider?.label || '未连接模型');
+      renderGoalSignals();
+      renderDomainInventory();
+      syncGoalSignalTicker();
       if (draftFor().view === 'overview') renderCriteria(criteria);
       if (draftFor().view === 'notes') renderNotes(notes);
     }
@@ -2307,6 +3189,7 @@
   const TODO_LABELS = { in_progress: '进行中', pending: '待做', completed: '已完成' };
   const todoFold = new Map();
   let todoFoldSession = '';
+  let todoList, todoRows = new Map();
   function renderAssistTodos() {
     const panel = byId('assist-todos');
     const goalMode = hostState?.mode === 'goal';
@@ -2320,10 +3203,16 @@
       if (!worker) return undefined;
       return { id, label: String(worker.name || worker.description || '').trim() || id.split('/').pop().slice(0, 12) };
     };
+    const runActive = Boolean(hostState?.busy || hostState?.execution?.busy);
     const items = (Array.isArray(raw) ? raw : []).flatMap(item => {
       if (!item || typeof item.content !== 'string' || !item.content.trim()) return [];
+      const status = TODO_STATUSES.has(item.status) ? item.status : 'pending';
+      // A run can end while the model forgot to close its current todo. Nothing
+      // is executing after the turn settles, so show it as pending instead of a
+      // stale "in progress" pill; the durable board keeps the agent's status for
+      // its next turn.
       return [{ id: String(item.id ?? ''), content: item.content, owner: ownerOf(item.worker_id),
-        status: TODO_STATUSES.has(item.status) ? item.status : 'pending' }];
+        status: runActive || status !== 'in_progress' ? status : 'pending' }];
     });
     if (goalMode || !items.length) { panel.hidden = true; return; }
     // The user's fold choice belongs to the conversation, not to the DOM node.
@@ -2337,6 +3226,7 @@
     const counts = TODO_ORDER.map(status => [status, items.filter(item => item.status === status).length]);
     const done = counts.find(([status]) => status === 'completed')[1];
     panel.style.setProperty('--assist-todos-progress', Math.round(done / items.length * 100) + '%');
+    panel.style.setProperty('--assist-todos-fill', String(done / items.length));
     const countHost = byId('assist-todos-count');
     const countsKey = counts.map(([status, size]) => status + ':' + size).join(',');
     if (countHost.dataset.key !== countsKey) {
@@ -2355,45 +3245,104 @@
     const key = JSON.stringify(ordered.map(item => [item.id, item.status, item.content, item.owner?.id]));
     if (body.dataset.key === key) return;
     body.dataset.key = key;
-    const list = document.createElement('ul');
-    list.className = 'assist-todos-list';
-    list.append(...ordered.map(item => {
-      const row = document.createElement('li');
-      row.className = 'assist-todos-item';
-      row.dataset.status = item.status;
-      // The active task is the board's selected row; mark it for AT and styling.
-      if (item.status === 'in_progress') row.setAttribute('aria-current', 'true');
-      row.append(Object.assign(document.createElement('span'), { className: 'assist-todos-text', textContent: item.content }));
-      if (item.owner) {
-        const owner = document.createElement('button');
-        owner.type = 'button';
-        owner.className = 'assist-todos-owner';
-        owner.textContent = item.owner.label;
-        owner.title = '打开此任务对应的并行任务记录';
-        owner.addEventListener('click', () => workerPanel.show(item.owner.id, owner));
-        row.append(owner);
+    if (!todoList) { todoList = document.createElement('ul'); todoList.className = 'assist-todos-list'; }
+    if (todoList.parentElement !== body) body.replaceChildren(todoList);
+    const ids = new Set(ordered.map(item => item.id));
+    for (const [id, row] of todoRows) if (!ids.has(id)) { row.element.remove(); todoRows.delete(id); }
+    for (const [index, item] of ordered.entries()) {
+      let row = todoRows.get(item.id);
+      if (!row) {
+        const rowElement = document.createElement('li');
+        rowElement.className = 'assist-todos-item';
+        const label = Object.assign(document.createElement('span'), { className: 'assist-todos-text' });
+        rowElement.append(label);
+        row = { element: rowElement, label, owner: undefined, ownerId: '' };
+        todoRows.set(item.id, row);
       }
-      return row;
-    }));
-    body.replaceChildren(list);
+      row.element.dataset.status = item.status;
+      if (item.status === 'in_progress') row.element.setAttribute('aria-current', 'true');
+      else row.element.removeAttribute('aria-current');
+      if (row.label.textContent !== item.content) row.label.textContent = item.content;
+      if (row.ownerId !== (item.owner?.id || '')) {
+        row.owner?.remove(); row.owner = undefined; row.ownerId = item.owner?.id || '';
+        if (item.owner) {
+          const owner = document.createElement('button');
+          owner.type = 'button';
+          owner.className = 'assist-todos-owner';
+          owner.textContent = item.owner.label;
+          owner.title = '打开此任务对应的并行任务记录';
+          owner.addEventListener('click', () => workerPanel.show(item.owner.id, owner));
+          row.owner = owner;
+        }
+      }
+      if (row.owner && row.owner.parentElement !== row.element) row.element.append(row.owner);
+      if (row.owner && row.owner.textContent !== item.owner.label) row.owner.textContent = item.owner.label;
+      const desired = todoList.children[index];
+      if (row.element !== desired) todoList.insertBefore(row.element, desired || null);
+    }
   }
   byId('assist-todos').addEventListener('toggle', () => {
     if (todoFoldSession) todoFold.set(todoFoldSession, byId('assist-todos').open);
   });
+  // The only user-facing way to end a live backend: it keeps the execution
+  // checkpoint and reports back, so a stuck model/tool step is recoverable
+  // without restarting the IDE and without any automatic task replay.
+  async function restartBackend() {
+    if (hasPending('restartBackend')) return;
+    let confirmed = true;
+    try {
+      confirmed = await modalDialog.confirm({
+        title: '重新启动 Agent 后端？',
+        message: '正在运行的 Agent 任务会停止，但执行记录检查点保留；重启后可点击“继续执行”恢复。',
+        detail: '用于后端长时间无响应或状态异常。若只是响应变慢，请先等待或检查连接。',
+        confirmLabel: '重新启动',
+        cancelLabel: '取消',
+        danger: true
+      }) === true;
+    } catch { confirmed = false; }
+    if (!confirmed) return;
+    request('restartBackend', {}, () => {}, failure => showError('重启 Agent 后端失败：' + (failure?.message || '请稍后重试。')), 30000);
+  }
   function sendPrompt() {
     const field = input;
     const draftKey = 'assist';
-    const text = field.value.trim();
+    const draft = draftFor();
+    const chips = (draft.pastes || []).map(chip => ({ ...chip }));
+    const text = composerPromptText().trim();
+    const totalLength = composerLength();
     const hasImages = (hostState?.pendingImages?.length ?? 0) > 0;
-    if (configurationMissing() || hostState?.mode === 'goal' || (!text && !hasImages) || field.value.length > field.maxLength || navigationPending() || hasPending('rewindInput') || hasPending('cancelRun') || hasPending('prompt') || hasPending('runGoal') || hasPending('resumeRun') || composingPrompt || contextPending()) return;
+    // A prompt may still be in flight while the next draft is typed; the host
+    // serializes prompts and keeps FIFO order, so a new send is allowed at once.
+    // Image-only resubmits wait for the acknowledgment that clears the attached
+    // images, otherwise the same image would be sent twice.
+    if (hasPending('prompt') && !text) return;
+    if (!currentSessionId || configurationMissing() || hostState?.mode === 'goal' || (!text && !hasImages) || totalLength > field.maxLength || navigationPending() || hasPending('rewindInput') || hasPending('cancelRun') || hasPending('runGoal') || hasPending('resumeRun') || composingPrompt || contextPending()) return;
+    // The host rejects an enqueue beyond 20 queued inputs. Say so before the
+    // optimistic clear and keep the draft and attachments exactly as typed.
+    if (queueAtLimit()) { showError('输入队列最多保留 20 条消息，请先继续发送或移除一条。'); return; }
     const sessionId = currentSessionId;
-    const submitted = field.value;
+    const submitted = { text: field.value, pastes: chips };
+    rememberPrompt(text);
+    // Optimistic send: clear the composer and its draft before the round-trip,
+    // so agent start-up (context capture, restore, queue write) never blocks
+    // typing, Enter, or the next message. A failed request restores the text.
+    field.value = '';
+    const cleared = draftFor(sessionId);
+    cleared[draftKey] = '';
+    cleared.pastes = [];
+    renderPastes();
+    resetHistoryRecall();
     forceScroll = true;
-    request('prompt', { text, approvalMode: approvalMode.querySelector('input:checked').value }, () => {
-      const draft = draftFor(sessionId);
-      if (draft[draftKey] === submitted) draft[draftKey] = '';
-      if (currentSessionId === sessionId && field.value === submitted) { field.value = ''; updateInput(); }
-      if (currentSessionId === sessionId && document.activeElement === submit) input.focus({ preventScroll: true });
+    updateInput();
+    persistDrafts();
+    if (document.activeElement === submit) input.focus({ preventScroll: true });
+    request('prompt', { text, approvalMode: approvalMode.querySelector('input:checked').value }, undefined, () => {
+      // Failure (including a timeout): bring the unacknowledged text and folded
+      // pastes back, below anything typed since then, so no draft is lost.
+      const current = draftFor(sessionId);
+      current[draftKey] = current[draftKey] ? submitted.text + '\n\n' + current[draftKey] : submitted.text;
+      current.pastes = [...submitted.pastes, ...(current.pastes || [])];
+      if (currentSessionId === sessionId) { field.value = current[draftKey]; renderPastes(); updateInput(); }
       persistDrafts();
     });
   }
@@ -2403,24 +3352,33 @@
     request('setModel', { modelId }, () => {});
   });
   function cancelRun() {
-    if (busy && !hasPending('cancelRun') && !navigationPending()) request('cancelRun');
+    if (busy && !hasPending('cancelRun') && !navigationPending()) request('cancelRun', {}, () => {
+      // The submit button morphs from stop back to send; return typing focus to
+      // the composer once the stop request is acknowledged.
+      if (document.activeElement === submit) input.focus({ preventScroll: true });
+    });
   }
-  function restoreInput(action, payload, text) {
+  function restoreInput(action, payload, text, options = {}) {
     if (queueControlsBlocked() || (action === 'rewindInput' && rewindControlsBlocked())) return;
     const sessionId = currentSessionId;
     request(action, payload, () => {
       const draft = draftFor(sessionId);
       // Preserve text typed while the host was stopping the agent.
       draft.assist = draft.assist ? text + '\n\n' + draft.assist : text;
-      if (currentSessionId === sessionId) { input.value = draft.assist; updateInput(); input.focus(); }
+      // A recalled input keeps the approval snapshot captured when it was
+      // queued. The host restores its images and context by itself.
+      const recalled = options.approvalMode;
+      if (['auto', 'manual', 'full'].includes(recalled)) draft.approvalMode = recalled;
+      if (currentSessionId === sessionId) { input.value = draft.assist; updateInput(); reflectApprovalMode(); input.focus(); }
       persistDrafts();
     });
   }
   let inputQueueKey = '';
   let inputQueueSession = '';
   function queueControlsBlocked() {
-    // Brief probe resync / soft stalls must not freeze queue/input controls.
-    return !currentSessionId || hostState?.recovering || ['disconnected', 'backend-disconnected'].includes(connectionStatus)
+    // Brief probe resync, slow IDE responses and backend recovery must not freeze
+    // queue/input controls; only an undeliverable bridge pauses new sends.
+    return !currentSessionId || hostState?.recovering || connectionStatus === 'unresponsive'
       || navigationPending() || ['cancelRun', 'rewindInput', 'removeInput', 'steerInput', 'resumeInputs'].some(action => hasPending(action));
   }
   function rewindControlsBlocked() {
@@ -2430,21 +3388,102 @@
     return button.isConnected && !button.disabled && sessionId === currentSessionId && !queueControlsBlocked();
   }
   let queuePreview;
+  function queuePreviewChars(item) {
+    return Array.from(typeof item?.text === 'string' ? item.text : '').length;
+  }
+  function queueContextLabel(context) {
+    if (!context || typeof context.label !== 'string' || !context.label) return '';
+    const kind = ['selection', 'file', 'active'].includes(context.kind) ? context.kind : 'active';
+    const prefix = kind === 'selection' ? t('选中') : kind === 'file' ? t('附件') : '';
+    return prefix ? prefix + ' ' + context.label : context.label;
+  }
+  function queueContextTitle(context) {
+    if (!context?.label) return '';
+    const range = typeof context.range === 'string' ? context.range.trim() : '';
+    return t('入队时的上下文：{0}', String(context.label) + (range ? ' · ' + range : ''));
+  }
+  function queueApprovalLabel(mode) { return mode === 'auto' ? '自动' : mode === 'full' ? '完全' : '人工'; }
+  function queueModelLabel(modelId) {
+    const value = String(modelId || '');
+    const tail = value.split('/').pop() || value;
+    return tail.length > 18 ? tail.slice(0, 17) + '…' : tail;
+  }
+  // Metadata snapshot published with each queued input. Absent fields simply
+  // hide their chip; the approval/model chips only appear when they differ from
+  // the composer, because a matching snapshot needs no explanation.
+  function queueItemChips(item, { busy: busyNow = false, preview = false } = {}) {
+    const chips = [];
+    const imageCount = Number.isFinite(item?.imageCount) ? item.imageCount : 0;
+    if (imageCount > 0) {
+      chips.push({ key: 'images', text: t('图片 ×{0}', imageCount), title: t('入队时附带 {0} 张图片', imageCount) });
+    }
+    const context = item?.context && typeof item.context === 'object' ? item.context : null;
+    if (context?.label) {
+      chips.push({
+        key: 'context', kind: ['selection', 'file', 'active'].includes(context.kind) ? context.kind : 'active',
+        text: queueContextLabel(context), title: queueContextTitle(context)
+      });
+    }
+    const approval = item?.approvalMode;
+    if (['auto', 'manual', 'full'].includes(approval) && (preview || approval !== approvalModeValue())) {
+      chips.push({ key: 'approval', tone: 'approval', text: t(queueApprovalLabel(approval)), title: t('入队时的执行方式；发出时沿用入队快照') });
+    }
+    const modelId = typeof item?.modelId === 'string' ? item.modelId.trim() : '';
+    if (modelId && (preview || modelId !== (hostState?.modelSelection?.selected || ''))) {
+      chips.push({ key: 'model', text: queueModelLabel(modelId), title: t('入队时模型：{0}', modelId) });
+    }
+    // An image input cannot steer the live turn: it will be sent next round.
+    if (!preview && busyNow && imageCount > 0) {
+      chips.push({ key: 'next-turn', tone: 'hint', text: t('下一轮'), title: t('带图片的输入会在下一轮发送，不能引导当前任务') });
+    }
+    return chips;
+  }
+  function queueChipNode(chip, className = 'input-queue-chip') {
+    const node = document.createElement('span'); node.className = className; node.dataset.chip = chip.key;
+    if (chip.kind) node.dataset.kind = chip.kind;
+    if (chip.tone) node.dataset.tone = chip.tone;
+    setText(node, chip.text);
+    if (chip.title) setAttribute(node, 'title', chip.title);
+    return node;
+  }
+  function renderQueuePreview(item, index) {
+    if (!queuePreview) return;
+    setText(queuePreview.body, item.text);
+    const prefix = document.createElement('span'); prefix.className = 'queue-preview-prefix';
+    setText(prefix, t('第 {0} 条 · {1} 字符', index + 1, queuePreviewChars(item)));
+    const nodes = [prefix];
+    for (const chip of queueItemChips(item, { preview: true })) nodes.push(queueChipNode(chip, 'queue-preview-chip'));
+    queuePreview.meta.replaceChildren(...nodes);
+    queuePreview.text = item.text;
+  }
   function openQueuePreview(item, index, trigger) {
     if (!queuePreview) {
       const dialog = document.createElement('dialog'); dialog.id = 'queue-preview'; dialog.setAttribute('aria-labelledby', 'queue-preview-title');
       const header = document.createElement('div'); header.className = 'queue-preview-heading';
-      const title = document.createElement('h2'); title.id = 'queue-preview-title'; title.textContent = '待发送输入';
-      const close = document.createElement('button'); close.type = 'button'; close.className = 'queue-preview-close'; close.textContent = '关闭'; close.setAttribute('aria-label', '关闭输入预览');
+      const title = document.createElement('h2'); title.id = 'queue-preview-title'; setText(title, '待发送输入');
+      const controls = document.createElement('div'); controls.className = 'queue-preview-actions';
+      const copy = document.createElement('button'); copy.type = 'button'; copy.className = 'queue-preview-copy';
+      copy.setAttribute('aria-label', '复制完整输入'); setText(copy, '复制');
+      const close = document.createElement('button'); close.type = 'button'; close.className = 'queue-preview-close'; setText(close, '关闭'); close.setAttribute('aria-label', '关闭输入预览');
       const meta = document.createElement('p'); meta.className = 'queue-preview-meta';
       const body = document.createElement('div'); body.className = 'queue-preview-content'; body.tabIndex = 0; body.setAttribute('role', 'region'); body.setAttribute('aria-label', '完整输入内容');
-      header.append(title, close); dialog.append(header, meta, body); document.body.appendChild(dialog);
-      queuePreview = { dialog, meta, body };
+      controls.append(copy, close); header.append(title, controls); dialog.append(header, meta, body); document.body.appendChild(dialog);
+      queuePreview = { dialog, meta, body, copy, text: '', copyTimer: 0 };
+      copy.onclick = () => {
+        if (!queuePreview.text) return;
+        request('copyText', { text: queuePreview.text }, () => {
+          setText(copy, '已复制');
+          clearTimeout(queuePreview.copyTimer);
+          queuePreview.copyTimer = setTimeout(() => setText(copy, '复制'), 1500);
+        }, error => showError(error?.message || '复制失败，请重试'));
+      };
       close.onclick = () => dialog.close();
       dialog.addEventListener('close', () => {
         // A queued close event may arrive after another preview was opened.
         if (dialog.open) return;
-        body.textContent = ''; meta.textContent = '';
+        clearTimeout(queuePreview.copyTimer);
+        setText(copy, '复制');
+        body.textContent = ''; meta.replaceChildren(); queuePreview.text = '';
         if (queuePreview.sessionId !== currentSessionId) return;
         const target = queuePreview.trigger?.isConnected ? queuePreview.trigger : input;
         target.focus({ preventScroll: true });
@@ -2452,34 +3491,103 @@
       window.addEventListener('pagehide', () => { if (dialog.open) dialog.close(); });
     }
     Object.assign(queuePreview, { sessionId: currentSessionId, inputId: item.id, trigger });
-    setText(queuePreview.meta, `第 ${index + 1} 条 · ${Array.from(item.text).length} 字符`);
-    setText(queuePreview.body, item.text);
+    renderQueuePreview(item, index);
     queuePreview.body.scrollTop = 0;
     if (!queuePreview.dialog.open) queuePreview.dialog.showModal();
     queuePreview.body.focus({ preventScroll: true });
   }
+  const queueRowViews = new WeakMap();
+  const queueRowHighlightTimers = new WeakMap();
+  function createQueueRowView() {
+    const row = document.createElement('div'); row.className = 'input-queue-row'; row.setAttribute('role', 'listitem'); row.tabIndex = -1;
+    const order = document.createElement('span'); order.className = 'input-queue-order'; order.setAttribute('aria-hidden', 'true');
+    const body = document.createElement('div'); body.className = 'input-queue-body';
+    const text = document.createElement('button'); text.type = 'button'; text.className = 'input-queue-text'; text.dataset.queueAction = 'preview'; text.setAttribute('aria-haspopup', 'dialog');
+    const meta = document.createElement('div'); meta.className = 'input-queue-meta'; meta.hidden = true;
+    body.append(text, meta);
+    const actions = document.createElement('div'); actions.className = 'input-queue-actions';
+    const pill = document.createElement('span'); pill.className = 'input-queue-delivery'; pill.hidden = true;
+    const steer = document.createElement('button'); steer.type = 'button'; steer.className = 'input-queue-steer'; steer.dataset.queueAction = 'steer'; steer.setAttribute('aria-label', '引导当前任务');
+    const edit = document.createElement('button'); edit.type = 'button'; edit.dataset.queueAction = 'edit';
+    edit.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 5 4 4M4 20l4-1L20 7a2 2 0 0 0-4-4L4 15Z"/></svg>';
+    const remove = document.createElement('button'); remove.className = 'input-queue-remove'; remove.type = 'button'; remove.dataset.queueAction = 'remove';
+    remove.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>';
+    actions.append(pill, steer, edit, remove);
+    row.append(order, body, actions);
+    const view = { row, order, text, meta, actions, pill, steer, edit, remove };
+    queueRowViews.set(row, view);
+    return view;
+  }
+  function queueRowView(row) {
+    let view = queueRowViews.get(row);
+    if (!view) {
+      view = {
+        row, order: row.querySelector('.input-queue-order'), text: row.querySelector('.input-queue-text'), meta: row.querySelector('.input-queue-meta'),
+        actions: row.querySelector('.input-queue-actions'), pill: row.querySelector('.input-queue-delivery'),
+        steer: row.querySelector('.input-queue-steer'), edit: row.querySelector('[data-queue-action="edit"]'), remove: row.querySelector('.input-queue-remove')
+      };
+      queueRowViews.set(row, view);
+    }
+    return view;
+  }
+  function markQueueRowNew(row) {
+    if (!row) return;
+    row.classList.remove('input-queue-row-new');
+    void row.offsetWidth;
+    row.classList.add('input-queue-row-new');
+    clearTimeout(queueRowHighlightTimers.get(row));
+    queueRowHighlightTimers.set(row, setTimeout(() => {
+      queueRowHighlightTimers.delete(row);
+      row.classList.remove('input-queue-row-new');
+    }, 1400));
+  }
+  function createQueueHeading() {
+    const heading = document.createElement('div'); heading.className = 'input-queue-heading';
+    const label = document.createElement('strong');
+    const labelText = document.createElement('span'); labelText.className = 'input-queue-label'; setText(labelText, '待发送');
+    const count = document.createElement('span'); count.className = 'input-queue-count';
+    label.append(labelText, count);
+    // The status text is the only live region: it changes when the queue render
+    // changes, never on every streaming tick.
+    const status = document.createElement('span'); status.className = 'input-queue-status';
+    status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite'); status.setAttribute('aria-atomic', 'true');
+    const resume = document.createElement('button'); resume.type = 'button'; resume.className = 'input-queue-resume'; setText(resume, '继续发送队列');
+    heading.append(label, status, resume);
+    return { heading, count, status, resume };
+  }
   function renderInputQueue() {
     const container = byId('input-queue');
     if (!container) return;
-    const items = hostState?.inputQueue ?? [];
-    const paused = hostState?.queuePaused || ['interrupted', 'failed'].includes(executionState().status);
+    const allItems = hostState?.inputQueue ?? [];
+    // An item marked `sending` has already been dispatched to the agent; it is
+    // kept durably so a crash can recover it, but while the launch is in flight
+    // it must not look like normal queued work the user is waiting on. If the
+    // launch fails, queuePaused turns it back into a visible "delivery uncertain"
+    // row requiring review.
+    const items = hostState?.queuePaused ? allItems : allItems.filter(item => item.delivery !== 'sending');
     const execution = executionState();
+    const paused = hostState?.queuePaused || ['interrupted', 'failed'].includes(execution.status);
     const canSteer = busy && execution.canSteer === true;
-    const unresolved = items.some(item => item.delivery);
+    const unresolved = allItems.some(item => item.delivery);
+    const sending = allItems.some(item => item.delivery === 'sending');
     const controlsBlocked = queueControlsBlocked();
     const stopping = hasPending('cancelRun') || hasPending('rewindInput');
-    const key = JSON.stringify([currentSessionId, items, paused, busy, canSteer, execution.runId, controlsBlocked, stopping, hasPending('removeInput'), hasPending('resumeInputs'), hasPending('steerInput')]);
+    const approvalNow = approvalModeValue();
+    const selectedModel = hostState?.modelSelection?.selected || '';
+    const key = JSON.stringify([currentSessionId, allItems, items, paused, busy, canSteer, execution.runId, controlsBlocked, stopping,
+      approvalNow, selectedModel, hasPending('removeInput'), hasPending('resumeInputs'), hasPending('steerInput')]);
     if (key === inputQueueKey) return;
     if (queuePreview?.dialog.open) {
       const index = items.findIndex(item => item.id === queuePreview.inputId);
       if (queuePreview.sessionId !== currentSessionId || index < 0) queuePreview.dialog.close();
-      else {
-        setText(queuePreview.body, items[index].text);
-        setText(queuePreview.meta, `第 ${index + 1} 条 · ${Array.from(items[index].text).length} 字符`);
-      }
+      else renderQueuePreview(items[index], index);
     }
     const sameSession = inputQueueSession === currentSessionId;
-    const previousScroll = sameSession ? container.querySelector('.input-queue-list')?.scrollTop ?? 0 : 0;
+    const previousList = sameSession ? container.querySelector('.input-queue-list') : null;
+    const previousScroll = previousList?.scrollTop ?? 0;
+    const previousIds = new Set(previousList ? [...previousList.children].map(row => row.dataset.inputId) : []);
+    const wasHidden = container.hidden;
+    const wasAtBottom = !previousList || previousList.scrollHeight - previousList.scrollTop - previousList.clientHeight <= 8;
     const focused = sameSession && container.contains(document.activeElement) ? document.activeElement : null;
     const focusedId = focused?.closest('.input-queue-row')?.dataset.inputId;
     const focusedAction = focused?.dataset.queueAction ?? focused?.closest('.input-queue-row')?.dataset.focusAction;
@@ -2488,56 +3596,77 @@
     if (!sameSession || !items.length) container.replaceChildren();
     container.hidden = !items.length;
     if (!items.length) { if (focused) input.focus({ preventScroll: true }); return; }
-    const heading = document.createElement('div'); heading.className = 'input-queue-heading';
-    const label = document.createElement('strong'); label.textContent = '待发送';
-    const count = document.createElement('span'); count.className = 'input-queue-count'; count.textContent = String(items.length); count.setAttribute('aria-label', `${items.length} 条待发送输入`); label.appendChild(count);
-    const status = document.createElement('span'); status.className = 'input-queue-status'; status.textContent = stopping ? '正在停止，请稍候' : unresolved ? '请核实引导送达状态' : paused ? '已暂停' : canSteer ? '可立刻调整当前任务' : busy ? '当前结束后按顺序执行' : '等待继续';
-    heading.append(label, status);
-    container.dataset.paused = String(Boolean(paused));
-    container.dataset.unresolved = String(Boolean(unresolved));
-    const oldHeading = container.querySelector('.input-queue-heading');
-    if (oldHeading) oldHeading.replaceWith(heading); else container.appendChild(heading);
+    let heading = container.querySelector('.input-queue-heading');
     let list = container.querySelector('.input-queue-list');
-    if (!list) { list = document.createElement('div'); list.className = 'input-queue-list'; list.setAttribute('role', 'list'); container.appendChild(list); }
+    if (!heading || !list) {
+      if (!heading) heading = createQueueHeading().heading;
+      if (!list) { list = document.createElement('div'); list.className = 'input-queue-list'; list.setAttribute('role', 'list'); }
+      container.replaceChildren(heading, list);
+    }
+    const count = heading.querySelector('.input-queue-count');
+    const status = heading.querySelector('.input-queue-status');
+    const resume = heading.querySelector('.input-queue-resume');
+    const interrupted = ['interrupted', 'failed'].includes(execution.status);
+    setProperty(container.dataset, 'paused', String(Boolean(paused)));
+    setProperty(container.dataset, 'unresolved', String(Boolean(unresolved)));
+    setProperty(container.dataset, 'sending', String(Boolean(sending)));
+    setText(count, items.length >= 15 ? `${items.length} / ${QUEUE_LIMIT}` : String(items.length));
+    setAttribute(count, 'aria-label', `${items.length} 条待发送输入`);
+    if (items.length >= 15) setAttribute(count, 'title', t('队列最多 {0} 条', QUEUE_LIMIT)); else count.removeAttribute('title');
+    setText(status, stopping ? '正在停止，请稍候'
+      : sending ? '正在发送…'
+      : unresolved ? '请核实引导送达状态'
+      : paused ? (interrupted ? '已暂停 · 上一轮已停止或失败，请核实后继续' : '已暂停')
+      : canSteer ? '可立刻调整当前任务'
+      : busy ? '当前结束后按顺序执行'
+      : '等待继续');
+    setProperty(resume, 'hidden', !(paused || !busy));
+    resume.disabled = busy || unresolved || controlsBlocked;
+    const resumeSession = currentSessionId;
+    resume.onclick = () => { if (queueActionAllowed(resume, resumeSession)) request('resumeInputs'); };
     const retainedRows = new Map([...list.children].map(row => [row.dataset.inputId, row]));
     const rows = [];
     for (const [index, item] of items.entries()) {
       const actionSession = currentSessionId;
       const existing = retainedRows.get(item.id);
-      const row = existing ?? document.createElement('div'); row.className = 'input-queue-row';
-      row.setAttribute('role', 'listitem');
-      row.dataset.inputId = item.id; row.tabIndex = -1;
+      const view = existing ? queueRowView(existing) : createQueueRowView();
+      const row = view.row;
+      row.dataset.inputId = item.id;
       row.dataset.delivery = item.delivery || 'queued';
-      const order = document.createElement('span'); order.className = 'input-queue-order'; order.textContent = String(index + 1); order.setAttribute('aria-hidden', 'true');
-      const text = document.createElement('button'); text.type = 'button'; text.className = 'input-queue-text'; text.textContent = item.text;
-      text.dataset.queueAction = 'preview';
-      const edit = document.createElement('button'); edit.type = 'button'; edit.title = '取回编辑'; edit.setAttribute('aria-label', '取回编辑');
-      edit.dataset.queueAction = 'edit';
-      edit.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 5 4 4M4 20l4-1L20 7a2 2 0 0 0-4-4L4 15Z"/></svg>';
-      edit.disabled = controlsBlocked; edit.onclick = () => { if (queueActionAllowed(edit, actionSession)) restoreInput('removeInput', { inputId: item.id }, item.text); };
-      const remove = document.createElement('button'); remove.className = 'input-queue-remove'; remove.type = 'button'; remove.title = '删除待发送输入'; remove.setAttribute('aria-label', '删除');
-      remove.dataset.queueAction = 'remove';
-      remove.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>';
-      remove.disabled = controlsBlocked; remove.onclick = () => { if (queueActionAllowed(remove, actionSession)) request('removeInput', { inputId: item.id }); };
-      const steer = document.createElement('button'); steer.type = 'button'; steer.className = 'input-queue-steer'; steer.textContent = item.delivery ? hasPending('steerInput') && item.delivery === 'sending' ? '发送中…' : '送达待确认' : '引导';
-      steer.dataset.queueAction = 'steer';
-      steer.title = item.delivery ? '输入及附件已保留，请核实执行结果；取回编辑或删除后可继续队列' : canSteer ? '立刻调整当前任务；当前模型回复和工具批次结束后生效，沿用当前审批设置' : '等待当前任务就绪后可立刻调整'; steer.setAttribute('aria-label', '引导当前任务');
-      steer.disabled = !canSteer || Boolean(item.delivery) || controlsBlocked;
-      const runId = execution.runId;
-      steer.onclick = () => { if (queueActionAllowed(steer, actionSession) && executionState().runId === runId && executionState().canSteer) request('steerInput', { inputId: item.id, runId }); };
-      const actions = document.createElement('div'); actions.className = 'input-queue-actions';
-      actions.append(steer, edit, remove);
-      if (existing) {
-        setText(row.querySelector('.input-queue-order'), String(index + 1));
-        const previousText = row.querySelector('.input-queue-text');
-        setText(previousText, item.text);
-        row.querySelector('.input-queue-actions').replaceWith(actions);
-      } else row.append(order, text, actions);
-      const preview = row.querySelector('.input-queue-text');
-      preview.title = '查看完整输入'; preview.setAttribute('aria-label', `查看第 ${index + 1} 条完整输入`);
-      preview.setAttribute('aria-haspopup', 'dialog');
+      setText(view.order, String(index + 1));
+      setText(view.text, item.text);
+      setAttribute(view.text, 'title', '查看完整输入');
+      setAttribute(view.text, 'aria-label', t('查看第 {0} 条完整输入', index + 1));
       const previewSession = currentSessionId;
-      preview.onclick = () => { if (previewSession === currentSessionId && row.isConnected) openQueuePreview(item, index, preview); };
+      view.text.onclick = () => { if (previewSession === currentSessionId && row.isConnected) openQueuePreview(item, index, view.text); };
+      const chips = queueItemChips(item, { busy });
+      if (chips.length) { view.meta.replaceChildren(...chips.map(chip => queueChipNode(chip))); setProperty(view.meta, 'hidden', false); }
+      else { view.meta.replaceChildren(); setProperty(view.meta, 'hidden', true); }
+      const delivery = typeof item.delivery === 'string' ? item.delivery : '';
+      if (delivery) {
+        setText(view.pill, delivery === 'sending' ? (hasPending('steerInput') ? '发送中…' : '发送中') : '送达待确认');
+        setAttribute(view.pill, 'title', '输入及附件已保留，请核实执行结果；取回编辑或删除后可继续队列');
+        setProperty(view.pill.dataset, 'delivery', delivery);
+      } else { setText(view.pill, ''); delete view.pill.dataset.delivery; }
+      setProperty(view.pill, 'hidden', !delivery);
+      const imageCount = Number.isFinite(item.imageCount) ? item.imageCount : 0;
+      setText(view.steer, '引导');
+      // The title explains why the control is (un)available. Pausing only stops
+      // automatic drain: manual steering can still be accepted while a run is
+      // live, so the paused wording is reserved for the disabled case.
+      setAttribute(view.steer, 'title', delivery ? '输入及附件已保留，请核实执行结果；取回编辑或删除后可继续队列'
+        : imageCount > 0 ? '带图片的输入会在下一轮发送，不能引导当前任务'
+        : !canSteer ? (paused ? '队列已暂停，继续后可发送' : '等待当前任务就绪后可立刻调整')
+        : '立刻调整当前任务；当前模型回复和工具批次结束后生效，沿用当前审批设置');
+      view.steer.disabled = !canSteer || Boolean(delivery) || controlsBlocked || imageCount > 0;
+      const runId = execution.runId;
+      view.steer.onclick = () => { if (queueActionAllowed(view.steer, actionSession) && executionState().runId === runId && executionState().canSteer) request('steerInput', { inputId: item.id, runId }); };
+      setAttribute(view.edit, 'title', '取回编辑'); setAttribute(view.edit, 'aria-label', '取回编辑');
+      view.edit.disabled = controlsBlocked;
+      view.edit.onclick = () => { if (queueActionAllowed(view.edit, actionSession)) restoreInput('removeInput', { inputId: item.id }, item.text, { approvalMode: item.approvalMode }); };
+      setAttribute(view.remove, 'title', '删除待发送输入'); setAttribute(view.remove, 'aria-label', '删除');
+      view.remove.disabled = controlsBlocked;
+      view.remove.onclick = () => { if (queueActionAllowed(view.remove, actionSession)) request('removeInput', { inputId: item.id }); };
       rows.push(row);
     }
     const keep = new Set(rows);
@@ -2548,19 +3677,54 @@
       if (row !== next) list.insertBefore(row, next);
       previousRow = row;
     }
-    if (paused || !busy) {
-      const resume = document.createElement('button'); resume.type = 'button'; resume.textContent = '继续发送队列';
-      resume.className = 'input-queue-resume';
-      const actionSession = currentSessionId;
-      resume.disabled = busy || unresolved || controlsBlocked; resume.onclick = () => { if (queueActionAllowed(resume, actionSession)) request('resumeInputs'); }; heading.appendChild(resume);
+    // A newly added row is only revealed automatically when the reader was at
+    // the end (or the queue was hidden). Otherwise their reading position stays.
+    const addedRows = rows.filter(row => !previousIds.has(row.dataset.inputId));
+    const revealNewest = addedRows.length > 0 && ((sameSession && wasAtBottom) || wasHidden);
+    list.scrollTop = revealNewest ? list.scrollHeight : previousScroll;
+    if (revealNewest) {
+      markQueueRowNew(addedRows[addedRows.length - 1]);
+      // The first paint can run while the loading surface still hides the
+      // composer, so measure again once the page is actually visible.
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        if (list.isConnected) list.scrollTop = list.scrollHeight;
+      }));
     }
-    list.scrollTop = previousScroll;
     if (focusedId) {
       const row = [...list.children].find(row => row.dataset.inputId === focusedId) ?? list.children[Math.min(focusedIndex, list.children.length - 1)];
       if (row && focusedAction) row.dataset.focusAction = focusedAction;
       const button = row && [...row.querySelectorAll('button')].find(button => button.dataset.queueAction === focusedAction && !button.disabled);
       (button ?? row)?.focus({ preventScroll: true });
-    } else if (focused?.classList.contains('input-queue-resume')) heading.querySelector('.input-queue-resume')?.focus({ preventScroll: true });
+    } else if (focused?.classList.contains('input-queue-resume')) resume.focus({ preventScroll: true });
+  }
+  // Arrow keys walk the queue rows from any control inside the queue; Tab order
+  // is untouched, so actions stay reachable in DOM order.
+  function queueRowPreviewButtons() {
+    const list = byId('input-queue')?.querySelector('.input-queue-list');
+    if (!list) return [];
+    return [...list.querySelectorAll('.input-queue-row')].map(row => row.querySelector('.input-queue-text')).filter(Boolean);
+  }
+  byId('input-queue')?.addEventListener('keydown', event => {
+    if (event.defaultPrevented || event.isComposing || event.keyCode === 229) return;
+    if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+    const container = byId('input-queue');
+    if (!container?.contains(document.activeElement)) return;
+    const buttons = queueRowPreviewButtons();
+    if (!buttons.length) return;
+    const current = buttons.indexOf(document.activeElement);
+    const row = document.activeElement.closest?.('.input-queue-row');
+    const index = current >= 0 ? current : row ? buttons.findIndex(button => button.closest('.input-queue-row') === row) : -1;
+    const target = event.key === 'Home' ? 0
+      : event.key === 'End' ? buttons.length - 1
+      : event.key === 'ArrowDown' ? Math.min(buttons.length - 1, index + 1)
+      : Math.max(0, index - 1);
+    event.preventDefault();
+    buttons[target].focus({ preventScroll: true });
+    buttons[target].closest('.input-queue-row')?.scrollIntoView({ block: 'nearest' });
+  });
+  function queueAtLimit() {
+    return hostState?.mode === 'assist' && (hostState?.inputQueue?.length ?? 0) >= QUEUE_LIMIT;
   }
   function resumeRun() {
     if (!configurationMissing() && !busy && executionState().canResume === true && !hasPending('resumeRun') && !navigationPending()) request('resumeRun');
@@ -2568,31 +3732,95 @@
   approvalMode.addEventListener('change', event => {
     const value = event.target.value;
     if (approvalMode.disabled || !['auto', 'manual', 'full'].includes(value)) return;
+    if (value === 'full') {
+      // Revert the radio immediately; full mode applies only after the
+      // confirmation dialog resolves true.
+      reflectApprovalMode();
+      void confirmFullApprovalMode();
+      return;
+    }
     draftFor().approvalMode = value;
     persistDrafts();
+    // Rows whose queued approval snapshot matches the composer need no chip.
+    renderInputQueue();
   });
-  form.addEventListener('submit', event => { event.preventDefault(); if (busy && !input.value.trim()) cancelRun(); else sendPrompt(); });
+  form.addEventListener('submit', event => { event.preventDefault(); if (busy && !hasComposerText()) cancelRun(); else sendPrompt(); });
   input.addEventListener('compositionstart', () => { composingPrompt = true; });
   input.addEventListener('compositionend', () => { composingPrompt = false; });
   input.addEventListener('blur', () => { composingPrompt = false; });
-  input.addEventListener('input', () => { draftFor().assist = input.value; scheduleDraftPersistence(); scheduleInput(); });
+  input.addEventListener('input', () => {
+    resetHistoryRecall();
+    draftFor().assist = input.value;
+    scheduleDraftPersistence();
+    scheduleInput();
+  });
   input.addEventListener('keydown', event => {
+    // Escape leaves history recall and restores the draft typed before recall.
+    if (event.key === 'Escape' && historyCursor >= 0 && !event.isComposing && event.keyCode !== 229) {
+      event.preventDefault();
+      const scratch = historyScratch;
+      resetHistoryRecall();
+      applyHistoryValue(scratch);
+      return;
+    }
+    // ↑ starts recall only from an empty composer; while recalling, both arrows
+    // walk the recent list and any real edit (input event above) exits recall.
+    if ((event.key === 'ArrowUp' || event.key === 'ArrowDown') && !event.altKey && !event.ctrlKey && !event.metaKey
+      && !event.shiftKey && !composingPrompt && !event.isComposing && event.keyCode !== 229
+      && navigateHistory(event.key === 'ArrowUp' ? -1 : 1)) {
+      event.preventDefault();
+      return;
+    }
     if (event.key === 'Enter' && !event.shiftKey && !composingPrompt && !event.isComposing && event.keyCode !== 229) { event.preventDefault(); sendPrompt(); }
   });
+  // Overflow menus close on item selection, outside click and Escape. Keyboard
+  // users get the same behavior as native menus: Arrow keys move between items,
+  // Home/End jump to the edges, and focus returns to the trigger on close.
+  function wireOverflowMenu(details, menuSelector) {
+    const summary = details.querySelector(':scope > summary');
+    const menu = details.querySelector(menuSelector);
+    const items = () => [...menu.querySelectorAll('button[role="menuitem"]')].filter(item => !item.hidden && !item.disabled && item.getClientRects().length);
+    const focusFirst = () => { const first = items()[0]; if (first) first.focus({ preventScroll: true }); };
+    summary.addEventListener('click', event => {
+      if (event.detail !== 0) return;
+      requestAnimationFrame(() => { if (details.open) focusFirst(); });
+    });
+    summary.addEventListener('keydown', event => {
+      if (event.key !== 'ArrowDown' || details.open) return;
+      event.preventDefault(); details.open = true;
+      requestAnimationFrame(focusFirst);
+    });
+    details.addEventListener('keydown', event => {
+      if (!details.open) return;
+      if (event.key === 'Escape') {
+        event.preventDefault(); details.open = false;
+        summary.focus({ preventScroll: true });
+        return;
+      }
+      if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+      const list = items();
+      if (!list.length) return;
+      const index = list.indexOf(document.activeElement);
+      const next = event.key === 'Home' ? 0 : event.key === 'End' ? list.length - 1
+        : (index + (event.key === 'ArrowDown' ? 1 : -1) + list.length) % list.length;
+      event.preventDefault();
+      list[next].focus({ preventScroll: true });
+    });
+    menu.addEventListener('click', event => {
+      if (!event.target.closest('button')) return;
+      const restore = details.contains(document.activeElement) || document.activeElement === document.body;
+      details.open = false;
+      if (restore) summary.focus({ preventScroll: true });
+    });
+    return () => { details.open = false; };
+  }
+  const assistMore = byId('assist-more');
+  const closeAssistMore = wireOverflowMenu(assistMore, '.topbar-more-menu');
+  document.addEventListener('click', event => { if (!assistMore.contains(event.target)) closeAssistMore(); });
   const goalHeaderMore = byId('goal-header-more');
-  const closeGoalHeaderMore = () => { goalHeaderMore.open = false; };
+  const closeGoalHeaderMore = wireOverflowMenu(goalHeaderMore, '.goal-header-more-menu');
   document.addEventListener('pointerdown', event => {
     if (!goalHeaderMore.contains(event.target)) closeGoalHeaderMore();
-  });
-  goalHeaderMore.addEventListener('keydown', event => {
-    if (event.key === 'Escape') {
-      event.preventDefault();
-      closeGoalHeaderMore();
-      goalHeaderMore.querySelector('summary').focus();
-    }
-  });
-  goalHeaderMore.querySelector('.goal-header-more-menu').addEventListener('click', event => {
-    if (event.target.closest('button')) closeGoalHeaderMore();
   });
   byId('goal-run').addEventListener('click', () => {
     if (hostState?.goal && !busy && !hasPending('runGoal') && !navigationPending()) request('runGoal');
@@ -2600,6 +3828,45 @@
   byId('goal-stop').addEventListener('click', cancelRun);
   byId('goal-resume').addEventListener('click', resumeRun);
   byId('assist-resume').addEventListener('click', resumeRun);
+  const copyGoalSignal = (button, text) => {
+    Promise.resolve(messageActions.onCopy(text)).then(() => {
+      const original = button.textContent;
+      button.textContent = t('已复制');
+      setTimeout(() => { if (button.isConnected) button.textContent = original; }, 1200);
+    }).catch(() => {});
+  };
+  byId('goal-signals-copy').addEventListener('click', () => {
+    copyGoalSignal(byId('goal-signals-copy'), goalSummaryText(goalSignalData()));
+  });
+  byId('goal-signals-export').addEventListener('click', () => {
+    const button = byId('goal-signals-export');
+    if (button.disabled) return;
+    button.disabled = true;
+    // Export is a host file-save operation: never serialize a multi-MB graph
+    // through the clipboard or back into the webview.
+    vscode.postMessage({ action: 'exportGoalGraph', sessionId: currentSessionId });
+    setTimeout(() => { if (button.isConnected) button.disabled = false; }, 1200);
+  });
+  function refreshBlackboardUi() {
+    // Escape hatch for a failed/partial graph paint: recreate the renderer from
+    // the last state, then ask the host for an authoritative snapshot. The host
+    // also drops its delivered-projection memo, so the blackboard is re-sent
+    // even when the backend revision did not change.
+    try {
+      try { blackboardGraph?.dispose(); } catch { /* Recreated below. */ }
+      blackboardGraph = undefined;
+      sectionViews.delete('blackboard');
+      renderBlackboard(hostState?.execution?.blackboard, hostState?.execution?.result);
+    } catch (error) {
+      console.warn('[UBOVM] Blackboard refresh failed', error);
+    }
+    vscode.postMessage({ action: 'refreshBlackboard', sessionId: currentSessionId });
+  }
+  byId('blackboard-empty-refresh').addEventListener('click', refreshBlackboardUi);
+  byId('goal-signal-autonomy').addEventListener('click', () => {
+    if (byId('goal-signal-autonomy').hidden) return;
+    vscode.postMessage({ action: 'openSettings', section: 'reason', sessionId: currentSessionId });
+  });
   byId('assist-evidence-goal').addEventListener('change', () => {
     byId('assist-evidence-list').dataset.key = '';
     renderAssistEvidence();
@@ -2627,8 +3894,13 @@
       renderAssistEvidence();
     });
   });
-  byId('assist-notes-toggle').addEventListener('click', () => {
+  function toggleAssistNotes() {
     setGoalView(draftFor().view === 'notes' ? 'overview' : 'notes');
+  }
+  byId('assist-notes-toggle').addEventListener('click', toggleAssistNotes);
+  byId('menu-assist-notes').addEventListener('click', () => {
+    closeAssistMore();
+    toggleAssistNotes();
   });
   document.addEventListener('click', event => {
     if (!byId('exploration-runs').contains(event.target)) byId('exploration-runs').open = false;
@@ -2667,16 +3939,33 @@
   byId('composer-images').addEventListener('click', event => {
     const button = event.target.closest('[data-image-id]');
     if (!button || !currentSessionId || hasPending('removeImage')) return;
-    request('removeImage', { imageId: button.dataset.imageId }, () => {});
+    // The remove button disappears with its chip; return typing focus to the
+    // composer after the host confirms the removal.
+    const restoreFocus = document.activeElement === button;
+    request('removeImage', { imageId: button.dataset.imageId }, () => { if (restoreFocus) input.focus({ preventScroll: true }); });
+  });
+  byId('composer-pastes').addEventListener('click', event => {
+    const expand = event.target.closest('[data-paste-expand]');
+    if (expand) { expandPasteChip(expand.dataset.pasteExpand); return; }
+    const remove = event.target.closest('[data-paste-remove]');
+    if (remove) removePasteChip(remove.dataset.pasteRemove);
   });
   input.addEventListener('paste', event => {
     const files = [...(event.clipboardData?.items ?? [])]
       .filter(item => item.kind === 'file' && (IMAGE_TYPES.has(item.type) || !item.type))
       .map(item => item.getAsFile())
       .filter(Boolean);
-    if (!files.length) return;
+    if (files.length) {
+      event.preventDefault();
+      void attachImageFiles(files);
+      return;
+    }
+    // Very long clipboard text folds into a chip instead of stretching the
+    // composer; the full text is still what gets sent.
+    const text = event.clipboardData?.getData('text/plain') ?? '';
+    if (text.length <= PASTE_CHIP_MIN) return;
     event.preventDefault();
-    void attachImageFiles(files);
+    addPasteChip(text);
   });
   byId('remove-context')?.addEventListener('click', () => {
     if (busy || contextPending() || !currentSessionId) return;
@@ -2703,6 +3992,12 @@
       event.preventDefault(); byId('goal-view-switcher').open = true;
       byId('goal-tab-' + draftFor().view).focus();
     }
+  });
+  byId('goal-view-switcher').querySelector('summary').addEventListener('click', event => {
+    if (event.detail !== 0) return;
+    requestAnimationFrame(() => {
+      if (byId('goal-view-switcher').open) byId('goal-tab-' + draftFor().view).focus({ preventScroll: true });
+    });
   });
   byId('goal-view-switcher').addEventListener('focusout', event => {
     if (!byId('goal-view-switcher').contains(event.relatedTarget)) byId('goal-view-switcher').open = false;
@@ -2763,10 +4058,15 @@
       if (sessionId === currentSessionId) renderGoal();
     });
   });
-  noteInput.addEventListener('input', () => { draftFor().note = noteInput.value; scheduleDraftPersistence(); updateControls(); });
+  noteInput.addEventListener('input', () => { if (!editingNote) { draftFor().note = noteInput.value; scheduleDraftPersistence(); } updateControls(); });
   byId('note-new').addEventListener('click', () => {
+    editingNote = null;
+    setText(byId('note-editor-title'), '新建笔记');
+    byId('goal-note-form').setAttribute('aria-label', '添加笔记');
+    noteInput.value = draftFor().note || '';
     byId('note-editor-error').hidden = true;
     byId('note-editor').showModal(); noteInput.focus();
+    updateControls();
   });
   byId('note-close').addEventListener('click', closeNoteEditor);
   byId('note-editor').addEventListener('cancel', event => { event.preventDefault(); closeNoteEditor(); });
@@ -2776,7 +4076,28 @@
   });
   byId('note-copy').addEventListener('click', () => {
     const selected = [...byId('goal-notes-list').children, ...byId('agent-notes-list').children].find(row => noteEntries.get(row)?.key === selectedNoteKey);
-    if (selected) messageActions.onCopy(noteEntries.get(selected).text).catch(error => showError(error.message));
+    if (!selected) return;
+    const button = byId('note-copy'), original = button.dataset.copyLabel || button.textContent;
+    button.dataset.copyLabel = original;
+    messageActions.onCopy(noteEntries.get(selected).text).then(() => {
+      if (!button.isConnected) return;
+      button.textContent = t('已复制');
+      clearTimeout(button.feedbackTimer);
+      button.feedbackTimer = setTimeout(() => { if (button.isConnected) button.textContent = original; }, 1200);
+    }).catch(error => showError(error.message));
+  });
+  byId('note-edit').addEventListener('click', () => {
+    const selected = [...byId('goal-notes-list').children, ...byId('agent-notes-list').children].find(row => noteEntries.get(row)?.key === selectedNoteKey);
+    const entry = selected && noteEntries.get(selected);
+    if (!entry?.id) return;
+    editingNote = { key: entry.key, id: entry.id, source: entry.source, text: entry.text };
+    setText(byId('note-editor-title'), '修改笔记');
+    byId('goal-note-form').setAttribute('aria-label', '修改笔记');
+    noteInput.value = entry.text;
+    byId('note-editor-error').hidden = true;
+    byId('note-editor').showModal(); noteInput.focus();
+    noteInput.setSelectionRange(noteInput.value.length, noteInput.value.length);
+    updateControls();
   });
   byId('notes-search').addEventListener('input', filterNotes);
   byId('notes-search').addEventListener('keydown', event => {
@@ -2796,11 +4117,30 @@
   byId('goal-note-form').addEventListener('submit', event => {
     event.preventDefault();
     const text = noteInput.value.trim();
-    if (!text || noteInput.value.length > noteInput.maxLength || navigationPending() || !hostState?.goal || hasPending('addGoalNote')) return;
+    const editing = editingNote;
+    const action = editing ? (editing.source === 'user' ? 'editNote' : 'editAgentNote') : 'addGoalNote';
+    if (!text || noteInput.value.length > noteInput.maxLength || navigationPending() || !(hostState?.goal || hostState?.mode === 'assist') || hasPending(action)) return;
     const submitted = noteInput.value;
     const sessionId = currentSessionId;
     byId('note-editor-error').hidden = true;
-    request('addGoalNote', { text }, () => {
+    if (editing) {
+      const editedKey = editing.key;
+      request(action, { noteId: editing.id, text }, () => {
+        if (sessionId !== currentSessionId) return;
+        closeNoteEditor();
+        selectedNoteKey = editedKey;
+        byId('goal-notes').dataset.reading = 'true';
+        requestAnimationFrame(() => {
+          const row = [...byId('goal-notes-list').children, ...byId('agent-notes-list').children].find(item => noteEntries.get(item)?.key === editedKey);
+          if (row) renderNoteReader(row); else filterNotes();
+        });
+      }, error => {
+        if (sessionId !== currentSessionId) return;
+        setText(byId('note-editor-error'), error.message); byId('note-editor-error').hidden = false;
+      });
+      return;
+    }
+    request(action, { text }, () => {
       const draft = draftFor(sessionId);
       if (draft.note === submitted) draft.note = '';
       if (sessionId === currentSessionId && noteInput.value === submitted) noteInput.value = '';
@@ -2921,14 +4261,19 @@
           if (paintAcknowledgement === acknowledgement) {
             paintAcknowledgement = undefined;
             if (commit !== committedRender) queueContentReady();
-            else if (contentReadyPending && !acknowledgement.cancelled && !pageHidden() && isCurrentPaint(commit) && !contentReadyRetried) {
-              contentReadyRetried = true;
-              contentReadyRetryTimer = setTimeout(() => {
-                contentReadyRetryTimer = 0;
-                if (contentReadyPending && isCurrentPaint(commit)) queueContentReady();
-              }, 400);
-            } else if (contentReadyPending && !acknowledgement.cancelled && !pageHidden() && paintError?.code === 'PAINT_DELIVERY_TIMEOUT') {
-              window.UBOVMRuntime?.fail('页面加载状态同步超时。请同步最新状态或重新加载页面。');
+            else if (contentReadyPending && !acknowledgement.cancelled && !pageHidden() && isCurrentPaint(commit)) {
+              // A stalled bridge already burned the full 5s clock; surface the
+              // recovery panel immediately instead of retrying into another
+              // silent 5s wait. Other failures get one delayed retry first.
+              if (paintError?.code === 'PAINT_DELIVERY_TIMEOUT' || contentReadyRetried) {
+                window.UBOVMRuntime?.fail('页面加载状态同步超时。请同步最新状态或重新加载页面。');
+              } else {
+                contentReadyRetried = true;
+                contentReadyRetryTimer = setTimeout(() => {
+                  contentReadyRetryTimer = 0;
+                  if (contentReadyPending && isCurrentPaint(commit)) queueContentReady();
+                }, 400);
+              }
             }
           }
         }
@@ -2963,7 +4308,7 @@
   // surface: the DOM is intact but no new frame is produced, so the page looks
   // blank until a resize forces one. While the page is visible and idle, emit a
   // harmless frame on an interval so the surface heals without a geometry change.
-  const keepAlive = { last: Date.now(), intervalMs: 20000, idleMs: 15000, probe: undefined, on: false };
+  const keepAlive = { last: Date.now(), intervalMs: 5000, idleMs: 15000, probe: undefined, on: false };
   function keepAliveMark() { keepAlive.last = Date.now(); }
   function keepAliveNudge() {
     if (!keepAlive.probe) {
@@ -2980,10 +4325,11 @@
   }
   setInterval(() => {
     if (document.hidden || suspended || visualSuspended()) return;
+    repairPrimarySurface({ repaint: true });
     if (Date.now() - keepAlive.last < keepAlive.idleMs) return;
     keepAlive.last = Date.now();
     keepAliveNudge();
-  }, keepAlive.intervalMs);
+  }, 5000);
   // Returning focus to the webview after an idle gap repaints the page, so a
   // discarded surface recovers on the first click even without an OS focus event.
   let focusRepaintAt = 0;
@@ -2994,6 +4340,7 @@
     focusRepaintAt = now;
     cancelVisualFrames();
     resumeVisuals();
+    repairPrimarySurface({ repaint: true });
   });
   for (const type of ['pointerdown', 'keydown', 'wheel']) {
     window.addEventListener(type, () => { keepAliveMark(); }, { capture: true, passive: true });
@@ -3081,13 +4428,19 @@
       return Array.isArray(hostState.agenda?.items) && hostState.agenda.items.length && !byId('goal-agenda-list').children.length ? view : '';
     }
     if (view === 'board') {
-      return Array.isArray(execution.blackboard?.nodes) && execution.blackboard.nodes.length && !byId('blackboard-nodes').children.length ? view : '';
+      const snapshot = execution.blackboard ?? (lastBoardConversation === hostState?.conversation?.id ? lastBoardSnapshot : undefined);
+      const expected = Array.isArray(snapshot?.nodes) ? snapshot.nodes.length : 0;
+      // The graph container always holds its toolbar once created, so check the
+      // painted node buttons: a component that exists but produced no node means
+      // the page is blank and must be rebuilt from the host projection.
+      const painted = byId('blackboard-nodes').querySelectorAll('.graph-node, .graph-frontier').length;
+      return expected > 0 && painted === 0 ? view : '';
     }
     if (view === 'notes') {
       return Array.isArray(hostState.goal.notes) && hostState.goal.notes.length && !byId('goal-notes-list').children.length ? view : '';
     }
     if (view === 'overview') {
-      const hasLog = Boolean(execution.parts?.length || execution.activities?.length || execution.workers?.length || execution.result?.summary || execution.streamText);
+      const hasLog = Boolean(execution.parts?.length || execution.activities?.length || execution.workers?.length || execution.result?.summary || execution.streamText || execution.logHistory?.length);
       return hasLog && !byId('goal-output-content').children.length ? view : '';
     }
     return '';
@@ -3113,12 +4466,18 @@
   function renderSafely(full) {
     keepAliveMark();
     const state = hostState, epoch = viewEpoch, generation = renderGeneration;
+    const focusedBefore = document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : null;
     let succeeded = false;
     try {
       if (full) renderState();
       else {
         setAttribute(messages, 'aria-busy', String(busy));
         renderLiveComponents(true);
+      }
+      // Moving/rebuilding live rows can detach the focused control and leave
+      // focus on <body>; restore it when the same control is still usable.
+      if (focusedBefore?.isConnected && document.activeElement === document.body && !focusedBefore.closest('[hidden]')) {
+        try { focusedBefore.focus({ preventScroll: true }); } catch { /* The control may have become inert. */ }
       }
       if (pendingViewRestore) {
         const target = pendingViewRestore; pendingViewRestore = undefined;
@@ -3166,12 +4525,31 @@
         }
         if (succeeded) {
           window.UBOVMRuntime?.painted();
+          repairPrimarySurface();
           if (window.UBOVMi18n?.locale === 'en') window.UBOVMi18n.apply(document.body);
           try { reconcileActiveGoalPage(); } catch { /* Self-heal must never fail the paint. */ }
         }
       }
     }
   }
+  // Floating affordance for an agent-driven browser page the user cannot see.
+  // The browser editor is never pulled forward automatically; this pill announces
+  // the activity and its data-action=browser click opens the page.
+  function renderBrowserAgentPeek(state) {
+    const peek = byId('browser-agent-peek');
+    if (!peek) return;
+    const activity = state.browserAgent;
+    peek.hidden = !activity;
+    if (!activity) return;
+    let where = '';
+    try { where = new URL(activity.url).host || ''; } catch { where = ''; }
+    setText(byId('browser-agent-peek-title'), t('Agent 正在操作浏览器'));
+    setText(byId('browser-agent-peek-url'), where || activity.title || t('点击查看页面'));
+    setText(byId('browser-agent-peek-open'), t('查看'));
+    setProperty(peek, 'title', t('Agent 正在操作浏览器，点击查看页面'));
+    setAttribute(peek, 'aria-label', t('Agent 正在操作浏览器，点击查看页面'));
+  }
+
   function renderState() {
     const failures = [];
     for (const render of [renderChrome, renderLiveComponents]) {
@@ -3179,15 +4557,58 @@
     }
     if (failures.length) throw failures[0];
   }
+  let pluginSlotsKey = '';
+  function renderPluginSlots(state) {
+    const slots = state?.plugins?.slots;
+    const key = JSON.stringify(slots || null);
+    if (key === pluginSlotsKey) return;
+    pluginSlotsKey = key;
+    const targets = {
+      'topbar.actions': 'plugin-slot-topbar',
+      'composer.toolbar': 'plugin-slot-composer',
+      'welcome.shortcuts': 'plugin-slot-welcome',
+      'status.item': 'plugin-slot-status'
+    };
+    for (const [slot, elementId] of Object.entries(targets)) {
+      const host = byId(elementId);
+      if (!host) continue;
+      const items = Array.isArray(slots?.[slot]) ? slots[slot] : [];
+      host.replaceChildren(...items.map(item => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'plugin-action';
+        button.textContent = item.label || item.id || '插件';
+        button.title = item.title || item.label || '';
+        button.addEventListener('click', () => {
+          if (button.disabled) return;
+          // Slot actions are host round-trips; disable briefly so a double click
+          // cannot run the same plugin command twice.
+          button.disabled = true;
+          vscode.postMessage({
+            action: 'pluginAction', sessionId: currentSessionId,
+            pluginId: item.pluginId, slot, contributionId: item.id
+          });
+          setTimeout(() => { if (button.isConnected) button.disabled = false; }, 700);
+        });
+        return button;
+      }));
+      host.hidden = items.length === 0;
+    }
+  }
+
   function renderChrome() {
     const state = hostState;
     if (!state) return;
     renderNavigationFeedback();
+    renderBrowserAgentPeek(state);
+    renderPluginSlots(state);
     renderMode();
     byId('busy-status').hidden = !busy;
     setAttribute(messages, 'aria-busy', String(busy));
-    setText(byId('conversation-title'), state.conversation.title || '新对话');
-    setProperty(byId('conversation-title'), 'title', state.conversation.title || '新对话');
+    const conversationTitle = state.conversation.title || '新对话';
+    const displayedTitle = conversationTitle === '新对话' || conversationTitle === '新探索' ? t(conversationTitle) : conversationTitle;
+    setText(byId('conversation-title'), displayedTitle);
+    setProperty(byId('conversation-title'), 'title', displayedTitle);
     let related = byId('related-conversations');
     if (!related) {
       related = document.createElement('div'); related.id = 'related-conversations';
@@ -3200,7 +4621,7 @@
       related.dataset.key = relatedKey;
       related.replaceChildren(...relatedItems.map(item => {
         const button = document.createElement('button'); button.type = 'button';
-        button.textContent = (item.mode === 'goal' ? '目标：' : '来源聊天：') + item.title;
+        button.textContent = t(item.mode === 'goal' ? '目标：' : '来源聊天：') + item.title;
         button.title = button.textContent;
         button.addEventListener('click', () => vscode.postMessage({ action: 'openRelatedConversation', sessionId: state.conversation.id, targetId: item.id }));
         return button;
@@ -3212,18 +4633,20 @@
         const workspacePath = state.context.workspace;
         const configured = state.context.workspaceConfigured === true;
         const inProject = Boolean(state.context.projectId);
-        const workspaceLabel = configured ? workspacePath : (inProject ? '选择项目目录' : '选择工作空间');
+        const workspaceLabel = configured ? workspacePath : t(inProject ? '选择项目目录' : '选择工作空间');
         const workspaceButton = byId('workspace-name').closest('button');
         setText(byId('workspace-name'), workspaceLabel);
         workspaceButton.title = configured
-          ? workspacePath + (inProject ? '\n点击切换当前项目的目录' : '\n点击切换当前会话的工作空间')
-          : (inProject ? '为当前项目选择工作文件夹' : '为当前会话选择工作文件夹');
+          ? workspacePath + (inProject ? '\n' + t('点击切换当前项目的目录') : '\n' + t('点击切换当前会话的工作空间'))
+          : (inProject ? t('为当前项目选择工作文件夹') : t('为当前会话选择工作文件夹'));
         workspaceButton.setAttribute('aria-label', configured
-          ? (inProject ? '切换项目目录：' : '切换工作空间：') + workspacePath
-          : (inProject ? '选择当前项目的目录' : '选择当前会话的工作空间'));
+          ? (inProject ? t('切换项目目录：') : t('切换工作空间：')) + workspacePath
+          : (inProject ? t('选择当前项目的目录') : t('选择当前会话的工作空间')));
         workspaceButton.dataset.configured = String(configured);
         const revealWorkspaceButton = byId('reveal-workspace');
         if (revealWorkspaceButton) revealWorkspaceButton.hidden = !configured;
+        const goalRevealWorkspaceButton = byId('goal-more-reveal');
+        if (goalRevealWorkspaceButton) goalRevealWorkspaceButton.hidden = !configured;
         setText(byId('goal-workspace-name'), configured ? workspaceLabel : (inProject ? '尚未选择项目目录' : '尚未选择工作空间'));
         byId('goal-workspace-name').title = configured ? workspacePath : '';
       }
@@ -3255,12 +4678,15 @@
     const providerId = state.modelSelection?.provider || state.provider?.provider || '';
     const pickerVisible = choices.length >= 2 && state.mode === 'assist';
     if (state.provider) {
-      const providerLabel = state.provider.configured && state.ssh?.configured === false ? '配置 SSH（必需）' : state.provider.label || '未连接模型';
+      const providerLabel = state.provider.label || '未连接模型';
       setText(byId('provider-label'), pickerVisible ? '模型配置' : providerLabel);
       byId('provider-label').title = pickerVisible
         ? `打开模型配置\n服务商：${state.provider.provider || '已连接'}\n默认模型：${state.provider.defaultModel || providerLabel}`
-        : state.provider.error || state.ssh?.error || '打开模型配置';
-      setText(byId('connection-note'), configurationMissing() ? '先完成模型和远程连接配置，就可以开始' : '模型已就绪，直接输入即可');
+        : state.provider.error || `当前模型：${providerLabel}\n打开模型配置`;
+      // Show which Linux server this conversation's remote commands will use.
+      const remote = state.ssh?.active?.label;
+      const remoteNote = remote ? ` · 远程 ${remote}${state.ssh.active.scope === 'session' ? '（本会话）' : ''}` : '';
+      setText(byId('connection-note'), configurationMissing() ? '先完成模型配置，就可以开始；远程连接可选' : '模型已就绪，直接输入即可' + remoteNote);
     }
     const key = JSON.stringify([choices, providerId, defaultModel]);
     if (modelPicker.dataset.choices !== key) {
@@ -3279,14 +4705,31 @@
     // Animate only after the target is committed and all loading masks are gone.
     const pageKey = `${currentSessionId}:${state.mode}:${draftFor().view}:${byId('goal-setup').hidden}`;
     if (renderedPageKey !== pageKey) {
+      const previous = renderedPageKey;
       renderedPageKey = pageKey;
       cancelPageAnimation();
       const panel = byId('goal-' + draftFor().view);
       const panelVisible = state.mode === 'goal' ? byId('goal-setup').hidden : draftFor().view === 'notes';
       const surface = panelVisible && panel && !panel.hidden ? panel : byId(state.mode === 'goal' ? 'goal-mode' : 'assist-mode');
       if (!document.hidden && !reducedMotion.matches && !surface.hidden) {
-        const animation = pageAnimation = surface.animate([{ transform: 'translateY(8px)' }, { transform: 'translateY(0)' }],
-          { duration: 240, easing: 'cubic-bezier(.22,1,.36,1)' });
+        // Same-mode page switches move horizontally in the tab order; session
+        // and mode changes still enter vertically. This keeps motion directional
+        // without making fast switches feel like a full route reload.
+        let dx = 0;
+        if (state.mode === 'goal' && previous.startsWith(currentSessionId + ':goal:')) {
+          const from = previous.split(':')[2], to = draftFor().view;
+          const fromIndex = goalViews.indexOf(from), toIndex = goalViews.indexOf(to);
+          // Board keeps the original vertical entry: the graph can be dragged
+          // immediately after switching, so avoid a horizontal transform while
+          // pointer coordinates are being captured.
+          if (from !== 'board' && to !== 'board' && fromIndex >= 0 && toIndex >= 0 && fromIndex !== toIndex) {
+            dx = toIndex > fromIndex ? 8 : -8;
+          }
+        }
+        const animation = pageAnimation = surface.animate(dx
+          ? [{ transform: `translateX(${dx}px)` }, { transform: 'translate(0, 0)' }]
+          : [{ transform: 'translateY(8px)' }, { transform: 'translateY(0)' }],
+        { duration: dx ? 200 : 240, easing: 'cubic-bezier(.22,1,.36,1)' });
         animation.id = 'page-enter';
         animation.finished.then(() => { if (pageAnimation === animation) pageAnimation = undefined; }, () => {});
       }
@@ -3314,9 +4757,11 @@
   window.addEventListener('pageshow', () => {
     suspended = false;
     resumeVisuals();
+    resumeRouteTransition();
     requestReadyResync();
   });
   window.addEventListener('blur', () => { if (draftTimer) persistDrafts(); });
+  window.addEventListener('focus', () => resumeRouteTransition());
   document.addEventListener('visibilitychange', () => {
     document.body.classList.toggle('page-background', document.hidden);
     if (document.hidden) {
@@ -3324,6 +4769,7 @@
       cancelVisualFrames();
     } else {
       resumeVisuals();
+      resumeRouteTransition();
       requestReadyResync();
     }
   });
@@ -3463,6 +4909,7 @@
     const changedSession = sessionId !== currentSessionId;
     if (changedSession && draftTimer) persistDrafts();
     if (changedSession) {
+      lastNotesSource = undefined;
       viewEpoch++; invalidateDropRead();
       // Host locks native chrome on conversation/project switches. Rearm so the
       // next committed paint can unlock it; the first acknowledgement must not
@@ -3504,6 +4951,10 @@
       byId('notes-search').value = '';
       cancelScroll();
       sectionViews.clear();
+      // A board cached for the previous conversation must not stand in for the
+      // next one (and must not suppress the missing-board checkpoint request).
+      lastBoardSnapshot = undefined; lastBoardConversation = undefined;
+      missingBoardRequest = { session: '', at: 0, pending: false };
       lastCriteria = ''; lastNotes = ''; lastCriteriaSource = lastNotesSource = undefined; forceScroll = true;
       restoreFields();
       byId('goal-setup').scrollTop = 0;
@@ -3545,6 +4996,12 @@
     requestInitialState();
   });
   watchInitialLoad();
+  // Host-side watchdog: if the webview process dies/blank out it cannot post, so
+  // the extension reloads the HTML after a minute of visible silence.
+  setInterval(() => {
+    if (pageHidden()) return;
+    try { vscode.postMessage({ action: 'viewAlive' }); } catch { /* Host may be closing. */ }
+  }, 20000);
   updateControls();
   requestInitialState();
 })();

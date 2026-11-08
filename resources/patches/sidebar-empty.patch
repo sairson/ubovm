@@ -1,8 +1,8 @@
 diff --git a/src/vs/workbench/browser/parts/compositeBarActions.ts b/src/vs/workbench/browser/parts/compositeBarActions.ts
 --- a/src/vs/workbench/browser/parts/compositeBarActions.ts
 +++ b/src/vs/workbench/browser/parts/compositeBarActions.ts
-@@ -556,12 +556,13 @@ export class CompositeActionViewItem extends CompositeBarActionViewItem {
- 			close.title = localize('ubovm.closeSidebarTab', "关闭 {0}", this.compositeBarActionItem.name);
+@@ -554,12 +554,13 @@ export class CompositeActionViewItem extends CompositeBarActionViewItem {
+ 			close.title = '关闭 ' + this.compositeBarActionItem.name;
  			close.setAttribute('aria-label', close.title);
  			const closeTab = () => {
 -				if (!container.closest('.part.sidebar')) { return; }
@@ -11,7 +11,7 @@ diff --git a/src/vs/workbench/browser/parts/compositeBarActions.ts b/src/vs/work
  				const tabBar = container.parentElement;
  				const restoreFocus = container.contains(container.ownerDocument.activeElement);
  				this.compositeBar.unpin(this.compositeBarActionItem.id);
- 				if (!this.compositeBar.getPinnedCompositeIds().some(id => ['workbench.view.explorer', 'workbench.view.search', 'workbench.view.extension.ubovm-workers', 'workbench.view.extension.ubovm-blackboard'].includes(id))) {
+ 				if (this.compositeBar.getPinnedCompositeIds().length === 0) {
 -					void this.commandService.executeCommand('workbench.action.closeSidebar');
 +					sidebar.dispatchEvent(new CustomEvent('ubovm-empty-sidebar'));
  				} else if (restoreFocus) {
@@ -31,7 +31,7 @@ diff --git a/src/vs/workbench/browser/parts/paneCompositePart.ts b/src/vs/workbe
  		const compositeId = composite.getId();
  		this.activePaneContextKey.set(compositeId);
  		this.element.dataset.activeComposite = compositeId;
-@@ -249,10 +253,99 @@ export abstract class AbstractPaneCompositePart extends CompositePart<PaneCompos
+@@ -249,10 +253,108 @@ export abstract class AbstractPaneCompositePart extends CompositePart<PaneCompos
  		this.updateCompositeBar();
  
  		const focusTracker = this._register(trackFocus(parent));
@@ -121,10 +121,18 @@ diff --git a/src/vs/workbench/browser/parts/paneCompositePart.ts b/src/vs/workbe
 +		actions.append(fileButton, workerButton);
 +		chooser.append(hint, actions);
 +		this.emptyPaneMessageElement?.replaceChildren(chooser);
-+		this._register(addDisposableListener(this.element, 'ubovm-empty-sidebar', () => {
-+			// Closing the last tab collapses the right sidebar (DSH-style); the
-+			// title toggle reopens it on the last active view.
++		this._register(addDisposableListener(this.element, 'ubovm-empty-sidebar', event => {
++			// Closing the last tab collapses the right sidebar, removes the tab
++			// from the bar and forgets the active viewlet.
++			const closedId = event?.detail?.id;
++			try { if (closedId && this.paneCompositeBar.value) this.paneCompositeBar.value.removeComposite(closedId); } catch { /* already gone */ }
++			this.element.dataset.ubovmEmpty = 'true';
 +			this.hideActivePaneComposite();
++			try {
++				this.storageService.remove('workbench.sidebar.activeviewletid', 0);
++				this.storageService.remove('workbench.sidebar.activeviewletid', 1);
++				this.storageService.remove('workbench.sidebar.activeviewletid', 2);
++			} catch { /* storage scopes are best-effort */ }
 +		}));
 +	}
 +

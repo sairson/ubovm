@@ -286,9 +286,13 @@ test('project creation and deletion actions are exposed through native menus and
   const fsSync = require('node:fs');
   const manifest = require('../../../package.json');
   const menus = manifest.contributes.menus;
-  assert(menus['view/title'].some(item => item.submenu === 'ubovm.create' && item.when.includes('ubovm.sessions')));
-  assert(menus['view/title'].some(item => item.command === 'ubovm.manageProjects' && item.when.includes('ubovm.sessions')));
-  assert(menus['view/title'].some(item => item.command === 'ubovm.newProject' && item.when.includes('ubovm.sessions') && item.group === 'navigation@0'));
+  // The sessions header no longer duplicates the compose row: project/search/
+  // new-chat entries live in the custom workspace row and the create submenu.
+  assert.equal(menus['view/title'].some(item => item.submenu === 'ubovm.create' && item.when.includes('ubovm.sessions')), false);
+  assert.equal(menus['view/title'].some(item => item.command === 'ubovm.manageProjects' && item.when.includes('ubovm.sessions')), false);
+  assert.equal(menus['view/title'].some(item => item.command === 'ubovm.newProject' && item.when.includes('ubovm.sessions')), false);
+  assert.equal(menus['view/title'].some(item => item.command === 'ubovm.searchConversations' && item.when.includes('ubovm.sessions')), false);
+  assert(menus['view/title'].some(item => item.command === 'ubovm.hideSessions' && item.when.includes('ubovm.sessions')));
   assert(menus['ubovm.create'].some(item => item.command === 'ubovm.newChat'));
   assert(menus['ubovm.create'].some(item => item.command === 'ubovm.newGoal'));
   assert.equal(menus['ubovm.create'].some(item => item.command === 'ubovm.newProject'), false);
@@ -959,7 +963,9 @@ test('goal writes require the goal space and stale queued writes cannot affect a
   await store.ready;
   const assist = store.current();
   await assert.rejects(store.saveGoal({ objective: '禁止写到协助会话', criteria: [] }), /仅可在探索模式/);
-  await assert.rejects(store.addGoalNote('禁止写到协助会话'), /仅可在探索模式/);
+  await store.addGoalNote('协助会话自己的笔记');
+  assert.equal(store.current().notes[0].text, '协助会话自己的笔记');
+  const assistAfterNote = store.current();
   await assert.rejects(store.toggleGoalCriterion('missing', true), /仅可在探索模式/);
   const firstId = (await store.setMode('goal', assist.id)).id;
   await store.saveGoal({ objective: '会话一', criteria: [{ text: '标准一' }] }, firstId);
@@ -986,8 +992,27 @@ test('goal writes require the goal space and stale queued writes cannot affect a
   const staleGoalSave = store.saveGoal({ objective: '过期目标页面', criteria: [] }, second.id);
   await changingMode;
   await assert.rejects(staleGoalSave, /会话已切换/);
-  assert.deepEqual(store.current(), assist);
+  assert.deepEqual(store.current(), assistAfterNote);
   assert.deepEqual(store.list('goal'), before);
+});
+
+test('assist notes persist across session switches and can be deleted', async () => {
+  const { store } = harness();
+  await store.ready;
+  const assist = store.current();
+  await store.addGoalNote('协助会话的持久笔记');
+  const saved = store.current().notes.find(note => note.text === '协助会话的持久笔记');
+  assert.ok(saved?.id);
+  const other = await store.create();
+  await store.select(assist.id);
+  assert.equal(store.current().notes.some(note => note.id === saved.id), true, 'notes survive a session switch');
+  await store.editNote(saved.id, '协助会话修改后的笔记');
+  assert.equal(store.current().notes.find(note => note.id === saved.id).text, '协助会话修改后的笔记');
+  await store.editAgentNote('agent-note', 'Agent 笔记的用户修改');
+  assert.equal(store.current().editedAgentNotes.find(note => note.id === 'agent-note').text, 'Agent 笔记的用户修改');
+  await store.deleteNote(saved.id);
+  assert.equal(store.current().notes.some(note => note.id === saved.id), false);
+  await store.select(other.id);
 });
 
 test('writes publish only after persistence and a storage failure leaves all visible state unchanged', async () => {

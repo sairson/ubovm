@@ -14,7 +14,12 @@ export function installWindowFocusRestore(window) {
 
 // The lifecycle hook runs before Code OSS starts renderer/extension-host shutdown.
 export function installBackgroundMode({ app, Tray, Menu, nativeImage, dialog, icon, platform = process.platform, log = console }) {
-  if (platform !== 'win32') return;
+  // Every desktop platform gets the background lifecycle; only the tray
+  // affordances differ. Unknown platforms keep the plain Electron behaviour.
+  if (!['win32', 'darwin', 'linux'].includes(platform)) return;
+  // Windows uses balloons and a single-click tray toggle; macOS shows the
+  // context menu on click and has no balloon API, Linux varies by desktop.
+  const trayBalloon = platform === 'win32';
   let tray;
   let lastWindow;
   const windows = new Set();
@@ -71,6 +76,7 @@ export function installBackgroundMode({ app, Tray, Menu, nativeImage, dialog, ic
   }
 
   function notifyBackground() {
+    if (!trayBalloon) return;
     if (notified || sessionEnding || !tray || tray.isDestroyed() || !liveWindows().every(isBackground)) return;
     // At most one quiet hint per process, even if Windows suppresses the balloon.
     notified = true;
@@ -149,9 +155,15 @@ export function installBackgroundMode({ app, Tray, Menu, nativeImage, dialog, ic
       lastStatus = undefined;
       const owner = tray;
       const showCurrent = () => { if (tray === owner && !owner.isDestroyed()) show(); };
-      tray.on('click', showCurrent);
-      tray.on('double-click', showCurrent);
-      tray.on('balloon-click', showCurrent);
+      if (trayBalloon) tray.on('balloon-click', showCurrent);
+      if (platform === 'win32') {
+        tray.on('click', showCurrent);
+        tray.on('double-click', showCurrent);
+      } else if (platform === 'linux') {
+        // StatusNotifier hosts deliver activation as a click; macOS reserves
+        // the click for the context menu, which already offers 显示 IDE.
+        tray.on('click', showCurrent);
+      }
       updateTray();
       return tray === owner && !owner.isDestroyed();
     } catch (error) {

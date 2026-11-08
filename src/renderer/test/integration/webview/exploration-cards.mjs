@@ -93,6 +93,12 @@ test('exploration tabs share one card surface, radius and flat elevation', async
     cards.notes = await card(page, '.notebook-layout');
     const note = await card(page, '#goal-notes-list .note-select');
     for (const [name, value] of Object.entries(cards)) {
+      if (name === 'board') {
+        assert.ok(parseFloat(value.radius) >= 30 || value.radius === '50%', 'board nodes are spheres');
+        assert.equal(value.border, '1px solid');
+        assert.notEqual(value.background, 'rgba(0, 0, 0, 0)');
+        continue;
+      }
       assert.equal(value.radius, '12px', `${name} radius`);
       assert.equal(value.border, '1px solid', `${name} border`);
       assert.equal(value.shadow, 'none', `${name} shadow`);

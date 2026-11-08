@@ -460,7 +460,7 @@ test('initialization rendering and request recovery remain isolated and repeatab
       assert.equal(await page.locator('#settings-fields').evaluate(node => node.inert), true);
       const saved = structuredClone(snapshot); saved.values.model.modelId = 'saving-model'; saved.initialization.model = true;
       await result(request, saved, { saved: true });
-      assert.equal(await page.locator('[data-setup-step="ssh"]').getAttribute('aria-current'), 'step');
+      assert.equal(await page.locator('[data-setup-step="web"]').getAttribute('aria-current'), 'step');
       assert.equal(await page.locator('#settings-fields').evaluate(node => node.inert), false);
       assert.deepEqual(errors, []);
     });
@@ -512,7 +512,7 @@ test('initialization rendering and request recovery remain isolated and repeatab
         assert.equal(await page.locator('#settings-load-error').isVisible(), true);
         await page.locator('#settings-reload').click();
         await result(await last('settingsRead'), modelReady);
-        assert.equal(await page.locator('[data-setup-step="' + (chosen || 'ssh') + '"]').getAttribute('aria-current'), 'step');
+        assert.equal(await page.locator('[data-setup-step="' + (chosen || 'web') + '"]').getAttribute('aria-current'), 'step');
         assert.equal(await page.locator('#settings-load-error').isVisible(), false);
         await page.locator('#settings-close').click();
       }

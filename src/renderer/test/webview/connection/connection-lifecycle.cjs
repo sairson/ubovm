@@ -22,7 +22,7 @@ test('connection probes resume after page restoration and explicit disposal rema
     const count = sent.length; monitor.probe(); assert.equal(sent.length, count);
     window.dispatchEvent(new Event('pageshow')); window.dispatchEvent(new Event('pageshow'));
     assert.equal(timers.size, 1); assert.equal(sent.length, count + 1);
-    assert.equal(states.at(-1), 'reconnecting'); acknowledge();
+    assert.equal(states.at(-1), 'connected', 'normal show probes silently instead of flashing reconnect'); acknowledge();
     assert.equal(states.at(-1), 'connected');
   }
   monitor.dispose(); monitor.dispose();
@@ -50,7 +50,11 @@ test('hidden connection clocks pause and late send failures cannot overwrite a r
     assert.equal(states.at(-1), 'reconnecting', 'one send failure soft-reconnects during UI churn');
     await new Promise(resolve => setImmediate(resolve));
     rejected.at(-1)(new Error('follow-up bridge failure')); await new Promise(resolve => setImmediate(resolve));
-    assert.equal(states.at(-1), 'disconnected', 'two consecutive send failures disconnect');
+    assert.equal(states.at(-1), 'reconnecting', 'post-show grace absorbs the first counted miss');
+    await new Promise(resolve => setImmediate(resolve));
+    rejected.at(-1)(new Error('second counted bridge failure')); await new Promise(resolve => setImmediate(resolve));
+    assert.equal(states.at(-1), 'unresponsive', 'sustained send failures stay advisory instead of declaring the host dead');
+    assert.equal(states.includes('disconnected'), false);
     monitor.dispose(); document.dispatchEvent(new Event('visibilitychange')); assert.equal(timers.size, 0);
   } finally { monitor.dispose(); }
 });

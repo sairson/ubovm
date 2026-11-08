@@ -167,6 +167,21 @@ test('turn cards show counts, send scoped file and undo actions, and preserve hi
     state.messages.push({ role: 'assistant', id: 'assist:round', text: '历史回复' });
     await send(state);
     assert.equal(await page.getByRole('button', { name: '一键撤销本轮全部修改', exact: true }).isDisabled(), true);
+    state.busy = false; state.execution = { status: 'completed', busy: false, runId: 'round', parts: [], workers: [] };
+    state.codeChanges.round.files = [
+      { id: 'file1', root: 0, path: 'src/one.ts', added: 1, removed: 0, operation: 'replace', state: 'applied' },
+      { id: 'file2', root: 0, path: 'src/two.ts', added: 1, removed: 0, operation: 'replace', state: 'applied' },
+      { id: 'file3', root: 0, path: 'src/three.ts', added: 1, removed: 0, operation: 'replace', state: 'applied' },
+      { id: 'file4', root: 0, path: 'src/four.ts', added: 1, removed: 0, operation: 'replace', state: 'applied' },
+      { id: 'file5', root: 0, path: 'src/five.ts', added: 1, removed: 0, operation: 'replace', state: 'applied' }
+    ];
+    state.codeChanges.round.revision = 'r3';
+    await send(state);
+    const compact = page.locator('#messages .code-change-card');
+    assert.equal(await compact.locator('.code-change-file:visible').count(), 3, 'only three files are shown by default');
+    assert.match(await compact.locator('.code-change-more-toggle').textContent(), /更多 2 个文件/);
+    await compact.locator('.code-change-more-toggle').click();
+    assert.equal(await compact.locator('.code-change-file:visible').count(), 5, 'the remaining files stay available under more');
     assert.deepEqual(errors, []);
   } finally { await browser.close(); }
 });

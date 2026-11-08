@@ -237,6 +237,44 @@ export class BrowserManager {
       case 'console': return { ...common, ...this.consoleEntries(state, input) };
       case 'tab_close': await page.close(); return { ...common, closed: true };
       case 'tab_activate': await page.bringToFront(); scope.active = state.id; return this.summary(state);
+      case 'cookies': {
+        // Background/headless parity with the IDE browser host: the context is
+        // isolated per Worker, so listing every cookie is the page's cookie jar.
+        const cookies = await scope.context.cookies();
+        return {
+          ...common, url: page.url(),
+          cookies: cookies.map(cookie => ({
+            name: cookie.name, domain: cookie.domain, path: cookie.path,
+            secure: cookie.secure === true, httpOnly: cookie.httpOnly === true,
+            sameSite: cookie.sameSite, expires: cookie.expires,
+            value_present: typeof cookie.value === 'string' && cookie.value.length > 0,
+            ...(input.include_credentials === true ? { value: cookie.value } : {})
+          }))
+        };
+      }
+      case 'set_cookie': {
+        const mutation = input.mutations && typeof input.mutations === 'object' ? input.mutations : {};
+        const name = String(mutation.name || input.name || '');
+        if (!name) throw new TypeError('set_cookie requires name');
+        const cookie = {
+          name, value: String(mutation.value ?? input.value ?? ''),
+          url: mutation.url ? String(mutation.url) : page.url(),
+          ...(mutation.domain ? { domain: String(mutation.domain) } : {}),
+          ...(mutation.path ? { path: String(mutation.path) } : {}),
+          ...(mutation.secure !== undefined ? { secure: mutation.secure === true } : {}),
+          ...(mutation.httpOnly !== undefined ? { httpOnly: mutation.httpOnly === true } : {}),
+          ...(mutation.sameSite ? { sameSite: String(mutation.sameSite) } : {}),
+          ...(Number.isFinite(Number(mutation.expires)) ? { expires: Number(mutation.expires) } : {})
+        };
+        await scope.context.addCookies([cookie]);
+        return { ...common, ok: true, name, domain: cookie.domain || cookie.url };
+      }
+      case 'clear_cookies': {
+        const name = String(input.name || '');
+        if (name) await scope.context.clearCookies({ name });
+        else await scope.context.clearCookies();
+        return { ...common, ok: true, cleared: name ? 'named' : 'all' };
+      }
       case 'navigate': await page.goto(requireString(input.url, 'url'), { waitUntil: 'domcontentloaded', timeout }); return this.summary(state);
       case 'back': await page.goBack({ waitUntil: 'domcontentloaded', timeout }); return this.summary(state);
       case 'forward': await page.goForward({ waitUntil: 'domcontentloaded', timeout }); return this.summary(state);
@@ -274,6 +312,7 @@ export class BrowserManager {
           if (!['visible', 'hidden', 'attached', 'detached'].includes(condition)) throw new TypeError('wait_for with ref must be visible, hidden, attached or detached');
           await this.locator(state, input).waitFor({ state: condition, timeout });
         }
+        else if (input.url) await page.waitForURL(url => String(url).toLowerCase().includes(String(input.url).toLowerCase()), { timeout });
         else if (input.query) await page.getByText(String(input.query), { exact: false }).first().waitFor({ state: 'visible', timeout });
         else if (['load', 'domcontentloaded', 'networkidle'].includes(condition)) await page.waitForLoadState(condition, { timeout });
         else await page.getByText(condition, { exact: false }).first().waitFor({ state: 'visible', timeout });
@@ -288,9 +327,14 @@ export class BrowserManager {
       case 'screenshot': {
         if (input.ref && input.full_page) throw new TypeError('Use either ref or full_page for screenshot');
         const target = input.ref ? this.locator(state, input) : page;
-        const bytes = await target.screenshot({ type: 'jpeg', quality: 65, timeout, ...(!input.ref ? { fullPage: input.full_page ?? false } : {}) });
+        const format = input.format === 'png' ? 'png' : 'jpeg';
+        const quality = format === 'jpeg' ? Math.min(100, Math.max(10, Number(input.quality) || 65)) : undefined;
+        const bytes = await target.screenshot({
+          type: format, ...(quality ? { quality } : {}), timeout,
+          ...(!input.ref ? { fullPage: input.full_page ?? false } : {})
+        });
         if (bytes.length > 4 * 1024 * 1024) throw new Error('Screenshot exceeds 4 MiB; reduce the viewport');
-        return { ...common, mime_type: 'image/jpeg', image: { type: 'image', data: bytes.toString('base64'), mimeType: 'image/jpeg' } };
+        return { ...common, mime_type: `image/${format}`, format, image: { type: 'image', data: bytes.toString('base64'), mimeType: `image/${format}` } };
       }
       case 'cdp': {
         const method = requireString(input.method, 'method');

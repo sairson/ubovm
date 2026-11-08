@@ -35,6 +35,57 @@ test('Reason strips parent notes from fenced JSON without a repair', async () =>
   assert.equal(Object.hasOwn(decision.intents[0], 'parentIds_note'), false);
 });
 
+test('Reason discards camelCase intent annotations from providers', async () => {
+  const source = JSON.stringify({ intents: [{
+    description: 'inspect', parentIds: ['n1'], priority: 'medium', keyPoints: ['checked'],
+    descriptionNote: 'scratch', parentIdsNote: 'scratch', priorityNote: 'scratch', keyPointsNote: 'scratch'
+  }] });
+  const events = [];
+  const decision = await createPiReason({ model, maxRepairs: 0, onEvent: event => events.push(event),
+    streamFn: () => response(source, 'stop') })({ context });
+  assert.deepEqual(decision, { intents: [{ description: 'inspect', parentIds: ['n1'], priority: 'medium', keyPoints: ['checked'] }] });
+  assert.deepEqual(events.find(event => event.type === 'reason_normalized').fields,
+    ['intents[0].descriptionNote', 'intents[0].parentIdsNote', 'intents[0].priorityNote', 'intents[0].keyPointsNote']);
+  assert.throws(() => parseReasonDecision(source, { context }), /unsupported field "descriptionNote"/);
+});
+
+test('Reason recognizes ignored note suffixes as annotations', async () => {
+  const source = JSON.stringify({ intents: [{
+    description: 'inspect', parentIds: ['n1'], priority: 'medium', keyPoints: ['checked'],
+    parentIdsNoteIgnored: 'scratch', keyPoints_note_ignored: 'scratch', priorityNoteRemoved: 'scratch'
+  }] });
+  const events = [];
+  const decision = await createPiReason({ model, maxRepairs: 0, onEvent: event => events.push(event),
+    streamFn: () => response(source, 'stop') })({ context });
+  assert.deepEqual(decision, { intents: [{ description: 'inspect', parentIds: ['n1'], priority: 'medium', keyPoints: ['checked'] }] });
+  assert.deepEqual(events.find(event => event.type === 'reason_normalized').fields, [
+    'intents[0].parentIdsNoteIgnored', 'intents[0].keyPoints_note_ignored', 'intents[0].priorityNoteRemoved'
+  ]);
+});
+
+test('Reason regenerates once when intent annotations appear', async () => {
+  let calls = 0;
+  const events = [];
+  const clean = { intents: [{ description: 'inspect', parentIds: ['n1'], priority: 'medium', keyPoints: ['checked'] }] };
+  const decision = await createPiReason({ model, onEvent: event => events.push(event),
+    streamFn: () => response(JSON.stringify(++calls === 1 ? { intents: [{ ...clean.intents[0], parentIdsNoteIgnored: 'scratch' }] } : clean), 'stop') })({ context });
+  assert.equal(calls, 2);
+  assert.deepEqual(decision, clean);
+  assert.deepEqual(events.find(event => event.type === 'reason_normalized').fields, ['intents[0].parentIdsNoteIgnored']);
+  assert.match(events.find(event => event.type === 'reason_repair').error, /Remove scratch annotation fields/);
+});
+
+test('Reason falls back to a normalized decision when annotation regeneration fails', async () => {
+  let calls = 0;
+  const clean = { intents: [{ description: 'inspect', parentIds: ['n1'], priority: 'medium', keyPoints: ['checked'] }] };
+  const decision = await createPiReason({ model,
+    streamFn: () => response(JSON.stringify(++calls === 1
+      ? { intents: [{ ...clean.intents[0], keyPointsNote: 'scratch' }] }
+      : { intents: [{ ...clean.intents[0], parentIds: ['n99'] }] }), 'stop') })({ context });
+  assert.equal(calls, 2);
+  assert.deepEqual(decision, clean);
+});
+
 test('Reason discards known parent notes locally without spending a repair or changing aliases', async () => {
   let calls = 0;
   const events = [];
@@ -65,10 +116,39 @@ test('Reason discards priority-note annotations instead of failing the review', 
     streamFn: () => response(JSON.stringify({ intents: [{ ...intents[0], hint: 'human instruction' }] }), 'stop') })({ context }), { code: 'INVALID_REASON_DECISION' });
 });
 
+test('Reason drops annotation payloads of any shape without interpreting them', async () => {
+  const source = JSON.stringify({ intents: [{
+    description: 'inspect', parentIds: ['n1'], priority: 'medium', keyPoints: ['checked'],
+    parentIds_note: { parentIds: ['n99'] },
+    keyPointsNote: { instruction: 'use this instead' },
+    descriptionNote: 'x'.repeat(2049)
+  }] });
+  const events = [];
+  const decision = await createPiReason({ model, maxRepairs: 0, onEvent: event => events.push(event),
+    streamFn: () => response(source, 'stop') })({ context });
+  assert.deepEqual(decision, { intents: [{ description: 'inspect', parentIds: ['n1'], priority: 'medium', keyPoints: ['checked'] }] });
+  assert.deepEqual(events.find(event => event.type === 'reason_normalized').fields,
+    ['intents[0].parentIds_note', 'intents[0].keyPointsNote', 'intents[0].descriptionNote']);
+});
+
+test('Reason salvages common commentary fields without spending a repair', async () => {
+  const source = JSON.stringify({ intents: [{
+    description: 'inspect', parentIds: ['n1'], priority: 'medium', keyPoints: ['checked'],
+    rationale: 'provider scratch', title: 'short title'
+  }] });
+  const events = [];
+  let calls = 0;
+  const decision = await createPiReason({ model, maxRepairs: 0, onEvent: event => events.push(event),
+    streamFn: () => { calls++; return response(source, 'stop'); } })({ context });
+  assert.deepEqual(decision, { intents: [{ description: 'inspect', parentIds: ['n1'], priority: 'medium', keyPoints: ['checked'] }] });
+  assert.equal(calls, 1);
+  assert.deepEqual(events.find(event => event.type === 'reason_normalized').fields,
+    ['intents[0].rationale', 'intents[0].title']);
+});
+
 test('Reason note normalization preserves schema, alias and response limits', async () => {
   for (const overrides of [
-    { hint: 'human instruction' }, { other_note: 'unknown' }, { parentIds: ['n99'] },
-    { parentIds_note: { parentIds: ['n1'] } }, { parentIds_note: 'x'.repeat(2049) },
+    { hint: 'human instruction' }, { other_note: 'unknown' },
     { keyPoints: [] }, { priority: 'urgent' }
   ]) {
     await assert.rejects(createPiReason({ model, maxRepairs: 0,
@@ -87,6 +167,20 @@ test('Reason repairs substantive errors even when a cosmetic note persists', asy
   assert.equal(calls, 2);
   assert.deepEqual(decision.intents[0].parentIds, ['n1']);
   assert.deepEqual(snapshots[0], snapshots[1]);
+});
+
+test('Reason re-roots intents when the reviewer keeps citing an unknown alias', async () => {
+  let calls = 0;
+  const events = [];
+  const decision = await createPiReason({ model, onEvent: event => events.push(event),
+    streamFn: () => {
+      calls++;
+      return response(JSON.stringify({ intents: [{ description: 'inspect', parentIds: ['n20'], priority: 'medium', keyPoints: ['checked'] }] }), 'stop');
+    } })({ context });
+  assert.equal(calls, 2);
+  assert.deepEqual(decision, { intents: [{ description: 'inspect', parentIds: ['n1'], priority: 'medium', keyPoints: ['checked'] }] });
+  assert.match(events.find(event => event.type === 'reason_repair').error, /only valid aliases/);
+  assert.deepEqual(events.find(event => event.type === 'reason_normalized' && event.aliasFallback).fields, ['intents[0].parentIds']);
 });
 
 test('Reason repairs token truncation against the same evidence within its budget', async () => {

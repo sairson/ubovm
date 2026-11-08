@@ -1,5 +1,5 @@
 import { Type } from 'typebox';
-import { graphNodeRef, renderGraphSubset } from '../blackboard/graph-view.mjs';
+import { graphNodeRef } from '../blackboard/graph-view.mjs';
 
 const READ_CHUNK = 12000;
 const MAX_NODES = 80;
@@ -64,7 +64,9 @@ export function createExplorationGraphTool({ build, info } = {}) {
           revision: snapshot.revision, nodes: snapshot.nodes.length, edges: snapshot.nodes.reduce((sum, node) => sum + node.parentIds.length, 0),
           root: refOf(snapshot, snapshot.nodes.find(node => node.id === snapshot.rootId) ?? snapshot.nodes[0]),
           counts, ...(graphInfo?.stats ? { view: graphInfo.stats } : {}),
-          guidance: 'Every node/edge is in the compact graph; use node/children/subtree/read_fact for details.'
+          guidance: graphInfo?.stats?.truncated
+            ? 'The compact evidence graph is truncated for a long campaign; use search/node/children/parents/read_fact to inspect omitted nodes. Every stored node still exists and aliases follow the complete board order.'
+            : 'Every node/edge is in the compact graph; use node/children/subtree/read_fact for details.'
         });
       }
       if (action === 'search') {
@@ -127,7 +129,9 @@ export function createExplorationGraphTool({ build, info } = {}) {
             .filter(id => { if (seen.has(id)) return false; seen.add(id); return true; });
         }
         const ids = [...seen].slice(0, MAX_NODES);
-        return result({ ref, depth: depthLimit, nodes: ids.map(id => describe(snapshot, snapshot.nodes.find(item => item.id === id), snapshot.nodes.findIndex(item => item.id === id))), truncated: seen.size > MAX_NODES, compact: renderGraphSubset(snapshot, ids, { detail: 'summary' }) });
+        // One representation: describe lines. The rendered subset duplicated the
+        // same nodes in a second, larger payload.
+        return result({ ref, depth: depthLimit, nodes: ids.map(id => describe(snapshot, snapshot.nodes.find(item => item.id === id), snapshot.nodes.findIndex(item => item.id === id))), truncated: seen.size > MAX_NODES });
       }
       throw new Error(`Unknown exploration_graph action: ${action || '(empty)'}`);
     }

@@ -27,13 +27,15 @@ const INSTALL_SKILL_PARAMETERS = { ...OBJECT, properties: {
 
 const INSTALL_MCP_PARAMETERS = { ...OBJECT, required: ['name'], properties: {
   name: { type: 'string', minLength: 1, maxLength: 64, description: 'Unique server name; also the tool-name prefix unless toolNamePrefix is set.' },
-  transport: { type: 'string', enum: ['stdio', 'sse', 'streamable_http'], description: 'Transport. Defaults to stdio.' },
+  transport: { type: 'string', enum: ['stdio', 'sse', 'streamable_http', 'streamable-http'], description: 'Transport. Defaults to stdio.' },
   command: { type: 'string', description: 'Executable for a stdio server, for example npx or node.' },
   args: { type: 'array', maxItems: 128, items: { type: 'string' }, description: 'Arguments for a stdio server.' },
   cwd: { type: 'string', description: 'Working directory for a stdio server.' },
   url: { type: 'string', description: 'Absolute HTTP(S) endpoint for a remote server.' },
   env: { ...STRING_MAP, description: 'Environment variables for a stdio server. Stored as a credential.' },
   headers: { ...STRING_MAP, description: 'Request headers for a remote server. Stored as a credential.' },
+  insecureTls: { type: 'boolean', description: 'Accept a self-signed or otherwise untrusted HTTPS certificate for this server. Only for endpoints the user controls.' },
+  tlsCa: { type: 'string', description: 'PEM certificate(s) to trust for this HTTPS server instead of skipping verification.' },
   enabled: { type: 'boolean', description: 'Whether the server is enabled. Defaults to true.' },
   required: { type: 'boolean', description: 'Abort a run when the server cannot connect. Set true only when the server must always be available.' },
   tools: { type: 'array', maxItems: 512, items: { type: 'string' }, description: 'Allowlist of remote tool names. Empty means all tools.' },
@@ -42,15 +44,36 @@ const INSTALL_MCP_PARAMETERS = { ...OBJECT, required: ['name'], properties: {
 } };
 
 const INSTALL_SKILL_DESCRIPTION = 'Install a skill into the user skills directory so it becomes available on the next turn. Provide either content (the full SKILL.md text with YAML frontmatter, plus optional supporting files) or url (a raw SKILL.md, a ZIP, or a tar.gz package). The skill is validated and written atomically; an existing skill is only replaced when overwrite is true, and replacing a skill already loaded in the current session may require starting a new session. It is discovered only when the next turn starts, and activates through load_skill (it is not a same-named tool); never report a skill as missing without checking the next turn\'s catalog. Use this only when the user explicitly asks to install a skill.';
-const INSTALL_MCP_DESCRIPTION = 'Add or replace one MCP server in the user settings so its tools become available on the next turn. Use transport stdio with command/args (and optional cwd) or sse/streamable_http with url. Credentials go in env/headers and are stored in the system credential store, never in the settings file. An existing server is only replaced when overwrite is true. required defaults to false so a server that cannot connect never aborts the run. The server connects only when the next turn starts, so it will not appear in this turn; each turn the harness reports every server as connected or NOT connected, and that status line is the authoritative way to check whether a server actually mounted. Use this only when the user explicitly asks to install or register an MCP server.';
+const INSTALL_MCP_DESCRIPTION = 'Add or replace one MCP server in the user settings, then immediately test the real connection. Use transport stdio with command/args (and optional cwd) or sse/streamable_http with url. Credentials go in env/headers and are stored in the system credential store, never in the settings file. An existing server is only replaced when overwrite is true. required defaults to false so a server that cannot connect never aborts the run. The result carries a `connection` object: connected, the exposed tool names, or the actual failure reason (HTTP status, untrusted certificate, missing executable, timeout). Report that status to the user verbatim instead of claiming the server works; a server that failed to connect stays installed but its tools are unusable until the cause is fixed. HTTPS certificate validation is off by default for MCP (the global "ignore HTTPS certificate" MCP setting); pass insecureTls=true or tlsCa (PEM) only to pin per-server trust, and never tell the user a self-signed certificate must be fixed before the server can work. Exposed tools are named mcp__<server>__<tool>. Use this only when the user explicitly asks to install or register an MCP server.';
 
 /** Build the agent installation tools for a host that owns settings and skills. */
-function createInstallTools({ settings, destination = defaultDirectory, onInstalled = () => {} } = {}) {
+function createInstallTools({ settings, destination = defaultDirectory, onInstalled = () => {}, verifyMcpServer } = {}) {
   if (!settings || typeof settings !== 'object') throw new TypeError('settings host is required');
   if (typeof destination !== 'string' || !destination.trim()) throw new TypeError('destination must be a directory');
   if (typeof onInstalled !== 'function') throw new TypeError('onInstalled must be a function');
+  if (verifyMcpServer !== undefined && typeof verifyMcpServer !== 'function') throw new TypeError('verifyMcpServer must be a function');
 
   const notify = event => { try { Promise.resolve(onInstalled(event)).catch(() => {}); } catch { /* observers cannot fail an install */ } };
+
+  // Saving a server only proves the settings write. Verify the real connection
+  // so the chat/notification reports "installed + N tools" or the actual reason
+  // instead of an unconditional success that leaves the user with no tools.
+  async function probe(server, credentials) {
+    if (typeof verifyMcpServer !== 'function' || server.enabled === false) return undefined;
+    const candidate = { ...server };
+    if (credentials.env !== undefined) candidate.env = credentials.env;
+    if (credentials.headers !== undefined) candidate.headers = credentials.headers;
+    try {
+      const connection = await verifyMcpServer(candidate);
+      return {
+        connected: connection?.connected === true,
+        tools: Array.isArray(connection?.tools) ? connection.tools : [],
+        ...(connection?.connected === true ? {} : { error: String(connection?.error ?? 'connection failed') })
+      };
+    } catch (error) {
+      return { connected: false, tools: [], error: String(error?.message ?? error) };
+    }
+  }
 
   const installSkillTool = {
     name: 'install_skill',
@@ -80,7 +103,8 @@ function createInstallTools({ settings, destination = defaultDirectory, onInstal
       // An empty allowlist would expose no tools; treat it as "all tools".
       if (Array.isArray(server.tools) && !server.tools.length) delete server.tools;
       const result = await settings.addMcpServer({ server, credentials: { env, headers }, overwrite: overwrite === true });
-      const value = { ...result, effective: 'next_turn' };
+      const connection = await probe(server, { env, headers });
+      const value = { ...result, effective: 'next_turn', ...(connection ? { connection } : {}) };
       notify({ type: 'mcp', ...value });
       return textResult(value);
     }

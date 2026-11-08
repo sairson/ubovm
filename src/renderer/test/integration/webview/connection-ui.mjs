@@ -37,7 +37,7 @@ test('late frontend state never restores stale execution or switches back to an 
   assert.deepEqual(errors, []);
 });
 
-test('connection loss is visible, preserves drafts and blocks submissions until state resync', async t => {
+test('probe silence is advisory: drafts and pending operations survive recovery', async t => {
   const browser = await chromium.launch({ channel: 'msedge', headless: true });
   t.after(() => browser.close());
   const page = await browser.newPage({ viewport: { width: 390, height: 760 } });
@@ -49,7 +49,9 @@ test('connection loss is visible, preserves drafts and blocks submissions until 
       if (online && message.action === 'connectionProbe') setTimeout(() => dispatchEvent(new MessageEvent('message', { data: { type: 'connectionStatus', probeId: message.probeId, backend: { status: backend } } })), 0);
     } });
   });
-  const html = renderWebview({ nonce: 'connection-test' }).replace('interval = 5000, timeout = 20000', 'interval = 50, timeout = 300');
+  const html = renderWebview({ nonce: 'connection-test' })
+    .replace('interval = 5000, timeout = 20000', 'interval = 50, timeout = 300')
+    .replace('interval: 5000, timeout: 30000', 'interval: 50, timeout: 300');
   await page.route('http://connection.test/', route => route.fulfill({ contentType: 'text/html', body: html }));
   await page.goto('http://connection.test/');
   await page.evaluate(() => dispatchEvent(new MessageEvent('message', { data: {
@@ -57,21 +59,25 @@ test('connection loss is visible, preserves drafts and blocks submissions until 
     provider: { configured: true, connected: true }, context: { workspace: 'test' }, execution: { status: 'running', busy: true, parts: [], workers: [], streamText: '已收到的内容\n\n```txt\n待复制文本\n```' }
   } })));
   await page.locator('#prompt-input').fill('断线时仍然保留的草稿');
-  const copy = page.locator('.md-code-actions button').last();
-  await copy.click();
-  assert.equal(await copy.isDisabled(), true);
   const readyCount = await page.evaluate(() => sent.filter(message => message.action === 'ready').length);
   await page.evaluate(() => { dispatchEvent(new Event('pagehide')); dispatchEvent(new Event('pageshow')); });
   await page.waitForFunction(count => sent.filter(message => message.action === 'ready').length > count, readyCount);
-  assert.equal(await copy.isDisabled(), true, 'page restoration must preserve pending operations until their real result or timeout');
   assert.equal(await page.locator('#connection-warning').isVisible(), false);
+  // Page lifecycle suspension settles its own in-flight operations (pinned by
+  // main-request-delivery.mjs). Create a fresh pending operation so the probe
+  // silence assertions target the transport only.
+  const copy = page.locator('.md-code-actions button').last();
+  await copy.click();
+  assert.equal(await copy.isDisabled(), true);
   await page.evaluate(() => { online = false; });
   await page.locator('#connection-warning').waitFor({ state: 'visible' });
-  assert.match(await page.locator('#connection-warning-text').textContent(), /任务状态未知/);
-  assert.equal(await page.locator('#operation-loading').isVisible(), false, 'lost acknowledgments must release pending request locks');
-  assert.equal(await page.locator('.md-code-actions button').last().isDisabled(), false);
+  assert.match(await page.locator('#connection-warning-text').textContent(), /响应变慢/);
+  // A probe deadline never fails in-flight work or clears the draft: the pending
+  // operation keeps its own deadline and the page keeps probing.
+  assert.equal(await copy.isDisabled(), true, 'unanswered operations are not failed by a probe miss');
+  assert.equal(await page.locator('#prompt-input').inputValue(), '断线时仍然保留的草稿');
   await page.locator('#prompt-input').fill('断线后继续编辑');
-  assert.equal(await page.locator('#submit-prompt').isDisabled(), true);
+  assert.equal(await page.locator('#submit-prompt').isDisabled(), true, 'a silent bridge cannot deliver a new send');
   await page.locator('#prompt-input').press('Enter');
   assert.equal(await page.locator('#prompt-input').inputValue(), '断线后继续编辑');
   assert(await page.locator('#prompt-input').evaluate(el => el.getBoundingClientRect().bottom <= innerHeight));

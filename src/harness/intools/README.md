@@ -13,12 +13,14 @@
 | `network/fetch/` | 网页获取与内容提取 |
 | `network/websearch/` | 网页搜索 |
 | `note/` | 会话笔记工具（资产/漏洞字段、黑板晋升）；与 `../learning/` 被动学习无关 |
-| `domain-inventory/` | 域名攻击面台账（种子域、关联资产、覆盖状态）；安全阶段验收门禁 |
+| `domain-inventory/` | 域名攻击面台账（种子域、关联资产、覆盖状态）；仅在探索模式提供，协助模式不注册该工具 |
 | `todo/` | 任务清单工具 |
 | `ask-human/` | 向用户提问并获取选择（单选/多选 + 自定义回答）；属宿主交互工具，仅在协助模式提供 `askHuman` 钩子时启用，目标模式不包含 |
-| `delivery/` | 交付工作流工具与记录校验 |
+| `delivery/` | 已移除（2026-10-28）：`delivery_workflow` 工具与交付台账删除，目录仅留说明性 stub |
 | `shared/` | 跨工具基础：`common.mjs`、`disclosure.mjs`（渐进式披露）、`tool-catalogs.mjs`、`http/`、`store/`、`process/` |
 | `runtime.mjs` | `createInternalTools` 会话编排（证据、学习接线、Worker 工具缓存） |
+
+SSH 工具只在至少存在一个包含 host 和 username 的完整 SSH endpoint 时进入 Agent 工具面。未配置或仅有空/残缺 profile 时，`run_linux_ssh_command`、`upload_sftp`、`deploy_remote_service` 会从 `allowedTools` 中自动过滤，不向模型暴露只能失败的调用；配置补全后下一轮执行即可重新出现。
 
 `index.mjs` 是工具工厂与 `createInternalTools` 的公开导出入口；编排实现位于 `runtime.mjs`。执行类工具在 `terminals/`，联网类工具在 `network/`。被动学习（`learn_capability`、共享库、后台队列）在 `../learning/`，由 runtime 接入。工具专属实现放在对应目录，跨工具复用的基础代码放在 `shared/`。测试与模块同级 `test/` 目录；新增工具仍通过根 `index.mjs` 注册和导出。Python 的 `setup.mjs` 仅供宿主初始化命令调用，不开放给 AI。
 
@@ -28,7 +30,7 @@
 
 Shell、SSH 与 Python 共用 `shared/process/process-output.mjs`：stdout/stderr 分别进行增量 UTF-8 解码，按到达顺序合并输出，每 16ms 或累计 32KiB 推送一次。连续 stderr 分片只在切入 stderr 时加前缀，避免将网络分片插入单词中。退出、失败和取消收尾时立即刷出剩余输出，结束后的迟到数据不再发布；输出预算包含 stderr 前缀与异常字节解码后的扩张。仅转发模式不重复保留完整结果，最终结果只合并一次。高频批处理、字节边界和结束竞态由 `shared/process/test/process-output.test.mjs`、`shared/process/test/process-stability.test.mjs` 及各工具测试覆盖。
 
-本地 `run_local_shell_command` 和远端 `run_linux_ssh_command` 可传入 `session: "build"` 等命名会话，在同一 Worker 生命周期内保留 shell 变量、环境变量和工作目录。省略 `session` 仍为单次隔离执行；会话不跨应用重启恢复。不同 Worker 的命名空间隔离，每个工具最多 16 个会话，同一会话串行执行，超时从实际开始执行计时。Windows 使用 PowerShell，本地 Unix 使用 `/bin/sh`，SSH 使用非交互 Bash；没有 PTY 提示符和输入回显。stdout/stderr 使用独立随机结束帧，等待两路输出结束后才完成调用。
+本地 `run_local_shell_command` 和远端 `run_linux_ssh_command` 可传入 `session: "build"` 等命名会话，在同一 Worker 生命周期内保留 shell 变量、环境变量和工作目录。省略 `session` 仍为单次隔离执行；会话不跨应用重启恢复。不同 Worker 的命名空间隔离，每个工具最多 16 个会话，同一会话串行执行，超时从实际开始执行计时。Windows 使用 PowerShell：优先解析 `pwsh.exe` 7（`UBOVM_PWSH_PATH`、`Program Files\PowerShell\7`、PATH，均未找到时回退 Windows PowerShell 5.1），每次以 `-NoLogo -NoProfile -NonInteractive -Command <preamble + command>` 启动独立进程，preamble 固定 UTF-8 输出与 `$LASTEXITCODE`；使用 `-Command` 而不是 `-EncodedCommand`，因此 stderr 不会再出现 `#< CLIXML` 序列化错误（旧格式仍会被解码为可读文本）。访问拒绝会归类为 `LOCAL_SHELL_ACCESS_DENIED` 并附带 cwd 与沙箱/ACL 提示。本地 Unix 使用 `/bin/sh`，SSH 使用非交互 Bash；没有 PTY 提示符和输入回显。stdout/stderr 使用独立随机结束帧，等待两路输出结束后才完成调用。
 
 本地显式 `cwd` 会切换会话目录，省略则保留当前目录。普通非零退出状态会报错并保留会话；执行 `exit`、取消、超时、输出超限或断连会使会话失效，不重放命令，必须传 `reset_session: true` 明确重建。同名会话重建也可用于主动清空状态。禁止在命名会话读取 stdin、启动后台任务或永久重定向 shell 的 stdout/stderr，这些操作会破坏命令边界。独立使用工具工厂时需调用其 `close()`；运行时自动清理所有 Worker 的空闲与活动会话，外部注入的 SSH 连接池仍归调用方所有。
 

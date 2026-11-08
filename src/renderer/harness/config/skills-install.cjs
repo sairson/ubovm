@@ -9,6 +9,7 @@ const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const { homedir } = require('node:os');
 const { readArchive, isZip, isGzip } = require('./archive.cjs');
+const { protectedBundledSkills } = require('./skills-catalog.cjs');
 
 const NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const DEFAULTS = {
@@ -257,6 +258,10 @@ async function installSkill(input, options = {}) {
     : await archiveEntries({ ...input, name: requested }, fetchImpl, options.signal, limits);
   checkLimits(entries, limits);
   const parsed = splitSkill(decodeText(entries.get('SKILL.md'), 'SKILL.md'), 'SKILL.md');
+  // The product-owned workflow skills are part of the agent contract (loaded on
+  // demand by prompts). They are re-seeded on startup and must never be
+  // replaced or deleted through the installer.
+  if (protectedBundledSkills.includes(parsed.name)) throw fail(`内置技能不可覆盖或删除：${parsed.name}`, 'BUILTIN_SKILL');
   if (requested && requested !== parsed.name) throw fail(`技能名称与 SKILL.md 不一致：请求 ${requested}，frontmatter 为 ${parsed.name}。`);
   const directory = await publish(destination, parsed.name, entries, input.overwrite === true);
   return {
@@ -269,4 +274,21 @@ async function installSkill(input, options = {}) {
   };
 }
 
-module.exports = { installSkill, skillName, safeRelativePath, parseFrontmatterObject, splitSkill, DEFAULTS };
+async function removeSkill(name, { destination = path.join(homedir(), '.ubovm', 'skills') } = {}) {
+  if (typeof name !== 'string' || !NAME.test(name)) throw fail('技能名称无效。');
+  if (protectedBundledSkills.includes(name)) throw fail(`内置技能不可删除：${name}`, 'BUILTIN_SKILL');
+  const root = path.resolve(destination);
+  const target = path.resolve(root, name);
+  if (target === root || !target.startsWith(root + path.sep)) throw fail('技能目录越界。');
+  let info;
+  try { info = await fs.lstat(target); }
+  catch (error) {
+    if (error.code === 'ENOENT') throw fail(`技能不存在：${name}`, 'SKILL_NOT_FOUND');
+    throw error;
+  }
+  if (!info.isDirectory() || info.isSymbolicLink()) throw fail('技能目录无效。');
+  await fs.rm(target, { recursive: true, force: false });
+  return { name, directory: target };
+}
+
+module.exports = { installSkill, removeSkill, skillName, safeRelativePath, parseFrontmatterObject, splitSkill, DEFAULTS };

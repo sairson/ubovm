@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
-const { installSkill } = require('../../../harness/config/skills-install.cjs');
+const { installSkill, removeSkill } = require('../../../harness/config/skills-install.cjs');
 const { readSkillsCatalog } = require('../../../harness/config/skills-catalog.cjs');
 const { zip, tarGz } = require('./build-archive.cjs');
 
@@ -55,6 +55,16 @@ test('an existing skill is preserved unless overwrite is requested', async t => 
   assert.deepEqual((await fs.readdir(destination)).filter(name => name.startsWith('.')), []);
 });
 
+test('built-in skills cannot be replaced or deleted through the installer', async t => {
+  const destination = await sandbox(t);
+  for (const name of ['swarm', 'team']) {
+    const content = SKILL.replace('demo-skill', name);
+    await assert.rejects(installSkill({ content }, { destination }), { code: 'BUILTIN_SKILL' });
+    await assert.rejects(installSkill({ content, overwrite: true }, { destination }), { code: 'BUILTIN_SKILL' });
+  }
+  assert.deepEqual(await fs.readdir(destination).catch(() => []), []);
+});
+
 test('a URL returning raw SKILL.md installs as a single-file skill', async t => {
   const destination = await sandbox(t);
   const result = await installSkill({ url: 'https://example.test/SKILL.md' }, { destination, fetch: fetchBuffer(Buffer.from(SKILL)) });
@@ -79,4 +89,21 @@ test('a GitHub-style tar.gz root is detected and ambiguous packages are rejected
   assert.equal(result.name, 'demo-skill');
   const ambiguous = zip([['one/SKILL.md', SKILL], ['two/SKILL.md', SKILL.replace('demo-skill', 'other-skill')]]);
   await assert.rejects(installSkill({ url: 'https://example.test/two.zip', name: 'demo-skill' }, { destination, fetch: fetchBuffer(ambiguous) }), { code: 'SKILL_AMBIGUOUS' });
+});
+
+test('removeSkill deletes only a direct non-symlink skill directory under the destination', async t => {
+  const destination = await sandbox(t);
+  const result = await installSkill({ content: SKILL }, { destination });
+  const removed = await removeSkill('demo-skill', { destination });
+  assert.equal(removed.name, 'demo-skill');
+  await assert.rejects(fs.lstat(result.directory), { code: 'ENOENT' });
+  await assert.rejects(removeSkill('demo-skill', { destination }), { code: 'SKILL_NOT_FOUND' });
+  await assert.rejects(removeSkill('../escape', { destination }), /名称无效/);
+  // A symlinked directory must never be followed and removed.
+  const outside = path.join(path.dirname(destination), 'outside-skill');
+  await fs.mkdir(outside, { recursive: true });
+  await fs.mkdir(destination, { recursive: true });
+  await fs.symlink(outside, path.join(destination, 'linked-skill'), process.platform === 'win32' ? 'junction' : 'dir');
+  await assert.rejects(removeSkill('linked-skill', { destination }), /目录无效/);
+  assert.equal((await fs.lstat(outside)).isDirectory(), true);
 });

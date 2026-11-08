@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -565,10 +565,10 @@ test('chat delegates to separate conversational worker loops and aggregates thei
       assert.ok(task, 'each worker receives its own task');
       const name = plain(task).includes('inspect-alpha') ? 'alpha' : 'beta';
       children.set(name, (children.get(name) ?? 0) + 1);
-      if (!toolResults(request, 'read_workspace_file').length) {
-        return respond(model, [toolCall(`read-${name}`, 'read_workspace_file', { path: `${name}.txt` })]);
+      if (!toolResults(request, 'read_workspace_code').length) {
+        return respond(model, [toolCall(`read-${name}`, 'read_workspace_code', { path: `${name}.txt` })]);
       }
-      assert.match(plain(toolResults(request, 'read_workspace_file').at(-1)), new RegExp(`${name}-evidence`));
+      assert.match(plain(toolResults(request, 'read_workspace_code').at(-1)), new RegExp(`${name}-evidence`));
       return respond(model, `${name}: verified ${name}-evidence`);
     }
     if (++mainCalls === 1) return respond(model, [
@@ -589,17 +589,25 @@ test('chat delegates to separate conversational worker loops and aggregates thei
     return respond(model, 'Both files verified: alpha-evidence and beta-evidence.');
   });
   await Promise.all(['alpha', 'beta'].map(name => writeFile(join(options.directory, `${name}.txt`), `${name}-evidence\n`)));
+  // The base workspace tools no longer read text (read_workspace_code is the
+  // canonical read, supplied by the host coding tools); provide it explicitly.
+  const readTool = {
+    name: 'read_workspace_code', label: 'Read workspace file', description: 'Read a workspace file',
+    parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'], additionalProperties: false },
+    async execute(_id, input) { return { content: [{ type: 'text', text: await readFile(join(options.directory, input.path), 'utf8') }], details: { path: input.path } }; },
+  };
+  options.configuration.tools = [readTool];
   const approvals = [];
   const answer = await runCollaboration({ ...options, workspaceRoots: [options.directory], text: 'Verify both files with workers.', onEvent: event => events.push(event),
     requestToolApproval: request => { approvals.push(request); return true; } });
   assert.equal(approvals.filter(request => request.toolName === 'spawn_worker').length, 2);
-  assert.equal(approvals.filter(request => request.toolName === 'read_workspace_file' && request.workerId !== options.sessionId).length, 2);
+  assert.equal(approvals.filter(request => request.toolName === 'read_workspace_code' && request.workerId !== options.sessionId).length, 2);
   assert.ok(approvals.some(request => request.toolName === 'wait_workers'));
   assert.equal(answer, 'Both files verified: alpha-evidence and beta-evidence.');
   assert.deepEqual([...children].sort(), [['alpha', 2], ['beta', 2]]);
   const childEvents = events.filter(event => event.type === 'swarm.worker.event');
   assert.equal(new Set(childEvents.map(event => event.workerId)).size, 2);
-  assert.ok(childEvents.some(event => event.event.type === 'tool_execution_end' && event.event.toolName === 'read_workspace_file'));
+  assert.ok(childEvents.some(event => event.event.type === 'tool_execution_end' && event.event.toolName === 'read_workspace_code'));
   assert.equal(events.some(event => event.type === 'message_end' && /^alpha:|^beta:/.test(plain(event.message))), false,
     'worker answers must stay out of the main response stream');
   assert.ok(events.some(event => event.type === 'swarm.status' && event.workers.filter(worker => worker.status === 'completed').length === 2));

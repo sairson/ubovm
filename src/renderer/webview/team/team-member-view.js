@@ -50,6 +50,15 @@
     return Array.from(name).slice(0, 2).join('');
   }
 
+  function usageLabel(value) {
+    const total = !value ? 0 : Number.isFinite(value.totalTokens) ? value.totalTokens : (value.input || 0) + (value.output || 0);
+    if (!total) return '';
+    if (total < 1000) return total + ' tokens';
+    const label = total < 1000000 ? (total / 1000).toFixed(total >= 100000 ? 0 : 1).replace(/\.0$/, '') + 'K'
+      : (total / 1000000).toFixed(total >= 10000000 ? 0 : 1).replace(/\.0$/, '') + 'M';
+    return label + ' tokens';
+  }
+
   const MEMBER_STATUS = Object.freeze({ running: '运行中', inactive: '未运行', provisioning: '准备中', failed: '失败' });
   const ACTIVITY_STATUS = Object.freeze({ running: '进行中', completed: '完成', failed: '失败', interrupted: '已停止' });
   const ROLES = Object.freeze({ lead: '主 Agent', teammate: '团队成员' });
@@ -184,6 +193,7 @@
     const statusText = byId('team-member-view-status-text');
     const liveDot = byId('team-member-view-live');
     const activityEl = byId('team-member-view-activity');
+    const usageEl = byId('team-member-view-usage');
     const descriptionEl = byId('team-member-view-description');
     const memberErrorEl = byId('team-member-view-member-error');
     const scroll = byId('team-member-view-scroll');
@@ -527,6 +537,9 @@
       const activity = normalizeActivity(watch.activity);
       setHidden(activityEl, !activity);
       if (activity) setRaw(activityEl, activityText(activity));
+      const tokens = usageLabel(watch.usage);
+      setText(usageEl, tokens);
+      setHidden(usageEl, !tokens);
       const description = clean(watch.description, 400);
       setHidden(descriptionEl, !description);
       if (description) setRaw(descriptionEl, description);

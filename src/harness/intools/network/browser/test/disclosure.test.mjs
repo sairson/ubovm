@@ -56,7 +56,7 @@ test('ide help hides obscura-only tiers and actions', () => {
     availableActions: ['help', 'navigate', 'cdp', 'network_start'],
   });
   assert.ok(all.actions.some(item => item.action === 'cdp'));
-  assert.ok(!all.actions.some(item => item.action === 'network_start'));
+  assert.ok(all.actions.some(item => item.action === 'network_start'));
 });
 
 test('createBrowserTools serves help without calling the manager', async () => {

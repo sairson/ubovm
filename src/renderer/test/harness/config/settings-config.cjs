@@ -16,19 +16,20 @@ function fixture(seed = {}) {
 }
 const ssh = { id: 'dev', host: '192.0.2.10', username: 'developer', port: 22, known_hosts_file: '~/.ssh/known_hosts' };
 
-test('initialization readiness follows persisted valid model and default SSH, not form defaults', async () => {
+test('initialization readiness requires a valid model; SSH stays optional', async () => {
   const f = fixture({ model: {}, intools: {} });
   assert.deepEqual((await f.service.snapshot()).initialization, { model: false, ssh: false, complete: false });
   await f.save('model', base.model);
-  assert.deepEqual((await f.service.snapshot()).initialization, { model: true, ssh: false, complete: false });
+  assert.deepEqual((await f.service.snapshot()).initialization, { model: true, ssh: false, complete: true }, 'a model alone is enough to start');
   await f.save('ssh', { profiles: [ssh], defaultId: ssh.id });
   assert.deepEqual((await f.service.snapshot()).initialization, { model: true, ssh: true, complete: true });
   const restored = createSettingsConfiguration(f.vscode, f.context);
   assert.equal((await restored.snapshot()).initialization.complete, true);
   f.values.intools.ssh.defaultId = 'missing';
-  assert.equal((await restored.snapshot()).initialization.complete, false);
+  assert.deepEqual((await restored.snapshot()).initialization, { model: true, ssh: false, complete: true }, 'losing SSH must not block conversations');
   f.values.model = {};
   assert.equal((await restored.snapshot()).initialization.model, false);
+  assert.equal((await restored.snapshot()).initialization.complete, false);
 });
 
 test('legacy SDK profiles normalize to Pi while retaining endpoint credentials', async () => {
@@ -427,8 +428,44 @@ test('MCP credentials are private, survive edits and do not follow changed serve
   await f.save('mcp', { servers: [server] }); assert.equal((await f.model.read()).mcp.servers[0].headers.Authorization, 'Bearer mcp-secret');
   await f.save('mcp', { servers: [{ ...server, url: 'https://other.example/sse' }] }); assert.equal((await f.model.read()).mcp.servers[0].headers, undefined);
 });
-test('legacy SSH and web keys migrate out of settings when their section is saved', async () => {
-  const f = fixture({ intools: { ssh: { profiles: [{ ...ssh, password: 'legacy-ssh' }] }, webSearch: { tavily: { apiKey: 'legacy-web' } } } });
+test('MCP credential names are listed and merge patches preserve untouched values', async () => {
+  const f = fixture(); const server = { name: 'local', transport: 'stdio', command: 'node' };
+  await f.save('mcp', { servers: [server], credentials: JSON.stringify({ local: { env: { TOKEN: 'one', REGION: 'eu' } } }) });
+  const snapshot = await f.service.snapshot();
+  assert.deepEqual(snapshot.mcpCredentialKeys, { local: { env: ['TOKEN', 'REGION'], headers: [] } });
+  assert(!JSON.stringify(snapshot).includes('"one"'), 'credential values must stay out of the snapshot');
+  await f.save('mcp', { servers: [server], credentials: JSON.stringify({ local: { $merge: true, env: { TOKEN: 'two', ADDED: 'x', REGION: null } } }) });
+  const read = await f.model.read();
+  assert.deepEqual(read.mcp.servers[0].env, { TOKEN: 'two', ADDED: 'x' });
+  await assert.rejects(f.save('mcp', { servers: [server], credentials: JSON.stringify({ local: { $merge: true, env: { 'BAD KEY': 'x' } } }) }), /环境变量名/);
+  await assert.rejects(f.save('mcp', { servers: [server], credentials: JSON.stringify({ local: { $merge: true, headers: { Authorization: 'Bearer\nInjected' } } }) }), /换行/);
+});
+test('MCP TLS trust options are validated, persisted and listed in the form', async () => {
+  const f = fixture();
+  const tlsCa = '-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----';
+  const server = { name: 'tls', transport: 'streamable_http', url: 'https://mcp.example/mcp', insecureTls: true, tlsCa };
+  const saved = await f.save('mcp', { servers: [server] });
+  assert.equal(saved.values.mcp.servers[0].insecureTls, true);
+  assert.equal(saved.values.mcp.servers[0].tlsCa, tlsCa);
+  assert.deepEqual((await f.model.read()).mcp.servers[0], server);
+  assert.ok(saved.mcpFields.some(field => field.key === 'insecureTls'));
+  assert.ok(saved.mcpFields.some(field => field.key === 'tlsCa'));
+  await assert.rejects(f.save('mcp', { servers: [{ name: 'x', transport: 'sse', url: 'https://mcp.example/mcp', insecureTls: 'yes' }] }), /开关值/);
+  await assert.rejects(f.save('mcp', { servers: [{ name: 'x', transport: 'sse', url: 'https://mcp.example/mcp', tlsCa: 'not a certificate' }] }), /PEM/);
+  await assert.rejects(f.save('mcp', { servers: [{ name: 'x', command: 'node', insecureTls: true }] }), /TLS/);
+});
+test('MCP ignores HTTPS certificates by default and the global switch is persisted', async () => {
+  const f = fixture();
+  // Product default: self-signed MCP endpoints must not fail the whole tool set.
+  assert.equal((await f.model.read()).mcp.insecureTls, true);
+  assert.equal((await f.service.snapshot()).values.mcp.insecureTls, true);
+  const saved = await f.save('mcp', { servers: [], insecureTls: false });
+  assert.equal(saved.values.mcp.insecureTls, false);
+  assert.equal((await f.model.read()).mcp.insecureTls, false);
+  const restored = await f.save('mcp', { servers: [], insecureTls: true });
+  assert.equal(restored.values.mcp.insecureTls, true);
+});
+test('legacy SSH and web keys migrate out of settings when their section is saved', async () => {  const f = fixture({ intools: { ssh: { profiles: [{ ...ssh, password: 'legacy-ssh' }] }, webSearch: { tavily: { apiKey: 'legacy-web' } } } });
   assert(!JSON.stringify(await f.service.snapshot()).includes('legacy-'));
   await f.save('ssh', { enabled: true, profiles: [ssh], defaultId: 'dev' }); await f.save('web', { enabled: true });
   assert(!JSON.stringify(f.values).includes('legacy-')); const result = await f.model.read();

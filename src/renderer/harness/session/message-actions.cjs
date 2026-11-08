@@ -9,10 +9,12 @@ const inside = (root, candidate) => {
 
 /** Host-only actions for explicit message copy/link clicks. */
 function createMessageActions(vscode, { fs = filesystem } = {}) {
+  // A graph/blackboard export can legitimately exceed a few MB of fact bodies.
+  // Clipboard writes are cheap compared with IPC, so allow a generous bound while
+  // still rejecting non-string/garbage payloads.
+  const MAX_CLIPBOARD_CHARS = 16 * 1024 * 1024;
   async function copyText(text) {
-    // Match the HTML preview's source bound so every accepted preview can be
-    // copied through the same host action without truncation.
-    if (typeof text !== 'string' || text.length > 2 * 1024 * 1024) throw new Error('复制内容过长或格式无效。');
+    if (typeof text !== 'string' || text.length > MAX_CLIPBOARD_CHARS) throw new Error('复制内容过长或格式无效。');
     await vscode.env.clipboard.writeText(text);
   }
 

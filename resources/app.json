@@ -4,7 +4,10 @@
     "nameLong": "UBOVM IDE",
     "applicationName": "ubovm",
     "dataFolderName": ".ubovm",
+    "sharedDataFolderName": ".ubovm-shared",
     "urlProtocol": "ubovm",
+    "darwinBundleIdentifier": "com.ubovm.ide",
+    "linuxIconName": "ubovm",
     "win32AppUserModelId": "UBOVM.IDE",
     "win32MutexName": "ubovm",
     "win32DirName": "UBOVM",
@@ -16,9 +19,13 @@
     "enableTelemetry": false,
     "showTelemetryOptOut": false,
     "updateUrl": "",
-    "linkProtectionTrustedDomains": ["*"],
+    "linkProtectionTrustedDomains": [
+      "*"
+    ],
     "extensionEnabledApiProposals": {
-      "ubovm.ubovm-core": ["browser"]
+      "ubovm.ubovm-core": [
+        "browser"
+      ]
     }
   },
   "settings": {
@@ -81,6 +88,7 @@
     "workbench.editor.tabSizing": "shrink",
     "workbench.tree.indent": 12,
     "workbench.tree.renderIndentGuides": "none",
+    "workbench.iconTheme": "vs-seti",
     "workbench.statusBar.visible": false,
     "breadcrumbs.enabled": false,
     "explorer.compactFolders": false,

@@ -1,8 +1,20 @@
 import { Type } from 'typebox';
-import { EXPLORATION_AGENDA_OWNER, renderAgenda } from '../blackboard/agenda.mjs';
+import { EXPLORATION_AGENDA_OWNER } from '../blackboard/agenda.mjs';
 
 const ACTIONS = new Set(['list', 'write', 'update']);
-const STATUSES = ['planned', 'active', 'done', 'dropped'];
+// Models frequently use lifecycle words from other systems (pending, in_progress,
+// completed, cancelled, ...). Normalize them instead of failing the whole tool turn.
+const STATUS_ALIASES = new Map([
+  ['planned', 'planned'], ['plan', 'planned'], ['todo', 'planned'], ['open', 'planned'],
+  ['pending', 'planned'], ['queued', 'planned'], ['new', 'planned'], ['backlog', 'planned'],
+  ['active', 'active'], ['in_progress', 'active'], ['inprogress', 'active'], ['running', 'active'],
+  ['working', 'active'], ['ongoing', 'active'], ['executing', 'active'], ['doing', 'active'],
+  ['done', 'done'], ['complete', 'done'], ['completed', 'done'], ['finished', 'done'],
+  ['resolved', 'done'], ['success', 'done'], ['succeeded', 'done'], ['verified', 'done'],
+  ['dropped', 'dropped'], ['drop', 'dropped'], ['skipped', 'dropped'], ['cancelled', 'dropped'],
+  ['canceled', 'dropped'], ['aborted', 'dropped'], ['abandoned', 'dropped'], ['blocked', 'dropped'],
+  ['failed', 'dropped'], ['rejected', 'dropped']
+]);
 const LIMITS = { content: 500, dedupe: 512, method: 500, acceptance: 500, items: 20 };
 
 const clip = (value, max, name) => {
@@ -12,11 +24,19 @@ const clip = (value, max, name) => {
   if (text.length > max) throw new RangeError(`${name} must contain at most ${max} characters`);
   return text;
 };
-const status = value => {
-  if (value === undefined) return 'planned';
-  const normalized = String(value).trim().toLowerCase();
-  if (!STATUSES.includes(normalized)) throw new Error(`Agenda status must be one of ${STATUSES.join(', ')}`);
-  return normalized;
+const status = (value, notes) => {
+  if (value === undefined || value === null || value === '') return 'planned';
+  const raw = String(value).trim();
+  const key = raw.toLowerCase().replace(/[\s-]+/g, '_');
+  const canonical = STATUS_ALIASES.get(key);
+  if (canonical) {
+    if (canonical !== raw.toLowerCase() && notes) notes.push({ from: raw, to: canonical });
+    return canonical;
+  }
+  // Unknown lifecycle word: keep the direction usable as planned and tell the
+  // model the canonical value instead of rejecting the whole write/update.
+  notes?.push({ from: raw, to: 'planned', fallback: true });
+  return 'planned';
 };
 const result = value => ({ content: [{ type: 'text', text: JSON.stringify(value) }], details: value });
 
@@ -30,13 +50,13 @@ export function createAgendaTool({ store, build, sessionId } = {}) {
   if (typeof build !== 'function') throw new TypeError('createAgendaTool requires an agenda builder');
   const tool = {
     name: 'exploration_todo', label: 'Shared exploration agenda',
-    description: 'Read and update the shared exploration agenda for this goal. The host already projects every intent (planned/active/blocked/done/dropped), Worker plan steps and failed/gap suggestions into the agenda; use this tool to read it and to record your own exploration directions (content, dedupe_key, method, acceptance) so Workers and later reviews do not repeat the same content. write replaces your direction list atomically; update changes one direction by id. Never restate projected intent status here.',
+    description: 'Read and update the shared exploration agenda for this goal. The host already projects every intent (planned/active/blocked/done/dropped), Worker plan steps and failed/gap suggestions into the agenda; use this tool to read it and to record your own exploration directions (content, dedupe_key, method, acceptance) so Workers and later reviews do not repeat the same content. write replaces your direction list atomically; update changes one direction by id. Direction status accepts planned/active/done/dropped; common lifecycle words (pending, in_progress, completed, cancelled, blocked, ...) are normalized automatically and returned in normalized_status. Never restate projected intent status here.',
     parameters: Type.Object({
       action: Type.String({ minLength: 1, maxLength: 16, description: 'list | write | update' }),
       items: Type.Optional(Type.Array(Type.Object({
         id: Type.Optional(Type.String({ maxLength: 80 })),
         content: Type.String({ minLength: 1, maxLength: LIMITS.content }),
-        status: Type.Optional(Type.String({ maxLength: 16 })),
+        status: Type.Optional(Type.String({ maxLength: 32 })),
         dedupe_key: Type.Optional(Type.String({ maxLength: LIMITS.dedupe })),
         method: Type.Optional(Type.String({ maxLength: LIMITS.method })),
         acceptance: Type.Optional(Type.String({ maxLength: LIMITS.acceptance }))
@@ -54,6 +74,8 @@ export function createAgendaTool({ store, build, sessionId } = {}) {
       for (const key of Object.keys(input)) if (!['action', 'items', 'direction_id', 'content', 'status', 'dedupe_key', 'method', 'acceptance'].includes(key)) throw new Error(`Unknown exploration_todo field: ${key}`);
       const action = String(input.action ?? '').trim().toLowerCase();
       if (!ACTIONS.has(action)) throw new Error(`Unknown exploration_todo action: ${action || '(empty)'}; use list, write or update`);
+      // The list result is the single structured agenda projection: tools no
+      // longer echo a rendered agenda copy, so one call carries one payload.
       const summarize = () => {
         const agenda = build();
         return {
@@ -75,13 +97,13 @@ export function createAgendaTool({ store, build, sessionId } = {}) {
       };
       if (action === 'list') {
         await store.flush();
-        const snapshot = summarize();
-        return result({ ...snapshot, text: renderAgenda(build(), { maxOpen: 30, maxDone: 8 }) });
+        return result(summarize());
       }
       const now = new Date().toISOString();
       if (action === 'write') {
         if (!Array.isArray(input.items) || !input.items.length || input.items.length > LIMITS.items) throw new Error(`exploration_todo write requires 1 to ${LIMITS.items} items`);
         const seen = new Set();
+        const statusNotes = [];
         const items = input.items.map((entry, index) => {
           if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw new TypeError(`items[${index}] must be an object`);
           const content = clip(entry.content, LIMITS.content, `items[${index}].content`);
@@ -92,7 +114,7 @@ export function createAgendaTool({ store, build, sessionId } = {}) {
           if (seen.has(id)) throw new Error(`Duplicate agenda direction id: ${id}`);
           seen.add(id);
           return {
-            id, worker_id: EXPLORATION_AGENDA_OWNER, content, status: status(entry.status),
+            id, worker_id: EXPLORATION_AGENDA_OWNER, content, status: status(entry.status, statusNotes),
             ...(dedupe ? { dedupe_key: dedupe } : {}),
             ...(clip(entry.method, LIMITS.method, `items[${index}].method`) ? { method: clip(entry.method, LIMITS.method, `items[${index}].method`) } : {}),
             ...(clip(entry.acceptance, LIMITS.acceptance, `items[${index}].acceptance`) ? { acceptance: clip(entry.acceptance, LIMITS.acceptance, `items[${index}].acceptance`) } : {}),
@@ -106,22 +128,26 @@ export function createAgendaTool({ store, build, sessionId } = {}) {
             ...items.map(item => ({ ...item, created_at: previous.get(item.id)?.created_at ?? now }))
           ];
         });
-        return result(summarize());
+        // Write replaces the whole direction list: report only what changed
+        // (ids + canonical statuses) plus counts; action=list reads the agenda.
+        return result({ counts: build().counts, written: items.map(item => ({ id: item.id, status: item.status })),
+          ...(statusNotes.length ? { normalized_status: statusNotes } : {}) });
       }
       const id = String(input.direction_id ?? '').trim();
       if (!id) throw new Error('exploration_todo update requires direction_id');
+      const statusNotes = [];
       const updated = await store.commit(state => {
         const item = (state.agenda ?? []).find(entry => entry.worker_id === EXPLORATION_AGENDA_OWNER && entry.id === id);
         if (!item) throw new Error(`Agenda direction ${id} was not found; use action=list to read current directions`);
         if (input.content !== undefined) item.content = clip(input.content, LIMITS.content, 'content');
-        if (input.status !== undefined) item.status = status(input.status);
+        if (input.status !== undefined) item.status = status(input.status, statusNotes);
         if (input.dedupe_key !== undefined) item.dedupe_key = clip(input.dedupe_key, LIMITS.dedupe, 'dedupe_key');
         if (input.method !== undefined) item.method = clip(input.method, LIMITS.method, 'method');
         if (input.acceptance !== undefined) item.acceptance = clip(input.acceptance, LIMITS.acceptance, 'acceptance');
         item.updated_at = now;
         return item;
       });
-      return result({ updated, ...summarize() });
+      return result({ updated, counts: build().counts, ...(statusNotes.length ? { normalized_status: statusNotes } : {}) });
     }
   };
   return tool;

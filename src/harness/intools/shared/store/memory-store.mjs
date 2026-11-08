@@ -1,7 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { writeSnapshot } from '../../../blackboard/persistence.mjs';
-import { validateDeliveryRecord } from '../../delivery/record.mjs';
 import { validateDomainInventory } from '../../domain-inventory/record.mjs';
 
 const clone = value => structuredClone(value);
@@ -25,7 +24,6 @@ function json(value, seen = new Set()) {
 }
 function validate(state, sessionId) {
   json(state);
-  validateDeliveryRecord(state.delivery);
   validateDomainInventory(state.domainInventory);
   if (state.schemaVersion !== 1 || state.sessionId !== sessionId || !Number.isSafeInteger(state.revision) || state.revision < 0) throw new Error('Invalid memory snapshot session or schema');
   for (const field of ['todos', 'notes', 'promotions', 'workers', 'audit']) if (!Array.isArray(state[field])) throw new Error(`Invalid memory snapshot ${field}`);
@@ -39,7 +37,7 @@ function validate(state, sessionId) {
   const noteIds = new Set();
   for (const note of state.notes) {
     required(note.id, 'note.id'); required(note.worker_id, 'note.worker_id');
-    if (note.session_id !== sessionId || noteIds.has(note.id) || !['note', 'asset', 'vulnerability'].includes(note.note_type)) throw new Error('Invalid memory note session, type, or identity');
+    if (note.session_id !== sessionId || noteIds.has(note.id) || !['note', 'asset', 'vulnerability', 'flag', 'scope'].includes(note.note_type)) throw new Error('Invalid memory note session, type, or identity');
     noteIds.add(note.id);
   }
   const todoIds = new Set();
@@ -112,9 +110,11 @@ export class MemoryStore {
   }
 
   get sessionId() { return this.#state.sessionId; }
+  /** Cheap change token for projections that must not clone the whole store. */
+  revision() { return this.#state.revision; }
   snapshot(fields) {
     if (fields === undefined) return clone(this.#state);
-    if (!Array.isArray(fields) || fields.some(field => typeof field !== 'string' || !(['toolEvidence', 'delivery', 'domainInventory'].includes(field) || Object.hasOwn(this.#state, field)))) {
+    if (!Array.isArray(fields) || fields.some(field => typeof field !== 'string' || !(['toolEvidence', 'domainInventory'].includes(field) || Object.hasOwn(this.#state, field)))) {
       throw new TypeError('Snapshot fields must name existing memory fields');
     }
     return clone(Object.fromEntries(fields.map(field => [field, this.#state[field]])));
@@ -140,24 +140,6 @@ export class MemoryStore {
     const data = this.#state.agentKnowledge;
     return clone({ sessionId: this.#state.sessionId,
       ...(data ? { agentKnowledge: { version: data.version, lessons: data.lessons } } : {}) });
-  }
-  // Delivery reads select history BEFORE cloning. A long-lived ledger must
-  // not allocate its entire archive at every model or UI status boundary.
-  deliverySnapshot() {
-    const record = this.#state.delivery;
-    if (!record) return undefined;
-    const { history, staleEvidence, evidenceFloor, ...current } = record;
-    return clone({ ...current, history: history.slice(-8), historyCount: history.length });
-  }
-  deliveryHistory({ offset = 0, limit = 20, expectedRevision } = {}) {
-    if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new Error('Invalid history pagination');
-    const record = this.#state.delivery;
-    const revision = record?.revision ?? 0;
-    if (expectedRevision !== undefined && expectedRevision !== revision) {
-      return clone({ status: 'revision_conflict', expectedRevision: revision, providedRevision: expectedRevision, message: 'Delivery revision conflict; call status and retry history with the current revision.', revision, total: 0, items: [], nextOffset: null });
-    }
-    const history = record?.history ?? [];
-    return clone({ revision, total: history.length, items: history.slice(offset, offset + limit), nextOffset: offset + limit < history.length ? offset + limit : null });
   }
   // Scheduling and status reads need neither evidence bodies nor saved model
   // candidates. Return detached scalar metadata, including before initialization.

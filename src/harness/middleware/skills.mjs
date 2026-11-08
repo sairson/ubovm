@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { lstat, open, readdir, realpath } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { parseDocument } from 'yaml';
 import { Type } from 'typebox';
 import { SkillRegistry, createSkillResourceTool } from '../intools/skills/resources.mjs';
@@ -90,7 +90,12 @@ async function discover(options) {
     if (!info.isDirectory() || info.isSymbolicLink()) throw failure('INVALID_SKILL', `${root} must be a regular directory`);
     const entries = (await readdir(root, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name));
     for (const entry of entries) {
-      if (!entry.isDirectory() || entry.isSymbolicLink() || entry.name.startsWith('.')) continue;
+      if (entry.name.startsWith('.')) continue;
+      if (entry.isFile() && !entry.isSymbolicLink() && entry.name.toLowerCase().endsWith('.md') && entry.name.toLowerCase() !== 'skill.md') {
+        candidates.push({ file: join(root, entry.name) });
+        continue;
+      }
+      if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
       const directory = join(root, entry.name);
       try { await lstat(join(directory, 'SKILL.md')); }
       catch (error) { if (error.code === 'ENOENT') continue; throw error; }
@@ -100,7 +105,27 @@ async function discover(options) {
   const catalog = new Map(), directories = new Map();
   let total = 0;
   for (const candidate of candidates) {
-    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) throw new TypeError('Each skill must provide a directory');
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) throw new TypeError('Each skill must provide a directory or file');
+    if (candidate.file !== undefined) {
+      const filePath = resolve(expandHome(requireText(candidate.file, 'skill.file')));
+      const info = await lstat(filePath);
+      if (!info.isFile() || info.isSymbolicLink()) throw failure('INVALID_SKILL', `${filePath} must be a regular Markdown file`);
+      const fileKey = process.platform === 'win32' ? filePath.toLowerCase() : filePath;
+      if (directories.has(fileKey)) continue;
+      if (catalog.size >= maxSkills) throw failure('SKILL_LIMIT_EXCEEDED', `Skill count exceeds ${maxSkills}`);
+      const bytes = await readBounded(filePath, maxSkillBytes);
+      total += bytes.length;
+      if (total > maxTotalBytes) throw failure('SKILL_LIMIT_EXCEEDED', `Total skill content exceeds ${maxTotalBytes} bytes`);
+      let text;
+      try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
+      catch (cause) { throw failure('INVALID_SKILL', `${filePath} must be UTF-8 text`, cause); }
+      const skill = splitSkill(text, filePath);
+      if (candidate.name !== undefined && candidate.name !== skill.name) throw failure('INVALID_SKILL', `${filePath}: configured name does not match SKILL.md`);
+      if (catalog.has(skill.name)) throw failure('DUPLICATE_SKILL', `Duplicate skill name: ${skill.name}`);
+      catalog.set(skill.name, Object.freeze({ ...skill, directory: dirname(filePath), file: filePath, files: Object.freeze([]), fingerprint: createHash('sha256').update(bytes).digest('hex') }));
+      directories.set(fileKey, skill.name);
+      continue;
+    }
     const path = resolve(expandHome(requireText(candidate.directory, 'skill.directory')));
     const info = await lstat(path);
     if (!info.isDirectory() || info.isSymbolicLink()) throw failure('INVALID_SKILL', `${path} must be a regular directory`);
@@ -225,7 +250,7 @@ export async function createSkillsMiddleware(options = {}) {
       const active = new Set(state.workers.find(worker => worker.workerId === id)?.skills.map(skill => skill.name) ?? []);
       const manifest = entries.map(skill => JSON.stringify({ name: skill.name, description: skill.description, loaded: active.has(skill.name) })).join('\n');
       const loaded = entries.filter(skill => active.has(skill.name)).map(renderSkill);
-      return `Available skills (host-configured catalog):\n${manifest}\n\nUse load_skill with a skill name before following it. Read supporting resources with read_skills_resource and run files under scripts/ with run_local_skill_script. Both require a skill loaded by this Worker. Skill scripts run on this controller, not a remote SSH host.${loaded.length ? `\n\nLoaded skill instructions:\n\n${loaded.join('\n\n')}` : ''}`;
+      return `Available skills (host-configured catalog):\n${manifest}\n\nLoad a skill proactively before the first action it governs: when the current task matches a skill description, call load_skill immediately — do not wait for the user to name the skill or ask you to use it. Load only the skills this turn will use; a loaded skill stays active for this Worker. Read supporting resources with read_skills_resource and run files under scripts/ with run_local_skill_script. Both require a skill loaded by this Worker. Skill scripts run on this controller, not a remote SSH host.${loaded.length ? `\n\nLoaded skill instructions:\n\n${loaded.join('\n\n')}` : ''}`;
     });
   }
 
@@ -259,7 +284,7 @@ export async function createSkillsMiddleware(options = {}) {
       script.execute = (callId, input, toolSignal, onUpdate) => operation(context, toolSignal, combined => scriptExecute(callId, input, combined, onUpdate));
       const load = {
         name: 'load_skill', label: 'Load skill',
-        description: 'Load instructions and supporting-file names for an available skill. Loading activates its resource and script tools only for this Worker.',
+        description: 'Load instructions and supporting-file names for an available skill. Call it proactively as soon as the task matches a skill description; do not wait for the user to name the skill. Loading activates its resource and script tools only for this Worker.',
         parameters: Type.Object({ name: Type.String() }, { additionalProperties: false }),
         execute(_callId, input, toolSignal) {
           return operation(context, toolSignal, async combined => {

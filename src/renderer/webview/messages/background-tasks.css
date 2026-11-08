@@ -1,11 +1,14 @@
 .background-tasks {
   position: fixed; z-index: 40; right: 12px; bottom: 12px; width: min(480px, calc(100vw - 24px));
   max-height: min(480px, calc(100dvh - 24px)); display: flex; flex-direction: column; min-width: 0;
-  border: 0.5px solid color-mix(in srgb, var(--border) 70%, transparent); border-radius: var(--dsw-radius-md);
-  background: var(--canvas); box-shadow: 0 12px 40px #00000018, 0 2px 8px #0000000a; font-size: 11px;
+  border: 0.5px solid var(--border-hairline); border-radius: var(--dsw-radius-md);
+  background: var(--surface); box-shadow: var(--dsw-elevation-prominent); font-size: 11px;
 }
 .background-tasks[hidden] { display: none; }
-body[data-mode="assist"] .background-tasks { bottom: 108px; }
+/* The dock must clear the composer, whose height follows the textarea, image
+ * chips and queued prompts. app.js publishes the measured composer height. */
+.background-tasks { bottom: calc(var(--compose-dock-offset, 108px) + 10px); }
+body[data-mode="assist"] .background-tasks { bottom: calc(var(--compose-dock-offset, 108px) + 10px); }
 .background-tasks-header { display: flex; align-items: center; gap: 8px; min-height: 38px; padding: 3px 10px; flex: 0 0 auto; }
 .background-tasks-toggle { display: flex; flex: 1; align-items: center; gap: 8px; min-width: 0; padding: 7px 2px; border: 0; background: transparent; text-align: left; }
 .background-tasks-title { font-size: 11px; font-weight: 500; white-space: nowrap; }
@@ -13,47 +16,47 @@ body[data-mode="assist"] .background-tasks { bottom: 108px; }
 .background-tasks-chevron { margin-left: auto; margin-right: 3px; flex: 0 0 6px; width: 6px; height: 6px; border-right: 1.25px solid currentColor; border-top: 1.25px solid currentColor; font-size: 0; color: var(--muted); transform: rotate(45deg); transition: transform 160ms cubic-bezier(.22, 1, .36, 1); }
 .background-tasks-toggle[aria-expanded="true"] .background-tasks-chevron { transform: rotate(135deg); }
 .background-tasks-clear, .background-task-action, .background-task-stop { flex-shrink: 0; border: 1px solid transparent; border-radius: 5px; background: transparent; padding: 3px 6px; color: var(--muted); font-size: 11px; }
-.background-tasks-clear:hover, .background-task-action:hover, .background-task-stop:hover { background: var(--hover); color: var(--ink); }
-.background-task-stop { color: var(--vscode-errorForeground, #b7554b); }
-.background-task-action[aria-pressed="true"] { color: var(--accent); background: transparent; }
+.background-tasks-clear:hover, .background-task-action:hover, .background-task-stop:hover { background: var(--surface-hover); color: var(--ink); }
+.background-task-stop { color: var(--vscode-errorForeground, var(--state-error)); }
+.background-task-action[aria-pressed="true"] { color: var(--focus); background: transparent; }
 .background-tasks-peek { margin: 0; padding: 0 12px 9px 28px; color: var(--muted); font: 10px/1.5 var(--vscode-editor-font-family, Consolas, monospace); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.background-tasks-body { display: grid; grid-template-rows: auto minmax(0, 1fr); min-height: 0; max-height: min(360px, 44vh); overflow: auto; border-top: 1px solid color-mix(in srgb, var(--border) 55%, transparent); overscroll-behavior: contain; scrollbar-width: thin; }
-.background-task-list { min-width: 0; min-height: 0; max-height: 100px; overflow: auto; padding: 5px; scrollbar-width: thin; overscroll-behavior: contain; }
+.background-tasks-body { display: grid; grid-template-rows: auto minmax(0, 1fr); min-height: 0; max-height: min(360px, 44vh); overflow-y: auto; overflow-x: hidden; border-top: 1px solid var(--border-hairline); overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--muted) 32%, transparent) transparent; }
+.background-task-list { min-width: 0; min-height: 0; max-height: 100px; overflow: auto; padding: 5px; scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--muted) 32%, transparent) transparent; overscroll-behavior: contain; }
 .background-task-select { display: flex; width: 100%; gap: 8px; align-items: center; text-align: left; border: 1px solid transparent; border-radius: 5px; padding: 7px 6px; background: transparent; }
-.background-task-select:hover { background: var(--wash); }
-.background-task-select[aria-pressed="true"] { background: var(--wash); border-color: transparent; }
+.background-task-select:hover { background: var(--surface-hover); }
+.background-task-select[aria-pressed="true"] { background: var(--surface-raised); border-color: transparent; }
 .background-task-select[aria-pressed="true"] .background-task-name { color: var(--ink); }
 .background-tasks :is(button, pre):focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
 .background-tasks button { min-height: 26px; transition: background 120ms ease, color 120ms ease; }
 .background-tasks button:disabled { opacity: .5; cursor: default; }
-.background-tasks button:active:enabled { background: var(--wash); }
+.background-tasks button:active:enabled { background: var(--surface-hover); }
 .background-tasks-body:not([hidden]) { animation: background-tasks-reveal 140ms ease-out; }
 @keyframes background-tasks-reveal { from { opacity: 0; } to { opacity: 1; } }
 .background-task-main { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 1px; }
 .background-task-head { display: flex; align-items: center; gap: 5px; min-width: 0; }
 .background-task-kind { flex: 0 0 auto; padding: 0 4px; border: 1px solid color-mix(in srgb, currentColor 22%, transparent); border-radius: 4px; color: var(--muted); font-size: 9px; font-weight: 500; line-height: 14px; letter-spacing: .02em; }
-.background-task-kind[data-kind="ssh"] { color: var(--dsw-alias-state-business-primary); border-color: color-mix(in srgb, var(--dsw-alias-state-business-primary) 32%, transparent); }
+.background-task-kind[data-kind="ssh"] { color: var(--state-running); border-color: color-mix(in srgb, var(--state-running) 32%, transparent); }
 .background-task-kind[hidden] { display: none; }
 .background-task-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 11px/1.6 var(--vscode-editor-font-family, Consolas, monospace); }
 .background-task-owner { color: var(--muted); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .background-task-info { display: flex; flex-shrink: 0; align-items: flex-end; flex-direction: column; gap: 1px; font-size: 10px; color: var(--muted); }
 .background-task-time { min-width: 42px; text-align: right; font-variant-numeric: tabular-nums; }
 .background-task-indicator { display: inline-block; width: 8px; height: 8px; flex-shrink: 0; border: 1px solid currentColor; border-radius: 50%; color: var(--muted); }
-[data-status="running"] > .background-tasks-header .background-task-indicator, .background-task-row[data-status="running"] .background-task-indicator { border-color: color-mix(in srgb, var(--ink) 20%, transparent); border-top-color: var(--ink); animation: tool-spin 1.2s linear infinite; }
-[data-status="completed"] > .background-tasks-header .background-task-indicator, .background-task-row[data-status="completed"] .background-task-indicator { border-radius: 0; height: 4px; border: 0; border-left: 1px solid var(--accent); border-bottom: 1px solid var(--accent); transform: rotate(-45deg); }
-[data-status="failed"] > .background-tasks-header .background-task-indicator, .background-task-row[data-status="failed"] .background-task-indicator { color: var(--vscode-errorForeground, #bd5252); background: currentColor; }
-.background-task-row[data-status="failed"] .background-task-state { color: var(--vscode-errorForeground, #bd5252); }
-.background-task-detail { min-width: 0; min-height: 0; padding: 10px 12px; border-top: 1px solid color-mix(in srgb, var(--border) 55%, transparent); overflow: auto; scrollbar-width: thin; }
+[data-status="running"] > .background-tasks-header .background-task-indicator, .background-task-row[data-status="running"] .background-task-indicator { border-color: color-mix(in srgb, var(--state-running) 28%, transparent); border-top-color: var(--state-running); animation: tool-spin 1.2s linear infinite; }
+[data-status="completed"] > .background-tasks-header .background-task-indicator, .background-task-row[data-status="completed"] .background-task-indicator { border-radius: 0; height: 4px; border: 0; border-left: 1px solid var(--state-success); border-bottom: 1px solid var(--state-success); transform: rotate(-45deg); }
+[data-status="failed"] > .background-tasks-header .background-task-indicator, .background-task-row[data-status="failed"] .background-task-indicator { color: var(--vscode-errorForeground, var(--state-error)); background: currentColor; }
+.background-task-row[data-status="failed"] .background-task-state { color: var(--vscode-errorForeground, var(--state-error)); }
+.background-task-detail { min-width: 0; min-height: 0; padding: 10px 12px; border-top: 1px solid var(--border-hairline); overflow: auto; scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--muted) 32%, transparent) transparent; }
 .background-task-detail-header { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
 .background-task-detail-command { flex: 1 1 100%; max-height: 54px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.6 var(--vscode-editor-font-family, Consolas, monospace); }
 .background-task-detail-meta { margin: 5px 0; font-size: 10px; color: var(--muted); }
-.background-task-log { margin: 8px 0 0; padding: 9px 10px; min-height: 64px; max-height: 180px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--ink); background: color-mix(in srgb, var(--wash) 65%, transparent); border: 0; border-radius: 5px; font: 12px/1.7 var(--vscode-editor-font-family, var(--font-code)); overscroll-behavior: contain; scrollbar-width: thin; }
+.background-task-log { margin: 8px 0 0; padding: 9px 10px; min-height: 64px; max-height: 180px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--ink); background: var(--dsw-alias-markdown-code-block, var(--surface-subtle)); border: 0; border-radius: 5px; font: 12px/1.7 var(--vscode-editor-font-family, var(--font-code)); overscroll-behavior: contain; scrollbar-width: thin; }
 .background-task-notice:empty { display: none; }
 .background-task-notice { padding-top: 5px; color: var(--muted); }
 @media (max-width: 380px) {
   .background-tasks { left: 12px; right: 12px; width: auto; }
-  body[data-mode="assist"] .background-tasks { bottom: 96px; }
+  body[data-mode="assist"] .background-tasks { bottom: calc(var(--compose-dock-offset, 96px) + 10px); }
   .background-tasks-header { gap: 2px; } .background-tasks-toggle { gap: 5px; } .background-tasks-clear { padding: 3px; font-size: 10px; }
 }
-@media (min-width: 700px) { .background-tasks-body { grid-template-columns: minmax(160px, 28%) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); } .background-task-list { max-height: 280px; } .background-task-detail { border-top: 0; border-left: 1px solid color-mix(in srgb, var(--border) 55%, transparent); } }
+@media (min-width: 700px) { .background-tasks-body { grid-template-columns: minmax(160px, 28%) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); } .background-task-list { max-height: 280px; } .background-task-detail { border-top: 0; border-left: 1px solid var(--border-hairline); } }
 @media (prefers-reduced-motion: reduce) { .background-tasks .background-task-indicator, .background-tasks-body { animation: none !important; } .background-tasks-chevron { transition: none; } }

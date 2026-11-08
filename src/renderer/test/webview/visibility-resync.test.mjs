@@ -22,8 +22,12 @@ test('conversation page forces full paint and ready resync after visibility rest
   assert.match(app, /clearRouteWatchdog\(\);/);
   assert.match(app, /function resumeVisuals\(\) \{\s*if \(visualSuspended\(\)\) return;\s*scheduleRender\(true\);/s);
   assert.match(app, /function requestReadyResync\(\)/);
-  assert.match(app, /window\.addEventListener\('pageshow', \(\) => \{\s*suspended = false;\s*resumeVisuals\(\);\s*requestReadyResync\(\);/s);
-  assert.match(app, /else \{\s*resumeVisuals\(\);\s*requestReadyResync\(\);/s);
+  assert.match(app, /window\.addEventListener\('pageshow', \(\) => \{\s*suspended = false;\s*resumeVisuals\(\);\s*resumeRouteTransition\(\);\s*requestReadyResync\(\);/s);
+  assert.match(app, /else \{\s*resumeVisuals\(\);\s*resumeRouteTransition\(\);\s*requestReadyResync\(\);/s);
+  // A route transition that was armed while the page was hidden must resume and
+  // eventually release its full-surface loader instead of showing a blank canvas.
+  assert.match(app, /function resumeRouteTransition\(\)/);
+  assert.match(app, /if \(pageHidden\(\)\) \{ armRouteWatchdog\(\); return; \}/);
   assert.match(app, /state\?\.type === 'windowFocused'/);
   // Focus restore forces a full paint; a live-components-only resume leaves a
   // compositor-discarded surface blank until a resize.
@@ -36,8 +40,11 @@ test('conversation page forces full paint and ready resync after visibility rest
   assert.match(app, /window\.addEventListener\('focus', \(\) => \{[\s\S]{0,320}?cancelVisualFrames\(\);\s*resumeVisuals\(\);/s);
   assert.match(app, /function renderSafely\(full\) \{\s*keepAliveMark\(\);/s);
   assert.match(app, /function receiveHostMessage\(event\) \{\s*keepAliveMark\(\);/s);
-  assert.match(app, /\['disconnected', 'backend-disconnected'\]\.includes\(connectionStatus\)/);
+  assert.match(app, /\['unresponsive', 'backend-disconnected'\]\.includes\(connectionStatus\)/);
   assert.doesNotMatch(app, /queueControlsBlocked[\s\S]{0,200}'reconnecting'/);
+  // A probe miss is advisory: the page keeps its pending operations and drafts.
+  assert.doesNotMatch(app, /连接已中断，已发送操作的结果尚未确认/);
+  assert.match(app, /if \(status === 'connected' && \['unresponsive', 'backend-disconnected', 'backend-stalled', 'reconnecting'\]/);
   const extension = fs.readFileSync(path.join(root, 'extension.cjs'), 'utf8');
   assert.match(extension, /onDidChangeWindowState/);
   assert.match(extension, /type: 'windowFocused'/);
@@ -54,13 +61,23 @@ test('conversation page forces full paint and ready resync after visibility rest
   assert.match(extension, /chromeLockWatchdog/);
   assert.match(extension, /never leave native chrome locked forever/);
   assert.match(extension, /status: 'disconnected', recovering: true/);
+  // Reconnection is an authoritative snapshot read, never a task replay.
+  assert.match(extension, /harness\.authoritative\(conversation\.id\)/);
+  assert.match(extension, /scheduleBackendResync/);
+  assert.match(extension, /noteBackendHealth/);
   assert.doesNotMatch(extension, /isBusy\(currentId\)\) return \{ status: 'connected'/);
   assert.match(extension, /if \(switched\) await lockConversationChrome\(\);/);
+  // Bursts of tree/mode clicks must collapse to the latest navigation request.
+  assert.match(extension, /function navigationAction\(run\)/);
+  assert.match(extension, /if \(ticket !== navigationTicket\) return undefined/);
+  assert.match(extension, /welcome\.reveal\(welcome\.viewColumn \|\| vscode\.ViewColumn\.One, true\)/);
   assert.match(extension, /createSessions\(vscode, context, \(\) => schedulePublishState\(\)/);
   assert.match(extension, /ensureIdle/);
   const monitor = fs.readFileSync(path.join(root, 'webview/connection-monitor.js'), 'utf8');
   assert.match(monitor, /missCount/);
   assert.match(monitor, /missCount >= 2/);
+  assert.match(monitor, /change\('unresponsive'\)/);
+  assert.doesNotMatch(monitor, /change\('disconnected'\)/);
   assert.match(monitor, /backendMissCount/);
   assert.match(monitor, /graceUntil/);
   assert.match(app, /Soft reconnect ticks only need the connection strip/);
@@ -70,7 +87,7 @@ test('conversation page forces full paint and ready resync after visibility rest
   assert.match(app, /if \(full \|\| !succeeded\) finishPageTransition\(\)/);
   assert.match(app, /contentReadyRetried/);
   assert.match(app, /finishPageTransition\(\)/);
-  assert.match(app, /HISTORY_TAIL/);
+  assert.match(app, /HISTORY_PROGRESSIVE_MIN/);
   assert.match(app, /scheduleHistoryFill/);
   assert.match(app, /queueThreadTeardown/);
   assert.match(app, /flushThreadTeardown/);

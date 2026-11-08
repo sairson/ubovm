@@ -1,4 +1,4 @@
-﻿# Shared Windows PowerShell 5.1 / PowerShell 7 build logic.
+# Shared Windows PowerShell 5.1 / PowerShell 7 build logic.
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 # Windows PowerShell 5.1 defaults to the system ANSI code page for BOM-less
@@ -685,16 +685,33 @@ function Set-FixedConversationCore($Product) {
     $bundle = $bundle.Replace('if(t!==true&&!this.layoutService.isVisible("workbench.parts.panel"))return;return super.openPaneComposite(e??this.getLastActivePaneCompositeId(),t)', 'return super.openPaneComposite(e??this.getLastActivePaneCompositeId(),t)')
     # Upgrade the terminal-only policy before installing the shared Worker panel policy.
     $bundle = $bundle.Replace('static{this.activePanelSettingsKey="workbench.panelpart.activepanelid"}async openPaneComposite(e,t){if(e!==void 0&&e!=="terminal")return;return super.openPaneComposite("terminal",t)}getPaneComposite(e){return e==="terminal"?super.getPaneComposite(e):void 0}getPaneComposites(){return super.getPaneComposites().filter(e=>e.id==="terminal")}getLastActivePaneCompositeId(){return"terminal"}', 'static{this.activePanelSettingsKey="workbench.panelpart.activepanelid"}')
-    $bundle = Replace-CoreSnippet $bundle 'static{this.activePanelSettingsKey="workbench.panelpart.activepanelid"}' 'static{this.activePanelSettingsKey="workbench.panelpart.activepanelid"}async openPaneComposite(e,t){if(e!==void 0&&e!=="terminal"&&e!=="workbench.view.extension.ubovm-workers")return;return super.openPaneComposite(e??this.getLastActivePaneCompositeId(),t)}getPaneComposite(e){return e==="terminal"||e==="workbench.view.extension.ubovm-workers"?super.getPaneComposite(e):void 0}getPaneComposites(){return super.getPaneComposites().filter(e=>e.id==="terminal"||e.id==="workbench.view.extension.ubovm-workers")}getLastActivePaneCompositeId(){const e=super.getLastActivePaneCompositeId();return e==="workbench.view.extension.ubovm-workers"?e:"terminal"}'
+    # An interrupted previous patch can leave two managed panel policies behind;
+    # remove every copy before inserting the canonical one so anchors stay unique.
+    $managedPanelPolicy = 'async openPaneComposite(e,t){if(e!==void 0&&e!=="terminal"&&e!=="workbench.view.extension.ubovm-workers")return;return super.openPaneComposite(e??this.getLastActivePaneCompositeId(),t)}getPaneComposite(e){return e==="terminal"||e==="workbench.view.extension.ubovm-workers"?super.getPaneComposite(e):void 0}getPaneComposites(){return super.getPaneComposites().filter(e=>e.id==="terminal"||e.id==="workbench.view.extension.ubovm-workers")}getLastActivePaneCompositeId(){const e=super.getLastActivePaneCompositeId();return e==="workbench.view.extension.ubovm-workers"?e:"terminal"}'
+    while ($bundle.Contains($managedPanelPolicy)) { $bundle = $bundle.Replace($managedPanelPolicy, '') }
+    # Workbench compatibility may have appended extension-container allowances;
+    # strip those variants too so an interrupted patch cannot duplicate methods.
+    $managedPanelPattern = 'async openPaneComposite\(e,t\)\{if\(e!==void 0&&e!=="terminal"&&e!=="workbench\.view\.extension\.ubovm-workers"(?:&&!e\.startsWith\("workbench\.view\.extension\."\))?\)return;return super\.openPaneComposite\(e\?\?this\.getLastActivePaneCompositeId\(\),t\)\}getPaneComposite\(e\)\{return e==="terminal"\|\|e==="workbench\.view\.extension\.ubovm-workers"(?:\|\|e\.startsWith\("workbench\.view\.extension\."\))?\?super\.getPaneComposite\(e\):void 0\}getPaneComposites\(\)\{return super\.getPaneComposites\(\)\.filter\(e=>e\.id==="terminal"\|\|e\.id==="workbench\.view\.extension\.ubovm-workers"(?:\|\|e\.id\.startsWith\("workbench\.view\.extension\."\))?\)\}getLastActivePaneCompositeId\(\)\{const e=super\.getLastActivePaneCompositeId\(\);return e==="workbench\.view\.extension\.ubovm-workers"(?:\|\|e\.startsWith\("workbench\.view\.extension\."\))?\?e:"terminal"\}'
+    $bundle = [regex]::Replace($bundle, $managedPanelPattern, '')
+    $bundle = Replace-CoreSnippet $bundle 'static{this.activePanelSettingsKey="workbench.panelpart.activepanelid"}' ('static{this.activePanelSettingsKey="workbench.panelpart.activepanelid"}' + $managedPanelPolicy)
     $bundle = $bundle.Replace('shouldShowCompositeBar(){return!1}getCompositeBarPosition(){return Ad.TITLE}toJSON(){return{type:"workbench.parts.panel"}}', 'shouldShowCompositeBar(){return!0}getCompositeBarPosition(){return Ad.TITLE}toJSON(){return{type:"workbench.parts.panel"}}')
-    $bundle = Replace-CoreSnippet $bundle 'shouldBeHidden(e,t){const s=Oe(e)?this.getViewContainer(e):e,n=Oe(e)?e:e.id;' 'shouldBeHidden(e,t){const s=Oe(e)?this.getViewContainer(e):e,n=Oe(e)?e:e.id;if(this.options.partContainerClass==="panel"&&n!=="terminal"&&n!=="workbench.view.extension.ubovm-workers")return!0;'
+    # The panel allow-list is prepended to shouldBeHidden. Strip all old copies
+    # (including the compatibility startsWith variant) before inserting one.
+    $panelHiddenRegex = 'if\(this\.options\.partContainerClass==="panel"&&n!=="terminal"&&n!=="workbench\.view\.extension\.ubovm-workers"(?:&&!n\.startsWith\("workbench\.view\.extension\."\))?\)return!0;'
+    $bundle = [regex]::Replace($bundle, $panelHiddenRegex, '')
+    $panelHidden = 'if(this.options.partContainerClass==="panel"&&n!=="terminal"&&n!=="workbench.view.extension.ubovm-workers")return!0;'
+    $bundle = Replace-CoreSnippet $bundle 'shouldBeHidden(e,t){const s=Oe(e)?this.getViewContainer(e):e,n=Oe(e)?e:e.id;' ('shouldBeHidden(e,t){const s=Oe(e)?this.getViewContainer(e):e,n=Oe(e)?e:e.id;' + $panelHidden)
     # Sidebar allow-list must appear exactly once. A short explorer/workers-only
     # guard inserted before the full policy hides Search/Blackboard and can leave
     # the right sidebar with no restorable composite after Browser removal.
-    $fullSidebarHidden = 'if(this.options.partContainerClass==="sidebar"&&n!=="workbench.view.explorer"&&n!=="workbench.view.search"&&n!=="workbench.view.extension.ubovm-workers"&&n!=="workbench.view.extension.ubovm-blackboard")return!0;'
+    $fullSidebarHiddenV4 = 'if(this.options.partContainerClass==="sidebar"&&n!=="workbench.view.explorer"&&n!=="workbench.view.search"&&n!=="workbench.view.extension.ubovm-workers"&&n!=="workbench.view.extension.ubovm-blackboard")return!0;'
+    $fullSidebarHidden = 'if(this.options.partContainerClass==="sidebar"&&n!=="workbench.view.explorer"&&n!=="workbench.view.search"&&n!=="workbench.view.extension.ubovm-workers"&&n!=="workbench.view.extension.ubovm-blackboard"&&n!=="workbench.view.extension.ubovm-goal-chat"&&!n.startsWith("workbench.view.extension."))return!0;'
     $shortSidebarHidden = 'if(this.options.partContainerClass==="sidebar"&&n!=="workbench.view.explorer"&&n!=="workbench.view.extension.ubovm-workers")return!0;'
+    $sidebarHiddenRegex = 'if\(this\.options\.partContainerClass==="sidebar"&&n!=="workbench\.view\.explorer"&&n!=="workbench\.view\.search"&&n!=="workbench\.view\.extension\.ubovm-workers"&&n!=="workbench\.view\.extension\.ubovm-blackboard"&&n!=="workbench\.view\.extension\.ubovm-goal-chat"(?:&&!n\.startsWith\("workbench\.view\.extension\."\))?\)return!0;'
+    $bundle = [regex]::Replace($bundle, $sidebarHiddenRegex, '')
     $bundle = $bundle.Replace($shortSidebarHidden, '')
-    $bundle = $bundle.Replace('&&n!=="workbench.view.search"&&n!=="workbench.view.extension.ubovm-browser"&&n!=="workbench.view.extension.ubovm-workers")return!0;', '&&n!=="workbench.view.search"&&n!=="workbench.view.extension.ubovm-workers"&&n!=="workbench.view.extension.ubovm-blackboard")return!0;')
+    $bundle = $bundle.Replace('&&n!=="workbench.view.search"&&n!=="workbench.view.extension.ubovm-browser"&&n!=="workbench.view.extension.ubovm-workers")return!0;', '&&n!=="workbench.view.search"&&n!=="workbench.view.extension.ubovm-workers"&&n!=="workbench.view.extension.ubovm-blackboard"&&n!=="workbench.view.extension.ubovm-goal-chat"&&!n.startsWith("workbench.view.extension."))return!0;')
+    $bundle = $bundle.Replace($fullSidebarHiddenV4, $fullSidebarHidden)
     if (-not $bundle.Contains($fullSidebarHidden)) {
         $bundle = Replace-CoreSnippet $bundle 'if(this.options.partContainerClass==="panel"&&n!=="terminal"&&n!=="workbench.view.extension.ubovm-workers")return!0;' ('if(this.options.partContainerClass==="panel"&&n!=="terminal"&&n!=="workbench.view.extension.ubovm-workers")return!0;' + $fullSidebarHidden)
     }
@@ -711,10 +728,12 @@ function Set-FixedConversationCore($Product) {
         $bundle = $bundle.Substring(0, $closeStart) + 'render(e){super.render(e),this.updateChecked(),this.updateEnabled(),' + $bundle.Substring($closeEnd)
     }
     $closeTabs = Get-PatchAdditions (Join-Path $ProjectRoot 'resources/patches/sidebar-close-tabs.patch') 'src/vs/workbench/browser/parts/compositeBarActions.ts'
-    $closeTabs = $closeTabs.Replace("if (!container.closest('.part.sidebar')) { return; }", "const sidebar = container.closest('.part.sidebar'); if (!sidebar) { return; }").Replace("void this.commandService.executeCommand('workbench.action.closeSidebar');", "sidebar.dispatchEvent(new CustomEvent('ubovm-empty-sidebar'));")
+    $closeTabs = $closeTabs.Replace("if (!container.closest('.part.sidebar')) { return; }", "const sidebar = container.closest('.part.sidebar'); if (!sidebar) { return; }")
+    $closeTabs = $closeTabs.Replace("void this.commandService.executeCommand(sidebar.classList.contains('auxiliarybar') ? 'workbench.action.closeAuxiliaryBar' : 'workbench.action.closeSidebar');", "if(sidebar.classList.contains('auxiliarybar')) void this.commandService.executeCommand('workbench.action.closeAuxiliaryBar'); else sidebar.dispatchEvent(new CustomEvent('ubovm-empty-sidebar', { detail: { id: this.compositeBarActionItem.id } }));")
+    $closeTabs = $closeTabs.Replace("void this.commandService.executeCommand('workbench.action.closeSidebar');", "sidebar.dispatchEvent(new CustomEvent('ubovm-empty-sidebar', { detail: { id: this.compositeBarActionItem.id } }));")
     $closeTabs = $closeTabs.Replace('querySelector<HTMLElement>', 'querySelector').Replace('addDisposableListener(', 'U(').Replace('localize(''ubovm.closeSidebarTab'', "关闭 {0}", this.compositeBarActionItem.name)', '(''关闭 '' + this.compositeBarActionItem.name)')
     $bundle = Replace-CoreSnippet $bundle 'render(e){super.render(e),this.updateChecked(),this.updateEnabled(),this._register(U(this.container,ie.CONTEXT_MENU,' ('render(e){super.render(e),this.updateChecked(),this.updateEnabled();const container=e;' + "`n" + $closeTabs + 'this._register(U(this.container,ie.CONTEXT_MENU,')
-    $bundle = Replace-CoreSnippet $bundle 'onDidViewContainerVisible(e){const t=this.getViewContainer(e);t&&(this.addComposite(t),this.compositeBar.activateComposite(t.id),' 'onDidViewContainerVisible(e){const t=this.getViewContainer(e);t&&(this.addComposite(t),this.options.partContainerClass==="sidebar"&&this.compositeBar.pin(e),this.compositeBar.activateComposite(t.id),'
+    $bundle = Replace-CoreSnippet $bundle 'onDidViewContainerVisible(e){const t=this.getViewContainer(e);t&&(this.addComposite(t),this.compositeBar.activateComposite(t.id),' 'onDidViewContainerVisible(e){const t=this.getViewContainer(e);t&&(this.addComposite(t),(this.options.partContainerClass==="sidebar"||this.options.partContainerClass==="auxiliarybar"||this.options.partContainerClass==="activitybar")&&this.compositeBar.pin(t.id),this.compositeBar.activateComposite(t.id),'
     $emptySidebar = Get-PatchAdditions (Join-Path $ProjectRoot 'resources/patches/sidebar-empty.patch') 'src/vs/workbench/browser/parts/paneCompositePart.ts'
     $emptyMethod = [regex]::Match($emptySidebar, '(?s)\tprivate initializeUbovmEmptySidebar\(\): void \{.*?\n\t\}').Value
     if (-not $emptyMethod) { throw 'Missing empty sidebar implementation.' }
@@ -745,18 +764,17 @@ function Set-FixedConversationCore($Product) {
     $bundle = Replace-CoreSnippet $bundle 'this.createEmptyPaneMessage(this.contentArea),this.updateCompositeBar();' 'this.createEmptyPaneMessage(this.contentArea),this.updateCompositeBar();this.initializeUbovmEmptySidebar();'
     $bundle = Replace-CoreSnippet $bundle 'onDidOpen(e){const t=e.getId();' 'onDidOpen(e){if(this.partId==="workbench.parts.sidebar"){delete this.element.dataset.ubovmEmpty;this.storageService.remove("ubovm.sidebar.empty",1)}const t=e.getId();'
     $bundle = Replace-CoreSnippet $bundle 'getLastActivePaneCompositeId(){return this.getLastActiveCompositeId()}' 'getLastActivePaneCompositeId(){if(this.partId==="workbench.parts.sidebar"&&this.element.dataset.ubovmEmpty==="true")return"";return this.getLastActiveCompositeId()}'
-    $bundle = $bundle.Replace(
+    # Sidebar tab order includes the exploration chat view beside Explorer/Worker/Blackboard.
+    $sidebarTabOrder = "['workbench.view.explorer', 'workbench.view.search', 'workbench.view.extension.ubovm-workers', 'workbench.view.extension.ubovm-blackboard', 'workbench.view.extension.ubovm-goal-chat']"
+    $sidebarTabOrderJson = '["workbench.view.explorer","workbench.view.search","workbench.view.extension.ubovm-workers","workbench.view.extension.ubovm-blackboard","workbench.view.extension.ubovm-goal-chat"]'
+    foreach ($variant in @(
       "['workbench.view.explorer', 'workbench.view.extension.ubovm-workers', 'workbench.view.extension.ubovm-blackboard']",
-      "['workbench.view.explorer', 'workbench.view.search', 'workbench.view.extension.ubovm-workers', 'workbench.view.extension.ubovm-blackboard']")
-    $bundle = $bundle.Replace(
       '["workbench.view.explorer","workbench.view.extension.ubovm-workers","workbench.view.extension.ubovm-blackboard"]',
-      '["workbench.view.explorer","workbench.view.search","workbench.view.extension.ubovm-workers","workbench.view.extension.ubovm-blackboard"]')
-    $bundle = $bundle.Replace(
       "['workbench.view.explorer', 'workbench.view.search', 'workbench.view.extension.ubovm-workers', 'workbench.view.extension.ubovm-blackboard']",
-      "['workbench.view.explorer', 'workbench.view.search', 'workbench.view.extension.ubovm-workers', 'workbench.view.extension.ubovm-blackboard']")
-    $bundle = $bundle.Replace(
-      '["workbench.view.explorer","workbench.view.search","workbench.view.extension.ubovm-workers","workbench.view.extension.ubovm-blackboard"]',
-      '["workbench.view.explorer","workbench.view.search","workbench.view.extension.ubovm-workers","workbench.view.extension.ubovm-blackboard"]')
+      '["workbench.view.explorer","workbench.view.search","workbench.view.extension.ubovm-workers","workbench.view.extension.ubovm-blackboard"]'
+    )) {
+        $bundle = $bundle.Replace($variant, $(if ($variant.StartsWith('[')) { $sidebarTabOrder } else { $sidebarTabOrderJson }))
+    }
     # Lock sidebar/auxiliary-bar tab order and view layout (sidebar-no-dnd.patch).
     # ViewContainerLocation: Sidebar=0, Panel=1, AuxiliaryBar=2.
     $bundle = Replace-CoreSnippet $bundle 'canDrop(i,e){const t=i.getData();if(t.type==="composite"){' 'canDrop(i,e){if(this.targetContainerLocation===0||this.targetContainerLocation===2)return!1;const t=i.getData();if(t.type==="composite"){'
@@ -784,7 +802,10 @@ function Set-FixedConversationCore($Product) {
     # Colors are removed inside the injected finish()/else path; drop the immediate strip.
     $bundle = $bundle.Replace('const t=et.document.head.getElementsByClassName("initialShellColors");t[0]?.remove()', '')
     # Keep source and pinned prebuilt startup width recovery identical.
-    $sidebarSizeCode = (Get-PatchAdditions (Join-Path $ProjectRoot 'resources/patches/sidebar-size.patch') 'src/vs/workbench/browser/layout.ts').Replace('LayoutStateKeys.', 'Ti.').Replace('width * 0.4', 'this._mainContainerDimension.width * 0.4').Replace('width / 4', 'this._mainContainerDimension.width / 4')
+    $sidebarSizeCode = (Get-PatchAdditions (Join-Path $ProjectRoot 'resources/patches/sidebar-size.patch') 'src/vs/workbench/browser/layout.ts').Replace('LayoutStateKeys.', 'Ti.')
+    if (-not $sidebarSizeCode.Contains('this._mainContainerDimension')) {
+        $sidebarSizeCode = $sidebarSizeCode.Replace('width * 0.4', 'this._mainContainerDimension.width * 0.4').Replace('width / 4', 'this._mainContainerDimension.width / 4')
+    }
     $sidebarDescriptor = 'createGridDescriptor(){'
     $sidebarWidthAnchor = 'const{width:i,height:e}'
     $sidebarAnchorAt = $bundle.IndexOf($sidebarWidthAnchor)
@@ -795,14 +816,20 @@ function Set-FixedConversationCore($Product) {
         $bundle = Replace-CoreSnippet $bundle 'createGridDescriptor(){const{width:i,height:e}' ('createGridDescriptor(){' + "`n" + $sidebarSizeCode + 'const{width:i,height:e}')
     }
     $auxMaxFrom = 'this.commandService=g,this.minimumWidth=170,this.maximumWidth=Number.POSITIVE_INFINITY'
+    $auxMaxLegacy = 'this.commandService=g,this.minimumWidth=170,this.maximumWidth=720'
     $auxMaxTo = 'this.commandService=g,this.minimumWidth=170,this.maximumWidth=420'
     if ($bundle.Contains($auxMaxFrom)) { $bundle = Replace-CoreSnippet $bundle $auxMaxFrom $auxMaxTo }
-    elseif (-not $bundle.Contains($auxMaxTo)) { throw 'Unsupported workbench bundle: the left sessions sidebar max-width anchor is missing.' }
+    elseif ($bundle.Contains($auxMaxLegacy)) { $bundle = Replace-CoreSnippet $bundle $auxMaxLegacy $auxMaxTo }
+    elseif (-not $bundle.Contains($auxMaxTo)) { Write-Warning 'Left sessions sidebar max-width anchor was not found; keeping the native width.' }
     $auxPreferredFrom = 'static{this.viewContainersWorkspaceStateKey="workbench.auxiliarybar.viewContainersWorkspaceState"}get preferredHeight(){return this.layoutService.mainContainerDimension.height*.4}get preferredWidth(){const e=this.getActivePaneComposite();if(!e)return;const t=e.getOptimalWidth();if(typeof t=="number")return Math.max(t,300)}'
+    $auxPreferredLegacy = 'static{this.viewContainersWorkspaceStateKey="workbench.auxiliarybar.viewContainersWorkspaceState"}get preferredHeight(){return this.layoutService.mainContainerDimension.height*.4}get preferredWidth(){const e=this.getActivePaneComposite();if(!e)return;const t=e.getOptimalWidth();if(typeof t=="number")return Math.min(720,Math.max(t,300))}'
     $auxPreferredTo = 'static{this.viewContainersWorkspaceStateKey="workbench.auxiliarybar.viewContainersWorkspaceState"}get preferredHeight(){return this.layoutService.mainContainerDimension.height*.4}get preferredWidth(){const e=this.getActivePaneComposite();if(!e)return;const t=e.getOptimalWidth();if(typeof t=="number")return Math.min(420,Math.max(t,300))}'
     if ($bundle.Contains($auxPreferredFrom)) { $bundle = Replace-CoreSnippet $bundle $auxPreferredFrom $auxPreferredTo }
-    elseif (-not $bundle.Contains($auxPreferredTo)) { throw 'Unsupported workbench bundle: the left sessions sidebar preferred-width anchor is missing.' }
-    $bundle = Replace-CoreSnippet $bundle 'return super.openPaneComposite(e??this.getLastActivePaneCompositeId(),t)' 'if(t!==true&&!this.layoutService.isVisible("workbench.parts.panel"))return;return super.openPaneComposite(e??this.getLastActivePaneCompositeId(),t)'
+    elseif ($bundle.Contains($auxPreferredLegacy)) { $bundle = Replace-CoreSnippet $bundle $auxPreferredLegacy $auxPreferredTo }
+    elseif (-not $bundle.Contains($auxPreferredTo)) { Write-Warning 'Left sessions sidebar preferred-width anchor was not found; keeping the native width.' }
+    $panelRevealAnchor = 'return super.openPaneComposite(e??this.getLastActivePaneCompositeId(),t)'
+    if (-not $bundle.Contains($panelRevealAnchor)) { throw 'Unsupported workbench bundle: the managed panel reveal anchor is missing.' }
+    $bundle = $bundle.Replace($panelRevealAnchor, 'if(t!==true&&!this.layoutService.isVisible("workbench.parts.panel"))return;return super.openPaneComposite(e??this.getLastActivePaneCompositeId(),t)')
     $bundle = Replace-CoreSnippet $bundle 'createGridDescriptor(){' 'createGridDescriptor(){this.stateModel.setRuntimeValue(Ti.SIDEBAR_HIDDEN,!0);'
     $bundle = Replace-CoreSnippet $bundle 'this.state.initialization.views.containerToRestore.sideBar&&(hs("code/willRestoreViewlet")' 'this.isVisible("workbench.parts.sidebar")&&this.state.initialization.views.containerToRestore.sideBar&&(hs("code/willRestoreViewlet")'
     # Reserve real virtual-list space for conversation rows only.
@@ -926,6 +953,17 @@ function Set-RuntimeExecutableIcon {
         Write-Host '[UBOVM] Skipped executable icon; app-icon.ico or rcedit is unavailable.'
         return
     }
+    # A previous replacement can leave the old image behind when a running IDE
+    # still holds it. That backup cannot be deleted or overwritten, so re-stamping
+    # would abort the whole sync; the current executable is already branded.
+    $previous = "$Executable.previous-icon"
+    if (Test-Path -LiteralPath $previous) {
+        try { Remove-Item -LiteralPath $previous -Force -ErrorAction Stop }
+        catch {
+            Write-Host '[UBOVM] Skipped executable icon; the previous image is still locked by a running IDE (restart to refresh the taskbar icon).'
+            return
+        }
+    }
     # Stamp a copy first. A running VSCodium.exe cannot be rewritten in place,
     # but Windows allows the image to be renamed and replaced.
     $stamped = Join-Path ([IO.Path]::GetTempPath()) ('ubovm-exe-icon-' + [Guid]::NewGuid().ToString('N') + '.exe')
@@ -979,6 +1017,15 @@ function Sync-Application {
     Set-FixedConversationCore $product
     Set-BackgroundTrayCore
     Write-Json $productPath $product
+    # The packaged runtime is a harness application, not a general VS Code
+    # distribution: keep only the extension host surface UBOVM needs and remove
+    # the marketplace configuration before the payload is copied.
+    $node = (Get-Command node -ErrorAction Stop).Source
+    $builtinArguments = @((Join-Path $ProjectRoot 'build/builtin-extensions.mjs'), $AppRoot)
+    $pristineExtensions = Join-Path $ProjectRoot '.cache/full-vscodium/resources/app/extensions'
+    if (Test-Path -LiteralPath $pristineExtensions) { $builtinArguments += $pristineExtensions }
+    if ($env:VSCODE_PORTABLE) { $builtinArguments += @('--state', (Join-Path $env:VSCODE_PORTABLE 'extension-state.json')) }
+    Invoke-Checked $node $builtinArguments
     $mainDirectory = Join-Path $AppRoot 'ubovm/main'
     New-Item -ItemType Directory -Force -Path $mainDirectory | Out-Null
     Get-ChildItem -LiteralPath (Join-Path $ProjectRoot 'src/main') -Filter '*.mjs' -File | ForEach-Object {
@@ -994,11 +1041,13 @@ function Sync-Application {
     Remove-Managed $extension $extensionsRoot
     Copy-Item -LiteralPath (Join-Path $ProjectRoot 'src/renderer') -Destination $extension -Recurse
     $npmManifestPath = Join-Path $extensionsRoot 'npm\package.json'
-    $npmManifest = Get-Content -LiteralPath $npmManifestPath -Raw | ConvertFrom-Json
-    foreach ($view in $npmManifest.contributes.views.explorer) {
-        if ($view.id -eq 'npm') { $view.when = 'false' }
+    if (Test-Path -LiteralPath $npmManifestPath) {
+        $npmManifest = Get-Content -LiteralPath $npmManifestPath -Raw | ConvertFrom-Json
+        foreach ($view in $npmManifest.contributes.views.explorer) {
+            if ($view.id -eq 'npm') { $view.when = 'false' }
+        }
+        Write-Json $npmManifestPath $npmManifest
     }
-    Write-Json $npmManifestPath $npmManifest
 }
 
 function Expand-RuntimeArchive($Archive, $Staging) {
@@ -1232,6 +1281,18 @@ function Copy-RuntimePayload($Source, $Destination) {
     }
 }
 
+function Protect-PackagedSources([string]$Payload) {
+    # Development keeps its readable source tree. Only the staged installer or
+    # portable payload is minified and stripped of docs/tests/type declarations,
+    # so a customer cannot open the installed app and read the core source.
+    $protectNode = (Get-HarnessInstaller).Node
+    $protectScript = Join-Path $ProjectRoot 'build/protect.mjs'
+    $appArgument = '--app=' + $AppDirectory
+    Invoke-Checked $protectNode @($protectScript, $Payload, $appArgument)
+    # Fail the package when any development material survived the transform.
+    Invoke-Checked $protectNode @($protectScript, $Payload, $appArgument, '--verify')
+}
+
 function Build-WindowsInstaller($version) {
     $tools = Get-InstallerTools
     $compiler = $tools.Compiler
@@ -1261,6 +1322,7 @@ function Build-WindowsInstaller($version) {
     if (Test-Path -LiteralPath $oldVisual) { Move-Item -LiteralPath $oldVisual -Destination (Join-Path $payload 'UBOVM.VisualElementsManifest.xml') }
     $packagedExtension = Join-Path $payload 'resources/app/extensions/ubovm-core'
     Remove-Managed (Join-Path $packagedExtension 'test') $packagedExtension
+    Protect-PackagedSources $payload
     $chinese = Join-Path $ProjectRoot 'vendor/vscode/build/win32/i18n/Default.zh-cn.isl'
     if (-not (Test-Path -LiteralPath $chinese)) { throw 'Missing installer Chinese translation; run node build/build.mjs source fetch.' }
     Invoke-InstallerCompiler $compiler @('/Qp', "/DAppVersion=$version", "/DPayloadDir=$payload", "/DOutputDir=$output", "/DAppIcon=$icon", "/DChineseMessages=$chinese", (Join-Path $ProjectRoot 'resources/installer/ubovm.iss')) $staging
@@ -1281,6 +1343,7 @@ function Build-PortableArchive($version) {
     Copy-RuntimePayload $Runtime $payload
     $packagedExtension = Join-Path $payload (Join-Path $AppDirectory 'extensions/ubovm-core')
     Remove-Managed (Join-Path $packagedExtension 'test') $packagedExtension
+    Protect-PackagedSources $payload
     $result = if ($OnMac) {
         Join-Path $output "UBOVM-$RuntimeKey-$version.zip"
     } else {
@@ -1306,10 +1369,12 @@ function Quote-NativeArgument([string]$Value) {
 }
 
 function Start-Desktop([switch]$Development, [switch]$Smoke) {
-    Initialize-Runtime
+    # Prepare the portable data root first: Sync-Application needs VSCODE_PORTABLE
+    # to apply the recorded extension enable/disable state during startup.
     $portable = Set-PortableData $(if ($Smoke) { 'smoke' } else { 'desktop' })
+    Initialize-Runtime
     $env:UBOVM_HARNESS_ENTRY = Join-Path $AppRoot 'ubovm/harness/index.mjs'
-    $arguments = @('--skip-welcome', '--skip-release-notes')
+    $arguments = @('--no-sandbox', '--skip-welcome', '--skip-release-notes')
     # Ordinary launches reuse Code OSS's existing window and IPC owner.
     # Tests require their own window; development uses upstream host matching.
     if ($Smoke) { $arguments += '--new-window' }
@@ -1371,6 +1436,13 @@ function Test-Runtime {
     $files += @((Join-Path 'ubovm/runtime/python' $pythonAsset.Value.executable), 'ubovm/runtime/python/.ubovm-python-runtime.json')
     $files += @('extensions/ubovm-core/host/agent/agent-service.cjs', 'extensions/ubovm-core/host/agent/agent-backend.cjs')
     $files += @('harness-service.cjs', 'harness-thread.cjs', 'thread-rpc.cjs', 'snapshot-queue.cjs', 'projection.cjs', 'errors.cjs') | ForEach-Object { 'ubovm/harness/ide/runtime/' + $_ }
+    $runtimeManifestPath = Join-Path $AppRoot 'ubovm/package.json'
+    if (-not (Test-Path -LiteralPath $runtimeManifestPath)) { throw 'Missing ubovm/package.json. Run node build/build.mjs setup.' }
+    $runtimeManifest = Get-Content -LiteralPath $runtimeManifestPath -Raw | ConvertFrom-Json
+    foreach ($dependency in $runtimeManifest.dependencies.PSObject.Properties) {
+        $file = 'ubovm/node_modules/' + $dependency.Name + '/package.json'
+        if (-not $files.Contains($file)) { $files += $file }
+    }
     foreach ($file in $files) {
         if (-not (Test-Path -LiteralPath (Join-Path $AppRoot $file))) { throw "Missing $file. Run node build/build.mjs setup." }
         Write-Host "[OK] $file"
@@ -1381,6 +1453,13 @@ function Test-Runtime {
     Write-Host "[OK] $($rg[0].FullName.Substring($AppRoot.Length + 1))"
     $manifest = Get-Content -LiteralPath (Join-Path $AppRoot 'package.json') -Raw | ConvertFrom-Json
     if ($manifest.main -ne './ubovm/main/index.mjs') { throw 'The custom Electron main entry is not connected.' }
+    $product = Get-Content -LiteralPath (Join-Path $AppRoot 'product.json') -Raw | ConvertFrom-Json
+    if ($product.PSObject.Properties.Name -contains 'extensionsGallery') { throw 'The runtime still exposes an extension marketplace. Run setup again.' }
+    if ([string]$product.updateUrl) { throw 'The runtime still points at a VSCodium update endpoint. Run setup again.' }
+    if (-not ($product.builtInExtensions -is [array])) { throw 'The runtime product metadata is missing builtInExtensions; startup would hang.' }
+    if (-not ($product.builtInExtensionsEnabledWithAutoUpdates -is [array])) { throw 'The runtime product metadata is missing builtInExtensionsEnabledWithAutoUpdates; startup would hang.' }
+    if (-not $product.defaultChatAgent) { throw 'The runtime product metadata is missing defaultChatAgent; startup would hang.' }
+    if (-not (Test-Path -LiteralPath (Join-Path $AppRoot 'extensions/ubovm-core/package.json'))) { throw 'The harness extension is missing from the runtime.' }
     if (-not ((Read-Utf8Text (Join-Path $AppRoot 'out/main.js'))).Contains('s.emit("ubovm-before-close",r,this._quitRequested)')) { throw 'The background lifecycle hook is missing. Run node build/build.mjs setup.' }
     $legacyKeys = (Get-PatchAdditions (Join-Path $ProjectRoot 'resources/patches/keyboard-policy.patch') 'src/vs/platform/keybinding/common/abstractKeybindingService.ts').Replace('resolveResult.commandId', 'l.commandId')
     $searchKeys = Get-PatchAdditions (Join-Path $ProjectRoot 'resources/patches/file-search.patch') 'src/vs/platform/keybinding/common/abstractKeybindingService.ts'

@@ -53,6 +53,17 @@ test('a late full snapshot from another conversation cannot erase the current fu
   assert.equal(f.errors.length, 0);
 });
 
+test('full snapshots keep Agent memory when the execution delta omits it', async t => {
+  const f = fixture(t);
+  f.publisher.publishFull({
+    type: 'state', conversation: { id: 'current' }, notes: [],
+    execution: { status: 'idle', busy: false, memory: { notes: [{ id: 'n1', content: 'keep' }] } }
+  });
+  await f.advance();
+  assert.equal(f.published[0].execution.memory.notes[0].content, 'keep');
+  assert.equal(f.published[0].execution.status, 'running');
+});
+
 test('background conversations and hidden panels perform no snapshot work', async t => {
   const f = fixture(t);
   f.publisher.schedule('background');

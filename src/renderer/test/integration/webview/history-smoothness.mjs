@@ -372,6 +372,39 @@ test('histories up to 24 messages still paint synchronously without indicator or
   assert.equal(await page.evaluate(() => document.querySelectorAll('#messages > .history-loading, #messages .message-hydrating').length), 0);
 });
 
+test('heavy histories keep every message laid out so the scrollbar cannot re-estimate', async t => {
+  const page = await fixture(t);
+  await dispatchState(page, state('smooth-tail', tallHistory(60, 'tail')));
+  await waitHistoryComplete(page, 60);
+  const geometry = await page.evaluate(() => {
+    const root = document.getElementById('messages');
+    const items = [...root.querySelectorAll(':scope > .message')];
+    const computed = node => getComputedStyle(node).contentVisibility;
+    return {
+      heavyClass: root.classList.contains('history-heavy'),
+      first: computed(items[0]),
+      tail: computed(items[items.length - 1]),
+      allVisible: items.every(node => computed(node) === 'visible')
+    };
+  });
+  assert.equal(geometry.heavyClass, false, 'the conversation no longer opts into content-visibility');
+  assert.equal(geometry.allVisible, true, 'every message keeps its true height while dragging the scrollbar');
+});
+
+test('very long histories cap mounted messages and page older records on demand', async t => {
+  const page = await fixture(t);
+  const messages = Array.from({ length: 700 }, (_, i) => ({ id: `cap-${i}`, role: i % 2 ? 'assistant' : 'user', text: `CAP T#${i}#` }));
+  await dispatchState(page, state('smooth-cap', messages));
+  await page.waitForFunction(() => document.querySelectorAll('#messages > .message').length === 600
+    && document.querySelector('#messages > .history-loading button'));
+  assert.equal(await page.evaluate(() => document.querySelectorAll('#messages > .message').length), 600, 'mounted history is bounded');
+  const before = await page.evaluate(() => document.querySelector('#messages > .history-loading button').textContent);
+  assert.match(before, /载入更早/);
+  await page.locator('#messages > .history-loading button').click();
+  await waitHistoryComplete(page, 700);
+  assert.equal(await page.evaluate(() => document.querySelectorAll('#messages > .message').length), 700, 'older page loads on demand');
+});
+
 test('session switch restarts progressive fill and abandons the previous fill', async t => {
   const page = await fixture(t);
   await armFirstPaint(page);

@@ -1,0 +1,200 @@
+diff --git a/src/vs/workbench/contrib/browserView/electron-browser/features/browserAgentControl.ts b/src/vs/workbench/contrib/browserView/electron-browser/features/browserAgentControl.ts
+index 1928515..4e53e5d 100644
+--- a/src/vs/workbench/contrib/browserView/electron-browser/features/browserAgentControl.ts
++++ b/src/vs/workbench/contrib/browserView/electron-browser/features/browserAgentControl.ts
+@@ -11,10 +11,17 @@ import { ServicesAccessor } from '../../../../../platform/instantiation/common/i
+ import { BrowserActionCategory } from '../browserEditor.js';
+ 
+ let locked = false;
++let dismissed = false;
+ let reason = localize('browser.agentControl.defaultReason', "Agent 正在操作浏览器（只读）");
+ const onDidChange = new Emitter<void>();
+ 
++/** Effective lock: a task-scoped agent lock can be dismissed by the user. */
+ export function isBrowserAgentControlLocked(): boolean {
++	return locked && !dismissed;
++}
++
++/** Whether the agent owns the browser for the current task, even if dismissed. */
++export function isBrowserAgentControlLockActive(): boolean {
+ 	return locked;
+ }
+ 
+@@ -30,6 +37,15 @@ export function setBrowserAgentControlLock(next: boolean, nextReason?: string):
+ 	const message = typeof nextReason === 'string' && nextReason.trim()
+ 		? nextReason.trim()
+ 		: localize('browser.agentControl.defaultReason', "Agent 正在操作浏览器（只读）");
++	// A new lock (false -> true) starts a new task and re-arms the overlay after
++	// a previous manual dismissal. Repeated true calls during the same task keep
++	// the user's dismissal.
++	if (next && !locked) {
++		dismissed = false;
++	}
++	if (!next) {
++		dismissed = false;
++	}
+ 	if (locked === next && reason === message) {
+ 		return;
+ 	}
+@@ -38,6 +54,15 @@ export function setBrowserAgentControlLock(next: boolean, nextReason?: string):
+ 	onDidChange.fire();
+ }
+ 
++/** Let the user take control of the page without ending the agent task. */
++export function dismissBrowserAgentControlLock(): void {
++	if (!locked || dismissed) {
++		return;
++	}
++	dismissed = true;
++	onDidChange.fire();
++}
++
+ class SetBrowserAgentControlLockAction extends Action2 {
+ 	constructor() {
+ 		super({
+diff --git a/src/vs/workbench/contrib/browserView/electron-browser/features/webContentsViewRendererFeature.ts b/src/vs/workbench/contrib/browserView/electron-browser/features/webContentsViewRendererFeature.ts
+index 7f2f83f..b99daa1 100644
+--- a/src/vs/workbench/contrib/browserView/electron-browser/features/webContentsViewRendererFeature.ts
++++ b/src/vs/workbench/contrib/browserView/electron-browser/features/webContentsViewRendererFeature.ts
+@@ -24,7 +24,7 @@ import {
+ 	IContainerLayoutOverride,
+ } from '../browserEditor.js';
+ import { BrowserOverlayManager, BrowserOverlayType } from '../overlayManager.js';
+-import { getBrowserAgentControlReason, isBrowserAgentControlLocked, onDidChangeBrowserAgentControlLock } from './browserAgentControl.js';
++import { dismissBrowserAgentControlLock, getBrowserAgentControlReason, isBrowserAgentControlLocked, onDidChangeBrowserAgentControlLock } from './browserAgentControl.js';
+ 
+ /**
+  * Default browser renderer: drives a Chromium WebContentsView.
+@@ -48,11 +48,13 @@ class WebContentsViewRendererFeature extends BrowserEditorContribution {
+ 	private _model: IBrowserViewModel | undefined;
+ 	private _editorVisible = false;
+ 	private _overlayObscured = false;
++	private _overlayHasNotification = false;
+ 
+ 	private readonly _placeholderScreenshot = $('.browser-placeholder-screenshot');
+ 	private readonly _overlayPauseEl = $('.browser-overlay-paused');
+ 	private readonly _overlayPauseHeading: HTMLElement;
+ 	private readonly _overlayPauseDetail: HTMLElement;
++	private readonly _overlayPauseDismiss: HTMLButtonElement;
+ 	private readonly _overlayManager: BrowserOverlayManager;
+ 
+ 	private readonly _placeholderContent: IBrowserEditorWidget;
+@@ -74,13 +76,20 @@ class WebContentsViewRendererFeature extends BrowserEditorContribution {
+ 		const message = $('.browser-overlay-paused-message');
+ 		const heading = $('.browser-overlay-paused-heading');
+ 		const detail = $('.browser-overlay-paused-detail');
++		const dismiss = $('button.browser-overlay-paused-dismiss') as HTMLButtonElement;
++		dismiss.type = 'button';
++		dismiss.textContent = localize('browser.agentControl.takeControl', "让我接管");
++		dismiss.title = localize('browser.agentControl.takeControlTitle', "关闭遮蔽层并接管当前页面");
++		dismiss.addEventListener('click', () => dismissBrowserAgentControlLock());
+ 		heading.textContent = localize('browser.overlayPauseHeading.notification', "Paused due to Notification");
+ 		detail.textContent = localize('browser.overlayPauseDetail.notification', "Dismiss the notification to continue using the browser.");
+ 		message.appendChild(heading);
+ 		message.appendChild(detail);
++		message.appendChild(dismiss);
+ 		this._overlayPauseEl.appendChild(message);
+ 		this._overlayPauseHeading = heading;
+ 		this._overlayPauseDetail = detail;
++		this._overlayPauseDismiss = dismiss;
+ 
+ 		this._placeholderContent = { location: BrowserWidgetLocation.ContentArea, element: this._placeholderScreenshot, order: 100 };
+ 		this._overlayPauseContent = { location: BrowserWidgetLocation.ContentArea, element: this._overlayPauseEl, order: 200 };
+@@ -234,19 +243,18 @@ class WebContentsViewRendererFeature extends BrowserEditorContribution {
+ 		const agentLocked = isBrowserAgentControlLocked();
+ 		if (agentLocked) {
+ 			this._overlayPauseHeading.textContent = getBrowserAgentControlReason();
+-			this._overlayPauseDetail.textContent = localize('browser.agentControl.detail', "Agent 操作完成前页面只读，请勿点击。");
++			this._overlayPauseDetail.textContent = localize('browser.agentControl.detail', "Agent 任务完成前页面只读；可手动关闭遮蔽层接管当前页面。");
+ 		} else {
+ 			this._overlayPauseHeading.textContent = localize('browser.overlayPauseHeading.notification', "Paused due to Notification");
+ 			this._overlayPauseDetail.textContent = localize('browser.overlayPauseDetail.notification', "Dismiss the notification to continue using the browser.");
+ 		}
++		this._overlayPauseDismiss.hidden = !agentLocked;
+ 
+ 		// Overlay-pause: workbench modal obstruction or agent-control lock.
+ 		const pauseActive = !!this._model?.url && this._editorVisible && (this._overlayObscured || agentLocked);
+ 		this._overlayPauseEl.classList.toggle('visible', pauseActive);
+ 		this._overlayPauseEl.classList.toggle('agent-control', agentLocked);
+-		if (agentLocked) {
+-			this._overlayPauseEl.classList.add('show-message');
+-		}
++		this._overlayPauseEl.classList.toggle('show-message', agentLocked || this._overlayHasNotification);
+ 
+ 		if (!this._model) {
+ 			return;
+@@ -281,6 +289,7 @@ class WebContentsViewRendererFeature extends BrowserEditorContribution {
+ 		const overlays = this._overlayManager.getOverlappingOverlays(this._container);
+ 		const obscured = overlays.length > 0;
+ 		const hasNotification = overlays.some(o => o.type === BrowserOverlayType.Notification);
++		this._overlayHasNotification = hasNotification;
+ 		this._overlayPauseEl.classList.toggle('show-message', hasNotification || isBrowserAgentControlLocked());
+ 		if (obscured !== this._overlayObscured) {
+ 			this._overlayObscured = obscured;
+diff --git a/src/vs/workbench/contrib/browserView/electron-browser/media/browser.css b/src/vs/workbench/contrib/browserView/electron-browser/media/browser.css
+index cbb599f..8fc2c4a 100644
+--- a/src/vs/workbench/contrib/browserView/electron-browser/media/browser.css
++++ b/src/vs/workbench/contrib/browserView/electron-browser/media/browser.css
+@@ -542,13 +542,13 @@
+ 	}
+ 
+ 	.browser-overlay-paused-message {
+-		padding: 20px 40px;
+-		border-radius: 4px;
++		padding: 16px 18px;
++		border-radius: 10px;
+ 		border: 1px solid var(--vscode-editorWidget-border);
+ 		background-color: var(--vscode-editor-background);
+ 		box-shadow: var(--vscode-shadow-lg);
+-		max-width: 80%;
+-		text-align: center;
++		max-width: 360px;
++		text-align: left;
+ 		display: none;
+ 	}
+ 
+@@ -557,16 +557,42 @@
+ 	}
+ 
+ 	.browser-overlay-paused-heading {
+-		font-size: 18px;
++		font-size: 13px;
+ 		font-weight: 600;
++		letter-spacing: .01em;
+ 		margin-bottom: 8px;
+ 	}
+ 
+ 	.browser-overlay-paused-detail {
+-		font-size: 14px;
++		font-size: 12px;
++		line-height: 1.65;
+ 		color: var(--vscode-descriptionForeground);
+ 	}
+ 
++	.browser-overlay-paused-dismiss {
++		margin-top: 14px;
++		padding: 4px 14px;
++		border: 1px solid var(--vscode-button-border, transparent);
++		border-radius: 4px;
++		color: var(--vscode-button-foreground);
++		background-color: var(--vscode-button-background);
++		cursor: pointer;
++		font-size: 13px;
++	}
++
++	.browser-overlay-paused-dismiss:hover {
++		background-color: var(--vscode-button-hoverBackground);
++	}
++
++	.browser-overlay-paused-dismiss:focus-visible {
++		outline: 1px solid var(--vscode-focusBorder);
++		outline-offset: 2px;
++	}
++
++	.browser-overlay-paused-dismiss[hidden] {
++		display: none;
++	}
++
+ 	.browser-error-container {
+ 		position: absolute;
+ 		top: 0;

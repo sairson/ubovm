@@ -5,9 +5,12 @@ const { randomUUID } = require('node:crypto');
 const SUPPORTED = new Set([
   'status', 'tabs', 'tab_new', 'tab_close', 'tab_activate',
   'navigate', 'back', 'forward', 'reload',
-  'snapshot', 'accessibility', 'screenshot', 'evaluate',
+  'snapshot', 'accessibility', 'screenshot', 'evaluate', 'frames', 'frame_evaluate',
   'click', 'fill', 'select', 'check', 'press', 'hover', 'scroll', 'wait',
-  'console', 'cdp'
+  'console', 'cdp', 'cdp_events',
+  'network_start', 'network', 'network_body', 'network_stop',
+  'cookies', 'set_cookie', 'clear_cookies',
+  'dialogs', 'dialog_policy', 'storage', 'upload', 'yield_control'
 ]);
 
 const UNSUPPORTED_HINT = '此操作在 IDE 内嵌浏览器模式下不可用。请在设置「浏览器与搜索」中关闭「使用 IDE 内嵌浏览器」后使用独立 Chromium（Obscura）。';
@@ -49,6 +52,17 @@ const SNAPSHOT_SCRIPT = `(({ token, max, chars, offset, role, query, clear }) =>
       name: String(label).trim().slice(0, 300),
       ...(node.type === 'password' ? {} : { value: String(node.value ?? '').slice(0, 300) || undefined }),
       href: node.getAttribute('href') || undefined,
+      ...(node.id ? { id: String(node.id).slice(0, 200) } : {}),
+      ...(node.getAttribute('type') ? { input_type: String(node.getAttribute('type')).slice(0, 40) } : {}),
+      ...(node.getAttribute('name') ? { field_name: String(node.getAttribute('name')).slice(0, 200) } : {}),
+      ...(node.getAttribute('placeholder') ? { placeholder: String(node.getAttribute('placeholder')).slice(0, 200) } : {}),
+      ...(node.required === true ? { required: true } : {}),
+      ...(node.readOnly === true ? { readonly: true } : {}),
+      ...(node.multiple === true ? { multiple: true } : {}),
+      ...(node.getAttribute('pattern') ? { pattern: String(node.getAttribute('pattern')).slice(0, 200) } : {}),
+      ...(node.getAttribute('accept') ? { accept: String(node.getAttribute('accept')).slice(0, 200) } : {}),
+      ...(node.hasAttribute('aria-expanded') ? { expanded: node.getAttribute('aria-expanded') === 'true' } : {}),
+      ...(node.hasAttribute('aria-selected') ? { aria_selected: node.getAttribute('aria-selected') === 'true' } : {}),
       disabled: !!(node.matches?.(':disabled') || node.disabled || node.getAttribute('aria-disabled') === 'true'),
       ...((node.type === 'checkbox' || node.type === 'radio' || node.hasAttribute('aria-checked'))
         ? { checked: node.hasAttribute('aria-checked') ? node.getAttribute('aria-checked') === 'true' : !!node.checked }
@@ -93,6 +107,9 @@ const CONSOLE_LIMIT = 500;
 const CONSOLE_TEXT_LIMIT = 4000;
 const CONSOLE_ENVELOPE_BYTES = 40 * 1024;
 const PAGE_ERROR_KIND = 'pageerror';
+const CDP_EVENT_LIMIT = 300;
+const NETWORK_EVENT_LIMIT = 500;
+const EVENT_PARAMS_LIMIT = 4096;
 // CDP errors that mean the cached page session is unusable. Only these evict
 // the session so the next action reattaches; the failed action is never retried.
 const SESSION_INVALID = /session (?:with given id )?(?:closed|not found)|no session with given id|target closed|not attached|inspected target navigated or closed|execution context was destroyed|cannot find context|detached from target|browser has been closed/i;
@@ -177,13 +194,97 @@ function keyDescriptor(key) {
   return { key };
 }
 
-function createIdeBrowserHost(vscode, { lockCommand = 'workbench.action.browser.setAgentControlLock' } = {}) {
+function createIdeBrowserHost(vscode, { lockCommand = 'workbench.action.browser.setAgentControlLock', onActivity } = {}) {
   const pages = new Map();
   const pageRefs = new Map();
   let activePageId;
   let nextCdpId = 1;
-  let lockDepth = 0;
+  // Task-scoped lock: the first browser action of an agent run locks the tab
+  // until the run ends (which can span many slow tool calls); a per-action
+  // counter lets a release requested mid-call settle after that call finishes.
+  let taskLocked = false;
+  let taskLockReason = '';
+  let activeCalls = 0;
+  let releaseWhenIdle = false;
+  let nativeLockSupported = true;
   const disposables = [];
+
+  // The page the user is actually looking at. Agent actions never bring the
+  // browser editor forward: when the agent drives a page that is not visible the
+  // host reports activity and the conversation shows a click-through affordance.
+  let visiblePageId;
+  let visibleInitialized = false;
+  let lastActivityKey;
+  function reportActivity(active, entry, url, title) {
+    const payload = active
+      ? { active: true, pageId: entry?.id ?? null, url: url || entry?.tab?.url || entry?.url || '', title: title || entry?.tab?.title || entry?.title || '' }
+      : { active: false };
+    const key = JSON.stringify(payload);
+    if (key === lastActivityKey) return;
+    lastActivityKey = key;
+    try { onActivity?.(payload); } catch { /* observers must not fail a browser action */ }
+  }
+  function visibleId() {
+    if (!visibleInitialized) {
+      visibleInitialized = true;
+      const active = vscode.window.activeBrowserTab;
+      if (active) visiblePageId = track(active)?.id;
+    }
+    return visiblePageId;
+  }
+  function pageVisible(entry) { return Boolean(entry?.id) && visibleId() === entry.id; }
+  function markVisible(entry) { if (!entry) return; visiblePageId = entry.id; visibleInitialized = true; reportActivity(false, entry); }
+
+  // The IDE browser editor cannot be created invisibly: opening a BrowserTab
+  // brings its editor group forward. IDE mode therefore never opens a page on
+  // the agent's behalf: with no page open the host reports the requested URL and
+  // returns a structured "not open" result. The conversation shows a
+  // click-through prompt; hidden background browsing is the separate Obscura
+  // mode selected in settings.
+  function notOpenResult(action, input, binding) {
+    const url = String(input?.url || binding?.target || '');
+    reportActivity(true, undefined, url);
+    return {
+      ok: false,
+      code: 'IDE_BROWSER_NOT_OPEN',
+      action,
+      url,
+      page_open: false,
+      source: 'ide-browser',
+      guidance: 'IDE 内嵌浏览器没有打开：请点击对话里的悬浮提示打开页面后重试；或在设置「浏览器与搜索」关闭「使用 IDE 内嵌浏览器」，切到独立 Chromium（Obscura）模式执行后台浏览。'
+    };
+  }
+
+  let browserApiAvailable;
+  async function hasBrowserApi() {
+    if (browserApiAvailable === true) return true;
+    const available = typeof vscode.window.openBrowserTab === 'function'
+      || !!(await vscode.commands.getCommands(true)).includes('workbench.action.browser.open');
+    if (available) browserApiAvailable = true;
+    return available;
+  }
+
+  // A Browser editor pane that is already open (even with no tab) is an explicit
+  // user affordance: filling it does not change the layout, so the agent may use
+  // it without the click-through prompt. With no pane open the agent must not
+  // create one behind the user's back.
+  function browserEditorOpen() {
+    try {
+      const groups = vscode.window.tabGroups?.all;
+      if (!Array.isArray(groups)) return false;
+      for (const group of groups) {
+        for (const tab of group?.tabs || []) {
+          const input = tab?.input;
+          const name = input?.constructor?.name || '';
+          const viewType = String(input?.viewType || input?.id || '');
+          const label = String(tab?.label || '').trim();
+          if (/browser/i.test(name) || /browser/i.test(viewType)) return true;
+          if (/^(browser|浏览器)$/i.test(label) && !input?.uri) return true;
+        }
+      }
+    } catch { /* tabGroups is a proposed API surface; absence means no pane */ }
+    return false;
+  }
 
   function listTabs() {
     return typeof vscode.window.browserTabs !== 'undefined' ? [...vscode.window.browserTabs] : [];
@@ -192,6 +293,57 @@ function createIdeBrowserHost(vscode, { lockCommand = 'workbench.action.browser.
   function consoleBuffer(entry) {
     if (!entry.console) entry.console = { entries: [], sequence: 0, droppedThrough: 0 };
     return entry.console;
+  }
+
+  function dialogBuffer(entry) {
+    if (!entry.dialogs) entry.dialogs = { entries: [], sequence: 0, policy: { accept: true, promptText: '' } };
+    return entry.dialogs;
+  }
+
+  function eventBuffer(entry) {
+    if (!entry.events) entry.events = { entries: [], sequence: 0, droppedThrough: 0 };
+    return entry.events;
+  }
+
+  function networkBuffer(entry) {
+    if (!entry.network) entry.network = { capture: false, entries: [], sequence: 0, droppedThrough: 0 };
+    return entry.network;
+  }
+
+  function recordCdpEvent(entry, method, params) {
+    if (!method || method === 'Runtime.bindingCalled') return;
+    let serialized = '';
+    try { serialized = JSON.stringify(params ?? {}); } catch { serialized = ''; }
+    const buffer = eventBuffer(entry);
+    buffer.entries.push({
+      sequence: ++buffer.sequence, method, at: Date.now(),
+      params: serialized.length > EVENT_PARAMS_LIMIT ? serialized.slice(0, EVENT_PARAMS_LIMIT) + '…' : serialized
+    });
+    while (buffer.entries.length > CDP_EVENT_LIMIT) buffer.droppedThrough = buffer.entries.shift().sequence;
+  }
+
+  function recordNetwork(entry, method, params) {
+    const buffer = networkBuffer(entry);
+    if (!buffer.capture) return;
+    const requestId = params?.requestId;
+    if (!requestId) return;
+    const at = Date.now();
+    let record;
+    if (method === 'Network.requestWillBeSent') {
+      record = { kind: 'request', request_id: requestId, url: params.request?.url, method: params.request?.method,
+        resource_type: params.type, headers: params.request?.headers, post_data: typeof params.request?.postData === 'string'
+          ? params.request.postData.slice(0, 8000) : undefined, mixed_content_type: params.request?.mixedContentType, at };
+    } else if (method === 'Network.responseReceived') {
+      record = { kind: 'response', request_id: requestId, url: params.response?.url, status: params.response?.status,
+        status_text: params.response?.statusText, mime_type: params.response?.mimeType,
+        headers: params.response?.headers, from_service_worker: params.response?.fromServiceWorker === true, at };
+    } else if (method === 'Network.loadingFailed') {
+      record = { kind: 'failed', request_id: requestId, error_text: params.errorText, blocked_reason: params.blockedReason, at };
+    } else if (method === 'Network.loadingFinished') {
+      record = { kind: 'finished', request_id: requestId, encoded_data_length: params.encodedDataLength, at };
+    } else return;
+    buffer.entries.push({ sequence: ++buffer.sequence, ...record });
+    while (buffer.entries.length > NETWORK_EVENT_LIMIT) buffer.droppedThrough = buffer.entries.shift().sequence;
   }
 
   function disposeSession(entry) {
@@ -207,6 +359,7 @@ function createIdeBrowserHost(vscode, { lockCommand = 'workbench.action.browser.
   function forgetPage(id) {
     const entry = pages.get(id);
     if (entry) disposeSession(entry);
+    if (visiblePageId === id) { visiblePageId = undefined; reportActivity(false); }
     pages.delete(id);
     pageRefs.delete(id);
     if (activePageId === id) {
@@ -304,7 +457,8 @@ function createIdeBrowserHost(vscode, { lockCommand = 'workbench.action.browser.
   }
   if (typeof vscode.window.onDidChangeActiveBrowserTab === 'function') {
     disposables.push(vscode.window.onDidChangeActiveBrowserTab(tab => {
-      if (tab) track(tab, undefined, { activate: true });
+      if (tab) markVisible(track(tab, undefined, { activate: true }));
+      else { visiblePageId = undefined; reportActivity(false); }
     }));
   }
   if (typeof vscode.window.onDidChangeBrowserTabState === 'function') {
@@ -356,7 +510,9 @@ function createIdeBrowserHost(vscode, { lockCommand = 'workbench.action.browser.
       || [...pages.values()].find(entry => entry.url === target)?.tab;
     const active = vscode.window.activeBrowserTab;
     if (options.force !== true && existing && active && active === existing) {
-      return track(existing, preferred?.id, { activate: true });
+      const entry = track(existing, preferred?.id, { activate: true });
+      markVisible(entry);
+      return entry;
     }
     // Prefer the workbench reuse filter so we focus an existing editor instead of minting a new BrowserTab.
     try {
@@ -368,7 +524,9 @@ function createIdeBrowserHost(vscode, { lockCommand = 'workbench.action.browser.
     } catch {
       if (existing) {
         // Command unavailable: keep logical selection only.
-        return track(existing, preferred?.id, { activate: true });
+        const entry = track(existing, preferred?.id, { activate: true });
+        markVisible(entry);
+        return entry;
       }
       return openTab(target, options);
     }
@@ -378,7 +536,9 @@ function createIdeBrowserHost(vscode, { lockCommand = 'workbench.action.browser.
       || existing
       || tabs[tabs.length - 1];
     if (!match) throw new Error('无法聚焦 IDE 内置浏览器页面。');
-    return track(match, preferred?.id, { activate: true });
+    const entry = track(match, preferred?.id, { activate: true });
+    markVisible(entry);
+    return entry;
   }
 
   async function navigate(url, pageId) {
@@ -390,11 +550,11 @@ function createIdeBrowserHost(vscode, { lockCommand = 'workbench.action.browser.
     }
     if (!entry) return openTab(target, { preserveFocus: false });
     activePageId = entry.id;
-    // Focus the page when possible, then navigate the resolved page_id in-place.
-    if (vscode.window.activeBrowserTab !== entry.tab) {
-      await reveal(entry.tab.url || entry.url || 'about:blank', { force: true, pageId: entry.id });
-    }
+    // Never foreground the page for an agent navigation: the user opens it from
+    // the conversation's floating indicator. tab_activate remains the explicit
+    // reveal path.
     entry = resolveTab(entry.id) || entry;
+    if (!pageVisible(entry)) reportActivity(true, entry);
     if ((entry.tab.url || entry.url) === target) return entry;
     entry.loading = true;
     try {
@@ -448,18 +608,162 @@ function createIdeBrowserHost(vscode, { lockCommand = 'workbench.action.browser.
     const value = locked === true;
     try {
       await vscode.commands.executeCommand(lockCommand, value, reason || 'Agent 正在操作浏览器（只读）');
+      nativeLockSupported = true;
+      return true;
     } catch {
-      // Prebuilt without the lock command still allows automation; page-level lock is best-effort.
+      // Prebuilt without the lock command still needs a tab-page mask; fall
+      // back to an in-page overlay for the whole agent task.
+      nativeLockSupported = false;
+      return false;
     }
   }
 
+  const OVERLAY_ID = '__ubovm_agent_control_overlay__';
+  function overlayExpression(action, reason = '') {
+    const message = JSON.stringify(String(reason || 'Agent 正在操作浏览器'));
+    const begin = `(() => { const id = ${JSON.stringify(OVERLAY_ID)};`;
+    if (action === 'remove') return `${begin} const root = document.getElementById(id); if (root) root.remove(); return true; })()`;
+    if (action === 'hide') return `${begin} const root = document.getElementById(id); if (root) root.style.display = 'none'; return true; })()`;
+    if (action === 'show') return `${begin} const root = document.getElementById(id); if (root) { root.style.display = 'flex'; return true; } return false; })()`;
+    return `${begin}
+      if (window.__ubovmAgentOverlayDismissed) return 'dismissed';
+      const existing = document.getElementById(id);
+      if (existing) { existing.style.display = 'flex'; return 'shown'; }
+      if (!document.getElementById('__ubovm_agent_overlay_style__')) {
+        const style = document.createElement('style');
+        style.id = '__ubovm_agent_overlay_style__';
+        style.textContent = [
+          '#' + id + '{position:fixed;inset:0;z-index:2147483647;display:flex;align-items:center;justify-content:center;background:rgba(8,10,14,.46);backdrop-filter:blur(1.5px);-webkit-backdrop-filter:blur(1.5px);pointer-events:auto;cursor:not-allowed;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;}',
+          '#' + id + ' .u-card{width:min(344px,calc(100vw - 40px));padding:16px 18px;border-radius:10px;border:1px solid rgba(255,255,255,.12);background:rgba(18,21,26,.96);color:#e9edf3;box-shadow:0 12px 40px rgba(0,0,0,.35);cursor:default;}',
+          '#' + id + ' .u-head{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;letter-spacing:.01em;}',
+          '#' + id + ' .u-dot{width:7px;height:7px;border-radius:50%;background:#9aa7b5;box-shadow:0 0 0 3px rgba(154,167,181,.14);animation:ubovmAgentPulse 1.6s ease-in-out infinite;}',
+          '#' + id + ' .u-state{margin-left:auto;font-size:10.5px;color:#8e9aa7;font-weight:400;letter-spacing:.02em;}',
+          '#' + id + ' .u-detail{margin:9px 0 14px;font-size:12px;line-height:1.65;color:#a4afbb;}',
+          '#' + id + ' .u-foot{display:flex;align-items:center;justify-content:space-between;gap:10px;}',
+          '#' + id + ' .u-hint{font-size:10.5px;color:#778390;letter-spacing:.02em;}',
+          '#' + id + ' .u-take{padding:5px 11px;border:1px solid rgba(255,255,255,.14);border-radius:6px;background:transparent;color:#dce4ec;font:inherit;font-size:11.5px;cursor:pointer;}',
+          '#' + id + ' .u-take:hover{background:rgba(255,255,255,.07);border-color:rgba(255,255,255,.22);}',
+          '#' + id + ' .u-take:focus-visible{outline:1px solid rgba(255,255,255,.5);outline-offset:2px;}',
+          '@keyframes ubovmAgentPulse{0%,100%{opacity:.55;transform:scale(.92);}50%{opacity:1;transform:scale(1);}}',
+          '@media (prefers-reduced-motion:reduce){#' + id + ' .u-dot{animation:none;}}'
+        ].join('');
+        document.documentElement.append(style);
+      }
+      const root = document.createElement('div');
+      root.id = id;
+      root.setAttribute('data-ubovm-agent-overlay', '');
+      root.setAttribute('role', 'dialog');
+      root.setAttribute('aria-modal', 'true');
+      root.setAttribute('aria-label', ${message});
+      const card = document.createElement('div');
+      card.className = 'u-card';
+      const head = document.createElement('div');
+      head.className = 'u-head';
+      const dot = document.createElement('span');
+      dot.className = 'u-dot';
+      dot.setAttribute('aria-hidden', 'true');
+      const heading = document.createElement('span');
+      heading.textContent = 'Agent 正在操作浏览器';
+      const state = document.createElement('span');
+      state.className = 'u-state';
+      state.textContent = '任务中';
+      head.append(dot, heading, state);
+      const detail = document.createElement('p');
+      detail.className = 'u-detail';
+      detail.textContent = '页面暂时只读，避免与 Agent 同时操作；任务结束后自动解除。';
+      const foot = document.createElement('div');
+      foot.className = 'u-foot';
+      const hint = document.createElement('span');
+      hint.className = 'u-hint';
+      hint.textContent = '只读保护';
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'u-take';
+      button.textContent = '接管页面';
+      button.addEventListener('click', () => {
+        window.__ubovmAgentOverlayDismissed = true;
+        try { window.__ubovmAgentOverlayDismiss?.(); } catch {}
+        root.remove();
+      });
+      foot.append(hint, button);
+      card.append(head, detail, foot);
+      root.append(card);
+      document.documentElement.append(root);
+      if (!window.__ubovmAgentOverlayKeys) {
+        window.__ubovmAgentOverlayKeys = true;
+        window.addEventListener('keydown', (event) => {
+          if (window.__ubovmAgentOperating || root.contains(event.target)) return;
+          event.preventDefault();
+          event.stopImmediatePropagation();
+        }, true);
+      }
+      try { button.focus({ preventScroll: true }); } catch {}
+      return 'created';
+    })()`;
+  }
+
+  async function pageOverlay(entry, send, action, reason) {
+    if (nativeLockSupported) return false;
+    try {
+      await send('Runtime.evaluate', { expression: overlayExpression(action, reason), returnByValue: true, awaitPromise: false });
+      return true;
+    } catch { return false; }
+  }
+
+  async function showAgentOverlay(entry, send) {
+    if (nativeLockSupported || !taskLocked || entry.agentOverlayDismissed) return;
+    await pageOverlay(entry, send, 'create', taskLockReason);
+  }
+
+  async function hideAgentOverlay(entry, send) {
+    if (nativeLockSupported) return;
+    await pageOverlay(entry, send, 'hide');
+  }
+
+  async function setAgentOperating(send, active) {
+    if (nativeLockSupported) return;
+    try {
+      await send('Runtime.evaluate', { expression: `window.__ubovmAgentOperating = ${active ? 'true' : 'false'}`, returnByValue: true });
+    } catch { /* page may have navigated away */ }
+  }
+
+  function removePageOverlays() {
+    for (const entry of pages.values()) {
+      const send = entry.session?.send;
+      if (!send) continue;
+      void pageOverlay(entry, send, 'remove').catch?.(() => {});
+    }
+  }
+
+  async function acquireTaskLock(reason) {
+    if (taskLocked) return;
+    taskLocked = true;
+    taskLockReason = String(reason || 'Agent 正在操作浏览器；任务完成前页面只读');
+    for (const entry of pages.values()) entry.agentOverlayDismissed = false;
+    await setAgentControl(true, taskLockReason);
+  }
+
+  async function endAgentTask() {
+    reportActivity(false);
+    if (!taskLocked) return;
+    if (activeCalls > 0) { releaseWhenIdle = true; return; }
+    releaseWhenIdle = false;
+    taskLocked = false;
+    if (nativeLockSupported) await setAgentControl(false);
+    removePageOverlays();
+    for (const entry of pages.values()) entry.agentOverlayDismissed = false;
+  }
+
   async function withLock(action) {
-    lockDepth++;
-    if (lockDepth === 1) await setAgentControl(true);
+    activeCalls++;
+    if (!taskLocked) await acquireTaskLock();
     try { return await action(); }
     finally {
-      lockDepth = Math.max(0, lockDepth - 1);
-      if (lockDepth === 0) await setAgentControl(false);
+      activeCalls = Math.max(0, activeCalls - 1);
+      if (releaseWhenIdle && activeCalls === 0) {
+        releaseWhenIdle = false;
+        void endAgentTask();
+      }
     }
   }
 
@@ -479,8 +783,39 @@ function createIdeBrowserHost(vscode, { lockCommand = 'workbench.action.browser.
       const text = String(details.exception?.description || details.text || 'Uncaught error');
       recordConsole(buffer, { kind: PAGE_ERROR_KIND, level: 'error', text: text.slice(0, CONSOLE_TEXT_LIMIT), truncated: text.length > CONSOLE_TEXT_LIMIT });
     });
+    // Browser log (CSP violations, mixed content, deprecations) — distinct from
+    // page console but equally useful as audit evidence.
+    session.on('Log.entryAdded', params => {
+      const item = params?.entry || {};
+      const text = String(item.text || '');
+      recordConsole(buffer, {
+        kind: 'browser', level: item.level || 'info',
+        text: text.slice(0, CONSOLE_TEXT_LIMIT), truncated: text.length > CONSOLE_TEXT_LIMIT,
+        source: item.source || 'browser',
+        ...(item.url ? { location: { url: String(item.url).slice(0, 2000), line: item.lineNumber ?? 0, column: 0 } } : {})
+      });
+    });
     // Navigation (by link, form, or history) invalidates refs; console survives.
     session.on('Page.frameNavigated', params => { if (!params?.frame?.parentId) pageRefs.delete(entry.id); });
+    // JS dialogs block the renderer; without a handler navigate/click hang.
+    session.on('Page.javascriptDialogOpening', params => {
+      const state = dialogBuffer(entry);
+      state.entries.push({
+        sequence: ++state.sequence, type: params?.type || 'alert',
+        message: String(params?.message || '').slice(0, 2000), url: params?.url || '',
+        default_prompt: params?.defaultPrompt || '', at: Date.now()
+      });
+      while (state.entries.length > 50) state.entries.shift();
+      const policy = state.policy;
+      void session.send('Page.handleJavaScriptDialog', {
+        accept: policy.accept !== false,
+        ...(policy.promptText ? { promptText: policy.promptText } : {})
+      }).catch(() => {});
+    });
+    session.onAny?.((method, params) => {
+      recordCdpEvent(entry, method, params);
+      recordNetwork(entry, method, params);
+    });
   }
 
   async function createSession(entry) {
@@ -503,18 +838,24 @@ function createIdeBrowserHost(vscode, { lockCommand = 'workbench.action.browser.
           try { listener(message.params || {}, message); } catch { /* ignore listener errors */ }
         }
       }
+      if (message.method) {
+        for (const listener of session.anyListeners) {
+          try { listener(message.method, message.params || {}, message); } catch { /* ignore listener errors */ }
+        }
+      }
     });
     session.send = async (method, params, options = {}) => {
       const id = nextCdpId++;
       const root = options.root === true || method.startsWith('Target.') || method.startsWith('Browser.');
       const sessionId = options.sessionId !== undefined ? options.sessionId : (root ? undefined : session.pageSessionId);
       const result = new Promise((resolve, reject) => {
+        const timeoutMs = Math.min(180000, Math.max(1000, Number(options.timeoutMs) || 30000));
         const timer = setTimeout(() => {
           if (pending.has(id)) {
             pending.delete(id);
             reject(new Error(`CDP timeout: ${method}`));
           }
-        }, 30000);
+        }, timeoutMs);
         pending.set(id, {
           resolve: value => { clearTimeout(timer); resolve(value); },
           reject: error => { clearTimeout(timer); reject(error); }
@@ -528,12 +869,27 @@ function createIdeBrowserHost(vscode, { lockCommand = 'workbench.action.browser.
       listeners.get(method).add(listener);
       return () => listeners.get(method)?.delete(listener);
     };
+    // Raw stream for cdp_events/network capture: every page event, not just the
+    // handful the host subscribes to.
+    session.anyListeners = new Set();
+    session.onAny = listener => {
+      session.anyListeners.add(listener);
+      return () => session.anyListeners.delete(listener);
+    };
     subscribeSessionEvents(entry, session);
     session.pageSessionId = await attachPageSession(session.send, session.on, entry.tab?.url || entry.url);
-    // Runtime drives console/exception capture; Page drives load/frame events.
-    // Enabling here (once per session) replaces the old per-action re-injection.
+    // Runtime drives console/exception capture; Page drives load/frame events
+    // and JS dialog interception. Enabling here (once per session) replaces the
+    // old per-action re-injection.
     await session.send('Runtime.enable').catch(() => {});
     await session.send('Page.enable').catch(() => {});
+    await session.send('Log.enable').catch(() => {});
+    // In-page fallback mask (used when the prebuilt workbench lacks the native
+    // agent-control command) reports its manual dismissal through this binding.
+    session.on('Runtime.bindingCalled', params => {
+      if (params?.name === '__ubovmAgentOverlayDismiss') entry.agentOverlayDismissed = true;
+    });
+    await session.send('Runtime.addBinding', { name: '__ubovmAgentOverlayDismiss' }).catch(() => {});
     entry.session = session;
     return session;
   }
@@ -551,11 +907,20 @@ function createIdeBrowserHost(vscode, { lockCommand = 'workbench.action.browser.
   // action is never replayed (retrying could double-apply a click).
   async function withSession(entry, fn) {
     const session = await ensureSession(entry);
+    await showAgentOverlay(entry, session.send);
+    await setAgentOperating(session.send, true);
     try {
       return await fn(session.send, session.on, session);
     } catch (error) {
       if (isSessionInvalid(error)) disposeSession(entry);
       throw error;
+    } finally {
+      await setAgentOperating(session.send, false);
+      // Navigation replaces the document (and its overlay); restore the task
+      // mask after every action so the page stays protected between slow calls.
+      if (!nativeLockSupported && taskLocked && !entry.agentOverlayDismissed) {
+        await showAgentOverlay(entry, session.send).catch(() => {});
+      }
     }
   }
 
@@ -626,10 +991,14 @@ function createIdeBrowserHost(vscode, { lockCommand = 'workbench.action.browser.
   async function ensurePage(binding, input) {
     let entry = resolveTab(input.page_id);
     if (!entry) {
-      const target = input.url || binding?.target || 'about:blank';
-      entry = await openTab(target, { preserveFocus: true });
+      if (!browserEditorOpen()) return undefined;
+      // The user already has a Browser pane open; fill it and continue.
+      try {
+        entry = await openTab(String(input.url || binding?.target || 'about:blank'), { preserveFocus: true, background: true });
+      } catch { return undefined; }
     }
     activePageId = entry.id;
+    if (!pageVisible(entry)) reportActivity(true, entry);
     return entry;
   }
 
@@ -639,7 +1008,7 @@ function createIdeBrowserHost(vscode, { lockCommand = 'workbench.action.browser.
       awaitPromise: options.awaitPromise === true,
       returnByValue: true,
       userGesture: options.userGesture === true
-    });
+    }, { timeoutMs: options.timeoutMs });
     if (result.exceptionDetails) {
       const text = result.exceptionDetails.exception?.description
         || result.exceptionDetails.text
@@ -655,9 +1024,21 @@ function createIdeBrowserHost(vscode, { lockCommand = 'workbench.action.browser.
     return remote?.value;
   }
 
+  async function evaluateHandle(send, expression, timeoutMs) {
+    const result = await send('Runtime.evaluate', {
+      expression, awaitPromise: false, returnByValue: false
+    }, { timeoutMs: timeoutMs || 15000 });
+    if (result.exceptionDetails) {
+      throw new Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text || 'evaluate failed');
+    }
+    const objectId = result.result?.objectId;
+    if (!objectId) throw new Error('weak reference required: the expression did not produce an object');
+    return objectId;
+  }
+
   function armLoadWait(on, timeoutMs) {
-    // Must not be async: returning a Promise from async would flatten and wait before navigate.
-    return new Promise(resolve => {
+    let cancel = () => {};
+    const promise = new Promise(resolve => {
       let done = false;
       const finish = reason => {
         if (done) return;
@@ -669,8 +1050,40 @@ function createIdeBrowserHost(vscode, { lockCommand = 'workbench.action.browser.
       };
       const off = on('Page.loadEventFired', () => finish('load'));
       const offFrame = on('Page.frameStoppedLoading', () => finish('frame'));
-      const timer = setTimeout(() => finish('timeout'), Math.min(timeoutMs, 15000));
+      const timer = setTimeout(() => finish('timeout'), Math.min(120000, Math.max(1000, timeoutMs)));
+      cancel = () => finish('cancelled');
     });
+    return { promise, cancel: () => cancel() };
+  }
+
+  /**
+   * Wait for a navigation triggered by an interaction (click). Resolves
+   * `no-navigation` quickly when the page did not start loading, so a click on a
+   * non-navigating control does not block for the full timeout.
+   */
+  function armNavigationWait(on, timeoutMs, detectMs = 4000) {
+    let cancel = () => {};
+    const promise = new Promise(resolve => {
+      let done = false;
+      let started = false;
+      const cleanup = () => {
+        offStart(); offLoad(); offStop();
+        clearTimeout(detect); clearTimeout(timer);
+      };
+      const finish = reason => {
+        if (done) return;
+        done = true;
+        cleanup();
+        resolve(reason);
+      };
+      const offStart = on('Page.frameStartedLoading', () => { started = true; clearTimeout(detect); });
+      const offLoad = on('Page.loadEventFired', () => finish('load'));
+      const offStop = on('Page.frameStoppedLoading', () => finish('frame'));
+      const detect = setTimeout(() => { if (!started) finish('no-navigation'); }, Math.min(detectMs, timeoutMs));
+      const timer = setTimeout(() => finish('timeout'), timeoutMs);
+      cancel = () => finish('cancelled');
+    });
+    return { promise, cancel: () => cancel() };
   }
 
   function rememberRefs(entry, elements) {
@@ -693,17 +1106,24 @@ function createIdeBrowserHost(vscode, { lockCommand = 'workbench.action.browser.
     }
     if (action === 'status') {
       const tabs = listTabs();
-      const available = typeof vscode.window.openBrowserTab === 'function'
-        || !!(await vscode.commands.getCommands(true)).includes('workbench.action.browser.open');
+      const available = await hasBrowserApi();
       return {
         session_id: binding.sessionId, worker_id: binding.workerId, source: 'ide-browser',
         manager_available: true, configured: available, available, connected: tabs.length > 0 || available,
         browser_action_available: available, isolated: false,
         state: available ? (tabs.length ? 'connected' : 'configured') : 'not_configured',
+        page_open: tabs.length > 0,
+        tab_count: tabs.length,
+        active_page_id: activePageId || null,
         worker_page_id: activePageId || null,
+        agent_control: taskLocked ? 'agent' : 'user',
+        ...(taskLocked ? { agent_control_reason: taskLockReason } : {}),
+        yield_supported: true,
         supported_actions: [...SUPPORTED],
         guidance: available
-          ? 'IDE Integrated Browser is ready; use navigate or tab_new. Snapshot refs work like Obscura (data-intools-ref). Network/identity/sitemap actions require disabling ideBrowser.'
+          ? (tabs.length
+            ? 'IDE Integrated Browser has open tabs. Use navigate or tab_new. Network capture (network_start/network/network_stop), cookies and cdp_events are available. Snapshot refs work like Obscura (data-intools-ref); sitemap/identity/replay need the standalone Obscura mode (disable「使用 IDE 内嵌浏览器」).'
+            : 'No IDE browser page is open. Browser actions return IDE_BROWSER_NOT_OPEN: click the floating prompt to open the page, or switch off「使用 IDE 内嵌浏览器」to use the standalone Chromium mode for hidden background browsing.')
           : 'Integrated Browser API is unavailable in this workbench build.'
       };
     }
@@ -718,7 +1138,10 @@ function createIdeBrowserHost(vscode, { lockCommand = 'workbench.action.browser.
       return { active_page_id: activePageId || null, pages: tabs, source: 'ide-browser' };
     }
     if (action === 'tab_new') {
-      const entry = await openTab(input.url || 'about:blank', { preserveFocus: true, background: true });
+      const target = input.url || 'about:blank';
+      const visible = listTabs().some(tab => { const tracked = track(tab); return tracked && pageVisible(tracked); });
+      if (!visible && !browserEditorOpen()) return notOpenResult(action, input, binding);
+      const entry = await openTab(target, { preserveFocus: true, background: true });
       return { page_id: entry.id, url: entry.tab.url, title: entry.tab.title, source: 'ide-browser' };
     }
     if (action === 'tab_close') {
@@ -730,7 +1153,7 @@ function createIdeBrowserHost(vscode, { lockCommand = 'workbench.action.browser.
     }
     if (action === 'tab_activate') {
       const entry = resolveTab(input.page_id);
-      if (!entry) throw new Error('Unknown page_id');
+      if (!entry) return notOpenResult(action, input, binding);
       activePageId = entry.id;
       await reveal(entry.tab.url || entry.url || 'about:blank', {
         preserveFocus: false,
@@ -744,6 +1167,7 @@ function createIdeBrowserHost(vscode, { lockCommand = 'workbench.action.browser.
     }
 
     const entry = await ensurePage(binding, input);
+    if (!entry) return notOpenResult(action, input, binding);
     return withSession(entry, async (send, on) => {
       if (action === 'navigate') {
         const url = String(input.url || '');
@@ -752,12 +1176,25 @@ function createIdeBrowserHost(vscode, { lockCommand = 'workbench.action.browser.
         entry.loading = true;
         try {
           await send('Page.enable').catch(() => {});
-          const waiting = armLoadWait(on, timeoutMs);
-          await send('Page.navigate', { url });
-          await waiting;
+          const wait = armLoadWait(on, timeoutMs);
+          let navigation;
+          try { navigation = await send('Page.navigate', { url }); }
+          catch (error) { wait.cancel(); throw error; }
+          if (navigation?.errorText) {
+            wait.cancel();
+            throw Object.assign(new Error(`导航失败：${navigation.errorText}`), { code: 'IDE_BROWSER_NAVIGATION_FAILED' });
+          }
+          if (!navigation?.loaderId) {
+            // Hash/route navigation does not fire load events.
+            wait.cancel();
+            entry.url = url;
+            pageRefs.delete(entry.id);
+            return { page_id: entry.id, url, loaded: true, load_state: 'same-document', source: 'ide-browser' };
+          }
+          const loadState = await wait.promise;
           entry.url = url;
           pageRefs.delete(entry.id);
-          return { page_id: entry.id, url, source: 'ide-browser' };
+          return { page_id: entry.id, url, loaded: loadState !== 'timeout' && loadState !== 'cancelled', load_state: loadState, source: 'ide-browser' };
         } finally {
           entry.loading = false;
         }
@@ -767,11 +1204,11 @@ function createIdeBrowserHost(vscode, { lockCommand = 'workbench.action.browser.
         entry.loading = true;
         try {
           await send('Page.enable').catch(() => {});
-          const waiting = armLoadWait(on, timeoutMs);
-          await send('Page.reload');
-          await waiting;
+          const wait = armLoadWait(on, timeoutMs);
+          await send('Page.reload', { ignoreCache: input.ignore_cache === true });
+          const loadState = await wait.promise;
           pageRefs.delete(entry.id);
-          return { page_id: entry.id, source: 'ide-browser' };
+          return { page_id: entry.id, loaded: loadState !== 'timeout' && loadState !== 'cancelled', load_state: loadState, source: 'ide-browser' };
         } finally {
           entry.loading = false;
         }
@@ -783,23 +1220,35 @@ function createIdeBrowserHost(vscode, { lockCommand = 'workbench.action.browser.
           const history = await send('Page.getNavigationHistory').catch(() => null);
           const index = history?.currentIndex;
           const targetIndex = action === 'back' ? index - 1 : index + 1;
+          let loadState = 'unknown';
           if (Number.isInteger(index) && history?.entries?.[targetIndex]) {
             await send('Page.enable').catch(() => {});
-            const waiting = armLoadWait(on, timeoutMs);
+            const wait = armLoadWait(on, timeoutMs);
             await send('Page.navigateToHistoryEntry', { entryId: history.entries[targetIndex].id });
-            await waiting;
+            loadState = await wait.promise;
           } else if (!Number.isInteger(index)) {
             // Method unavailable: fall back to the page's own history API.
+            await send('Page.enable').catch(() => {});
+            const wait = armLoadWait(on, timeoutMs);
             await evaluate(send, action === 'back' ? 'history.back()' : 'history.forward()');
+            loadState = await wait.promise;
           }
           pageRefs.delete(entry.id);
-          return { page_id: entry.id, source: 'ide-browser' };
+          return {
+            page_id: entry.id, loaded: loadState !== 'timeout' && loadState !== 'cancelled',
+            load_state: loadState, source: 'ide-browser'
+          };
         } finally {
           entry.loading = false;
         }
       }
       if (action === 'screenshot') {
+        // The mask is for the human reader; never bake it into agent captures.
+        await hideAgentOverlay(entry, send);
         if (input.ref && input.full_page) throw new Error('Use either ref or full_page for screenshot');
+        const format = input.format === 'png' ? 'png' : 'jpeg';
+        const quality = format === 'jpeg' ? Math.min(100, Math.max(10, Number(input.quality) || 72)) : undefined;
+        const capture = extras => send('Page.captureScreenshot', { format, ...(quality ? { quality } : {}), ...extras });
         if (input.ref) {
           const ref = requireRef(entry, String(input.ref));
           const box = await evaluate(send, `(() => {
@@ -816,30 +1265,77 @@ function createIdeBrowserHost(vscode, { lockCommand = 'workbench.action.browser.
               width: Math.max(1, rect.width), height: Math.max(1, rect.height), scale: 1
             };
           })()`);
-          const result = await send('Page.captureScreenshot', {
-            format: 'jpeg', quality: 72, clip: box, captureBeyondViewport: true
-          });
+          const result = await capture({ clip: box, captureBeyondViewport: true });
           const bytes = Buffer.from(result.data, 'base64');
           return {
-            page_id: entry.id, format: 'jpeg', ref,
-            image: { type: 'image', data: bytes.toString('base64'), mimeType: 'image/jpeg' },
+            page_id: entry.id, format, ref,
+            image: { type: 'image', data: bytes.toString('base64'), mimeType: `image/${format}` },
             source: 'ide-browser'
           };
         }
-        const result = await send('Page.captureScreenshot', {
-          format: 'jpeg', quality: 72, captureBeyondViewport: input.full_page === true
-        });
+        let clip;
+        if (input.full_page === true) {
+          const metrics = await send('Page.getLayoutMetrics').catch(() => null);
+          const size = metrics?.cssContentSize || metrics?.contentSize;
+          if (size && Number.isFinite(size.width) && Number.isFinite(size.height)) {
+            clip = { x: 0, y: 0, width: Math.max(1, Math.ceil(size.width)), height: Math.max(1, Math.ceil(size.height)), scale: 1 };
+          }
+        }
+        const result = await capture(clip ? { clip, captureBeyondViewport: true } : { captureBeyondViewport: input.full_page === true });
         const bytes = Buffer.from(result.data, 'base64');
         return {
-          page_id: entry.id, format: 'jpeg',
-          image: { type: 'image', data: bytes.toString('base64'), mimeType: 'image/jpeg' },
+          page_id: entry.id, format,
+          ...(clip ? { full_page: true, width: clip.width, height: clip.height } : {}),
+          image: { type: 'image', data: bytes.toString('base64'), mimeType: `image/${format}` },
+          source: 'ide-browser'
+        };
+      }
+      if (action === 'frames') {
+        const tree = await send('Page.getFrameTree').catch(() => null);
+        const flatten = (node, parent) => {
+          const frame = node?.frame || {};
+          const list = [{
+            frame_id: frame.id, parent_frame_id: parent || null,
+            url: frame.url || '', name: frame.name || '',
+            security_origin: frame.securityOrigin || '', mime_type: frame.mimeType || ''
+          }];
+          for (const child of node?.childFrames || []) list.push(...flatten(child, frame.id));
+          return list;
+        };
+        return { page_id: entry.id, frames: tree?.frameTree ? flatten(tree.frameTree) : [], source: 'ide-browser' };
+      }
+      if (action === 'frame_evaluate') {
+        const frameId = String(input.frame_id || '');
+        if (!frameId) throw new Error('frame_evaluate requires frame_id (see action=frames)');
+        const expression = String(input.script || input.expression || '');
+        if (!expression) throw new Error('frame_evaluate requires script');
+        const world = await send('Page.createIsolatedWorld', { frameId, worldName: 'ubovm-agent' });
+        const contextId = world?.executionContextId;
+        if (!contextId) throw new Error('could not create an execution context for the frame');
+        const evaluation = await send('Runtime.evaluate', {
+          expression, contextId,
+          awaitPromise: input.await_promise !== false,
+          returnByValue: true
+        }, { timeoutMs: Math.min(180000, Math.max(1000, Number(input.timeout_seconds || 30) * 1000)) });
+        if (evaluation.exceptionDetails) {
+          throw new Error(evaluation.exceptionDetails.exception?.description || evaluation.exceptionDetails.text || 'frame_evaluate failed');
+        }
+        return {
+          page_id: entry.id, frame_id: frameId,
+          result: evaluation.result?.value ?? evaluation.result?.description ?? null,
           source: 'ide-browser'
         };
       }
       if (action === 'evaluate') {
         const expression = String(input.script || input.expression || '');
         if (!expression) throw new Error('evaluate requires script');
-        const value = await evaluate(send, expression, { awaitPromise: true });
+        const value = await evaluate(send, expression, {
+          // Async scripts are common; allow opting out for expressions that
+          // return a thenable but should not be awaited.
+          awaitPromise: input.await_promise !== false,
+          userGesture: input.user_gesture === true,
+          timeoutMs: Math.min(180000, Math.max(1000, Number(input.timeout_seconds || 30) * 1000))
+        });
         return { page_id: entry.id, result: value, source: 'ide-browser' };
       }
       if (action === 'cdp') {
@@ -849,12 +1345,168 @@ function createIdeBrowserHost(vscode, { lockCommand = 'workbench.action.browser.
         const result = await send(method, input.command_params || input.params || {});
         return { page_id: entry.id, result, source: 'ide-browser' };
       }
+      if (action === 'cdp_events') {
+        const buffer = eventBuffer(entry);
+        const query = String(input.query || '').toLowerCase();
+        const after = Math.max(0, Number(input.after_sequence) || 0);
+        const limit = Math.min(200, Math.max(1, Number(input.limit) || 40));
+        const selected = buffer.entries.filter(item => item.sequence > after
+          && (!query || item.method.toLowerCase().includes(query) || String(item.params).toLowerCase().includes(query)));
+        const entries = selected.slice(0, limit);
+        return {
+          page_id: entry.id, entries, total: selected.length, has_more: selected.length > entries.length,
+          next_sequence: entries.length ? entries[entries.length - 1].sequence : Math.max(after, buffer.sequence),
+          dropped_through_sequence: buffer.droppedThrough || undefined,
+          source: 'ide-browser'
+        };
+      }
+      if (action === 'dialogs') {
+        const state = dialogBuffer(entry);
+        const limit = Math.min(50, Math.max(1, Number(input.limit) || 20));
+        const entries = state.entries.slice(-limit);
+        if (input.clear === true) state.entries = [];
+        return { page_id: entry.id, dialogs: entries, policy: state.policy, source: 'ide-browser' };
+      }
+      if (action === 'dialog_policy') {
+        const state = dialogBuffer(entry);
+        if (typeof input.accept === 'boolean') state.policy.accept = input.accept;
+        if (input.prompt_text !== undefined) state.policy.promptText = String(input.prompt_text).slice(0, 2000);
+        return { page_id: entry.id, accept: state.policy.accept, prompt_text: state.policy.promptText, source: 'ide-browser' };
+      }
+      if (action === 'storage') {
+        const scope = ['local', 'session', 'both'].includes(String(input.source || '')) ? String(input.source) : 'both';
+        const mutations = input.mutations && typeof input.mutations === 'object' ? input.mutations : {};
+        const clear = input.clear === true;
+        const values = await evaluate(send, `(() => {
+          const scope = ${JSON.stringify(scope)};
+          const mutations = ${JSON.stringify(mutations)};
+          const stores = scope === 'local' ? [localStorage] : scope === 'session' ? [sessionStorage] : [localStorage, sessionStorage];
+          if (${clear ? 'true' : 'false'}) for (const store of stores) store.clear();
+          for (const store of stores) for (const [key, value] of Object.entries(mutations)) store.setItem(key, String(value));
+          const read = store => Object.fromEntries(Array.from({ length: store.length }, (_, index) => store.key(index)).map(key => [key, String(store.getItem(key)).slice(0, 4000)]));
+          const output = {};
+          if (scope !== 'session') output.local = read(localStorage);
+          if (scope !== 'local') output.session = read(sessionStorage);
+          return output;
+        })()`, { timeoutMs: 15000 });
+        return { page_id: entry.id, storage: values, source: 'ide-browser' };
+      }
+      if (action === 'upload') {
+        const ref = String(input.ref || '');
+        if (!ref) throw new Error('upload requires ref');
+        requireRef(entry, ref);
+        const files = Array.isArray(input.values) ? input.values
+          : (Array.isArray(input.mutations?.files) ? input.mutations.files : []);
+        if (!files.length || files.some(file => typeof file !== 'string' || !file)) {
+          throw new Error('upload requires values[] with absolute file paths');
+        }
+        await send('DOM.enable').catch(() => {});
+        const objectId = await evaluateHandle(send, `(() => {
+          const el = ${FIND_REF_SCRIPT}(${JSON.stringify(ref)});
+          if (!el) throw new Error('Unknown or stale element ref; take a new snapshot');
+          if (el.tagName !== 'INPUT' || el.type !== 'file') throw new Error('upload ref must be an <input type="file">');
+          return el;
+        })()`);
+        const node = await send('DOM.requestNode', { objectId });
+        if (!node?.nodeId) throw new Error('upload could not resolve the file input node');
+        await send('DOM.setFileInputFiles', { files, nodeId: node.nodeId });
+        return { page_id: entry.id, ok: true, files: files.length, source: 'ide-browser' };
+      }
+      if (action === 'network_start') {
+        entry.network = { capture: true, entries: [], sequence: 0, droppedThrough: 0 };
+        await send('Network.enable', {}).catch(error => { throw new Error('无法启用网络抓包：' + (error?.message || error)); });
+        return { page_id: entry.id, capturing: true, source: 'ide-browser' };
+      }
+      if (action === 'network_stop') {
+        if (entry.network) entry.network.capture = false;
+        await send('Network.disable').catch(() => {});
+        return { page_id: entry.id, capturing: false, source: 'ide-browser' };
+      }
+      if (action === 'network') {
+        const buffer = networkBuffer(entry);
+        const query = String(input.query || '').toLowerCase();
+        const method = String(input.method || '').toUpperCase();
+        const after = Math.max(0, Number(input.after_sequence) || 0);
+        const limit = Math.min(200, Math.max(1, Number(input.limit || input.page_size) || 40));
+        const selected = buffer.entries.filter(item => item.sequence > after
+          && (!query || String(item.url || '').toLowerCase().includes(query))
+          && (!method || String(item.method || '').toUpperCase() === method));
+        const entries = selected.slice(0, limit);
+        if (input.clear === true) {
+          const removed = new Set(entries.map(item => item.sequence));
+          buffer.entries = buffer.entries.filter(item => !removed.has(item.sequence));
+        }
+        return {
+          page_id: entry.id, capturing: buffer.capture, entries, total: selected.length,
+          has_more: selected.length > entries.length,
+          next_sequence: entries.length ? entries[entries.length - 1].sequence : Math.max(after, buffer.sequence),
+          dropped_through_sequence: buffer.droppedThrough || undefined,
+          source: 'ide-browser'
+        };
+      }
+      if (action === 'network_body') {
+        const requestId = String(input.request_id || '');
+        if (!requestId) throw new Error('network_body requires request_id');
+        const body = await send('Network.getResponseBody', { requestId });
+        const maxBytes = Math.min(1 << 20, Math.max(256, Number(input.max_bytes) || 65536));
+        const encoded = body?.base64Encoded === true;
+        const raw = encoded ? Buffer.from(String(body.body || ''), 'base64') : Buffer.from(String(body.body || ''), 'utf8');
+        const slice = raw.subarray(0, maxBytes);
+        return {
+          page_id: entry.id, request_id: requestId, base64: encoded,
+          body: encoded ? slice.toString('base64') : slice.toString('utf8'),
+          truncated: raw.length > slice.length, total_bytes: raw.length,
+          source: 'ide-browser'
+        };
+      }
+      if (action === 'cookies') {
+        const url = /^https?:/i.test(entry.url || entry.tab.url || '') ? (entry.url || entry.tab.url) : entry.tab.url;
+        if (!/^https?:/i.test(url || '')) throw new Error('cookies requires an http(s) page');
+        const result = await send('Network.getCookies', { urls: [url] });
+        return {
+          page_id: entry.id, url,
+          cookies: (result?.cookies || []).map(cookie => ({
+            name: cookie.name, domain: cookie.domain, path: cookie.path,
+            secure: cookie.secure === true, httpOnly: cookie.httpOnly === true,
+            sameSite: cookie.sameSite, expires: cookie.expires,
+            value_present: typeof cookie.value === 'string' && cookie.value.length > 0,
+            ...(input.include_credentials === true ? { value: cookie.value } : {})
+          })),
+          source: 'ide-browser'
+        };
+      }
+      if (action === 'set_cookie') {
+        const mutation = input.mutations && typeof input.mutations === 'object' ? input.mutations : {};
+        const name = String(mutation.name || input.name || '');
+        if (!name) throw new Error('set_cookie requires name');
+        const params = {
+          name, value: String(mutation.value ?? input.value ?? ''),
+          ...(mutation.url ? { url: String(mutation.url) } : /^https?:/i.test(entry.url || '') ? { url: entry.url } : {}),
+          ...(mutation.domain ? { domain: String(mutation.domain) } : {}),
+          ...(mutation.path ? { path: String(mutation.path) } : {}),
+          ...(mutation.secure !== undefined ? { secure: mutation.secure === true } : {}),
+          ...(mutation.httpOnly !== undefined ? { httpOnly: mutation.httpOnly === true } : {}),
+          ...(mutation.sameSite ? { sameSite: String(mutation.sameSite) } : {}),
+          ...(Number.isFinite(Number(mutation.expires)) ? { expires: Number(mutation.expires) } : {})
+        };
+        const result = await send('Network.setCookie', params);
+        return { page_id: entry.id, ok: result?.success !== false, name, domain: params.domain || params.url, source: 'ide-browser' };
+      }
+      if (action === 'clear_cookies') {
+        const name = String(input.name || '');
+        if (name) {
+          await send('Network.deleteCookies', { name, ...(input.url ? { url: String(input.url) } : /^https?:/i.test(entry.url || '') ? { url: entry.url } : {}) });
+        } else {
+          await send('Network.clearBrowserCookies');
+        }
+        return { page_id: entry.id, ok: true, cleared: name ? 'named' : 'all', source: 'ide-browser' };
+      }
       if (action === 'wait') {
         const ms = Math.min(120000, Math.max(0, Number(input.timeout_seconds || 30) * 1000));
         const condition = String(input.wait_for || (input.ref ? 'visible' : (input.query ? 'text' : 'load')));
         // Poll in the page so a wait costs one round trip instead of one per tick.
         const outcome = await evaluate(send, `(async () => {
-          const p = ${JSON.stringify({ ref: input.ref ? String(input.ref) : '', query: input.query ? String(input.query).toLowerCase() : '', condition, ms })};
+          const p = ${JSON.stringify({ ref: input.ref ? String(input.ref) : '', query: input.query ? String(input.query).toLowerCase() : '', url: input.url ? String(input.url).toLowerCase() : '', condition, ms })};
           const deadline = Date.now() + p.ms;
           const find = ${FIND_REF_SCRIPT};
           const visible = el => {
@@ -862,6 +1514,7 @@ function createIdeBrowserHost(vscode, { lockCommand = 'workbench.action.browser.
             return !!(rect.width && rect.height && style.visibility !== 'hidden' && style.display !== 'none');
           };
           const body = () => (document.body?.innerText || '').toLowerCase();
+          let idleCount = -1, idleAt = 0;
           for (;;) {
             let ready;
             if (p.ref) {
@@ -871,9 +1524,17 @@ function createIdeBrowserHost(vscode, { lockCommand = 'workbench.action.browser.
               else if (p.condition === 'visible') ready = !!el && visible(el);
               else if (p.condition === 'hidden') ready = !el || !visible(el);
               else throw new Error('wait_for with ref must be visible, hidden, attached or detached');
+            } else if (p.url || p.condition === 'url') {
+              ready = location.href.toLowerCase().includes((p.url || p.condition).toLowerCase());
             } else if (p.query) {
               ready = body().includes(p.query);
-            } else if (['load', 'domcontentloaded', 'networkidle'].includes(p.condition)) {
+            } else if (p.condition === 'networkidle') {
+              // Approximate Chromium's networkidle: document loaded plus no new
+              // resource entries observed for 500ms.
+              const count = performance.getEntriesByType('resource').length;
+              if (count !== idleCount) { idleCount = count; idleAt = Date.now(); }
+              ready = document.readyState === 'complete' && Date.now() - idleAt >= 500;
+            } else if (['load', 'domcontentloaded'].includes(p.condition)) {
               ready = document.readyState === 'complete';
             } else if (p.condition) {
               ready = body().includes(p.condition.toLowerCase());
@@ -884,11 +1545,13 @@ function createIdeBrowserHost(vscode, { lockCommand = 'workbench.action.browser.
             if (Date.now() >= deadline) return { ready: false };
             await new Promise(resolve => setTimeout(resolve, 100));
           }
-        })()`, { awaitPromise: true });
+        })()`, { awaitPromise: true, timeoutMs: ms + 10000 });
         if (!outcome?.ready) throw new Error('wait timed out');
-        return { page_id: entry.id, ok: true, wait_for: condition, source: 'ide-browser' };
+        return { page_id: entry.id, ok: true, wait_for: condition, ...(input.url ? { url: String(input.url) } : {}), source: 'ide-browser' };
       }
       if (action === 'snapshot' || action === 'accessibility') {
+        // Keep the fallback mask out of the agent's DOM/accessibility view.
+        await hideAgentOverlay(entry, send);
         const payload = {
           token: 'r' + randomUUID().replaceAll('-', '').slice(0, 12),
           max: Number(input.max_elements) > 0 ? Math.min(300, Number(input.max_elements)) : 120,
@@ -950,6 +1613,18 @@ function createIdeBrowserHost(vscode, { lockCommand = 'workbench.action.browser.
           if (action === 'click') {
             await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: point.x, y: point.y, button: 'left', buttons: 1, clickCount: 1 });
             await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: point.x, y: point.y, button: 'left', buttons: 0, clickCount: 1 });
+            if (input.wait_for_navigation === true) {
+              const timeoutMs = Math.min(120000, Math.max(1000, Number(input.timeout_seconds || 30) * 1000));
+              const wait = armNavigationWait(on, timeoutMs);
+              const loadState = await wait.promise;
+              pageRefs.delete(entry.id);
+              return {
+                page_id: entry.id, ok: true, action,
+                loaded: loadState === 'load' || loadState === 'frame', load_state: loadState,
+                source: 'ide-browser'
+              };
+            }
+            return { page_id: entry.id, ok: true, action, source: 'ide-browser' };
           }
           return { page_id: entry.id, ok: true, action, source: 'ide-browser' };
         }
@@ -1026,9 +1701,31 @@ function createIdeBrowserHost(vscode, { lockCommand = 'workbench.action.browser.
     });
   }
 
+  async function yieldAgentControl() {
+    if (activeCalls > 0) {
+      return {
+        ok: false, code: 'IDE_BROWSER_BUSY', action: 'yield_control', source: 'ide-browser',
+        guidance: 'A browser call is still returning. Retry yield_control after it completes.'
+      };
+    }
+    const entry = (activePageId && pages.get(activePageId))
+      || [...pages.values()].at(-1);
+    taskLocked = false;
+    releaseWhenIdle = false;
+    if (nativeLockSupported) await setAgentControl(false, 'Agent released control for user interaction');
+    removePageOverlays();
+    for (const page of pages.values()) page.agentOverlayDismissed = false;
+    return {
+      ok: true, action: 'yield_control', source: 'ide-browser', control: 'user',
+      ...(entry ? { page_id: entry.id, url: entry.tab.url, title: entry.tab.title } : {}),
+      guidance: 'Agent control released. Ask the user to complete the interactive step (login, MFA, consent), then call browser_action again; the next action reacquires the lock automatically.'
+    };
+  }
+
   async function call(binding, input, signal) {
     signal?.throwIfAborted();
     if (input?.action === 'status') return perform(binding, input);
+    if (input?.action === 'yield_control') return yieldAgentControl();
     return withLock(async () => {
       signal?.throwIfAborted();
       return perform(binding, input);
@@ -1044,19 +1741,40 @@ function createIdeBrowserHost(vscode, { lockCommand = 'workbench.action.browser.
     if (op === 'status') return status(payload.binding || {});
     if (op === 'call') return call(payload.binding || {}, payload.input || {}, signal);
     if (op === 'open') return open(payload.url, payload.options);
+    if (op === 'openAgentPage') return openAgentPage(payload.url);
     if (op === 'reveal') return reveal(payload.url, payload.options);
     if (op === 'navigate') return navigate(payload.url, payload.pageId || payload.page_id);
     if (op === 'listPages') return listPages();
     if (op === 'closePage') return closePage(payload.pageId || payload.page_id);
     if (op === 'setAgentControl') return setAgentControl(payload.locked, payload.reason);
+    if (op === 'yieldControl') return yieldAgentControl();
+    if (op === 'endAgentTask') return endAgentTask();
     throw new Error(`Unknown ide browser op: ${op}`);
   }
 
   async function open(url, options) {
-    return openTab(url, options);
+    const entry = await openTab(url, options);
+    markVisible(entry);
+    // The user opened the page while an agent task is still running: reapply the
+    // read-only task mask so the page stays protected.
+    if (taskLocked) { try { await setAgentControl(true, taskLockReason); } catch { /* mask is best effort */ } }
+    return entry;
+  }
+
+  // Agent-initiated fallback: after the click-through grace period the bridge may
+  // ask the host to open the page itself (the user stayed idle). The tab may be
+  // revealed by the workbench, which is acceptable after the grace period.
+  async function openAgentPage(url) {
+    const target = typeof url === 'string' && url ? url : 'about:blank';
+    const entry = await openTab(target, { preserveFocus: true, background: true });
+    activePageId = entry.id;
+    if (!pageVisible(entry)) reportActivity(true, entry);
+    if (taskLocked) { try { await setAgentControl(true, taskLockReason); } catch { /* mask is best effort */ } }
+    return { page_id: entry.id, url: entry.tab.url, title: entry.tab.title, opened: true, source: 'ide-browser' };
   }
 
   function dispose() {
+    reportActivity(false);
     for (const disposable of disposables) {
       try { disposable.dispose?.(); } catch { /* ignore */ }
     }
@@ -1064,14 +1782,14 @@ function createIdeBrowserHost(vscode, { lockCommand = 'workbench.action.browser.
     for (const entry of pages.values()) disposeSession(entry);
     pages.clear();
     pageRefs.clear();
-    if (lockDepth > 0) {
-      lockDepth = 0;
+    if (taskLocked) {
+      taskLocked = false;
       void setAgentControl(false);
     }
   }
 
   return {
-    call, status, open, reveal, navigate, listPages, closePage, setAgentControl, handle, dispose,
+    call, status, open, reveal, navigate, listPages, closePage, setAgentControl, endAgentTask, handle, dispose,
     supportedActions: [...SUPPORTED]
   };
 }

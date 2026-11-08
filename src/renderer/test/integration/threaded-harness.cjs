@@ -71,7 +71,7 @@ async function fixture(t, body, overrides = {}) {
   let wasBusy = false;
   const messages = [];
   service = createHarnessService({ sdkPath: path.join(root, 'index.mjs'), storageDirectory: path.join(root, 'storage'),
-    workspaceRoots: () => [root], readConfiguration: async () => ({}),
+    workspaceRoots: () => [root], readConfiguration: async () => ({ intools: false }),
     onMessage: (id, message) => messages.push(message),
     onChange: id => { if (service.isBusy(id)) wasBusy = true; else if (wasBusy) complete(); }, ...overrides });
   return { root, service, done, messages,
@@ -178,19 +178,18 @@ test('an SDK error after steering admission cannot claim a safe pre-delivery rej
   f.service.cancel('test'); await f.done;
 });
 
-test('a hung worker soft-stalls then is killed without replaying its task', { timeout: 15000 }, async t => {
-  const f = await fixture(t, "setTimeout(() => { while (true) {} }, 10); await new Promise(() => {});", {
-    heartbeatInterval: 25, heartbeatTimeout: 200, heartbeatKillTimeout: 600
+test('a briefly blocked worker soft-stalls without being killed and then completes', { timeout: 20000 }, async t => {
+  const f = await fixture(t, `const end = Date.now() + 900; while (Date.now() < end) {} return 'recovered';`, {
+    heartbeatInterval: 25, heartbeatTimeout: 150, heartbeatStartupGrace: 0
   });
-  await f.start();
+  const starting = f.start();
   await waitFor(() => f.service.connectionState().status === 'stalled');
-  assert.equal(f.service.isBusy('test'), true, 'soft stall must keep the hung turn alive');
-  await waitFor(() => f.service.connectionState().status === 'disconnected');
-  await waitFor(() => !f.service.isBusy('test'));
-  assert.equal(f.service.state('test').status, 'failed');
-  assert.equal(f.service.state('test').error.code, 'AGENT_HEARTBEAT_TIMEOUT');
-  assert.equal(f.service.state('test').canResume, true, 'assist becomes explicitly resumable after thread loss');
-  assert.equal(f.messages.length, 0);
+  assert.equal(f.service.isBusy('test'), true, 'soft stall must keep the running turn');
+  await starting;
+  await f.done;
+  assert.equal(f.service.state('test').status, 'completed');
+  assert.equal(f.messages.at(-1).text, 'recovered', 'the worker survives the silence and is never restarted');
+  assert.equal(f.service.connectionState().status, 'connected');
 });
 
 test('foreground sessions wait for local learning to release storage and always release the pause', async t => {

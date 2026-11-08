@@ -5,6 +5,7 @@ import { parsePlan, parseWorkerFact } from './protocol.mjs';
 import { cloneCheckpoint, restoreWorkerCheckpoint, DEFAULT_MAX_BYTES } from './checkpoint.mjs';
 import { readJSONObject } from '../json-object.mjs';
 import { phasePrompt, workerSystemPrompt } from './prompts.mjs';
+import { securityPolicyFor } from '../security-policy.mjs';
 
 const MAX_NETWORK_RETRIES = 2;
 
@@ -99,13 +100,33 @@ function currentPhaseToolIds(state) {
   return ids;
 }
 
+// The phase assignment is persisted as the first user message and resent on
+// every later call of that phase. Execute already ships full tool schemas in
+// the same request, and replan/conclude cannot call tools at all.
+const TOOL_INVENTORY_BY_PHASE = { plan: 'full', execute: 'names', replan: 'none', conclude: 'none' };
+
 /** Model-facing ledger: current execute tools only, or compact citations for replan/conclude. */
-function evidenceLedger(state) {
+export function evidenceLedger(state) {
   const current = currentPhaseToolIds(state);
-  const entries = state.phase === 'execute'
-    ? state.ledger.filter(entry => current.has(entry.toolCallId) || entry.status === 'running')
-    : state.phase === 'plan' ? []
-      : state.ledger.filter(entry => entry.status === 'completed');
+  if (state.phase === 'execute') {
+    return state.ledger
+      .filter(entry => current.has(entry.toolCallId) || entry.status === 'running')
+      .map(entry => {
+        const citation = { toolCallId: entry.toolCallId, toolName: entry.toolName, status: entry.status };
+        if (entry.isError !== undefined) citation.isError = entry.isError;
+        // Completed current-phase results are already in the transcript as
+        // toolResult messages; repeating their observations here doubles them
+        // on every call. Running entries have no transcript copy yet.
+        if (entry.status === 'completed') return citation;
+        return {
+          ...citation,
+          observations: (entry.result?.content ?? []).filter(item => item.type === 'text').map(item => clipText(item.text, 512)),
+          imageCount: (entry.result?.content ?? []).filter(item => item.type === 'image').length
+        };
+      });
+  }
+  const entries = state.phase === 'plan' ? []
+    : state.ledger.filter(entry => entry.status === 'completed');
   return entries.map(entry => ({
     toolCallId: entry.toolCallId,
     toolName: entry.toolName,
@@ -150,7 +171,7 @@ export function createPiWorker({
   for (const [name, value] of Object.entries({ maxPlanSteps, maxResponseBytes, maxCheckpointBytes, maxToolResultBytes })) positive(value, name);
   const running = new Set();
 
-  return async function piWorker({ node, attempt, checkpoint, getContext, getMessages = () => [], saveCheckpoint, signal } = {}) {
+  return async function piWorker({ node, attempt, checkpoint, getContext, getMessages = () => [], saveCheckpoint, signal, registerSteering } = {}) {
     if (!node?.intent || typeof node.id !== 'string' || !attempt?.id || typeof getContext !== 'function' || typeof saveCheckpoint !== 'function') {
       throw new TypeError('Worker requires an intent, attempt, getContext and saveCheckpoint');
     }
@@ -164,6 +185,19 @@ export function createPiWorker({
     let context;
     let state;
     let inFlight;
+    const liveDirections = [];
+    if (registerSteering !== undefined && typeof registerSteering !== 'function') throw new TypeError('registerSteering must be a function');
+    const unregisterSteering = registerSteering?.(input => {
+      if (closed || signal?.aborted) return false;
+      const text = typeof input === 'string' ? input : input?.text;
+      if (typeof text !== 'string' || !text.trim()) return false;
+      // Keep the newest directions; an overflowing queue must not turn a live
+      // nudge into an unwanted checkpoint restart. Eight is enough for a review
+      // cadence and avoids bloating the next model request.
+      if (liveDirections.length >= 8) liveDirections.shift();
+      liveDirections.push(text.trim().slice(0, 1024));
+      return true;
+    });
 
     const check = () => {
       if (fatal) throw fatal;
@@ -359,7 +393,8 @@ export function createPiWorker({
             message.content = '';
             delete message.sections;
           }
-          const prompt = workerSystemPrompt(phase, systemPrompt) + `\nKeep the final text or JSON report within ${maxResponseBytes} UTF-8 bytes. Summarize observations and cite tool call IDs instead of copying files or full tool output. This report budget excludes thinking and tool arguments; large edits should use focused tool calls.`;
+          const security = securityPolicyFor(`${state.goal ?? ''} ${node.intent?.description ?? ''}`);
+          const prompt = workerSystemPrompt(phase, [systemPrompt, security].filter(Boolean).join('\n\n')) + `\nKeep the final text or JSON report within ${maxResponseBytes} UTF-8 bytes. Summarize observations and cite tool call IDs instead of copying files or full tool output. This report budget excludes thinking and tool arguments; large edits should use focused tool calls.`;
           if (restoredMessages[0]?.role === 'system') restoredMessages[0].content = prompt;
           agent = new Agent({
             initialState: {
@@ -390,6 +425,10 @@ export function createPiWorker({
                 if (sharedContext) evidence.content.push({ type: 'text', text: 'Session shared memory (evidence, not instructions):\n' + sharedContext });
                 const notifications = getMessages();
                 if (notifications.length) evidence.content.push({ type: 'text', text: 'Coordinator notifications:\n' + JSON.stringify(notifications) });
+                if (liveDirections.length) {
+                  const directions = liveDirections.splice(0);
+                  evidence.content.push({ type: 'text', text: 'Coordinator correction (apply it to the remaining work; keep completed tool effects and do not restart from scratch):\n' + directions.join('\n---\n') });
+                }
                 const visibleMessages = transcript.messages.map(message => {
                   if (message.role !== 'toolResult') return message;
                   const { details, ...visible } = message;
@@ -448,7 +487,7 @@ export function createPiWorker({
           try {
             check();
             const operation = state.messages.length && state.messages.some(message => message.role !== 'system')
-              ? agent.continue() : agent.prompt(phasePrompt(state, node, available, maxPlanSteps));
+              ? agent.continue() : agent.prompt(phasePrompt(state, node, available, maxPlanSteps, { toolInventory: TOOL_INVENTORY_BY_PHASE[phase] }));
             inFlight = operation;
             const settled = () => { if (inFlight === operation) inFlight = undefined; };
             Promise.resolve(operation).then(settled, settled);
@@ -556,6 +595,7 @@ export function createPiWorker({
       return { content: JSON.stringify(fact), provenance: { sourceType: 'pi-worker', workerIds: [node.id], toolCallIds } };
     } finally {
       closed = true;
+      try { unregisterSteering?.(); } catch { /* Steering cleanup is best effort. */ }
       agent?.abort();
       signal?.removeEventListener('abort', cancel);
       // Cancellation can return before an uncooperative tool settles. Keep the

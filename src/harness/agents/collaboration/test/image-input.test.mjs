@@ -113,3 +113,32 @@ test('a read_image tool result reaches the next model request as an image part',
   assert.equal(seen?.mimeType, 'image/png');
   assert.equal(seen?.data, PNG.toString('base64'));
 });
+
+test('older attributed images keep an actionable local-path hint instead of the payload', async t => {
+  const { directory, image, configuration } = await fixture(t, ['text', 'image']);
+  let request;
+  configuration.model.streamFn = (model, value) => {
+    request = value;
+    return respond(model, '继续分析');
+  };
+  const messages = [
+    { role: 'user', text: '第一张', images: [image] },
+    { role: 'assistant', text: '收到第一张' },
+    { role: 'user', text: '第二张', images: [image] },
+    { role: 'assistant', text: '收到第二张' },
+    { role: 'user', text: '第三张', images: [image] },
+    { role: 'assistant', text: '收到第三张' },
+  ];
+  const answer = await runCollaboration({ configuration, sessionId: randomUUID(), directory, workspaceRoots: [], text: '第四张', images: [image], messages });
+  assert.equal(answer, '继续分析');
+  const contentOf = index => request.messages.filter(message => message.role === 'user')[index].content;
+  const hint = contentOf(0).find(part => part.type === 'text' && /较早的图片已从上下文移除/.test(part.text));
+  assert.ok(hint, 'the oldest image is removed from context');
+  assert.match(hint.text, /本地路径：/);
+  assert.match(hint.text, /read_image/);
+  assert.equal(contentOf(0).some(part => part.type === 'image'), false);
+  // The two newest history images and the current one stay inlined.
+  assert.equal(contentOf(1).find(part => part.type === 'image')?.mimeType, 'image/png');
+  assert.equal(contentOf(2).find(part => part.type === 'image')?.mimeType, 'image/png');
+  assert.equal(contentOf(3).find(part => part.type === 'image')?.mimeType, 'image/png');
+});

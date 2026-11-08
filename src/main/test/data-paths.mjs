@@ -67,6 +67,17 @@ test('plain JSON profiles receive startup restore policy before Code OSS launche
   for (const key of STARTUP_POLICY_KEYS) assert.equal(saved[key], defaults[key]);
 });
 
+test('startup policy leaves extension policy to the packaged product', t => {
+  const paths = prepareDataPaths({ home: fixture(t) });
+  const filename = path.join(paths.userData, 'User', 'settings.json');
+  const defaults = JSON.parse(fs.readFileSync(new URL('../../../resources/app.json', import.meta.url), 'utf8')).settings;
+  fs.writeFileSync(filename, JSON.stringify({ 'editor.fontSize': 18 }, null, 2) + '\n');
+  initializeUserSettings(paths, defaults);
+  const saved = JSON.parse(fs.readFileSync(filename, 'utf8'));
+  assert.equal(saved['extensions.allowed'], undefined);
+  assert.equal(saved['editor.fontSize'], 18);
+});
+
 test('previous-session editor backups are discarded and links are not followed', t => {
   const paths = prepareDataPaths({ home: fixture(t) });
   const backups = path.join(paths.userData, 'Backups');
@@ -90,6 +101,14 @@ test('previous-session editor backups are discarded and links are not followed',
   discardRestoredWorkbenchSession(paths);
   assert.equal(fs.readFileSync(path.join(outside, 'keep'), 'utf8'), 'ok');
   assert.equal(fs.existsSync(backups), false);
+});
+
+test('a locked editor-backup folder cannot abort startup', t => {
+  const paths = prepareDataPaths({ home: fixture(t) });
+  const backups = path.join(paths.userData, 'Backups');
+  fs.mkdirSync(backups);
+  t.mock.method(fs, 'rmdirSync', () => { throw Object.assign(new Error('locked'), { code: 'EPERM' }); });
+  assert.doesNotThrow(() => discardRestoredWorkbenchSession(paths));
 });
 
 test('data profiles are isolated below the user home and reject path escapes', () => {

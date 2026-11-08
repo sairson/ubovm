@@ -1,20 +1,23 @@
 diff --git a/src/vs/workbench/browser/layout.ts b/src/vs/workbench/browser/layout.ts
 --- a/src/vs/workbench/browser/layout.ts
 +++ b/src/vs/workbench/browser/layout.ts
-@@ -2685,6 +2685,18 @@
+@@ -2685,6 +2685,21 @@
  	private createGridDescriptor(): ISerializedGrid {
  		const { width, height } = this._mainContainerDimension;
 +		// Repair oversized persisted sidebars before the first grid layout.
-+		// The left sessions sidebar also has a hard cap; the primary sidebar only repairs clearly oversized widths.
-+		const leftSidebarMax = 420;
 +		for (const key of [LayoutStateKeys.SIDEBAR_SIZE, LayoutStateKeys.AUXILIARYBAR_SIZE]) {
 +			const savedWidth = this.stateModel.getInitializationValue(key);
-+			const proportionalLimit = width * 0.4;
++			const proportionalLimit = this._mainContainerDimension.width * 0.4;
 +			if (!Number.isFinite(savedWidth) || savedWidth <= 0 || savedWidth > proportionalLimit) {
-+				this.stateModel.setInitializationValue(key, Math.min(300, width / 4));
-+			} else if (key === LayoutStateKeys.AUXILIARYBAR_SIZE && savedWidth > leftSidebarMax) {
-+				this.stateModel.setInitializationValue(key, leftSidebarMax);
++				this.stateModel.setInitializationValue(key, Math.min(420, this._mainContainerDimension.width * 0.32));
 +			}
++		}
++		// The auxiliary bar is styled with a 420px maximum. Clamp its persisted
++		// split-view width too, otherwise the native grid reserves the old width
++		// and leaves a blank strip between the sidebar and the editor.
++		const auxiliaryBarWidth = this.stateModel.getInitializationValue(LayoutStateKeys.AUXILIARYBAR_SIZE);
++		if (Number.isFinite(auxiliaryBarWidth) && auxiliaryBarWidth > 420) {
++			this.stateModel.setInitializationValue(LayoutStateKeys.AUXILIARYBAR_SIZE, 420);
 +		}
  		const sideBarSize = this.stateModel.getInitializationValue(LayoutStateKeys.SIDEBAR_SIZE);
  		const auxiliaryBarSize = this.stateModel.getInitializationValue(LayoutStateKeys.AUXILIARYBAR_SIZE);

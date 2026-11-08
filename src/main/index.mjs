@@ -6,6 +6,10 @@ import path from 'node:path';
 import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { configureDataPaths, discardRestoredWorkbenchSession, findLegacyRoot, initializeUserSettings } from './data-paths.mjs';
+import { reconcileExtensionState } from './extension-state.mjs';
+import { ensureWorkbenchExtensionViews } from './workbench-compat.mjs';
+import { restoreExtensionViewContainers } from './extension-views.mjs';
+import { prepareExtensionDataDirectories, repairExtensionExecutableIntegrity } from './extension-permissions.mjs';
 import { installBackgroundMode } from './background.mjs';
 import { normalizeLaunchArguments } from './launch-policy.mjs';
 import { installWindowRendering } from './window-rendering.mjs';
@@ -34,6 +38,18 @@ if (process.platform === 'win32') {
 app.commandLine.appendSwitch('disable-skia-graphite');
 
 const dataPaths = configureDataPaths({ app, legacyRoot: findLegacyRoot(app.getAppPath()) });
+// Restore manifests moved by an earlier view-relocation experiment. The
+// activity-bar tab strip now supplies the tabs, so extensions keep their
+// contributed location.
+try { restoreExtensionViewContainers(dataPaths.extensions, console); } catch (error) { console.warn('[UBOVM] Extension view restore failed:', error?.message || error); }
+try { prepareExtensionDataDirectories(console); } catch (error) { console.warn('[UBOVM] Extension data permission repair failed:', error?.message || error); }
+try { repairExtensionExecutableIntegrity(dataPaths.extensions, console); } catch (error) { console.warn('[UBOVM] Extension executable repair failed:', error?.message || error); }
+// Extension enable/disable is recorded by the extension host and applied here,
+// before Code OSS scans the extensions directory.
+try { reconcileExtensionState(dataPaths, console); } catch (error) { console.warn('[UBOVM] Extension state reconcile failed:', error?.message || error); }
+// Keep extension-contributed webview views/panels reachable even when the
+// packaged workbench was built from an older UBOVM UI patch set.
+try { ensureWorkbenchExtensionViews(app.getAppPath(), console); } catch (error) { console.warn('[UBOVM] Workbench extension view patch failed:', error?.message || error); }
 process.argv.splice(0, process.argv.length, ...normalizeLaunchArguments(process.argv));
 const configuration = JSON.parse(readFileSync(new URL('../app.json', import.meta.url), 'utf8'));
 initializeUserSettings(dataPaths, configuration.settings);
@@ -58,14 +74,14 @@ app.whenReady().then(() => {
 // Resolve the mark from this module. An absolute path breaks Windows icons
 // when the install directory contains spaces.
 function loadPackagedIcon() {
-  // ICO is the Windows taskbar/tray source. PNG is the fallback when a runtime
-  // cannot decode an ICO buffer. Read bytes instead of a filesystem path: this
-  // checkout lives under a directory name that contains spaces.
-  for (const relativePath of [
-    '../../resources/win32/code.ico',
-    '../../extensions/ubovm-core/media/app-icon.ico',
-    '../../extensions/ubovm-core/media/app-icon.png'
-  ]) {
+  // ICO is the Windows taskbar/tray source. macOS and Linux use PNG, because a
+  // menu-bar/StatusNotifier host cannot be relied on to decode an ICO buffer.
+  // Read bytes instead of a filesystem path: this checkout lives under a
+  // directory name that contains spaces.
+  const candidates = process.platform === 'win32'
+    ? ['../../resources/win32/code.ico', '../../extensions/ubovm-core/media/app-icon.ico', '../../extensions/ubovm-core/media/app-icon.png']
+    : ['../../extensions/ubovm-core/media/app-icon-70.png', '../../extensions/ubovm-core/media/app-icon.png'];
+  for (const relativePath of candidates) {
     try {
       const image = nativeImage.createFromBuffer(readFileSync(new URL(relativePath, import.meta.url)));
       if (!image.isEmpty()) return image;
@@ -74,7 +90,12 @@ function loadPackagedIcon() {
   return undefined;
 }
 const windowIcon = loadPackagedIcon();
-installBackgroundMode({ app, Tray, Menu, nativeImage, dialog, icon: windowIcon });
+// A menu-bar entry is drawn at its native pixel size; keep it compact off Windows.
+function trayIconFor(icon) {
+  if (!icon || process.platform === 'win32') return icon;
+  try { return icon.resize({ width: 18, height: 18 }); } catch { return icon; }
+}
+installBackgroundMode({ app, Tray, Menu, nativeImage, dialog, icon: trayIconFor(windowIcon) });
 
 // Apply the product mark to every window, including auxiliary editor windows.
 app.on('browser-window-created', (_event, window) => {

@@ -47,6 +47,12 @@ test('the complete graph renderer never drops a node or parent edge', () => {
   }
   assert.match(lines[0], /complete topology/);
   assert.match(lines[1], /nodes=500 intents=250 facts=249 edges=499 root=n1 detail=full omitted_fact_bodies=249/);
+  // Completed Workers are archived: one line with status/result, no repeated task prose.
+  const completedIntent = nodeLines.find(line => /^n2 .*status=completed/.test(line));
+  assert.ok(completedIntent, 'completed intent line is present');
+  assert.match(completedIntent, /result=n3/);
+  assert.match(completedIntent, /detail=archived/);
+  assert.doesNotMatch(completedIntent, /Audit component/);
   assert.equal(view.stats.omittedFacts, 249);
 });
 
@@ -71,6 +77,20 @@ test('budget pressure degrades detail deterministically while preserving topolog
   assert(topology.stats.omittedFacts > 0);
   assert.equal(buildGraphView(small, { maxChars: Math.floor(smallFull.text.length * 0.8) }).text, summary.text, 'rendering is deterministic');
   assert.equal(graphStats(small, { maxChars: Math.floor(smallFull.text.length * 0.8) }).detail, 'summary');
+});
+
+test('long campaigns bound topology under an explicit node budget', () => {
+  const snapshot = syntheticSnapshot();
+  const view = buildGraphView(snapshot, { maxChars: 60000, maxNodes: 60 });
+  assert.equal(view.truncated, true);
+  assert.equal(view.stats.truncated, true);
+  assert.equal(view.stats.nodes, 500);
+  assert(view.stats.listedNodes <= 100, 'bounded view keeps only the actionable frontier and recent tail');
+  assert.match(view.text, /nodes=500/);
+  assert.match(view.text, /truncated=true/);
+  assert.match(view.text, /omitted_nodes=/);
+  assert.match(view.text, /^n1 root/m);
+  assert.doesNotMatch(view.text, /^n2 /m, 'older completed entries outside the frontier are omitted');
 });
 
 test('fact references and subset rendering stay addressable', () => {

@@ -235,7 +235,8 @@ function createWorkspaceAudit(vscode, { workspaceFolders = () => vscode.workspac
     }
     const selected = SECRET_PATTERNS.filter(item => patternIds.includes(item.id));
     const { root, rootIndex, requestedRoot } = await resolveRoot(input, sessionId);
-    const rootKey = value => process.platform === 'win32' ? value.toLowerCase() : value;
+    // Windows and macOS (default APFS) compare paths case-insensitively.
+    const rootKey = value => process.platform === 'linux' ? value : value.toLowerCase();
     function assertWorkspaceCurrent() {
       const current = workspaceFolders(sessionId).filter(folder => folder.uri.scheme === 'file')[rootIndex]?.uri.fsPath;
       if (!current || rootKey(path.resolve(current)) !== rootKey(requestedRoot)) {

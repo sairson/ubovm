@@ -6,8 +6,13 @@ import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 import { CallToolResultSchema } from '@modelcontextprotocol/sdk/types.js';
 import { Type } from 'typebox';
 import { Compile } from 'typebox/compile';
+import { createTlsFetch } from './tls-fetch.mjs';
 
 const SERVER_NAME = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$/;
+// Node/undici failures keep the useful reason in `cause`; these codes mean the
+// certificate was rejected rather than the endpoint being unreachable.
+const TLS_CERT_CODES = new Set(['DEPTH_ZERO_SELF_SIGNED_CERT', 'SELF_SIGNED_CERT_IN_CHAIN', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+  'CERT_HAS_EXPIRED', 'CERT_NOT_YET_VALID', 'ERR_TLS_CERT_ALTNAME_INVALID', 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY']);
 const MAX_DISCOVERY_PAGES = 100;
 const MAX_TOOLS = 1_000;
 
@@ -38,6 +43,31 @@ function stringMap(value, label, header = false) {
   return result;
 }
 
+/**
+ * One-line diagnostic for a failed connection. `fetch failed` alone tells the
+ * user nothing, so include numeric HTTP statuses (401, 406, …) and the cause
+ * chain Node hides behind a TypeError, e.g. DEPTH_ZERO_SELF_SIGNED_CERT.
+ * Command lines, credentials and response bodies are never added here.
+ */
+function describeFailure(error) {
+  const parts = [];
+  const codes = new Set();
+  for (let current = error, depth = 0; current && depth < 4; depth++) {
+    const message = typeof current.message === 'string' ? current.message.split('\n')[0].trim() : '';
+    const code = current.code !== undefined && current.code !== null && current.code !== '' ? String(current.code) : '';
+    if (code) codes.add(code);
+    // Keep the root message short: the cause often repeats Node's own advice.
+    const part = [message.slice(0, depth ? 120 : 200), code ? `(${code})` : ''].filter(Boolean).join(' ');
+    if (part && !parts.includes(part)) parts.push(part);
+    current = current.cause;
+  }
+  const detail = parts.join(' <- ').slice(0, 260);
+  const hint = [...codes].some(code => TLS_CERT_CODES.has(code))
+    ? '; certificate not trusted — enable the global ignore-HTTPS-certificate MCP option, set insecureTls, or configure tlsCa for this server'
+    : '';
+  return `${detail || 'unknown error'}${hint}`;
+}
+
 function normalizeServers(servers) {
   if (!Array.isArray(servers)) throw new TypeError('mcp.servers must be an array');
   const names = new Set();
@@ -47,7 +77,7 @@ function normalizeServers(servers) {
     if (names.has(key)) throw new TypeError(`Duplicate MCP server name: ${input.name}`);
     names.add(key);
     for (const flag of ['enabled', 'required']) if (input[flag] !== undefined && typeof input[flag] !== 'boolean') throw new TypeError(`MCP ${flag} must be boolean`);
-    const server = { ...input, enabled: input.enabled ?? true, required: input.required ?? true };
+    const server = { ...input, enabled: input.enabled ?? true, required: input.required ?? false };
     if (!server.enabled) return server;
     server.transport ??= 'stdio';
     if (server.transport === 'streamable-http') server.transport = 'streamable_http';
@@ -59,12 +89,16 @@ function normalizeServers(servers) {
       server.env = stringMap(server.env, 'MCP env');
       if (server.cwd !== undefined) text(server.cwd, 'MCP cwd');
       if (server.url !== undefined || server.headers !== undefined) throw new TypeError('MCP stdio does not accept url or headers');
+      if (server.insecureTls !== undefined || server.tlsCa !== undefined) throw new TypeError('MCP stdio does not accept TLS options');
     } else if (server.transport === 'streamable_http' || server.transport === 'sse') {
       const url = new URL(text(server.url, 'MCP url'));
       if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.hash) throw new TypeError('MCP url must be absolute HTTP(S), without credentials or a fragment');
       server.url = url;
       server.headers = stringMap(server.headers, 'MCP headers', true);
       if (['command', 'args', 'env', 'cwd'].some(key => server[key] !== undefined)) throw new TypeError('MCP HTTP transports do not accept command, args, env or cwd');
+      // opt-in TLS trust for self-signed / private-CA endpoints.
+      if (server.insecureTls !== undefined && typeof server.insecureTls !== 'boolean') throw new TypeError('MCP insecureTls must be boolean');
+      if (server.tlsCa !== undefined && (typeof server.tlsCa !== 'string' || !server.tlsCa.trim() || !server.tlsCa.includes('-----BEGIN CERTIFICATE-----'))) throw new TypeError('MCP tlsCa must be a PEM certificate');
     } else throw new TypeError(`Unsupported MCP transport: ${server.transport}`);
     if (server.tools !== undefined && (!Array.isArray(server.tools) || server.tools.some(name => typeof name !== 'string' || !name || name.includes('\0')) || new Set(server.tools).size !== server.tools.length)) throw new TypeError('MCP tools must be a unique array of remote tool names');
     server.tools = server.tools && [...server.tools];
@@ -75,7 +109,7 @@ function normalizeServers(servers) {
 
 /** Stable provider-safe names, including tools with punctuation or long names. */
 function exposedName(server, remoteName) {
-  const original = `${server.toolNamePrefix ?? `mcp_${server.name}`}_${remoteName}`;
+  const original = server.toolNamePrefix ? `${server.toolNamePrefix}_${remoteName}` : `mcp__${server.name}__${remoteName}`;
   let normalized = original.replace(/[^a-zA-Z0-9_-]/g, '_');
   if (!/^[A-Za-z_]/.test(normalized)) normalized = `mcp_${normalized}`;
   if (normalized === original && normalized.length <= 64) return normalized;
@@ -83,13 +117,28 @@ function exposedName(server, remoteName) {
   return `${normalized.slice(0, 51)}_${hash}`;
 }
 
+const ENV_CREDENTIAL = /KEY|PASSWORD|SECRET|TOKEN/i;
+/** Parent environment minus credentials and stale host-control variables. */
+function childEnvironment(extra) {
+  const environment = Object.create(null);
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value === undefined || ENV_CREDENTIAL.test(key) || key.startsWith('DSH_')) continue;
+    environment[key] = value;
+  }
+  return { ...environment, ...extra };
+}
+
 function makeTransport(server, maxResultBytes) {
   if (server.transport === 'stdio') return new StdioClientTransport({
-    command: server.command, args: server.args, env: server.env, cwd: server.cwd,
+    command: server.command, args: server.args, env: childEnvironment(server.env), cwd: server.cwd,
     // Stderr is intentionally not sent to model context or SDK diagnostics.
     stderr: 'ignore', maxBufferSize: Math.max(maxResultBytes * 2, 1 << 20),
   });
-  const options = { requestInit: { headers: server.headers } };
+  // Global fetch cannot express TLS trust; only opted-in servers use the
+  // minimal https implementation that can.
+  const ca = typeof server.tlsCa === 'string' && server.tlsCa.trim() ? server.tlsCa.trim() : undefined;
+  const options = { requestInit: { headers: server.headers },
+    ...(server.insecureTls === true || ca ? { fetch: createTlsFetch({ rejectUnauthorized: server.insecureTls !== true, ca }) } : {}) };
   return server.transport === 'sse' ? new SSEClientTransport(server.url, options) : new StreamableHTTPClientTransport(server.url, options);
 }
 
@@ -140,8 +189,14 @@ function convertResult(result, serverName, toolName, maxResultBytes) {
  * Environment values and HTTP headers are literal host-supplied values, never
  * expanded through a shell or copied to tool definitions and diagnostics.
  */
-export async function createMcpMiddleware({ servers = [], connectTimeoutMs = 20_000, callTimeoutMs = 60_000, maxResultBytes = 262_144, signal } = {}) {
-  const configurations = normalizeServers(servers);
+export async function createMcpMiddleware({ servers = [], connectTimeoutMs = 20_000, callTimeoutMs = 60_000, maxResultBytes = 262_144, insecureTls = false, signal } = {}) {
+  if (typeof insecureTls !== 'boolean') throw new TypeError('MCP insecureTls option must be boolean');
+  // The host-level switch opts every HTTP server out of certificate validation.
+  // A server can still request verification on its own, but a host that ignores
+  // TLS for MCP (self-signed endpoints are normal in authorized testing) must
+  // not fail each server separately on the same certificate problem.
+  const configurations = normalizeServers(servers).map(server => insecureTls && server.enabled !== false && server.transport !== 'stdio'
+    ? { ...server, insecureTls: true } : server);
   connectTimeoutMs = integer(connectTimeoutMs, 20_000, 1, 120_000, 'connectTimeoutMs');
   callTimeoutMs = integer(callTimeoutMs, 60_000, 1, 3_600_000, 'callTimeoutMs');
   maxResultBytes = integer(maxResultBytes, 262_144, 1_024, 16 << 20, 'maxResultBytes');
@@ -257,10 +312,10 @@ export async function createMcpMiddleware({ servers = [], connectTimeoutMs = 20_
         connected = true;
       } catch (error) {
         // Keep credentials, command arguments and transport response bodies out
-        // of public diagnostics. A short error code (ENOENT, MCP_TIMEOUT, …) is
-        // safe and lets the user see why a server did not register.
-        const reason = typeof error?.code === 'string' && error.code ? ` (${error.code})` : '';
-        diagnostic.error = `MCP server ${server.name} connection or discovery failed${reason}`;
+        // of public diagnostics. Numeric HTTP statuses and Node cause codes
+        // (401, ENOENT, DEPTH_ZERO_SELF_SIGNED_CERT, …) are safe and are the
+        // difference between an actionable report and "fetch failed".
+        diagnostic.error = `MCP server ${server.name} connection or discovery failed: ${describeFailure(error)}`;
         await client.close().catch(() => {});
         await transport.close().catch(() => {});
         signal?.throwIfAborted();

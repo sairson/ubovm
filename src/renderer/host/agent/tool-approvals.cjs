@@ -52,12 +52,29 @@ function createToolApprovals({ onChange = () => {}, maxPending = 128, maxArgumen
   }
   return {
     request,
-    snapshot(conversationId) { return [...entries.values()].filter(entry => entry.record.conversationId === conversationId).map(entry => ({ ...entry.record })); },
+    snapshot(conversationId) {
+      return [...entries.values()].filter(entry => entry.record.conversationId === conversationId).map(entry => {
+        // Completed approvals are only used to remove the inline card. Keep the
+        // full arguments for pending calls; never republish up to 100 completed
+        // 64 KB argument payloads in every full state snapshot.
+        if (entry.record.status !== 'pending') return { id: entry.record.id, status: entry.record.status };
+        return { ...entry.record };
+      });
+    },
     respond({ id, conversationId, decision }) {
       const entry = entries.get(id);
       if (disposed || !entry?.finish || entry.record.conversationId !== conversationId || !['approve', 'deny'].includes(decision)) return false;
       entry.finish(decision === 'approve' ? 'approved' : 'denied');
       return true;
+    },
+    cancelConversation(conversationId) {
+      let cancelled = 0;
+      for (const entry of [...entries.values()]) {
+        if (entry.record.conversationId !== conversationId || !entry.finish) continue;
+        entry.finish('cancelled');
+        cancelled++;
+      }
+      return cancelled;
     },
     dispose() { disposed = true; for (const entry of [...entries.values()]) entry.finish?.('cancelled'); entries.clear(); }
   };

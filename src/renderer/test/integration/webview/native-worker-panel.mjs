@@ -222,7 +222,7 @@ test('Worker output bursts render once per frame and navigation discards obsolet
 test('worker assets are cached while each page receives a fresh CSP nonce', () => {
   const entry = new URL('../../../host/ui/worker-panel.cjs', import.meta.url), nativeRequire = createRequire(entry);
   let reads = 0;
-  const sandbox = { module: { exports: {} }, __dirname: fileURLToPath(new URL('../../../host', import.meta.url)),
+  const sandbox = { module: { exports: {} }, __dirname: fileURLToPath(new URL('../../../host/ui', import.meta.url)),
     require: name => name === 'node:fs' ? { readFileSync(...args) { reads++; return readFileSync(...args); } } : nativeRequire(name) };
   vm.runInNewContext(readFileSync(entry, 'utf8'), sandbox);
   const first = sandbox.module.exports.renderWorkerPanel(), count = reads;

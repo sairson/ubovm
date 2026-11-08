@@ -17,42 +17,20 @@ export const TODO_CATALOG = {
 };
 
 export const NOTE_CATALOG = {
-  description: 'Shared session notebook for discoveries. Core: write / list. Use action=help for get, delete, promote, and asset/vulnerability shapes.',
+  description: 'Shared session notebook for discoveries, flags and engagement scope. Core: write / list. Use action=help for get, delete, promote, and asset/vulnerability/flag/scope shapes. A flag is not verified until the actual checker result and evidence are recorded.',
   tiers: ['core', 'read', 'lifecycle'],
   tierBlurbs: {
-    core: 'write notes/assets/vulnerability candidates; list with filters',
+    core: 'write notes/assets/vulnerability candidates/flag ledger/engagement scope; list with filters',
     read: 'get one note by id',
     lifecycle: 'delete (audit reason) or promote fact/intent to the Blackboard',
   },
   docs: [
     helpMeta(),
-    { action: 'write', tier: 'core', summary: 'Store a note, asset, or vulnerability candidate.', params: ['note_type?', 'content?', 'asset?', 'vulnerability?', 'tool_call_ids?'] },
+    { action: 'write', tier: 'core', summary: 'Store a note, asset, vulnerability candidate, flag, or authorized scope.', params: ['note_type?', 'content?', 'asset?', 'vulnerability?', 'flag?', 'scope?', 'tool_call_ids?'], notes: 'flag.status verified/submitted/accepted/rejected requires flag.verification + evidence/tool_call_ids; scope.targets lists the authorized in-scope assets.' },
     { action: 'list', tier: 'core', summary: 'Page shared notes with filters.', params: ['note_type?', 'query?', 'limit?', 'offset?'] },
     { action: 'get', tier: 'read', summary: 'Fetch one note by note_id.', params: ['note_id'] },
     { action: 'delete', tier: 'lifecycle', summary: 'Delete an unpromoted note with audit reason.', params: ['note_id', 'delete_reason'] },
     { action: 'promote', tier: 'lifecycle', summary: 'Owner-only: promote closed fact/intent to Blackboard.', params: ['note_id', 'promotion_kind', 'statement?', 'evidence?'], notes: 'Vulnerability candidates are not Findings.' },
-  ],
-};
-
-export const DELIVERY_CATALOG = {
-  description: 'Delivery ledger ONLY for new-development projects. Core: status then initialize/accept. Standalone audit/deploy work should not use this ledger. Call action=help for block/findings/history.',
-  tiers: ['core', 'control', 'findings'],
-  tierBlurbs: {
-    core: 'status, history, initialize, accept',
-    control: 'block, invalidate',
-    findings: 'finding, resolve, reopen',
-  },
-  docs: [
-    helpMeta(),
-    { action: 'status', tier: 'core', summary: 'Current revision, stages, findings, coverage hooks.', params: [] },
-    { action: 'history', tier: 'core', summary: 'Paged ledger history.', params: ['offset?', 'limit?'] },
-    { action: 'initialize', tier: 'core', summary: 'Start ledger; projectType must be new-development.', params: ['projectType', 'objective', 'artifact', 'expectedRevision'] },
-    { action: 'accept', tier: 'core', summary: 'Accept a stage with evidence + expectedRevision.', params: ['stage', 'summary', 'evidence', 'expectedRevision'] },
-    { action: 'block', tier: 'control', summary: 'Mark a stage blocked.', params: ['stage', 'summary', 'expectedRevision', 'owner?'] },
-    { action: 'invalidate', tier: 'control', summary: 'Invalidate from a stage forward after artifact change.', params: ['stage', 'artifact', 'summary', 'expectedRevision'] },
-    { action: 'finding', tier: 'findings', summary: 'Open a severity-tagged finding.', params: ['findingId', 'severity', 'summary', 'evidence', 'expectedRevision'] },
-    { action: 'resolve', tier: 'findings', summary: 'Resolve with new retest evidence.', params: ['findingId', 'summary', 'evidence', 'expectedRevision'] },
-    { action: 'reopen', tier: 'findings', summary: 'Reopen a finding.', params: ['findingId', 'summary', 'evidence', 'expectedRevision'] },
   ],
 };
 
@@ -68,7 +46,7 @@ export const DOMAIN_CATALOG = {
     helpMeta(),
     { action: 'bootstrap', tier: 'core', summary: 'Seed root domains once.', params: ['seeds|hostname'] },
     { action: 'upsert', tier: 'core', summary: 'Add/update related hosts without re-authorization.', params: ['hostname|hostnames', 'discovery?', 'parent?', 'kind?'] },
-    { action: 'coverage', tier: 'core', summary: 'Coverage summary for delivery acceptance.', params: [] },
+    { action: 'coverage', tier: 'core', summary: 'Coverage summary for security acceptance.', params: [] },
     { action: 'relate', tier: 'relate', summary: 'Attach relation evidence between hosts.', params: ['hostname', 'relation_type', 'evidence_refs?'] },
     { action: 'list', tier: 'status', summary: 'Page inventory with query/status filters.', params: ['query?', 'test_status?', 'limit?', 'offset?'] },
     { action: 'mark_tested', tier: 'status', summary: 'Mark host tested with evidence.', params: ['hostname', 'evidence_refs'] },
@@ -193,13 +171,14 @@ export const DEPLOY_CATALOG = {
 };
 
 export const RUN_PYTHON_CATALOG = {
-  description: 'Run sandboxed CPython (code XOR script) with reason. Network and all opened workspaces are available by default; credentials remain denied. Missing modules, required argv, and missing files return recovery guidance. Use manage_python_environment for deps.',
+  description: 'Run sandboxed CPython: prefer script for an existing .py, code for inline source (reason required). Network and opened workspaces are available; credentials remain denied. Result returns exit_code and output_directory: write artifacts to UBOVM_PYTHON_OUTPUT, and for large output write files then read_workspace_file. Missing modules/argv/files return recovery guidance; manage_python_environment handles deps.',
   tiers: ['core', 'io', 'limits'],
-  tierBlurbs: { core: 'code|script + reason', io: 'arguments, cwd, output_directory', limits: 'sandbox/network/size caps' },
+  tierBlurbs: { core: 'code|script + reason', io: 'arguments, cwd, output artifacts', limits: 'sandbox/network/size caps' },
   docs: [
-    { action: 'code', tier: 'core', field: 'code', summary: 'Inline Python source (≤256 KiB).', params: ['code|script', 'reason'] },
-    { action: 'script', tier: 'core', field: 'script', summary: 'Existing .py inside any opened workspace.', params: ['code|script', 'reason'] },
+    { action: 'code', tier: 'core', field: 'code', summary: 'Inline Python source (≤256 KiB); prefer script when the .py already exists.', params: ['code|script', 'reason'] },
+    { action: 'script', tier: 'core', field: 'script', summary: 'Existing .py inside any opened workspace; preferred over inline code for existing files.', params: ['code|script', 'reason'] },
     { action: 'arguments', tier: 'io', field: 'arguments', summary: 'sys.argv[1:].', params: ['arguments?', 'cwd?', 'timeout_seconds?'] },
+    { action: 'output', tier: 'io', summary: 'Write artifact files under UBOVM_PYTHON_OUTPUT; the result lists output_directory and a bounded outputs line with byte sizes—read them with read_workspace_file.', params: [] },
     { action: 'limits', tier: 'limits', summary: 'Network is enabled by default; opened workspace files are readable/writable, while secrets remain denied. Missing dependency/argument diagnostics are included in failures.', params: [] },
   ],
 };
@@ -234,17 +213,6 @@ export const WORKSPACE_LIST_CATALOG = {
   ],
 };
 
-export const WORKSPACE_READ_CATALOG = {
-  description: 'Read UTF-8 workspace file by 1-based lines (≤400 lines / 128 KiB / first 4 MiB). Follow nextLine. Missing files return exists:false without a tool error. Set help=true for truncation flags. Path: ubovm/src/renderer/workbench/ and ubovm/src/renderer/webview/ are siblings; startup.html/workbench.css live under workbench/, not webview/ (did-you-mean if a webview/... lookup misses). Large files (workbench.css ~1715 lines / message-view.css 300+ lines): page read_workspace_file via nextLine loop; code to edit pages via read_workspace_code nextOffset loop; on tool_defect re-read with the other read tool instead of repeating the same call.',
-  tiers: ['core', 'page'],
-  tierBlurbs: { core: 'path + root', page: 'startLine/lineCount/nextLine/truncation' },
-  docs: [
-    { action: 'path', tier: 'core', field: 'path', summary: 'File path inside root.', params: ['path', 'root?'] },
-    { action: 'startLine', tier: 'page', field: 'startLine', summary: '1-based start; continue with nextLine.', params: ['startLine?', 'lineCount?'] },
-    { action: 'truncation', tier: 'page', summary: 'fileTruncated/lineTruncated mean omitted content cannot always be recovered by advancing.', params: [] },
-  ],
-};
-
 export const HARNESS_PROJECT_CATALOG = {
   description: 'Harness profiles: validate/list/define/import/export. Profiles only narrow tools/limits. Call action=help for each verb. Use returned IDs with spawn_worker profile.',
   tiers: ['core', 'mutate'],
@@ -260,7 +228,7 @@ export const HARNESS_PROJECT_CATALOG = {
 };
 
 export const SPAWN_WORKER_CATALOG = {
-  description: 'Default assist path: start a Swarm worker and return worker_id immediately. Optional writes lists the only files that worker may edit; parallel workers need disjoint paths. Optional priority 0–9 (higher starts first when slots are full) and preempt=true to interrupt lower-priority runners. Optional profile + depends_on (≤8). Use wait_workers for results and manage_workers to reorder later. Set help=true for queue/slot rules.',
+  description: 'Start a Swarm worker for ONE independent, verifiable slice and return worker_id immediately. Do not spawn for a lookup, a question, a status update or a sequential chain — do that inline. The task must state the slice, inputs (paths/hashes) and one acceptance check that can pass or fail. Optional writes lists the only files that worker may edit; parallel workers need disjoint paths. Optional priority 0–9 (higher starts first when slots are full) and preempt=true to interrupt lower-priority runners. Optional profile + depends_on (≤8). Use wait_workers for results and manage_workers to reorder later. Set help=true for queue/slot rules. Before the first Swarm call in a turn, load the `swarm` skill.',
   tiers: ['core', 'deps'],
   tierBlurbs: { core: 'task + profile + priority', deps: 'depends_on / preempt / concurrency' },
   docs: [
@@ -372,7 +340,7 @@ export const LEARN_CAPABILITY_CATALOG = {
 // registered directly (no progressive help), so these descriptions are the
 // complete model-facing contract for each tool.
 export const SPAWN_TEAMMATE_CATALOG = {
-  description: 'Create one named, durable teammate. Only the Team Lead may call this tool. The name is permanent and never reused, including failed members. context=fresh starts without Lead history; fork inherits completed Lead turns. The teammate starts running immediately; use list_agents/wait_agent for progress and send_message to steer it.',
+  description: 'Create one named, durable teammate for ONE independent workstream. Only the Team Lead may call this tool. Create its shared task first (team_task_create) and put the task id, acceptance check and write scope in the prompt. Typical team size is the number of independent lanes (usually 2–4), not one member per file; for one-shot parallel work use spawn_worker instead. The name is permanent and never reused, including failed members. context=fresh starts without Lead history; fork inherits completed Lead turns. The teammate starts running immediately; use list_agents/wait_agent for progress and send_message to steer it. Before the first team tool call in a turn, load the `team` skill.',
   tiers: ['core'],
   tierBlurbs: { core: 'name, description, prompt, context' },
   docs: [
@@ -381,7 +349,7 @@ export const SPAWN_TEAMMATE_CATALOG = {
 };
 
 export const SEND_MESSAGE_CATALOG = {
-  description: 'Send one message to another Team member. A running target receives it at the nearest step boundary; an inactive target starts or resumes a turn. Success only means inbox admission, not that the recipient processed or finished the message. A peer message starts with its sender name.',
+  description: 'Send one message to another Team member. A running target receives it at the nearest step boundary; an inactive target starts or resumes a turn. Success only means inbox admission, not that the recipient processed or finished the message. A peer message starts with its sender name. Use it for actionable steering only (new evidence, scope change, blocker, corrected acceptance) — not for status pings or "what are you doing" questions.',
   tiers: ['core'],
   tierBlurbs: { core: 'target and message' },
   docs: [
@@ -417,7 +385,7 @@ export const INTERRUPT_AGENT_CATALOG = {
 };
 
 export const TEAM_TASK_CREATE_CATALOG = {
-  description: 'Create one unowned pending task on the shared Team task board. blocked_by lists task ids that must complete before it is ready; write_scopes records advisory workspace-relative prefixes so the Lead can spot overlapping writers. Tasks have revisions; every later change must pass expected_revision.',
+  description: 'Create one unowned pending task on the shared Team task board BEFORE spawning its teammate. One task per independent lane; the description must contain the acceptance criteria and the evidence the member must return. blocked_by lists task ids that must complete before it is ready; write_scopes records advisory workspace-relative prefixes so the Lead can spot overlapping writers. Tasks have revisions; every later change must pass expected_revision.',
   tiers: ['core'],
   tierBlurbs: { core: 'subject, description, blocked_by, write_scopes' },
   docs: [

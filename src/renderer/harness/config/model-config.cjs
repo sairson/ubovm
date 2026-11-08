@@ -156,6 +156,7 @@ function createModelConfiguration(vscode, context) {
     const maxConcurrency = Number.isSafeInteger(reason.maxConcurrency) ? reason.maxConcurrency : 3;
     const maxRounds = Number.isSafeInteger(reason.maxRounds) ? reason.maxRounds : 0;
     const maxIntents = Number.isSafeInteger(reason.maxIntents) ? reason.maxIntents : 5;
+    const reviewIntervalMs = Number.isSafeInteger(reason.reviewIntervalMs) ? reason.reviewIntervalMs : 120000;
     for (const [name, value, min, max] of [
       ['openIntents', openIntents, 1, 20],
       ['maxConcurrency', maxConcurrency, 1, 10],
@@ -164,12 +165,15 @@ function createModelConfiguration(vscode, context) {
     ]) {
       if (!Number.isSafeInteger(value) || value < min || value > max) throw new Error(`${name} 必须在 ${min} 至 ${max} 之间。`);
     }
+    if (reviewIntervalMs !== 0 && (reviewIntervalMs < 30000 || reviewIntervalMs > 600000)) {
+      throw new Error('周期复盘间隔必须为 0（关闭），或 30000–600000 毫秒（至少 30 秒），避免过密复盘持续消耗模型调用。');
+    }
     if (maxConcurrency > openIntents) throw new Error('并行任务数不能超过同时进行上限。');
     if (maxIntents > openIntents) throw new Error('每轮新增任务上限不能超过同时进行上限。');
     result.openIntents = openIntents;
     result.maxConcurrency = maxConcurrency;
     result.maxRounds = maxRounds;
-    result.reason = { ...reason, openIntents, maxIntents };
+    result.reason = { ...reason, openIntents, maxIntents, reviewIntervalMs };
     // Planning log needs Reason thinking by default; workers stay opt-in.
     if (result.reason.thinkingLevel === undefined) result.reason.thinkingLevel = defaultReasonThinkingLevel(result.reason.model ?? result.model);
     delete result.reason.maxConcurrency;
@@ -181,6 +185,13 @@ function createModelConfiguration(vscode, context) {
     for (const name of ['mcp', 'skills', 'intools']) {
       const value = setting(name, undefined);
       if (value !== undefined) result[name] = value;
+    }
+    // Authorized testing routinely points MCP at self-signed or private-CA
+    // HTTPS endpoints. Certificate validation stays off unless the user opts in
+    // (globally, or by configuring a CA / strict server), so a certificate
+    // problem never silently removes every configured tool.
+    if (result.mcp && typeof result.mcp === 'object' && !Array.isArray(result.mcp) && result.mcp.insecureTls === undefined) {
+      result.mcp = { ...result.mcp, insecureTls: true };
     }
     // The desktop product always exposes its built-in tools. Old allowlists and
     // switches must not silently disable them after upgrading the UI.

@@ -2,6 +2,8 @@
 
 `series.json` 是补丁应用顺序的唯一清单，由 `build/build.ps1` 和补丁回归测试共同读取。构建在应用前检查重复、缺失、非法文件名和未登记的补丁。
 
+产品级外观与启动行为优先放在 `resources/app.json` 的 `product` / `settings`；当前 38 个补丁里，大多数修改 workbench DOM、命令调度或自定义侧栏/启动流程，其余是源码安装兼容补丁。少数纯 chrome 细节可以评估改为接受原生行为或改走资产注入，见下文「补丁分层与预算」。不要为了减少补丁数量删除行为补丁，除非同时接受对应功能消失、重写 Custom UI 或完成桌面回归。
+
 这些补丁针对 `resources/app.json` 固定的 Code OSS 源码版本。多个补丁会修改同一文件；不要按文件名排序或直接拼接合并。补丁栈识别会在临时副本中逆序剥离补丁，历史菜单和侧栏补丁还包含专门的升级流程。
 
 | 范围 | 补丁 |
@@ -30,6 +32,21 @@
 安装缓存记录 Node 版本、操作系统和 CPU 架构；复制到不同平台的依赖以及缺少这些字段的旧缓存会触发重装。
 
 新增补丁时，在清单中明确插入位置，同时检查 `build/build.ps1` 是否需要同步预构建产物修补逻辑。修改已有补丁时，应保留或补充旧版补丁升级测试。
+
+## 补丁分层与预算（2026-11）
+
+减少与上游对抗的目标不是一次删掉补丁，而是把新增行为挡在补丁之外，并让补丁集只保留“必须改 workbench 内部”的部分。当前 `series.json` 38 个补丁，目标是在两个上游升级周期内收敛到 ≤24 个。
+
+| 层级 | 手段 | 适用 |
+| --- | --- | --- |
+| T0 | `resources/app.json` 的 product / settings、扩展 `package.json` 的 contributes、命令与键位 | 产品默认值、菜单可见性、命令注册、视图声明 |
+| T1 | 扩展贡献（TreeView / WebviewView / WebviewPanel / 状态栏 / 命令 / when 子句 / `workbench/workbench.css`） | 会话树、Worker/黑板/日志面板、对话框、入口按钮 |
+| T2 | 构建期资产注入（`workbench.css`、`startup.html`、product 字段） | 原生 chrome 的样式、启动画面、品牌 |
+| T3 | 源码补丁 | 只有 DOM 结构、布局算法、命令调度、原生输入处理必须改变时才使用 |
+
+规则：新增能力先按 T0→T3 的顺序找落点；任何新 T3 补丁必须在 `series.json` 附近写明为什么 T0–T2 不可行。合并同文件补丁（侧栏 9 个、面板 4 个、菜单/键位 3 个、浏览器 4 个）应逐步收敛成组补丁，减少锚点冲突面积。
+
+第一批可评估“接受原生行为或改走 T1/T2”的补丁：`sidebar-no-dnd`、`sidebar-empty`、`sidebar-close-tabs`、`sidebar-auto-close`、`sidebar-event-type`（原生侧栏细节）；`startup-ui`（淡出可改 `workbench.css` 动画）、`theme-startup`（默认主题可由 product settings 保证）；`composer-file-drop`（页面已整页拦截文件拖放，需回归确认宿主不再抢打开编辑器）；`background-tray`（优先在 `src/main` 主进程实现）。这些移除都需要逐项跑桌面回归，不以删补丁数量本身作为验收。
 
 验证命令：
 

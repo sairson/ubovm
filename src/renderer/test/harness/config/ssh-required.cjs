@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const { sshConfigurationStatus, readSSHStatus } = require('../../../harness/config/settings-config.cjs');
 const profile = { id: 'server', host: 'example.test', username: 'dev' };
 
-test('IDE requires a valid default SSH connection, including legacy settings', () => {
+test('remote SSH status recognizes a valid default profile (optional for local tasks)', () => {
   for (const ssh of [undefined, false, {}, { profiles: [] }, { profiles: [profile], defaultId: 'missing' },
     ...[{ host: ' ' }, { username: '' }, { port: 0 }, { port: 65536 }, { port: '22' }].map(change => ({ profiles: [{ ...profile, ...change }] }))]) {
     assert.equal(sshConfigurationStatus(ssh).configured, false);

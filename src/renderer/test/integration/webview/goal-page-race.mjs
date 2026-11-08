@@ -47,7 +47,10 @@ async function fixture(t) {
   const page = await browser.newPage({ viewport: { width: 1180, height: 900 }, reducedMotion: 'reduce' });
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
-  await page.addInitScript(() => { window.acquireVsCodeApi = () => ({ getState: () => ({}), setState() {}, postMessage: () => true }); });
+  await page.addInitScript(() => {
+    window.__posted = [];
+    window.acquireVsCodeApi = () => ({ getState: () => ({}), setState() {}, postMessage(message) { window.__posted.push(message); return true; } });
+  });
   await page.route('**/*', route => route.fulfill({ contentType: 'text/html', body: renderWebview({ nonce: 'page-race' }) }));
   await page.goto('http://page-race.test/');
   await page.evaluate(value => window.dispatchEvent(new MessageEvent('message', { data: value })), state());
@@ -83,7 +86,8 @@ async function fixture(t) {
         document.getElementById('ui-render-retry').hidden;
     }, { view, minimum });
   };
-  return { browser, page, errors, frames, switchTo, pageInfo, waitForPage };
+  const emit = value => page.evaluate(value => window.dispatchEvent(new MessageEvent('message', { data: value })), value);
+  return { browser, page, errors, frames, switchTo, pageInfo, waitForPage, emit };
 }
 
 test('rapid page switching always renders the final selected page', async t => {
@@ -169,5 +173,147 @@ test('a state update arriving during a page transition renders the selected page
   assert.deepEqual(info.selected, ['workers']);
   assert.deepEqual(info.visible, ['workers']);
   assert.ok(info.content.workers > 0);
+  assert.deepEqual(f.errors, []);
+});
+
+test('the blackboard page exposes a refresh control that requests an authoritative snapshot', async t => {
+  const f = await fixture(t);
+  await f.switchTo('board');
+  await f.waitForPage('board', 2);
+  const button = f.page.locator('.graph-navigation .graph-refresh');
+  assert.equal(await button.isVisible(), true, 'the blackboard refresh control must be visible in the graph toolbar');
+  await button.click();
+  await f.frames();
+  const posted = await f.page.evaluate(() => window.__posted || []);
+  assert.ok(posted.some(message => message?.action === 'refreshBlackboard'), 'refresh must ask the host for a snapshot: ' + JSON.stringify(posted));
+  const rendered = await f.page.locator('#blackboard-nodes .graph-node').count();
+  assert.ok(rendered >= 2, 'refresh must keep the graph rendered');
+  assert.deepEqual(f.errors, []);
+});
+
+test('light goal page switches avoid the full-route loader flash', async t => {
+  const f = await fixture(t);
+  const first = await f.page.evaluate(async () => {
+    const animations = [];
+    const animate = Element.prototype.animate;
+    Element.prototype.animate = function(...args) {
+      animations.push({ id: this.id, frames: args[0], options: args[1] });
+      return animate.apply(this, args);
+    };
+    document.getElementById('goal-view-switcher').open = true;
+    document.getElementById('goal-tab-agenda').click();
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    return {
+      loaderHidden: document.getElementById('route-loading').hidden,
+      animations
+    };
+  });
+  assert.equal(first.loaderHidden, true, 'a fast agenda switch must not flash the full-surface cover');
+  await f.waitForPage('agenda', 1);
+  await f.frames();
+  assert.deepEqual(f.errors, []);
+});
+
+test('a stale expanded worker panel cannot leave the primary surface blank', async t => {
+  const f = await fixture(t);
+  await f.page.evaluate(() => {
+    document.querySelector('.shell').classList.add('worker-panel-expanded');
+    const panel = document.getElementById('worker-panel');
+    if (panel) panel.hidden = true;
+  });
+  const before = await f.page.evaluate(() => getComputedStyle(document.getElementById('main-content')).visibility);
+  assert.equal(before, 'visible', 'the CSS guard keeps the surface visible even before the JS repair runs');
+  await f.switchTo('board');
+  await f.frames();
+  const after = await f.page.evaluate(() => ({
+    expanded: document.querySelector('.shell').classList.contains('worker-panel-expanded'),
+    main: getComputedStyle(document.getElementById('main-content')).visibility,
+    goalVisible: !document.getElementById('goal-mode').hidden,
+    assistVisible: !document.getElementById('assist-mode').hidden
+  }));
+  assert.equal(after.expanded, false, 'stale worker-panel expansion is cleared on the next render');
+  assert.equal(after.main, 'visible');
+  assert.equal(after.goalVisible, true);
+  assert.equal(after.assistVisible, false);
+  assert.deepEqual(f.errors, []);
+});
+
+test('an empty blackboard still exposes refresh so a missed projection can be reloaded', async t => {
+  const f = await fixture(t);
+  const empty = state();
+  empty.busy = false;
+  empty.execution = { ...empty.execution, status: 'idle', busy: false, parts: [], activities: [], workers: [], blackboard: { revision: 0, rootId: 'root', goal: empty.goal.objective, nodes: [] } };
+  await f.emit(empty);
+  await f.frames();
+  await f.switchTo('board');
+  await f.frames();
+  assert.equal(await f.page.locator('#blackboard-empty').isVisible(), true);
+  const refresh = f.page.locator('#blackboard-empty-refresh');
+  assert.equal(await refresh.isVisible(), true, 'the empty board must offer a refresh action');
+  await refresh.click();
+  await f.frames();
+  const posted = await f.page.evaluate(() => window.__posted || []);
+  assert.ok(posted.some(message => message?.action === 'refreshBlackboard'), 'empty-state refresh must ask the host for a snapshot');
+  assert.equal(await refresh.isEnabled(), true, 'refresh must not stay disabled after the click');
+  assert.deepEqual(f.errors, []);
+});
+
+test('a board-less reloaded project requests the authoritative checkpoint and explains failures', async t => {
+  const f = await fixture(t);
+  // Fresh page + one full snapshot without any blackboard: this is what a
+  // restored exploration looks like before the backend checkpoint is loaded.
+  await f.page.reload();
+  await f.frames();
+  const restored = state();
+  restored.busy = false;
+  restored.execution = { status: 'completed', busy: false, parts: [], activities: [], workers: [], error: { message: '执行记录恢复超时，请在黑板页重试' } };
+  await f.emit(restored);
+  await f.frames();
+  await f.switchTo('board');
+  await f.frames(); await f.frames();
+  const posted = await f.page.evaluate(() => window.__posted || []);
+  const refreshes = posted.filter(message => message?.action === 'refreshBlackboard');
+  assert.equal(refreshes.length, 1, 'a run without a board asks the host to reload it exactly once per session: ' + JSON.stringify(posted));
+  assert.equal(await f.page.locator('#blackboard-empty').isVisible(), true);
+  const hint = await f.page.locator('#blackboard-empty-hint').textContent();
+  assert.match(hint, /黑板读取失败/);
+  assert.match(hint, /执行记录恢复超时/);
+  // Re-rendering the same state must not spam the host with more requests.
+  await f.emit(restored);
+  await f.frames(); await f.frames();
+  assert.equal(await f.page.evaluate(() => (window.__posted || []).filter(message => message?.action === 'refreshBlackboard').length), 1);
+  // When the checkpoint arrives, the graph replaces the empty state.
+  await f.emit(state());
+  await f.frames(); await f.frames();
+  assert.ok(await f.page.locator('#blackboard-nodes .graph-node').count() >= 2);
+  assert.equal(await f.page.locator('#blackboard-empty').isVisible(), false);
+  assert.match(await f.page.locator('#blackboard-empty-hint').textContent(), /如果长时间没有内容/);
+  assert.deepEqual(f.errors, []);
+});
+
+test('an idle goal that never ran does not auto-request the blackboard', async t => {
+  const f = await fixture(t);
+  await f.page.reload();
+  await f.frames();
+  const idle = state();
+  idle.busy = false;
+  idle.execution = { status: 'idle', busy: false, parts: [], activities: [], workers: [] };
+  await f.emit(idle);
+  await f.frames();
+  await f.switchTo('board');
+  await f.frames(); await f.frames();
+  const posted = await f.page.evaluate(() => window.__posted || []);
+  assert.equal(posted.filter(message => message?.action === 'refreshBlackboard').length, 0, 'a new goal with no run must not auto-request a nonexistent board');
+  // A just-started run without any produced part/worker is not a missed board either.
+  const starting = state();
+  starting.busy = true;
+  starting.execution = { status: 'running', busy: true, phase: 'reason', parts: [], activities: [], workers: [] };
+  await f.emit(starting);
+  await f.frames(); await f.frames();
+  assert.equal(await f.page.evaluate(() => (window.__posted || []).filter(message => message?.action === 'refreshBlackboard').length), 0, 'a running session without produced work must not auto-request');
+  // The manual escape hatch still works.
+  await f.page.locator('#blackboard-empty-refresh').click();
+  await f.frames();
+  assert.equal(await f.page.evaluate(() => (window.__posted || []).filter(message => message?.action === 'refreshBlackboard').length), 1);
   assert.deepEqual(f.errors, []);
 });

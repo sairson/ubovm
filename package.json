@@ -1,6 +1,6 @@
 {
   "name": "ubovm-ide",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "private": true,
   "description": "Desktop IDE skeleton powered by the full VS Code / Code OSS core",
   "type": "module",
@@ -30,6 +30,7 @@
     "test": "node build/build.mjs test",
     "core": "node build/build.mjs source",
     "test:platform": "node --test src/main/test/build-platform.mjs src/main/test/runtime-targets.mjs",
+    "test:extensions": "node --test src/main/test/builtin-extensions.mjs",
     "test:harness": "node --test \"src/harness/**/*.test.mjs\""
   },
   "dependencies": {

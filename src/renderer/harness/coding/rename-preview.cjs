@@ -7,7 +7,7 @@ const inside = (root, file) => { const p = path.relative(root, file); return !p 
 function createRenamePreview(vscode, { locate, read, assertClean, workspaceFolders, unbounded = () => false, hash }) {
   return sessionId => ({
     name: 'preview_workspace_rename', recovery: 'retry-read-only', label: '预览符号重命名',
-    description: 'Ask the installed language provider for cross-file symbol rename TEXT edits without applying them. Returns versioned ranges suitable for preview_workspace_edits then edit_workspace_files. Read affected files and project instructions before applying. Only text edits are represented; resource/file operations are not applied or represented. This is not a file rename tool or a guarantee of exhaustive references. Fails if any returned text edit is outside the session workspace, dirty, stale or too large; never returns a silently filtered text-edit subset.',
+    description: 'Ask the installed language provider for cross-file symbol rename TEXT edits without applying them. Returns versioned ranges suitable for an edit_workspace_files dryRun:true preflight, then edit_workspace_files to apply. Read affected files and project instructions before applying. Only text edits are represented; resource/file operations are not applied or represented. This is not a file rename tool or a guarantee of exhaustive references. Fails if any returned text edit is outside the session workspace, dirty, stale or too large; never returns a silently filtered text-edit subset.',
     parameters: { type: 'object', properties: { root: { type: 'integer', minimum: 0 }, path: { type: 'string' }, line: { type: 'integer', minimum: 1 }, column: { type: 'integer', minimum: 1 }, newName: { type: 'string', minLength: 1, maxLength: 256 } }, required: ['path', 'line', 'column', 'newName'], additionalProperties: false },
     async execute(_id, input, signal) {
       signal?.throwIfAborted();
@@ -35,7 +35,7 @@ function createRenamePreview(vscode, { locate, read, assertClean, workspaceFolde
         // 完全模式 accepts a rename plan that reaches files outside every workspace root.
         if (root < 0 && unbounded(sessionId) !== true) throw new Error('重命名方案超出会话工作区。');
         const resolved = await locate(root >= 0 ? { root, path: path.relative(roots[root], uri.fsPath) } : { root: -1, path: file }, sessionId);
-        const key = process.platform === 'win32' ? resolved.file.toLowerCase() : resolved.file;
+        const key = process.platform === 'linux' ? resolved.file : resolved.file.toLowerCase();
         if (seen.has(key)) throw new Error('重命名方案包含重复文件。');
         seen.add(key);
         const before = await read(resolved.file);
@@ -63,7 +63,7 @@ function createRenamePreview(vscode, { locate, read, assertClean, workspaceFolde
         const target = await locate(item, sessionId); await assertClean(target.file);
         if (hash(await read(target.file)) !== item.expectedHash) throw new Error('重命名目标已变化，请重新生成方案。');
       }
-      const value = { status: 'text_edits_proposed', files, saved: false, scope: 'language-provider text edits only; file/resource operations excluded', next: 'Read affected files/instructions, preview_workspace_edits, then edit_workspace_files and validate.' };
+      const value = { status: 'text_edits_proposed', files, saved: false, scope: 'language-provider text edits only; file/resource operations excluded', next: 'Read affected files/instructions, preflight with edit_workspace_files dryRun:true, then apply with edit_workspace_files and validate.' };
       const text = JSON.stringify(value);
       if (Buffer.byteLength(text) > 65536) throw new Error('重命名方案超过 64 KiB，请缩小重构范围。');
       signal?.throwIfAborted();

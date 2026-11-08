@@ -1,9 +1,24 @@
 'use strict';
 
-const { redactDisplayObject } = require('./projection.cjs');
+const { redactDisplayObject, sanitizeToolImage } = require('./projection.cjs');
 const WORKER_RECORD_LIMIT = 8 << 20;
 const WORKER_RECORD_COUNT = 100;
 const byteLength = value => Buffer.byteLength(JSON.stringify(value));
+
+/**
+ * Persist one display part. redactDisplayObject clamps every string to 64000
+ * chars, which would corrupt an inlined base64 tool image; valid image payloads
+ * are therefore validated separately and kept whole, or dropped to an
+ * imageOmitted note when they cannot be stored intact.
+ */
+function persistPart(part) {
+  if (!part || typeof part !== 'object' || Array.isArray(part) || part.image === undefined && part.imageOmitted !== true) return redactDisplayObject(part);
+  const { image, ...rest } = part;
+  const clean = redactDisplayObject(rest);
+  const sanitized = sanitizeToolImage(image);
+  if (sanitized) return { ...clean, image: sanitized };
+  return { ...clean, ...(part.imageOmitted === true || image !== undefined ? { imageOmitted: true } : {}) };
+}
 
 // Bound persisted display data, never execution checkpoints or model context.
 // Work newest-first and size each part once instead of repeatedly serializing
@@ -20,8 +35,15 @@ function workerRecord(sessionId, workers, totalWorkers) {
     remaining -= overhead;
     const kept = [];
     for (let partIndex = parts.length - 1; partIndex >= Math.max(0, parts.length - 500); partIndex--) {
-      const part = redactDisplayObject(parts[partIndex]);
-      const bytes = byteLength(part) + (kept.length ? 1 : 0);
+      let part = persistPart(parts[partIndex]);
+      let bytes = byteLength(part) + (kept.length ? 1 : 0);
+      // An image that no longer fits the record budget must not evict the whole
+      // tool card: retry the part without its payload and mark it omitted.
+      if (bytes > remaining && part && typeof part === 'object' && !Array.isArray(part) && part.image !== undefined) {
+        const { image, ...rest } = part;
+        part = { ...rest, imageOmitted: true };
+        bytes = byteLength(part) + (kept.length ? 1 : 0);
+      }
       if (bytes > remaining) break;
       kept.push(part); remaining -= bytes;
     }

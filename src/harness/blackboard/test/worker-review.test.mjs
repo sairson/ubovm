@@ -63,6 +63,21 @@ test('Reason waits for existing workers and reviews their results separately', {
   assert.deepEqual(counts, [0, 1, 2]);
 });
 
+test('REVIEW_REFRESH re-enters Reason with the current board instead of failing', { timeout: 3000 }, async () => {
+  const board = new Blackboard({ sessionId: 'refresh', goal: 'verify' });
+  let calls = 0;
+  const result = await new BlackboardCoordinator({ blackboard: board, maxConcurrency: 1,
+    reason: async ({ context }) => {
+      calls++;
+      if (calls === 1) throw Object.assign(new Error('Reason is waiting for Workers'), { code: 'REVIEW_REFRESH' });
+      return facts(context).length ? done(context) : { intents: plan(context).intents.slice(0, 1) };
+    },
+    worker: async () => 'verified'
+  }).run();
+  assert.equal(result.complete, true);
+  assert.equal(calls, 3);
+});
+
 test('external cancellation still revokes running workers while waiting for advisory wrap-up', { timeout: 3000 }, async () => {
   const board = new Blackboard({ sessionId: 'cancel', goal: 'verify' });
   const controller = new AbortController(), ready = gate(), delivered = gate();

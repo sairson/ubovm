@@ -28,9 +28,9 @@
   width: min(420px, 100%);
   max-height: min(72dvh, 640px);
   margin: 0;
-  border: 1px solid var(--overlay-border, var(--border));
+  border: 1px solid var(--overlay-border, var(--border-hairline));
   border-radius: 14px;
-  background: var(--overlay-surface, var(--canvas));
+  background: var(--overlay-surface, var(--surface, var(--canvas)));
   box-shadow: var(--modal-shadow);
   overflow: hidden;
   font-family: var(--font-ui, inherit);
@@ -40,7 +40,7 @@
 
 .ubovm-modal-header {
   display: flex; align-items: center; gap: 10px;
-  padding: 16px 18px 12px; border-bottom: 1px solid var(--border);
+  padding: 16px 18px 12px; border-bottom: 1px solid var(--border-hairline);
   flex: 0 0 auto;
 }
 .ubovm-modal-header h2 {
@@ -53,7 +53,7 @@
   border: 0; border-radius: 8px; background: transparent; color: var(--muted);
   font: inherit; font-size: var(--fs-sm, 12px); line-height: 1; cursor: pointer;
 }
-.ubovm-modal-close:hover { background: var(--hover); color: var(--ink); }
+.ubovm-modal-close:hover { background: var(--surface-hover); color: var(--ink); }
 .ubovm-modal-close:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
 
 .ubovm-modal-body {
@@ -71,7 +71,7 @@
   font-size: var(--fs-sm, 12px); line-height: var(--lh-ui, 1.55);
   color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere;
 }
-.ubovm-modal-error { margin: 0; font-size: var(--fs-sm, 12px); line-height: var(--lh-tight, 1.4); color: var(--vscode-errorForeground, #a8453f); }
+.ubovm-modal-error { margin: 0; font-size: var(--fs-sm, 12px); line-height: var(--lh-tight, 1.4); color: var(--vscode-errorForeground, var(--state-error)); }
 .ubovm-modal-error[hidden], .ubovm-modal-detail:empty { display: none; }
 
 .ubovm-modal-field { display: flex; flex-direction: column; gap: 7px; }
@@ -79,8 +79,9 @@
 .ubovm-modal-field input,
 .ubovm-modal-search {
   box-sizing: border-box; width: 100%; padding: 10px 12px; border: 1px solid var(--border);
-  border-radius: 9px; background: var(--canvas); color: var(--ink);
+  border-radius: 9px; background: var(--surface, var(--canvas)); color: var(--ink);
   font: inherit; font-size: var(--fs-md, 13px); line-height: var(--lh-tight, 1.4);
+  box-shadow: var(--dsw-inset);
 }
 .ubovm-modal-field input:focus-visible,
 .ubovm-modal-search:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
@@ -95,7 +96,7 @@
   padding: 10px 12px; border: 0; border-radius: 9px;
   background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer;
 }
-.ubovm-modal-row:hover, .ubovm-modal-row.is-active { background: var(--overlay-hover-background, var(--hover)); }
+.ubovm-modal-row:hover, .ubovm-modal-row.is-active { background: var(--overlay-hover-background, var(--surface-hover)); }
 .ubovm-modal-row:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
 .ubovm-modal-row-title { font-size: var(--fs-md, 13px); font-weight: 600; line-height: var(--lh-tight, 1.4); }
 .ubovm-modal-row-meta { font-size: var(--fs-xs, 11px); line-height: var(--lh-tight, 1.4); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -108,11 +109,11 @@
 }
 .ubovm-modal-footer .text-button { min-height: 34px; min-width: 72px; }
 .ubovm-modal-footer .danger-button {
-  color: var(--vscode-errorForeground, #b44a3d);
-  border-color: color-mix(in srgb, var(--vscode-errorForeground, #b44a3d) 35%, var(--border));
+  color: var(--vscode-errorForeground, var(--state-error));
+  border-color: color-mix(in srgb, var(--state-error) 35%, var(--border));
 }
 .ubovm-modal-footer .danger-button:hover:enabled {
-  background: color-mix(in srgb, var(--vscode-errorForeground, #b44a3d) 10%, var(--canvas));
+  background: var(--state-error-wash);
 }
 
 @media (max-width: 560px) {

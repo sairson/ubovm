@@ -26,9 +26,13 @@ test('Reason can stop a running Worker and start it again from the same checkpoi
       const workers = control.list();
       assert.equal(workers.find(worker => worker.worker === refFor(context, 'quick evidence')).status, 'completed');
       assert.equal(workers.find(worker => worker.worker === slowRef).status, 'running');
+      // A Reason-directed stop must name a concrete reason.
+      await assert.rejects(control.stop(slowRef), /requires a concrete reason/);
+      await assert.rejects(control.stop(slowRef, '   '), /requires a concrete reason/);
       const stopped = await control.stop(slowRef, 'no longer needed');
       assert.equal(stopped.stopped, true);
       assert.equal(stopped.status, 'stopping');
+      assert.equal(stopped.reason, 'no longer needed');
       stopRequested = true;
       return { wait: true };
     }
@@ -97,6 +101,83 @@ test('Reason can steer a running Worker; the new direction is attached to the re
   assert.equal(steered.intent.description, 'browser evidence');
 });
 
+test('Reason live-steers a running Worker without restarting its attempt', async () => {
+  const board = new Blackboard({ sessionId: 'control-live-steer', goal: 'verify' });
+  const steered = [];
+  let phase = 0;
+  const reason = async ({ context, control }) => {
+    if (++phase === 1) {
+      return { intents: [
+        { description: 'quick evidence', parentIds: [context.data.root], keyPoints: ['quick'], priority: 'medium' },
+        { description: 'live evidence', parentIds: [context.data.root], keyPoints: ['live'], priority: 'medium' }
+      ] };
+    }
+    if (phase === 2) {
+      const target = refFor(context, 'live evidence');
+      const directed = await control.prompt(target, 'Check only the TLS handshake.');
+      assert.equal(directed.directed, true);
+      assert.equal(directed.live, true);
+      assert.equal(control.list().find(worker => worker.worker === target).lastCorrection?.type, 'live');
+      const duplicate = await control.prompt(target, '  Check only the TLS handshake. ');
+      assert.equal(duplicate.duplicate, true);
+      assert.equal(duplicate.directed, false);
+      return { wait: true };
+    }
+    return facts(context).length >= 2
+      ? { complete: true, evidenceIds: facts(context).map(node => node.ref), summary: 'live correction recorded' }
+      : { wait: true };
+  };
+  const coordinator = new BlackboardCoordinator({ blackboard: board, maxConcurrency: 2, reason,
+    worker: async ({ node, signal, registerSteering }) => {
+      if (node.intent.description.startsWith('quick evidence')) return 'quick fact';
+      await new Promise((resolve, reject) => {
+        registerSteering(({ text }) => { steered.push(text); resolve(); });
+        signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+      });
+      return 'live fact';
+    } });
+  const result = await coordinator.run();
+  assert.equal(result.complete, true);
+  assert.deepEqual(steered, ['Check only the TLS handshake.']);
+  const node = board.snapshot().nodes.find(item => item.intent?.description === 'live evidence');
+  assert.deepEqual(node.attempts.map(attempt => attempt.status), ['completed'], 'live steering must not interrupt the attempt');
+});
+
+test('a live review cadence re-enters Reason while a Worker is still running', async () => {
+  const board = new Blackboard({ sessionId: 'control-periodic-review', goal: 'verify' });
+  let phase = 0, reviewSawRunning = false, releaseWorker;
+  const reason = async ({ context }) => {
+    phase++;
+    if (phase === 1) {
+      return { intents: [{ description: 'long evidence', parentIds: [context.data.root], keyPoints: ['long'], priority: 'medium' }] };
+    }
+    if (phase === 2) {
+      reviewSawRunning = context.data.nodes.some(node => node.intent?.status === 'running');
+      releaseWorker?.();
+      return { wait: true };
+    }
+    const evidence = facts(context);
+    return evidence.length
+      ? { complete: true, evidenceIds: evidence.map(node => node.ref), summary: 'periodic review saw the result' }
+      : { wait: true };
+  };
+  const coordinator = new BlackboardCoordinator({ blackboard: board, maxConcurrency: 1, reviewIntervalMs: 25, reason,
+    worker: async ({ signal }) => {
+      await new Promise((resolve, reject) => {
+        // Fallback release keeps a broken timer from hanging the suite; the
+        // assertion below still requires the timer review to have run first.
+        const timer = setTimeout(resolve, 1000);
+        releaseWorker = () => { clearTimeout(timer); resolve(); };
+        signal.addEventListener('abort', () => { clearTimeout(timer); reject(signal.reason); }, { once: true });
+      });
+      return 'long fact';
+    } });
+  const result = await coordinator.run();
+  assert.equal(result.complete, true);
+  assert.equal(reviewSawRunning, true, 'the timer review must enter before the Worker settles');
+  assert.ok(phase >= 3);
+});
+
 test('Reason steers a queued Worker and stops another to free its slot', async () => {
   const board = new Blackboard({ sessionId: 'control-queued', goal: 'verify' });
   const lateDirections = [];
@@ -116,9 +197,11 @@ test('Reason steers a queued Worker and stops another to free its slot', async (
       const removedRef = refFor(context, 'removed evidence');
       assert.equal(control.list().find(worker => worker.worker === lateRef).status, 'pending');
       assert.equal(control.list().find(worker => worker.worker === removedRef).status, 'pending');
+      await assert.rejects(control.stop(removedRef), /requires a concrete reason/);
       const cancelled = await control.stop(removedRef, 'duplicate direction');
       assert.equal(cancelled.stopped, true);
       assert.equal(cancelled.status, 'interrupted');
+      assert.equal(cancelled.reason, 'duplicate direction');
       const directed = await control.prompt(lateRef, 'Include the remote port check.');
       assert.equal(directed.directed, true);
       const stopped = await control.stop(blockerRef, 'blocking the queue');
@@ -146,6 +229,8 @@ test('Reason steers a queued Worker and stops another to free its slot', async (
   const removed = board.snapshot().nodes.find(node => node.intent?.description === 'removed evidence');
   assert.equal(removed.intent.status, 'interrupted');
   assert.deepEqual(removed.attempts.map(attempt => attempt.status), ['interrupted']);
+  // The operator-facing attempt error keeps the stop marker and the exact reason.
+  assert.match(removed.attempts.at(-1).error, /\[已放弃\] duplicate direction/);
 });
 
 test('Reason control rejects invalid targets and terminal Workers without breaking the review', async () => {
@@ -156,7 +241,7 @@ test('Reason control rejects invalid targets and terminal Workers without breaki
     const quickRef = refFor(context, 'quick evidence');
     await assert.rejects(control.start(quickRef), /already completed/);
     await assert.rejects(control.prompt(quickRef, 'more'), /already completed/);
-    await assert.rejects(control.stop(quickRef), /only running or pending/);
+    await assert.rejects(control.stop(quickRef, 'terminal check'), /only running or pending/);
     await assert.rejects(control.stop('n99'), /Unknown worker alias/);
     await assert.rejects(control.stop('worker-1'), /node alias/);
     assert.equal(control.list().filter(worker => worker.worker === quickRef).length, 1);

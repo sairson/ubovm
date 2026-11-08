@@ -5,6 +5,9 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
 const { createCodingService } = require('../../../harness/coding/coding-service.cjs');
+const { createCallChain } = require('../../../harness/coding/call-chain.cjs');
+
+const REMOVED_TOOLS = ['read_workspace_file', 'edit_workspace_file', 'preview_workspace_edits', 'analyze_workspace_call_chain'];
 
 async function fixture(t, executeCommand) {
   const parent = await fs.realpath(os.tmpdir()), root = await fs.mkdtemp(path.join(parent, 'ubovm-chain-'));
@@ -36,10 +39,17 @@ async function fixture(t, executeCommand) {
   };
   const context = { workspaceState: { get: (_key, fallback) => structuredClone(values.get(_key) ?? fallback), async update(key, value) { values.set(key, structuredClone(value)); } } };
   const service = createCodingService(vscode, context, {});
-  const call = async (input = {}, signal) => (await service.tools('one').find(tool => tool.name === 'analyze_workspace_call_chain').execute('test', input, signal)).details;
+  // The call-chain module is no longer advertised on the model-facing surface;
+  // this suite exercises the bounded BFS helper directly and asserts removal.
+  const locate = async (input = {}) => {
+    const file = path.resolve(root, input.path);
+    return { file, path: path.relative(root, file).split(path.sep).join('/'), rootIndex: input.root ?? 0, sessionId: 'one' };
+  };
+  const callChain = createCallChain(vscode, { locate, workspaceFolders: () => vscode.workspace.workspaceFolders, unbounded: () => false });
+  const call = async (input = {}, signal) => (await callChain('one').execute('test', input, signal)).details;
   t.after(async () => { service.dispose(); await fs.rm(root, { recursive: true, force: true }); });
   return {
-    root, vscode, documents, call,
+    root, vscode, documents, call, get service() { return service; },
     write: (name, text) => fs.writeFile(path.join(root, name), text),
     loc: (rel, line, column) => ({
       uri: uri(path.join(root, rel)),
@@ -114,4 +124,10 @@ test('analyze_workspace_call_chain truncates when maxNodes is reached', async t 
   const details = await f.call({ path: 'a.js', line: 1, column: 1, direction: 'callees', maxDepth: 3, maxNodes: 2 });
   assert.equal(details.nodes.length, 2);
   assert.equal(details.truncated, true);
+});
+
+test('analyze_workspace_call_chain is no longer advertised on the model-facing tool surface', async t => {
+  const f = await fixture(t);
+  const names = f.service.tools('one').map(tool => tool.name);
+  for (const name of REMOVED_TOOLS) assert.equal(names.includes(name), false, name + ' must not be advertised');
 });

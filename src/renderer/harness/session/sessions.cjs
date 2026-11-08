@@ -12,6 +12,23 @@ function workspaceKey(value) {
 const goalRequestFingerprint = (objective, initialFacts, criteria) => createHash('sha256').update(JSON.stringify([objective, initialFacts, criteria])).digest('hex');
 const inputMessageId = (messages, index) => messages[index].id ?? 'legacy-' + createHash('sha256').update(JSON.stringify(messages.slice(0, index + 1))).digest('hex');
 
+// DSH-style conversation metadata: a compact relative timestamp instead of a
+// message count. Uses the host UI language so Chinese/English stay localized
+// without adding translation keys for every number.
+function relativeSessionTime(value, locale = 'zh-CN') {
+  const time = Number(value);
+  if (!Number.isFinite(time) || time <= 0) return '';
+  const diff = Math.max(0, Date.now() - time);
+  try {
+    const format = (amount, unit) => new Intl.RelativeTimeFormat(locale, { numeric: 'auto', style: 'narrow' }).format(amount, unit);
+    if (diff < 60_000) return format(0, 'second');
+    if (diff < 3_600_000) return format(-Math.round(diff / 60_000), 'minute');
+    if (diff < 86_400_000) return format(-Math.round(diff / 3_600_000), 'hour');
+    if (diff < 7 * 86_400_000) return format(-Math.round(diff / 86_400_000), 'day');
+    return new Intl.DateTimeFormat(locale, { month: 'short', day: 'numeric' }).format(new Date(time));
+  } catch { return ''; }
+}
+
 // Match legacy prefix hashes exactly, but serialize each record only once.
 // Hash.copy() forks the current digest without rehashing the saved prefix.
 function inputMessageIds(messages, role) {
@@ -164,6 +181,38 @@ function attachedEvidenceIdsForGoal(goal) {
   return new Set((goal?.sourceEvidence || []).map(item => item.id).filter(Boolean));
 }
 
+function cleanNotes(value) {
+  const seen = new Set();
+  return (Array.isArray(value) ? value : [])
+    .filter(item => {
+      if (!item || typeof item.text !== 'string' || !item.text.trim()) return false;
+      if (typeof item.id === 'string' && item.id.trim()) {
+        if (seen.has(item.id)) return false;
+        seen.add(item.id);
+      }
+      return true;
+    })
+    .slice(-MAX_NOTES)
+    .map(item => ({
+      id: typeof item.id === 'string' && item.id.trim() ? item.id : randomUUID(),
+      text: item.text.trim().slice(0, MAX_NOTE_LENGTH),
+      createdAt: Number.isFinite(item.createdAt) ? item.createdAt : Date.now()
+    }));
+}
+
+function cleanAgentEdits(value) {
+  const seen = new Set();
+  return (Array.isArray(value) ? value : [])
+    .filter(item => {
+      if (!item || typeof item.id !== 'string' || !item.id || typeof item.text !== 'string' || !item.text.trim()) return false;
+      if (seen.has(item.id)) return false;
+      seen.add(item.id);
+      return true;
+    })
+    .slice(-MAX_NOTES)
+    .map(item => ({ id: item.id, text: item.text.trim().slice(0, MAX_NOTE_LENGTH), updatedAt: Number.isFinite(item.updatedAt) ? item.updatedAt : Date.now() }));
+}
+
 function cleanGoal(value) {
   if (!value || typeof value.objective !== 'string' || !value.objective.trim()) return null;
   const seenCriteria = new Set();
@@ -182,22 +231,7 @@ function cleanGoal(value) {
       text: item.text.trim().slice(0, MAX_CRITERION_LENGTH),
       done: item.done === true
     }));
-  const seenNotes = new Set();
-  const notes = (Array.isArray(value.notes) ? value.notes : [])
-    .filter(item => {
-      if (!item || typeof item.text !== 'string' || !item.text.trim()) return false;
-      if (typeof item.id === 'string' && item.id.trim()) {
-        if (seenNotes.has(item.id)) return false;
-        seenNotes.add(item.id);
-      }
-      return true;
-    })
-    .slice(-MAX_NOTES)
-    .map(item => ({
-      id: typeof item.id === 'string' && item.id.trim() ? item.id : randomUUID(),
-      text: item.text.trim().slice(0, MAX_NOTE_LENGTH),
-      createdAt: Number.isFinite(item.createdAt) ? item.createdAt : Date.now()
-    }));
+  const notes = cleanNotes(value.notes);
   const sourceEvidence = cleanAssistEvidence(value.sourceEvidence);
   return {
     objective: value.objective.trim().slice(0, MAX_OBJECTIVE_LENGTH), criteria, notes,
@@ -275,7 +309,7 @@ function goalTitle(goal, fallback = '新对话') {
 function newSession(messages = [], mode = 'assist') {
   const now = Date.now();
   return {
-    id: randomUUID(), title: titleFrom(messages, mode === 'goal' ? '新探索' : '新对话'), messages, mode, goal: null,
+    id: randomUUID(), title: titleFrom(messages, mode === 'goal' ? '新探索' : '新对话'), messages, mode, goal: null, notes: [], deletedAgentNotes: [], editedAgentNotes: [],
     ...(mode === 'assist' ? { assistEvidence: [] } : {}),
     placeholder: messages.length === 0, createdAt: now, updatedAt: now
   };
@@ -286,6 +320,9 @@ function snapshot(session) {
     ...session,
     inputQueue: structuredClone(session.inputQueue ?? []),
     messages: session.messages.map(message => ({ ...message, ...(message.parts ? { parts: message.parts.map(part => ({ ...part })) } : {}) })),
+    notes: cleanNotes(session.notes),
+    deletedAgentNotes: [...new Set(Array.isArray(session.deletedAgentNotes) ? session.deletedAgentNotes : [])],
+    editedAgentNotes: cleanAgentEdits(session.editedAgentNotes),
     goal: goalSnapshot(session.goal),
     ...(session.mode === 'assist' ? { assistEvidence: evidenceSnapshot(session.assistEvidence) } : {})
   };
@@ -317,7 +354,10 @@ function restoreState(stored, legacyMessages) {
         }),
       ...(session.inputQueue?.length || session.queuePaused !== undefined ? { queuePaused: true } : {}),
       ...(typeof session.executionBranch === 'string' ? { executionBranch: session.executionBranch } : {}),
-      id: session.id, title, messages, placeholder: session.placeholder === true && messages.length === 0 && !goal,
+      id: session.id, title, messages, notes: cleanNotes(session.notes),
+      deletedAgentNotes: [...new Set((Array.isArray(session.deletedAgentNotes) ? session.deletedAgentNotes : []).filter(id => typeof id === 'string' && id))],
+      editedAgentNotes: cleanAgentEdits(session.editedAgentNotes),
+      placeholder: session.placeholder === true && messages.length === 0 && !goal,
       ...(typeof session.projectId === 'string' ? { projectId: session.projectId } : {}),
       ...(typeof session.workspace === 'string' && session.workspace.trim() ? { workspace: session.workspace.trim() } : {}),
       ...(typeof session.selectedModelId === 'string' && session.selectedModelId.trim() ? { selectedModelId: session.selectedModelId.trim() } : {}),
@@ -409,6 +449,7 @@ function createSessions(vscode, context, onDidChange, { isBusy = () => false, cr
   let queue = Promise.resolve();
   let disposed = false;
   const runningSessions = new Set();
+  const uiLocale = () => (typeof vscode?.env?.language === 'string' && vscode.env.language) || 'zh-CN';
   // History arrays are replaced by mutations; identity is a safe budget cache.
   // A WeakMap drops old history when neither state nor snapshots retain it.
   const messageBudgets = new WeakMap();
@@ -601,8 +642,9 @@ function createSessions(vscode, context, onDidChange, { isBusy = () => false, cr
       item.contextValue = currentSession ? 'ubovm.currentConversation' : 'ubovm.conversation';
       const modeTitle = tr(session.mode === 'goal' ? '探索模式' : '协助模式');
       const messageCount = session.messageCount ?? session.messages.length;
-      item.description = running ? tr('运行中') : String(messageCount);
-      item.tooltip = `${session.title}\n${currentSession ? tr('当前会话 · ') : ''}${running ? tr('运行中 · ') : ''}${modeTitle} · ${tr(`${messageCount} 条消息`)}`;
+      const timestamp = relativeSessionTime(session.updatedAt ?? session.createdAt, uiLocale());
+      item.description = running ? tr('运行中') : timestamp || String(messageCount);
+      item.tooltip = `${session.title}\n${currentSession ? tr('当前会话 · ') : ''}${running ? tr('运行中 · ') : ''}${timestamp ? timestamp + ' · ' : ''}${modeTitle} · ${tr(`${messageCount} 条消息`)}`;
       item.accessibilityInformation = { label: `${session.title}${currentSession ? tr('，当前会话') : ''}${running ? tr('，运行中') : ''}${tr(session.mode === 'goal' ? '，探索模式' : '，协助模式')}，${tr(`${messageCount} 条消息`)}` };
       item.command = { command: 'ubovm.selectConversation', title: tr('打开会话'), arguments: [session.id] };
       return item;
@@ -644,6 +686,11 @@ function createSessions(vscode, context, onDidChange, { isBusy = () => false, cr
     get(id) {
       const session = state.sessions.find(item => item.id === id);
       return session ? snapshot(session) : undefined;
+    },
+    // Mode-only lookup for hot paths (harness notifications) that must not clone
+    // a whole conversation snapshot just to read the mode.
+    modeOf(id) {
+      return state.sessions.find(item => item.id === id)?.mode;
     },
     list,
     related(id) {
@@ -1107,11 +1154,68 @@ function createSessions(vscode, context, onDidChange, { isBusy = () => false, cr
     },
     addGoalNote(text, expectedSessionId) {
       return enqueue(() => {
-        const existing = selectedGoal(expectedSessionId);
-        if (!existing.goal) throw new Error('请先保存目标，再添加备注。');
+        const existing = selected(expectedSessionId);
         const note = { id: randomUUID(), text: requireText(text, MAX_NOTE_LENGTH, '备注'), createdAt: Date.now() };
-        const goal = { ...existing.goal, updatedAt: note.createdAt, notes: [...existing.goal.notes, note].slice(-MAX_NOTES) };
-        return commitSession({ ...existing, goal, updatedAt: note.createdAt });
+        if (existing.goal) {
+          const goal = { ...existing.goal, updatedAt: note.createdAt, notes: [...existing.goal.notes, note].slice(-MAX_NOTES) };
+          return commitSession({ ...existing, goal, updatedAt: note.createdAt });
+        }
+        // Assist conversations keep a top-level notebook so notes persist even
+        // without a saved exploration goal.
+        const notes = [...(existing.notes ?? []), note].slice(-MAX_NOTES);
+        return commitSession({ ...existing, notes, updatedAt: note.createdAt });
+      });
+    },
+    deleteNote(noteId, expectedSessionId) {
+      return enqueue(() => {
+        if (typeof noteId !== 'string' || !noteId) throw new Error('备注不存在。');
+        const existing = selected(expectedSessionId);
+        if (existing.goal) {
+          const notes = existing.goal.notes.filter(note => note.id !== noteId);
+          if (notes.length === existing.goal.notes.length) throw new Error('备注不存在。');
+          return commitSession({ ...existing, goal: { ...existing.goal, notes, updatedAt: Date.now() }, updatedAt: Date.now() });
+        }
+        const notes = (existing.notes ?? []).filter(note => note.id !== noteId);
+        if (notes.length === (existing.notes ?? []).length) throw new Error('备注不存在。');
+        return commitSession({ ...existing, notes, updatedAt: Date.now() });
+      });
+    },
+    deleteAgentNote(noteId, expectedSessionId) {
+      return enqueue(() => {
+        if (typeof noteId !== 'string' || !noteId) throw new Error('备注不存在。');
+        const existing = selected(expectedSessionId);
+        // Agent notes live in execution memory and may still be rewritten while
+        // a run is active. Keep the deletion in the conversation notebook so it
+        // is independent from the run and survives branch/refresh.
+        const deleted = [...new Set([...(existing.deletedAgentNotes ?? []), noteId])].slice(-500);
+        return commitSession({ ...existing, deletedAgentNotes: deleted, updatedAt: Date.now() });
+      });
+    },
+    editNote(noteId, text, expectedSessionId) {
+      return enqueue(() => {
+        if (typeof noteId !== 'string' || !noteId) throw new Error('备注不存在。');
+        const existing = selected(expectedSessionId);
+        const next = requireText(text, MAX_NOTE_LENGTH, '备注');
+        if (existing.goal) {
+          const notes = existing.goal.notes.map(note => note.id === noteId ? { ...note, text: next } : note);
+          if (notes.length === existing.goal.notes.length && !existing.goal.notes.some(note => note.id === noteId)) throw new Error('备注不存在。');
+          return commitSession({ ...existing, goal: { ...existing.goal, notes, updatedAt: Date.now() }, updatedAt: Date.now() });
+        }
+        const notes = (existing.notes ?? []).map(note => note.id === noteId ? { ...note, text: next } : note);
+        if (!(existing.notes ?? []).some(note => note.id === noteId)) throw new Error('备注不存在。');
+        return commitSession({ ...existing, notes, updatedAt: Date.now() });
+      });
+    },
+    editAgentNote(noteId, text, expectedSessionId) {
+      return enqueue(() => {
+        if (typeof noteId !== 'string' || !noteId) throw new Error('备注不存在。');
+        const existing = selected(expectedSessionId);
+        const next = requireText(text, MAX_NOTE_LENGTH, '备注');
+        const edited = [...(existing.editedAgentNotes ?? [])];
+        const index = edited.findIndex(item => item.id === noteId);
+        const item = { id: noteId, text: next, updatedAt: Date.now() };
+        if (index >= 0) edited[index] = item; else edited.push(item);
+        return commitSession({ ...existing, editedAgentNotes: edited.slice(-MAX_NOTES), updatedAt: Date.now() });
       });
     },
     dispose() {

@@ -43,8 +43,13 @@ function applyStartupPolicy(settingsFile, defaults) {
   if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
     let changed = false;
     for (const key of STARTUP_POLICY_KEYS) {
-      if (!Object.hasOwn(defaults, key) || parsed[key] === defaults[key]) continue;
-      parsed[key] = defaults[key];
+      if (!Object.hasOwn(defaults, key)) continue;
+      const expected = defaults[key];
+      const same = expected && typeof expected === 'object'
+        ? JSON.stringify(parsed[key]) === JSON.stringify(expected)
+        : parsed[key] === expected;
+      if (same) continue;
+      parsed[key] = expected;
       changed = true;
     }
     if (changed) fs.writeFileSync(settingsFile, JSON.stringify(parsed, null, 2) + '\n');
@@ -68,6 +73,9 @@ function upsertJsoncValue(raw, key, value) {
   const encoded = JSON.stringify(value);
   const pattern = new RegExp(`(${quoted.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*:\\s*)(?:true|false|null|-?\\d+(?:\\.\\d+)?|"(?:\\\\.|[^"\\\\])*")`);
   if (pattern.test(raw)) return raw.replace(pattern, `$1${encoded}`);
+  // A complex value (the extension allowlist) is already present: leave the
+  // user's JSONC untouched rather than appending a duplicate root key.
+  if (raw.includes(quoted)) return raw;
   const index = raw.indexOf('{');
   if (index < 0) return raw;
   return raw.slice(0, index + 1) + `\n  ${quoted}: ${encoded},` + raw.slice(index + 1);
@@ -75,8 +83,15 @@ function upsertJsoncValue(raw, key, value) {
 
 // Drop previous-session editor backups before Code OSS can reopen them.
 // Never follow links: unlink the link itself and leave the target directory intact.
+// A crashed or still-closing process can hold Backups open on Windows; that must
+// never abort application startup. The stale backup is harmless if left behind.
 export function discardRestoredWorkbenchSession(paths) {
-  removeTreeWithoutFollowingLinks(path.join(paths.userData, 'Backups'));
+  try {
+    removeTreeWithoutFollowingLinks(path.join(paths.userData, 'Backups'));
+  } catch (error) {
+    if (!['EPERM', 'EACCES', 'EBUSY', 'ENOTEMPTY', 'EROFS'].includes(error.code)) throw error;
+    console.warn(`[UBOVM] Could not clear restored editor backups (${error.code}); continuing startup.`);
+  }
 }
 
 function removeTreeWithoutFollowingLinks(target) {

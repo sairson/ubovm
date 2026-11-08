@@ -11,16 +11,41 @@ const stringsSchema = Type.Array(string);
 const optionalStrings = Type.Optional(stringsSchema);
 const objectSchema = Type.Record(Type.String(), Type.Unknown());
 const enumSchema = values => Type.Union(values.map(value => Type.Literal(value)));
-const noteTypes = ['note', 'asset', 'vulnerability'];
+const noteTypes = ['note', 'asset', 'vulnerability', 'flag', 'scope'];
 const subtypeSchema = Type.String({ description: 'A 2-64 character lowercase snake_case identifier starting with a letter, e.g. http_endpoint, source_file, sql_injection. Spaces, hyphens and camelCase are normalized.' });
 const assetKeys = ['type', 'locator', 'content', 'method', 'operation', 'protocol', 'details', 'evidence', 'tool_call_ids'];
 const vulnerabilityLists = ['preconditions', 'effects', 'constraints', 'evidence', 'chain_hints', 'related_note_ids', 'tool_call_ids'];
 const vulnerabilityKeys = ['type', 'title', 'target', 'vector', 'status', 'severity', 'details', ...vulnerabilityLists];
+const flagStatuses = ['found', 'verified', 'submitted', 'accepted', 'rejected'];
+const flagKeys = ['value', 'target', 'challenge', 'source', 'status', 'verification', 'evidence', 'tool_call_ids', 'details'];
+const scopeKeys = ['targets', 'out_of_scope', 'rules', 'authorization', 'evidence', 'tool_call_ids', 'details'];
 const assetSchema = Type.Object({ type: subtypeSchema, locator: string, content: optionalString, method: optionalString, operation: optionalString, protocol: optionalString, details: Type.Optional(objectSchema), evidence: optionalStrings, tool_call_ids: optionalStrings }, { additionalProperties: false });
 const vulnerabilitySchema = Type.Object({ type: subtypeSchema, title: string, target: string, vector: optionalString, status: Type.Optional(enumSchema(['candidate', 'verified', 'exploitable'])), severity: Type.Optional(enumSchema(['unknown', 'info', 'low', 'medium', 'high', 'critical'])), details: Type.Optional(objectSchema), ...Object.fromEntries(vulnerabilityLists.map(key => [key, ['effects', 'evidence'].includes(key) ? stringsSchema : optionalStrings])) }, { additionalProperties: false });
+const flagSchema = Type.Object({
+  value: Type.String({ description: 'The flag string exactly as observed; never guess or fabricate one.' }),
+  target: string,
+  challenge: optionalString,
+  source: optionalString,
+  status: Type.Optional(enumSchema(flagStatuses)),
+  verification: optionalString,
+  evidence: optionalStrings,
+  tool_call_ids: optionalStrings,
+  details: Type.Optional(objectSchema)
+}, { additionalProperties: false });
+const scopeSchema = Type.Object({
+  targets: stringsSchema,
+  out_of_scope: optionalStrings,
+  rules: optionalString,
+  authorization: optionalString,
+  evidence: optionalStrings,
+  tool_call_ids: optionalStrings,
+  details: Type.Optional(objectSchema)
+}, { additionalProperties: false });
 const parameters = Type.Object(withActionHelp({
-  note_type: Type.Optional({ ...enumSchema(noteTypes), description: 'Record category. On write, omit to infer from asset/vulnerability, otherwise defaults to note. On list, omit for all categories. fact and intent belong in promotion_kind, not note_type.' }), asset_type: Type.Optional(subtypeSchema), vulnerability_type: Type.Optional(subtypeSchema),
+  note_type: Type.Optional({ ...enumSchema(noteTypes), description: 'Record category. On write, omit to infer from asset/vulnerability/flag/scope, otherwise defaults to note. On list, omit for all categories. fact and intent belong in promotion_kind, not note_type.' }), asset_type: Type.Optional(subtypeSchema), vulnerability_type: Type.Optional(subtypeSchema),
   asset: Type.Optional(Type.Union([assetSchema, Type.String({ description: 'Compatibility: JSON-encoded asset object' })])), vulnerability: Type.Optional(vulnerabilitySchema),
+  flag: Type.Optional(Type.Union([flagSchema, Type.String({ description: 'Compatibility: JSON-encoded flag object' })])),
+  scope: Type.Optional(Type.Union([scopeSchema, Type.String({ description: 'Compatibility: JSON-encoded engagement scope object' })])),
   type: Type.Optional(subtypeSchema), locator: optionalString, method: optionalString, operation: optionalString, protocol: optionalString, details: Type.Optional(objectSchema),
   content: optionalString, query: optionalString, limit: Type.Optional(Type.Integer()), offset: Type.Optional(Type.Integer()), note_id: optionalString, delete_reason: optionalString,
   promotion_kind: optionalString, outcome: optionalString, statement: optionalString, evidence: optionalStrings, failed_checks: optionalStrings, limitations: optionalStrings, description: optionalString, hint: optionalString, tool_call_ids: optionalStrings
@@ -87,7 +112,7 @@ function parseInput(input) {
   if (action === 'write' || action === 'list') {
     normalized.note_type = text(value.note_type, 'note_type').toLowerCase();
     if (['note-knowledge', 'note_knowledge'].includes(normalized.note_type)) normalized.note_type = 'note';
-    if (normalized.note_type && !noteTypes.includes(normalized.note_type)) throw new Error(`Invalid note_type ${JSON.stringify(normalized.note_type)}: expected note, asset, or vulnerability. Use asset.type/vulnerability.type for subtypes and promotion_kind for fact/intent.`);
+    if (normalized.note_type && !noteTypes.includes(normalized.note_type)) throw new Error(`Invalid note_type ${JSON.stringify(normalized.note_type)}: expected note, asset, vulnerability, flag, or scope. Use asset.type/vulnerability.type for subtypes, flag/scope objects for engagement records, and promotion_kind for fact/intent.`);
   }
   if (['get', 'promote', 'delete'].includes(action)) normalized.note_id = required(value.note_id, 'note_id');
   if (action === 'delete') normalized.delete_reason = required(text(value.delete_reason, 'delete_reason', 1024), 'delete_reason');
@@ -117,10 +142,14 @@ function parseInput(input) {
   }
   if (action === 'write') {
     if (!normalized.note_type) {
-      const hasAsset = value.asset !== undefined || Boolean(value.asset_type);
-      const hasVulnerability = value.vulnerability !== undefined || Boolean(value.vulnerability_type);
-      if (hasAsset && hasVulnerability) throw new Error('Specify note_type when both asset and vulnerability fields are supplied');
-      normalized.note_type = hasAsset ? 'asset' : hasVulnerability ? 'vulnerability' : 'note';
+      const typed = [
+        ['asset', value.asset !== undefined || Boolean(value.asset_type)],
+        ['vulnerability', value.vulnerability !== undefined || Boolean(value.vulnerability_type)],
+        ['flag', value.flag !== undefined],
+        ['scope', value.scope !== undefined]
+      ].filter(([, present]) => present).map(([kind]) => kind);
+      if (typed.length > 1) throw new Error('Specify note_type when asset, vulnerability, flag and scope are combined');
+      normalized.note_type = typed[0] ?? 'note';
     }
     normalized.content = text(value.content, 'content');
     if (normalized.note_type === 'asset') {
@@ -150,6 +179,51 @@ function parseInput(input) {
       if (!out.effects.length || !out.evidence.length) throw new Error('vulnerability.effects and vulnerability.evidence require at least one item');
       normalized.content ||= out.title;
       bounded(out, 'vulnerability');
+    } else if (normalized.note_type === 'flag') {
+      let flag = value.flag;
+      if (typeof flag === 'string') flag = JSON.parse(flag);
+      if (!flag) throw new Error('flag payload is required when note_type is flag');
+      fields(flag, flagKeys, 'flag');
+      const status = text(flag.status, 'flag.status').toLowerCase() || 'found';
+      if (!flagStatuses.includes(status)) throw new Error('flag.status must be found, verified, submitted, accepted, or rejected');
+      const payload = {
+        value: required(text(flag.value, 'flag.value', 4096), 'flag.value'),
+        target: required(text(flag.target, 'flag.target', 2048), 'flag.target'),
+        challenge: text(flag.challenge, 'flag.challenge', 2048),
+        source: text(flag.source, 'flag.source', 2048),
+        status,
+        verification: text(flag.verification, 'flag.verification', 8192),
+        evidence: textList(flag.evidence, 'flag.evidence'),
+        tool_call_ids: textList(flag.tool_call_ids, 'flag.tool_call_ids', 32, 128),
+        details: details(flag.details)
+      };
+      if (payload.value.includes('\n') || payload.value.includes('\r')) throw new Error('flag.value must not contain line breaks');
+      // A flag is not confirmed merely because it looks plausible. Verified or
+      // later states require the actual checker result and its evidence.
+      if (status !== 'found' && !payload.verification) throw new Error(`flag.verification (the checker or challenge result) is required for status ${status}`);
+      if (status !== 'found' && !payload.evidence.length && !payload.tool_call_ids.length) throw new Error(`flag.evidence or flag.tool_call_ids is required for status ${status}`);
+      normalized.flag = payload;
+      normalized.content ||= `FLAG ${payload.target}: ${payload.value}`;
+      bounded(payload, 'flag');
+    } else if (normalized.note_type === 'scope') {
+      let scope = value.scope;
+      if (typeof scope === 'string') scope = JSON.parse(scope);
+      if (!scope) throw new Error('scope payload is required when note_type is scope');
+      fields(scope, scopeKeys, 'scope');
+      const targets = textList(scope.targets, 'scope.targets', 64, 512);
+      if (!targets.length) throw new Error('scope.targets requires at least one authorized target');
+      const payload = {
+        targets,
+        out_of_scope: textList(scope.out_of_scope, 'scope.out_of_scope', 64, 512),
+        rules: text(scope.rules, 'scope.rules', 8192),
+        authorization: text(scope.authorization, 'scope.authorization', 4096),
+        evidence: textList(scope.evidence, 'scope.evidence'),
+        tool_call_ids: textList(scope.tool_call_ids, 'scope.tool_call_ids', 32, 128),
+        details: details(scope.details)
+      };
+      normalized.scope = payload;
+      normalized.content ||= 'Authorized scope: ' + targets.join(', ') + (payload.out_of_scope.length ? '; out of scope: ' + payload.out_of_scope.join(', ') : '');
+      bounded(payload, 'scope');
     } else required(normalized.content, 'content');
     text(normalized.content, 'content');
   }
@@ -165,9 +239,22 @@ function publicNote(state, source) {
 }
 function mergePayload(existing, incoming, kind) {
   const next = { ...existing, ...incoming, details: { ...existing.details, ...incoming.details } };
-  for (const key of kind === 'asset' ? ['evidence', 'tool_call_ids'] : vulnerabilityLists) next[key] = mergeList(existing[key] ?? [], incoming[key] ?? []);
+  const listKeys = kind === 'asset' ? ['evidence', 'tool_call_ids']
+    : kind === 'vulnerability' ? vulnerabilityLists
+    : kind === 'flag' ? ['evidence', 'tool_call_ids']
+    : ['targets', 'out_of_scope', 'evidence', 'tool_call_ids'];
+  for (const key of listKeys) next[key] = mergeList(existing[key] ?? [], incoming[key] ?? []);
   if (kind === 'vulnerability') {
     for (const [key, ranks] of [['status', ['candidate', 'verified', 'exploitable']], ['severity', ['unknown', 'info', 'low', 'medium', 'high', 'critical']]]) if (ranks.indexOf(existing[key]) > ranks.indexOf(incoming[key])) next[key] = existing[key];
+  } else if (kind === 'flag') {
+    const ranks = ['found', 'verified', 'submitted', 'accepted', 'rejected'];
+    next.status = ranks.indexOf(existing.status) > ranks.indexOf(incoming.status) ? existing.status : incoming.status;
+    next.verification = incoming.verification || existing.verification;
+    next.challenge = incoming.challenge || existing.challenge;
+    next.source = incoming.source || existing.source;
+  } else if (kind === 'scope') {
+    next.rules = incoming.rules || existing.rules;
+    next.authorization = incoming.authorization || existing.authorization;
   }
   return bounded(next, kind);
 }
@@ -290,7 +377,11 @@ export function createNoteTool({ store, sessionId, workerId = 'worker', blackboa
         }
         result = await store.commit(state => {
           checkAbort(signal);
-          const fp = kind === 'asset' ? fingerprint([payload.type, payload.locator, payload.method, payload.operation, payload.protocol]) : kind === 'vulnerability' ? fingerprint([payload.type, payload.target, payload.vector]) : '';
+          const fp = kind === 'asset' ? fingerprint([payload.type, payload.locator, payload.method, payload.operation, payload.protocol])
+            : kind === 'vulnerability' ? fingerprint([payload.type, payload.target, payload.vector])
+            : kind === 'flag' ? fingerprint([payload.target, payload.value])
+            : kind === 'scope' ? fingerprint([...payload.targets].sort())
+            : '';
           const existing = fp && state.notes.find(note => note.note_type === kind && note[`${kind}_fingerprint`] === fp);
           const now = new Date().toISOString();
           if (existing) {
@@ -300,7 +391,7 @@ export function createNoteTool({ store, sessionId, workerId = 'worker', blackboa
             return { status: 'already_known', count: 1, note: publicNote(state, existing) };
           }
           const note = { id: `note-${randomUUID()}`, session_id: sessionId, worker_id: workerId, content: request.content, note_type: kind, seen_count: 1, last_seen_at: now, created_at: now };
-          if (payload) { note[kind] = payload; note[`${kind}_type`] = payload.type; note[`${kind}_fingerprint`] = fp; note.contributor_worker_ids = [workerId]; }
+          if (payload) { note[kind] = payload; if (payload.type !== undefined) note[`${kind}_type`] = payload.type; note[`${kind}_fingerprint`] = fp; note.contributor_worker_ids = [workerId]; }
           state.notes.push(note);
           return { status: 'saved', count: 1, note: publicNote(state, note) };
         });
@@ -314,7 +405,7 @@ export function createNoteTool({ store, sessionId, workerId = 'worker', blackboa
         }
       } else if (request.action === 'list') {
         const state = store.snapshot(['notes', 'promotions']);
-        const notes = state.notes.filter(note => (!request.note_type || note.note_type === request.note_type) && (!request.asset_type || note.asset_type === request.asset_type) && (!request.vulnerability_type || note.vulnerability_type === request.vulnerability_type) && (!request.query || [note.content, JSON.stringify(note.asset ?? {}), JSON.stringify(note.vulnerability ?? {})].join(' ').toLowerCase().includes(request.query))).reverse();
+        const notes = state.notes.filter(note => (!request.note_type || note.note_type === request.note_type) && (!request.asset_type || note.asset_type === request.asset_type) && (!request.vulnerability_type || note.vulnerability_type === request.vulnerability_type) && (!request.query || [note.content, JSON.stringify(note.asset ?? {}), JSON.stringify(note.vulnerability ?? {}), JSON.stringify(note.flag ?? {}), JSON.stringify(note.scope ?? {})].join(' ').toLowerCase().includes(request.query))).reverse();
         const page = notes.slice(request.offset, request.offset + request.limit).map(note => publicNote(state, note));
         result = { status: 'ok', count: page.length, total: notes.length, offset: request.offset,
           next_offset: request.offset + page.length < notes.length ? request.offset + page.length : null, notes: page };
@@ -352,6 +443,21 @@ export function createNoteTool({ store, sessionId, workerId = 'worker', blackboa
   const disclosed = withProgressiveDisclosure(tool, NOTE_CATALOG);
   // Preserve host helpers used outside model tool calls.
   disclosed.recoverPromotions = (...args) => tool.recoverPromotions(...args);
+  // Compact engagement ledger injected into every Worker model boundary so a
+  // resumed or long-running Worker does not lose scope/flag state.
+  disclosed.summary = () => {
+    const notes = store.snapshot(['notes']).notes;
+    const flags = notes.filter(note => note.note_type === 'flag').slice(-12).map(note => ({
+      target: note.flag?.target, challenge: note.flag?.challenge, status: note.flag?.status,
+      value: note.flag?.value, verification: note.flag?.verification || undefined
+    }));
+    const scope = notes.filter(note => note.note_type === 'scope').slice(-1)[0]?.scope;
+    if (!flags.length && !scope) return '';
+    return '# Security engagement ledger\n' + JSON.stringify({
+      ...(scope ? { scope: { targets: scope.targets, out_of_scope: scope.out_of_scope, authorization: scope.authorization || undefined } } : {}),
+      flags
+    });
+  };
   return disclosed;
 }
 

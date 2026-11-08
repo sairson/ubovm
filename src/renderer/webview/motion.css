@@ -17,51 +17,30 @@
 #settings-dialog[open] { opacity: 1; transform: none; animation: none; }
 /* The initial placeholder must paint immediately; only the progress bar waits. */
 .page-loading { animation: none; }
-.route-loading { position: absolute; inset: 0; z-index: 8; display: flex; flex-direction: column; justify-content: center; padding: clamp(20px, 6vw, 72px); background: var(--canvas); }
-.route-loading .panel-loading { margin: 0 0 20px; }
-.route-loading-lines { display: grid; gap: 12px; width: min(100%, 560px); }
-.route-loading-session { display: none; }
-.route-loading[data-kind="session"] { justify-content: flex-start; padding: 28px var(--gutter) 16px; }
-.route-loading[data-kind="session"] .panel-loading { margin: 0 0 14px; }
-.route-loading[data-kind="session"] .route-loading-lines { display: none; }
-.route-loading[data-kind="session"] .route-loading-session {
-  position: relative; display: flex; flex-direction: column; flex: 1; min-height: 0; gap: 12px;
-  width: min(100%, var(--reading)); margin-inline: auto; overflow: hidden; contain: paint;
+/* Full-surface route cover: the loading affordance sits in the middle of the
+   content area for every switch kind (conversation, goal view, route). */
+.route-loading {
+  position: absolute; inset: 0; z-index: 8;
+  display: grid; place-content: center; justify-items: center; gap: 16px;
+  padding: clamp(20px, 6vw, 72px); text-align: center; background: var(--canvas);
 }
-.route-loading[data-kind="session"] .route-loading-session::after {
-  content: ''; position: absolute; inset: 0; z-index: 1; pointer-events: none;
-  background: linear-gradient(105deg, transparent 12%, var(--skeleton-shine) 46%, var(--skeleton-shine) 54%, transparent 88%);
-  transform: translateX(-130%);
-  animation: loading-sweep var(--skeleton-sweep-duration) var(--skeleton-sweep-ease) infinite;
-}
-.route-loading[data-kind="session"] .route-loading-session .skeleton-composer { margin-top: auto; }
-.route-loading-lines i { display: block; height: 10px; border-radius: 5px; background: var(--wash); overflow: hidden; contain: paint; position: relative; }
-.route-loading-lines i:nth-child(2) { width: 85%; }
-.route-loading-lines i:nth-child(3) { width: 65%; }
-.route-loading-lines i::after {
-  content: ''; position: absolute; inset: 0; pointer-events: none;
-  background: linear-gradient(105deg, transparent 12%, var(--skeleton-shine) 46%, var(--skeleton-shine) 54%, transparent 88%);
-  transform: translateX(-130%);
-  animation: loading-sweep var(--skeleton-sweep-duration) var(--skeleton-sweep-ease) infinite;
-  will-change: transform;
-}
-.route-loading-lines i:nth-child(1) { animation: skeleton-bone 2.4s ease-in-out infinite; }
-.route-loading-lines i:nth-child(2) { animation: skeleton-bone 2.4s ease-in-out .12s infinite; }
-.route-loading-lines i:nth-child(2)::after { animation-delay: 90ms; }
-.route-loading-lines i:nth-child(3) { animation: skeleton-bone 2.4s ease-in-out .24s infinite; }
-.route-loading-lines i:nth-child(3)::after { animation-delay: 180ms; }
+.route-loading .panel-loading { margin: 0; justify-content: center; font-size: 13px; }
+/* Kept in the DOM for accessibility/recovery history; the visible affordance is
+   the centered spinner, not a top-aligned skeleton. */
+.route-loading-lines, .route-loading-session { display: none !important; }
 body[data-switching="true"] :is(#assist-mode, #goal-mode) { pointer-events: none; }
-body[data-switching="true"] .page-progress { display: block; animation-delay: 0s; }
-.page-progress { animation: loading-reveal 160ms ease-out 180ms both; }
-/* Keep reduced-motion loading visible without a moving stripe. */
+.page-progress { animation: none; }
+/* Keep reduced-motion loading visible without any moving stripe. */
 @media (prefers-reduced-motion: reduce) {
-  .page-progress > span { width: 100%; opacity: .6; transform: none; }
+  .page-loader { border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+  .page-loader::before { opacity: .45; }
+  .page-loader::after { opacity: .28; }
 }
 @keyframes loading-reveal { from { opacity: 0; } to { opacity: 1; } }
-.composer.file-drag-over { outline: 2px solid var(--vscode-focusBorder, #5488ff); outline-offset: 2px; }
+.composer.file-drag-over { outline: 2px solid var(--vscode-focusBorder, #4C63C7); outline-offset: 2px; }
 #related-conversations { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 12px; flex-shrink: 0; max-height: 100px; overflow-y: auto; }
 #related-conversations[hidden] { display: none; }
-#related-conversations button { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 5px 10px; border: 1px solid var(--vscode-widget-border, #444); border-radius: 6px; background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); cursor: pointer; }
+#related-conversations button { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 5px 10px; border: 1px solid var(--vscode-widget-border, var(--border, #E4E7EC)); border-radius: 6px; background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); cursor: pointer; }
 #related-conversations button:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 2px; }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; scroll-behavior: auto !important; } }
 .page-background *, .page-background *::before, .page-background *::after,

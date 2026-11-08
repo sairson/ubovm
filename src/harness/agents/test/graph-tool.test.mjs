@@ -44,6 +44,9 @@ test('exploration_graph traverses parents, children, subtree and search', async 
   assert.deepEqual(children.details.nodes.map(line => line.split(' ')[0]).sort(), ['n2', 'n4', 'n5']);
   const subtree = await tool.execute('subtree', { action: 'subtree', ref: 'n2', depth: 1 });
   assert.deepEqual(subtree.details.nodes.map(line => line.split(' ')[0]), ['n2', 'n3']);
+  // One representation: nodes describe lines only, no rendered duplicate subset.
+  assert.equal(Object.hasOwn(subtree.details, 'compact'), false);
+  assert.equal(subtree.content[0].text, JSON.stringify(subtree.details));
   const search = await tool.execute('search', { action: 'search', query: 'tls' });
   assert.equal(search.details.matches.length, 1);
   assert.match(search.details.matches[0], /^n4 intent/);

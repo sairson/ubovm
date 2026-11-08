@@ -42,7 +42,7 @@ body :is(.goal-view-switcher, .exploration-runs)[open] > summary { border-color:
 .exploration-runs > summary::after { content: ''; width: 5px; height: 5px; margin: -3px 2px 0 4px; border: solid currentColor; border-width: 0 1.5px 1.5px 0; transform: rotate(45deg); }
 .exploration-runs[open] > summary::after { transform: rotate(225deg); margin-top: 3px; }
 .exploration-runs-popover h2 { padding: 2px 4px 10px; color: var(--muted); font-size: 11px; font-weight: 500; }
-.exploration-run + .exploration-run { border-top: 1px solid var(--border); margin-top: 6px; padding-top: 10px; }
+.exploration-run + .exploration-run { border-top: 1px solid var(--border-hairline); margin-top: 6px; padding-top: 10px; }
 .exploration-run .text-button { width: 100%; border: 0; border-radius: 7px; padding: 7px 8px; background: transparent; }
 .exploration-run p { padding-inline: 8px; overflow-wrap: anywhere; }
 body #note-editor { border-color: var(--overlay-border); border-radius: 16px; background: var(--overlay-surface); box-shadow: var(--modal-shadow); }
@@ -66,7 +66,7 @@ body #settings-discard { padding: 16px; gap: 12px; }
 body .html-preview { border-color: var(--overlay-border); border-radius: 16px; box-shadow: var(--modal-shadow); }
 body #settings-dialog { box-shadow: none; }
 #settings-dialog select { cursor: pointer; transition: border-color 120ms, background 120ms; }
-#settings-dialog select:hover:enabled { border-color: var(--overlay-border); background: var(--wash); }
+#settings-dialog select:hover:enabled { border-color: var(--overlay-border); background: var(--surface-hover); }
 #settings-dialog select:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 #settings-dialog select:disabled { cursor: default; opacity: .55; }
 /* Keep the native select fallback on engines without customizable pickers. */
